@@ -53,7 +53,8 @@ bool enterable(const il::Function& fn) {
 
 class Rewriter {
 public:
-    Rewriter(il::Module& module, const OwnCallees& callees) : module_(module), callees_(callees) {}
+    Rewriter(il::Module& module, const OwnCallees* callees, const ClosureTargets* closures)
+        : module_(module), callees_(callees), closures_(closures) {}
 
     uint32_t run() {
         uint32_t count = 0;
@@ -93,10 +94,21 @@ private:
     static constexpr uint32_t kNone = UINT32_MAX;
 
     uint32_t targetOf(const il::Function& fn, const il::Instruction& inst) const {
-        if (inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
+        if (inst.op == il::Op::DynamicCall && closures_ != nullptr && inst.operands.size() >= 2) {
+            // A closure call: its callee is operand 0 itself. A recursive
+            // call is split too: its direct entry is the function's own.
+            const uint32_t target = (*closures_)(inst);
+            if (target >= module_.functions.size() || inst.operands.size() - 2 > kMaxArgs) return kNone;
+            if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
+            for (il::ValueId v : inst.operands) {
+                if (v >= types_.size() || types_[v] != il::Type::Dynamic) return kNone;
+            }
+            return enterable(module_.functions[target]) ? target : kNone;
+        }
+        if (callees_ == nullptr || inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
         if (inst.directTarget != il::Instruction::kNoDirectTarget) return kNone;
-        const auto it = callees_.find(inst.icIndex);
-        if (it == callees_.end() || it->second >= module_.functions.size()) return kNone;
+        const auto it = callees_->find(inst.icIndex);
+        if (it == callees_->end() || it->second >= module_.functions.size()) return kNone;
         if (inst.operands.size() - 1 > kMaxArgs) return kNone;
         if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
         for (il::ValueId v : inst.operands) {
@@ -143,21 +155,29 @@ private:
             if (call.result != il::kNoValue) fn.blocks[tail].params.push_back({call.result, il::Type::Dynamic});
         }
 
-        il::Instruction slotFn = at(il::Op::MethodSlotFn, il::Type::Dynamic);
-        slotFn.result = fresh(fn, il::Type::Dynamic);
-        slotFn.operands = {call.operands[0]};
-        slotFn.icIndex = call.icIndex;
-        slotFn.keyIndex = call.keyIndex;
+        // A method call's closure is its receiver's slot; a closure call's is
+        // its callee operand, ahead of `this` and the arguments.
+        const bool method = call.op == il::Op::MethodCall;
+        il::ValueId slotValue = call.operands[0];
+        if (method) {
+            il::Instruction slotFn = at(il::Op::MethodSlotFn, il::Type::Dynamic);
+            slotFn.result = fresh(fn, il::Type::Dynamic);
+            slotFn.operands = {call.operands[0]};
+            slotFn.icIndex = call.icIndex;
+            slotFn.keyIndex = call.keyIndex;
+            slotValue = slotFn.result;
+            fn.blocks[b].instructions.push_back(std::move(slotFn));
+        }
+        const il::ValueId thisValue = method ? call.operands[0] : call.operands[1];
+        const size_t firstArg = method ? 1 : 2;
         il::Instruction is = at(il::Op::ClosureIs, il::Type::Bool);
         is.result = fresh(fn, il::Type::Bool);
-        is.operands = {slotFn.result};
+        is.operands = {slotValue};
         is.calleeIndex = target;
         il::Instruction br = at(il::Op::Branch, il::Type::Void);
         br.operands = {is.result};
         br.target.block = enter;
         br.elseTarget.block = slow;
-        const il::ValueId slotValue = slotFn.result;
-        fn.blocks[b].instructions.push_back(std::move(slotFn));
         fn.blocks[b].instructions.push_back(std::move(is));
         fn.blocks[b].instructions.push_back(std::move(br));
 
@@ -172,10 +192,10 @@ private:
             e.instructions.push_back(std::move(env));
         }
         const size_t firstSource = callee.firstSourceParam();
-        if (callee.needsThis) operands.push_back(call.operands[0]);
+        if (callee.needsThis) operands.push_back(thisValue);
         il::ValueId undef = il::kNoValue;
         for (size_t p = firstSource; p < callee.params.size(); ++p) {
-            const size_t arg = 1 + (p - firstSource);
+            const size_t arg = firstArg + (p - firstSource);
             if (arg < call.operands.size()) {
                 operands.push_back(call.operands[arg]);
                 continue;
@@ -223,7 +243,8 @@ private:
     }
 
     il::Module& module_;
-    const OwnCallees& callees_;
+    const OwnCallees* callees_;
+    const ClosureTargets* closures_;
     std::vector<il::Type> types_;
 };
 
@@ -231,7 +252,11 @@ private:
 
 uint32_t applyOwnCalleeCalls(il::Module& module, const OwnCallees& callees) {
     if (callees.empty()) return 0;
-    return Rewriter(module, callees).run();
+    return Rewriter(module, &callees, nullptr).run();
+}
+
+uint32_t applyClosureCalls(il::Module& module, const ClosureTargets& targets) {
+    return Rewriter(module, nullptr, &targets).run();
 }
 
 }  // namespace bronze::lower

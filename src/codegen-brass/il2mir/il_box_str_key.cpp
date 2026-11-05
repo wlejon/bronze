@@ -10,6 +10,7 @@
 // answer; past the count or 0 (not interned on this thread yet), the helper
 // runs and interns it, and the next evaluation hits.
 
+#include "il_lowering_dynamic.h"
 #include "il_lowering_ops.h"
 #include "il_abi.h"
 

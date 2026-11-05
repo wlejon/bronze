@@ -1,4 +1,4 @@
-add_executable(bronze_oracle_tests oracle_test.cpp)
+add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp)
 target_include_directories(bronze_oracle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases"
@@ -11,7 +11,7 @@ target_compile_definitions(bronze_oracle_tests PRIVATE
 # — and names codegen_brass ahead of embed, whose setEnterJsHook it calls, for
 # single-pass linkers.
 target_link_libraries(bronze_oracle_tests PRIVATE
-    bronze::cli bronze::codegen_brass bronze::runtime bronze::embed doctest::doctest)
+    bronze::cli bronze::codegen_brass bronze::runtime bronze::embed bronze::spec doctest::doctest)
 # The JIT half runs every case through the CLI's `bronze run`, so the CLI is
 # part of what the harness tests.
 add_dependencies(bronze_oracle_tests bronze)
@@ -26,7 +26,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -93,6 +93,13 @@ set_tests_properties(oracle-tiers-release-stress PROPERTIES LABELS "oracle;jit;t
 add_test(NAME oracle-spec-profile COMMAND bronze_oracle_tests "--test-case=Oracle spec-profile*")
 set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spec-profile")
 
+# Type feedback (docs/type-feedback.md): every case built instrumented and run,
+# then built on the profile its run wrote and on an adversarial profile made
+# from it (oracle_feedback_test.cpp), each held to the pinned bytes. A wrong
+# profile may only cost speed. Three builds a case: its own label, `-L feedback`.
+add_test(NAME oracle-feedback COMMAND bronze_oracle_tests "--test-case=Oracle feedback*")
+set_tests_properties(oracle-feedback PROPERTIES LABELS feedback)
+
 # Each of these suites runs its cases on getWorkerJobCount() threads
 # (oracle_test.cpp: BRONZE_TEST_JOBS, else at most 4), one child process per
 # thread, so one suite is four busy cores and not one. ctest has to be told:
@@ -102,7 +109,7 @@ set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spe
 # whole core.
 set_tests_properties(oracle oracle-jit oracle-jit-tier0 oracle-jit-tier2
                      oracle-tiers oracle-tiers-deopt-stress oracle-tiers-deopt-stress-3
-                     oracle-tiers-arm-all-stress-3 oracle-spec-profile
+                     oracle-tiers-arm-all-stress-3 oracle-spec-profile oracle-feedback
                      oracle-jit-release-stress oracle-tiers-release-stress
                      PROPERTIES PROCESSORS 4)
 

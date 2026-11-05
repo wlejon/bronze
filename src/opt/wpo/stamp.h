@@ -120,4 +120,12 @@ void applyStamps(il::Module& mod, const StampPlan& plan);
 // contradicts).
 void applyDirects(il::Module& mod, const StampPlan& plan);
 
+// The family range a receiver whose own keys are exactly `slots` (key indices,
+// in slot order) may be stamped with, when every family in the range declares
+// `keyIndex` at `slot` (writable for a write): what a site reading or writing
+// that key of such a receiver can claim (StampForm::Family). False when no
+// registered family begins the keys, or the range disagrees on the slot.
+bool familyClaimFor(const il::Module& mod, const std::vector<uint32_t>& slots, uint32_t slot, uint32_t keyIndex,
+                    bool write, uint32_t* lo, uint32_t* span);
+
 }  // namespace bronze::wpo

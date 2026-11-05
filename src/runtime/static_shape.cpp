@@ -73,6 +73,7 @@ extern "C" {
 //     upstream of here needs to be sound.
 //   - WRITABLE when the site stores, since the fast path is a bare store and
 //     cannot fall into 10.4.5's refusal.
+//   - for a store, not a PROTOTYPE's shape: a bare store skips the epoch.
 void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell,
                                  uint32_t slot, bool forWrite) {
     recordHelperCall("bronze_static_shape_publish");
@@ -111,6 +112,15 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
         return;
     }
     if (info.accessor || info.slot != slot || (forWrite && !info.writable)) {
+        *cell = kRefused;
+        return;
+    }
+    // A store into an object others inherit from has to reach the runtime,
+    // which moves the prototype epoch when it overwrites a function
+    // (`ObjectHeader::setProp`); the bare store would leave a method cache
+    // naming the old one. A claim proven by the layout never names such a
+    // shape; one guessed from a type-feedback profile might.
+    if (forWrite && shape->used_as_prototype) {
         *cell = kRefused;
         return;
     }

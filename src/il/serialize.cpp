@@ -49,6 +49,7 @@ struct InstructionMirror {
     uint32_t envDepth;
     uint32_t envIndex;
     bool envImmutable;
+    bool numberHint;
     uint32_t callEnvHops;
     uint32_t inlineFrame;
     Span span;
@@ -300,7 +301,8 @@ enum InstBits : uint64_t {
     kIcPolymorphic = 1u << 30,
     kIcAbsent = 1u << 31,
     kShapeGuarded = uint64_t{1} << 32,
-    kKnownBits = (uint64_t{1} << 33) - 1,
+    kNumberHint = uint64_t{1} << 33,
+    kKnownBits = (uint64_t{1} << 34) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -354,6 +356,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.shapeGuarded) m |= kShapeGuarded;
     if (inst.staticSlotGuessed) m |= kStaticSlotGuessed;
     if (inst.envImmutable) m |= kEnvImmutable;
+    if (inst.numberHint) m |= kNumberHint;
 
     w.u8(static_cast<uint8_t>(inst.op));
     w.u8(static_cast<uint8_t>(inst.type));
@@ -449,6 +452,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     inst.shapeGuarded = (m & kShapeGuarded) != 0;
     inst.staticSlotGuessed = (m & kStaticSlotGuessed) != 0;
     inst.envImmutable = (m & kEnvImmutable) != 0;
+    inst.numberHint = (m & kNumberHint) != 0;
 }
 
 void writeBlock(Writer& w, const Block& b) {

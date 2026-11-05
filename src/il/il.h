@@ -307,6 +307,12 @@ struct Instruction {
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
     bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding
+    // A HINT from a type-feedback profile (`--feedback-in`, docs/type-feedback.md):
+    // every Dynamic operand this arithmetic, compare, equality, ToNumber or
+    // truthiness op saw on the profiled run was a Number. The backend puts the
+    // Number arm on the fall-through and the generic path out of line (cold);
+    // both paths stay, so a wrong hint costs speed and never an answer.
+    bool numberHint = false;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //

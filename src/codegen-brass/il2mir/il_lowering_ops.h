@@ -20,17 +20,9 @@ Value* box_f64_bits(Builder& b, Value* f);
 // The f64 an i64 Value was boxed from by box_f64_bits, or null.
 Value* boxed_f64_source(Value* v);
 
-// ToBoolean of a dynamic (i64) value as an i32 0/1; inline for every operand
-// whose answer is its bits unless `helper_only`.
-Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only);
-
 // `box.str k` for the global key id `key_id` (i32): bronze_box_str_key's
 // answer, read inline from the thread's key-header table (il_box_str_key.cpp).
 Value* lower_box_str_key(Builder& b, Value* key_id);
-
-// Whether two String headers (payload pointers) with different bits are proven
-// to hold different text, as an i32 (il_lowering_ops.cpp).
-Value* build_strings_differ(Builder& b, Value* s0, Value* s1);
 
 // `x === lit` where `lit` is a `box.str k` (il_box_str_key.cpp): equal bits
 // answer true by one compare, and only a String with other bits goes on.

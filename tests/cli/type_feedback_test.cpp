@@ -196,7 +196,8 @@ TEST_CASE("type feedback: a build without --feedback-out carries nothing of it")
                                (dir / "x.tfb").string()) == 0);
     CHECK(fbIl.find("feedback.record") != std::string::npos);
 
-    // A profile read back is held, not spent: the object is the same bytes.
+    // A profile none of whose functions the build has changes nothing: the
+    // object is the same bytes.
     const auto tfb = dir / "fb_in.tfb";
     write(tfb, "bronze-type-feedback 1\nfn\tsum#0000000000000000\t3\nsite\t0\tentry\t3\t\n");
     std::string err;

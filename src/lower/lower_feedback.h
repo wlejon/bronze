@@ -17,6 +17,7 @@
 
 namespace bronze::spec {
 class TypeProfile;
+struct FeedbackPlan;
 }
 
 namespace bronze::lower {
@@ -25,8 +26,8 @@ namespace bronze::lower {
 //
 // `outPath` (`--feedback-out`) instruments the module so that a run writes its
 // profile there (the runtime's BRONZE_FEEDBACK_OUT overrides it at run time).
-// `profile` (`--feedback-in`) is a profile read back; nothing consumes it yet,
-// and it is held where the passes that will can reach it (Lowerer::feedback).
+// `profile` (`--feedback-in`) is a profile read back, which the final passes
+// specialize on (lower_final_passes.cpp, opt/spec/feedback_plan.h).
 struct FeedbackOptions {
     std::string outPath;
     const spec::TypeProfile* profile = nullptr;

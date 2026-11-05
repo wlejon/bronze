@@ -62,6 +62,11 @@ struct FeedbackSite {
     bool after() const { return kind == FeedbackKind::Result; }
 };
 
+// Whether `inst`'s Dynamic operands are VALUE sites: arithmetic, bitwise,
+// relational and equality compares, ToNumeric / ToInt32, and a checked unbox
+// (truthiness or ToNumber).
+bool observesOperandTags(const Instruction& inst);
+
 // Every site of `fn`, entry sites first, then in block / instruction order.
 // Empty for an external function. The ordinals are 0..n-1 in that order.
 std::vector<FeedbackSite> enumerateFeedbackSites(const Module& module, const Function& fn);

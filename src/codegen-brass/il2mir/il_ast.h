@@ -212,6 +212,9 @@ struct BronzeInstruction {
     BronzeType box_type = BronzeType::Unknown;
     bool raw_unbox = false;
     bool nullish_unbox = false;
+    // A type-feedback hint (il.h `numberHint`): the Number arm falls through
+    // and the generic path is laid out cold.
+    bool number_hint = false;
     // PropGet: the element's bits may be held as a double (il.h `numberBits`).
     bool number_bits = false;
     // PropGet/PropSet: a dominating `is.shape` answered the site's static

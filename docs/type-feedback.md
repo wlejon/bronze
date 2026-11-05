@@ -4,7 +4,7 @@ Most values in a real library stay `Dynamic` in the IL, because bronze types a
 value only where a proof does. Type feedback is the measurement that says what
 those values actually are on a representative run, so a later build can
 specialize the hot ones behind a guard. This document covers the recording,
-the file, and the reader. Nothing consumes a profile for codegen yet.
+the file, the reader, and the build that spends a profile (`--feedback-in`).
 
 ```sh
 bronze build app.js -o app.fb --feedback-out app.tfb   # 1. instrument
@@ -15,8 +15,8 @@ python3 bench/tools/feedback_report.py app.tfb         # what the run saw
 
 A feedback build is an instrument, never measured and never shipped. Without
 either flag a build is byte-identical to one made before the feature existed;
-`--feedback-in` alone changes no byte either (the profile is only held, at
-`Lowerer::feedbackProfile()`).
+`--feedback-in` with a profile that names none of the build's functions
+changes no byte either.
 
 Implementation:
 
@@ -28,6 +28,12 @@ Implementation:
 | instrumentation pass | `src/lower/lower_feedback.{h,cpp}` |
 | runtime recorder and writer | `src/runtime/type_feedback.{h,cpp}` |
 | reader and query API | `src/opt/spec/profile.{h,cpp}` |
+| plan (profile read against the probe) | `src/opt/spec/feedback_plan.{h,cpp}` |
+| claims, direct targets, hints | `src/opt/spec/feedback_apply.cpp` |
+| probe + where each consumer runs | `src/lower/lower_final_passes.cpp` |
+| closure split for profiled `call.dynamic` | `src/lower/own_callee_calls.{h,cpp}` (`applyClosureCalls`) |
+| hinted backend lowering | `src/codegen-brass/il2mir/il_lowering_dynamic.{h,cpp}` |
+| adversarial-profile suite | `tests/oracle/oracle_feedback_test.cpp` |
 | report | `bench/tools/feedback_report.py` |
 
 ## Sites
@@ -156,20 +162,58 @@ for (const il::FeedbackSite& s : il::enumerateFeedbackSites(module, fn)) {
 profile->entryCount(keys[fnIndex]);  profile->isHot(keys[fnIndex], minEntries);
 ```
 
-## Consumers (later chunks)
+## Consumers (`--feedback-in`)
 
-The intended consumer is a specialization pass that runs where the
-instrumentation runs, after every other lowering pass, so the keys it computes
-are the ones the profile was recorded under:
+A profile's keys name sites of the final IL of a build without a profile. The
+build that reads it changes that IL (a direct target planned before inlining
+moves its callers' hashes), so it cannot look its own sites up by key.
+Lowering instead runs its final IL passes twice
+(`Lowerer::finishIlPasses`): first on a copy of the module, the PROBE, whose
+final IL is the recorded build's, where `planFeedback` reads the profile and
+refiles every observation under an identity the real run shares:
 
-- a `value` site that saw only `f64`/`i32` gets an `is.number` guard and the
-  typed arithmetic, with the generic op on the cold side;
-- a `shape` site that saw one shape gets a shape-guarded fast path;
-- a `target` / `method` site with one callee gets a guarded direct call;
-- `entryCount` decides which functions are worth it.
+- a property or method site by its inline-cache index (every copy of an
+  instruction keeps it: inlining, versioning, guarded regions);
+- a `call.dynamic` by its span, and a value operand by (span, op, operand
+  position): an inlined copy keeps its callee's span.
 
-The guard is what makes a specialization sound; the profile only decides where
-a guard pays.
+Copies' observations are summed. Then the passes run on the module, spending
+the plan where each claim has to be made:
+
+- **B, direct targets** (right after `predictDirectTargets`, before the passes
+  that copy bodies, so typed entries and inlining see them): a `method.call`
+  with one profiled callee and no planned target gets that callee as its
+  direct target, on the terms of a whole-program one; the site's method cache
+  is the guard (its direct entry names the code only for a receiver whose
+  lookup finds it). A `call.dynamic` with one profiled callee is split on
+  `closure.is` (`applyClosureCalls`): the direct entry on a match, the generic
+  call on the other side.
+- **A, static-slot claims** (after `wpo::optimizeForBuild`, before the layout
+  facts spend claims): a `prop.get`/`prop.set` the whole-program pass left
+  unclaimed, whose receivers had one dominant shape, claims the key's slot in
+  that shape: a family claim when the shape's key list matches class families
+  that all have the key at that slot, else an identity claim with a static
+  cell of its own. Both are guarded as wpo's are: the runtime publishes a cell
+  only after checking an own data slot there, and refuses a store's cell on a
+  shape used as a prototype.
+- **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
+  every observed Dynamic operand was a Number gets `numberHint` (`!num` in
+  `bronze il`). The backend then lays the Number test first and moves the
+  generic path to cold blocks (sunk to the function's end); it adds
+  Number-first arms for truthiness, `==` and unary `-`. The value's
+  representation does not change.
+
+Thresholds (`feedback_plan.h`): a site needs `kMinExecutions` (32)
+executions; a shape or callee needs `kDominantPercent` (99%) of them.
+`--wpo-stats` prints `feedback:` lines: sites matched, and per consumer the
+sites taken and the profiled executions they cover.
+
+A wrong profile costs speed, never an answer. The `oracle-feedback` ctest
+(label `feedback`) builds each oracle case with `--feedback-out`, then on its
+own profile and on an ADVERSARIAL one (every value site numbers only, every
+shape's keys rotated so each slot guess is wrong, every callee another
+site's, each with 1000 executions), and requires the pinned bytes from all
+three. `BRONZE_ORACLE_FEEDBACK_CASES=<substr>[,...]` runs a subset.
 
 ## Report
 

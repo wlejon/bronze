@@ -1,3 +1,4 @@
+#include "il_lowering_dynamic.h"
 #include "il_lowering.h"
 #include "il_lowering_calls.h"
 #include "il_lowering_coro.h"
@@ -20,7 +21,7 @@ namespace {
 // compare and a bitcast; everything else is the helper's ToNumber, which may
 // call user code (an object's ToPrimitive). The test is a speculation site,
 // which tier 2 turns into a guard where the helper never ran.
-Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
+Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits, bool hot) {
     if (lowering->run_once()) return b.build_call("bronze_unbox_f64", Type::f64(), {bits});
     BasicBlock* cur = b.current_block();
     const std::string prefix = "unbox_" + std::to_string(cur->parent()->next_block_id());
@@ -28,6 +29,8 @@ Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::f64());
+    // A type-feedback hint (il.h `numberHint`): the ToNumber call out of line.
+    if (hot) slow->set_cold();
 
     b.position_at_end(cur);
     Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
@@ -615,12 +618,12 @@ bool IlLowering::lower_instruction(
                     Value* f64_bits = b.build_select(is_num, i_val, nullish_bits);
                     res_val = b.build_bitcast_f64_i64(f64_bits);
                 } else {
-                    res_val = lower_unbox_f64(this, b, i_val);
+                    res_val = lower_unbox_f64(this, b, i_val, inst_ast.number_hint);
                 }
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::Bool) {
-                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_);
+                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_, inst_ast.number_hint);
             } else if (inst_ast.result_type == BronzeType::Str) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 res_val = b.build_call("bronze_unbox_str", Type::i64(), {i_val});

@@ -907,6 +907,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         break;
                 }
+                // A type-feedback hint (il.h `numberHint`): the Number arm laid
+                // out hot. Only a `--feedback-in` build sets it.
+                if (inst.numberHint) out += " !num";
                 out += "\n";
             }
         }

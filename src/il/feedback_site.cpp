@@ -7,8 +7,6 @@
 
 namespace bronze::il {
 
-namespace {
-
 // The ops whose Dynamic operands are VALUE sites: the ones whose generic form
 // is a runtime ladder a typed specialization would replace — arithmetic,
 // relational and equality compares, truthiness, and ToNumber.
@@ -30,6 +28,8 @@ bool observesOperandTags(const Instruction& inst) {
             return false;
     }
 }
+
+namespace {
 
 bool observesResult(const Instruction& inst) {
     switch (inst.op) {

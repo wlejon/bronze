@@ -81,6 +81,11 @@ public:
     }
 
 private:
+    // The IL -> IL passes after lowering, and the type-feedback plan read
+    // around them (lower_final_passes.cpp).
+    bool finishIlPasses();
+    bool runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec::FeedbackPlan* plan, bool probe);
+
     const ast::Module& astModule_;
     DiagnosticSink& diags_;
     const types::InferenceResult* inference_ = nullptr;

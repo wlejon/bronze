@@ -30,7 +30,8 @@ namespace bronze::il {
 // 15: prop.get carries icAbsent (il.h).
 // 16: is.shape, and prop.get/prop.set carry shapeGuarded (il.h).
 // 17: feedback.record (il_op.h).
-inline constexpr uint32_t kFormatVersion = 17;
+// 18: numberHint (il.h), from a type-feedback profile.
+inline constexpr uint32_t kFormatVersion = 18;
 
 std::string serializeModule(const Module& module);
 

@@ -312,6 +312,23 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
     return plan;
 }
 
+bool familyClaimFor(const il::Module& mod, const std::vector<uint32_t>& slots, uint32_t slot, uint32_t keyIndex,
+                    bool write, uint32_t* lo, uint32_t* span) {
+    if (mod.classFamilies.empty()) return false;
+    const auto stamps = possibleStamps(mod, slots, /*exact=*/true);
+    if (stamps.empty()) return false;
+    const uint32_t first = stamps.front(), last = stamps.back();
+    for (uint32_t c = first; c <= last; ++c) {
+        const auto& fields = mod.classFamilies[c].fields;
+        if (slot >= fields.size() || fields[slot].keyIndex != keyIndex || (write && !fields[slot].writable)) {
+            return false;
+        }
+    }
+    *lo = first;
+    *span = last - first;
+    return true;
+}
+
 void applyDirects(il::Module& mod, const StampPlan& plan) {
     for (const PolyEntry& w : plan.withdrawn) {
         il::Instruction& inst = mod.functions[w.fn].blocks[w.block].instructions[w.inst];

@@ -66,6 +66,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
     il2mir::BronzeInstruction out;
     out.result_id = (inst.result != il::kNoValue) ? inst.result : UINT32_MAX;
     out.result_type = mapType(inst.type);
+    out.number_hint = inst.numberHint;
 
     if (inst.op != il::Op::GlobalGet) {
         out.operands = inst.operands;

@@ -402,68 +402,9 @@ std::optional<il::Module> Lowerer::lower() {
             ilModule_.sourceFiles.emplace_back(ec ? path : absPath.string());
         }
     }
-    // The one IL -> IL pass, and it runs LAST: it reads the finished module and
-    // hands out no module-global identity of its own, so everything above —
-    // inline-cache indices, static-slot cells, template sites, the census table
-    // — is already frozen and a copied instruction shares the site the original
-    // named. It is also why `bronze il` shows the transformed IL: `lowerModule`
-    // is the single funnel both `runIl` and `runBuild` come through.
-    {
-        // The predicted direct targets first, so that every pass below that
-        // copies or specializes a callee reads them as it reads lowering's.
-        const bool wholeProgram = wholeProgram_ != nullptr && wholeProgram_->on;
-        OwnCallees ownCallees;
-        if (wholeProgram) {
-            wholeProgram_->report += wpo::predictDirectTargets(ilModule_, wholeProgram_->build, &ownCallees);
-        }
-        inlineSmallFunctions(ilModule_, &directMethods_);
-        sanitizeLoopInBoundsProofs(ilModule_);
-        hoistLoopInvariantProps(ilModule_, &directMethods_);
-        eliminateRepeatedReads(ilModule_);
-        GuardRegionStats stats;
-        applyGuardedRegions(ilModule_, &stats);
-        guardRegionStatsReport(stats);
-        // After the regions, so that a region's fast copy, whose element
-        // reads already stand behind `is.number`, is the loop it versions.
-        ColdBlocks coldLoops;
-        applyTypedLoopVersions(ilModule_, &coldLoops);
-        applyTypedEntries(ilModule_, nullptr);
-        // Last, so a body is copied as it is finished: its guarded regions
-        // formed, a typed site's entry built and folded. Copied first, the
-        // caller's regions could not form across it (they start at a
-        // function's entry or a loop header, and an inlined body is neither),
-        // and a typed site would lose its unboxed entry for a generic body.
-        directMethods_.resolveAccessors(ilModule_);
-        if (inlineGuarded_) {
-            std::vector<uint32_t> inlinedInto;
-            const ClosureGuesses guesses = directMethods_.closureGuesses(ilModule_);
-            inlineGuardedMethods(ilModule_, diags_, &inlinedInto, &guesses, &coldLoops);
-            if (diags_.hasErrors()) return std::nullopt;
-            foldInlinedCallers(ilModule_, inlinedInto);
-        }
-        // The own-slot calls inlining left: a direct entry behind the slot's
-        // closure's code word.
-        const uint32_t ownCalls = applyOwnCalleeCalls(ilModule_, ownCallees);
-        if (wholeProgram && wholeProgram_->build.stats) {
-            wholeProgram_->report += "wpo-own: own-slot calls entered directly " + std::to_string(ownCalls) + "\n";
-        }
-        // After every pass that copies instructions: a copied run would share
-        // its cells with the original (transition_runs.h).
-        markTransitionRuns(ilModule_);
-        assignDefineAddCells(ilModule_);
-        // The claims last: they hand out static cells of their own, one per
-        // site, so an inlined copy is claimed in its caller's context.
-        if (wholeProgram) {
-            wholeProgram_->report += wpo::optimizeForBuild(ilModule_, wholeProgram_->build);
-            // After the claims, which it spends: a receiver's guard asked once
-            // answers its later sites across calls (layout_facts.h).
-            LayoutFactStats layoutStats;
-            std::string layoutPerFn;
-            const wpo::BuildOptions& build = wholeProgram_->build;
-            applyLayoutFacts(ilModule_, &layoutStats, build.perSite ? build.filter : std::string{}, &layoutPerFn);
-            if (build.stats) wholeProgram_->report += layoutFactReport(layoutStats) + layoutPerFn;
-        }
-    }
+    // The IL -> IL passes, LAST (lower_final_passes.cpp): they read the
+    // finished module, and everything above is frozen before they copy code.
+    if (!finishIlPasses()) return std::nullopt;
     // The type-feedback instrument, after everything: its sites are the final
     // IL's own (lower_feedback.h), and the build that reads the profile back
     // enumerates them at this same point. Nothing runs after it, so no pass
