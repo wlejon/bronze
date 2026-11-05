@@ -850,9 +850,11 @@ A fresh guard is now about 9 instructions (`xor`, `cmp`, `jae`, `cmp`,
 The meshes scene loses ~4M instructions a frame (4-5%) in the main thread
 and app.so; skinned, whose hot code is bone math in typed arrays with few
 fresh receivers, does not move beyond its spread, and neither scene's cpu
-time moves outside noise: the instructions removed were cheap ones (the
-selects and constant moves run in the shadow of the header and shape
-loads' latency, which remain).
+time moves outside noise. (The explanation first given here, that the
+removed selects ran in the shadow of the header and shape loads, does not
+hold: counted exactly, S6 removes 2.9M instructions and adds 0.32M taken
+branches and 10% more backend-stall slots, and its cycles rise 1%. See
+"Cycle accounting".)
 
 Categories (`insncat.py`, every hot function, one run a side, M/frame):
 tag/box/cmov 9.2 to 6.3, bool 3.9 to 3.0, branches 7.5 to 10.3, `movabs`
@@ -880,6 +882,106 @@ then splittable tagged intervals (S5's 13.3M of slot traffic, ~2M by the
 rule alone), then doubles (2.5M), then pooled constants (~2.4M of slot
 stores at entry).
 
+## Cycle accounting
+
+S1-S6 each removed instructions and none moved cpu ms, so the frame was
+measured in cycles on halo (Zen 5), three_meshes n=2565, base = S6. Totals
+are counted (`perf stat -I`) or low-rate samples without call chains, main
+thread, bro inside `traceWindow`, Chromium as 1500- minus 300-frame runs
+(±10%); per-function shares from call chains, IBS op samples and LBR.
+
+| per frame, main / renderer thread | bro-aot | Chromium |
+|---|---|---|
+| cpu ms (rw.py, these runs) | 7.7 | 3.3-3.8 |
+| cycles; instructions; IPC | 39.6M; 122.2M; 3.08 | 16-18M; 59.0M; ~3.5 |
+| on-CPU (task-clock incl. kernel) | 7.88 ms of 7.88 | 3.9 ms |
+| ops from the legacy decoder | 65.5M of 121.3M (54%) | 17.1M of 57.4M (30%) |
+| op-cache misses / accesses | 11.7M / 21.0M | 3.5M / 10.6M |
+| L1i misses; iTLB L1 misses | 12.1M; 0.55M | 4.6M; 0.35M |
+| taken branches; all branches | 9.25M; 19.5M | 4.50M; 10.8M |
+| calls (= returns); indirect | 1.07M; 0.41M | 0.58M; 0.22M |
+| mispredicts | 40K | 37K |
+| L1d demand misses (L2 hits); dTLB L1 misses | 1.88M (1.79M); 0.69M | 0.22M (0.15M); 0.41M |
+| top-down: retiring / frontend (latency + bandwidth) / backend / bad spec | 36 / 50 (15.5+35) / 11.5 / 2 % | 41 / 38 (17.5+20.5) / 23 / 3 % |
+
+**The frame is the main thread's cycles**: on-CPU 7.883 of 7.884 ms at
+5.1 GHz, `js` 7.59 of 7.66 ms, nothing waits. Chromium also spends ~5.6 ms
+a frame on other cores (Viz 3.5, thread pool 1.5, GL thread 0.6).
+
+**By layer**: bro app.so 5.3 ms (68%), bronze runtime 1.0 (hostTrampoline,
+WeakMap `findFastIdentity`/`weakMapGet`, `taSet`, `rtHandleData`), radv 0.74
+(IPC 1.41), libbro 0.44 (`bindVertexInputs`, `setUniformMatrices`,
+`prepareDraw`, `PipelineKey==`, `glsl::typeInfo` 0.55M cycles), libc 0.28.
+Chromium: JIT code 1.4 ms, the chromium binary 1.9, the driver elsewhere.
+
+**Where bro's 4.4 ms over V8 comes from.** Per function, bro's cycles per
+instruction match V8's (setProgram 0.35 vs 0.35, multiplyMatrices 0.50 vs
+0.54, projectObject 0.37 vs 0.39); across bro's 48 hottest functions
+cycles ≈ 0.36 × instructions (R² 0.905). The frame splits:
+
+- **3.6 ms: 2.07x the instructions** (63M more a frame) at V8's average
+  0.29 cycles each.
+- **+1.3 ms: frontend bandwidth.** bro's hot code does not fit: the lines
+  holding 50/80/90% of its ops are 43/118/157 KB against V8's 10/34/50 KB
+  (IBS op samples; app.so 115 KB of the 90% set, runtime 16, radv 13, libbro
+  11; setProgram 19.8 KB hot of 102 KB against V8's 4.3 of 17). So 54% of
+  ops come through the 4-wide decoder. Hot app.so bytes: frame-slot
+  operands 29% (disp32 9.8%), branches 13% (rel32 to out-of-line blocks),
+  `movabs` 7%, selects 4.5%; 4.9 bytes an instruction.
+- **-0.6 ms: backend.** bro has 8.6x V8's L1d misses (IBS, a frame: JS heap
+  and shapes 808K, IC sites in app.so's .data 432K — a 96-byte site per
+  property, way 0 first, so each executed site is its own line and
+  setProgram's miss every time — malloc'd driver and host objects 323K,
+  stack 65K; V8 256K in all), yet fewer backend-stall slots per
+  instruction: the frontend starves the backend, which hides them.
+  Frontend latency and bad speculation are at parity.
+
+**Why removed instructions did not pay.** S6 again, both app.so builds in one
+session, `perf stat -I`: instructions 124.9 → 122.0M, decoded ops 69.8 →
+65.5M, but taken branches 8.96 → 9.28M, mispredicts 36K → 40K, backend-stall
+slots 34.5 → 37.9M, cycles 39.0/39.1 → 39.3/39.5M. A taken branch costs
+about what 5-9 removed instructions save (per-function fit: 0.22 cycles an
+instruction, 1.9 a taken branch). Yardsticks, in order: hot code bytes and
+taken branches, then instructions; never instruction count alone.
+
+**Taken branches** (LBR, a frame): bro 9.25M — 5.0M inside app.so functions
+(setProgram 0.75M against V8's 0.10M), 0.7M inside the runtime; V8 2.2M
+inside JIT code and builtins. Of bro's, 0.97M are round trips (a branch to a
+block placed after the function's main line and a jump back), 0.59M of them
+because the generic helper call (`bronze_unbox_f64`, `bronze_strict_eq`,
+`bronze_rel_lt`, ...) fell through; 0.72M are taken skips over a call
+(`bronze_stack_overflow` 245K, `bronze_env_get_tdz` 160K). Without a
+profile, brass's layout let "the side with work" — the call — fall through.
+
+**Built: the call heuristic in brass's layout** (`codegen/block_layout.cpp`
+`shape_score`): of a two-way branch's sides, one that calls and one that
+does not, the one that does not falls through. Same session, three runs a
+side, `perf stat -I`:
+
+| | base | call heuristic |
+|---|---|---|
+| three_meshes cycles (M/frame) | 39.05, 38.32, 39.14 | 37.93, 38.09, 37.80 |
+| three_meshes cpu ms | 7.56, 7.43, 7.57 | 7.35, 7.39, 7.32 |
+| three_meshes taken branches; op-cache accesses | 9.26M; 20.9M | 8.48M; 19.8M |
+| three_skinned cycles; cpu ms | 34.1, 34.6; 6.78, 6.67 | 35.2, 34.1, 33.3; 6.78, 6.56, 6.42 |
+
+three_meshes -2.7% cycles, -2.0% cpu ms; three_skinned within its spread;
+object_graph -2.6% cycles, fib's taken branches -28% at equal cycles.
+Tests: two cases in brass `test_block_layout.cpp`, brass's unit tests under
+GC verify/poison, the oracle (infer and no-infer), bronze `wpo`,
+`codegen_brass`, `runtime`.
+
+**Ranked from here.**
+1. Hot code size (~1.3 ms frontend plus the instruction gap): frame-slot
+   traffic (splittable tagged intervals), pooled constants, rel32 tails;
+   the 90% hot set from 157 KB toward 60 KB.
+2. Taken branches left (~1.1M a frame): IC stub way hits out of line,
+   the plain-object guard's `je` to an out-of-line shape test.
+3. Calls V8 inlines (1.07M calls against 0.58M; projectObject's subtree).
+4. bro, outside the compiler: GL on the JS thread, 1.2 ms (radv 0.74,
+   libbro WebGL 0.44 in `src/webgl/vulkan/`); Chromium runs it elsewhere.
+5. Data layout (IC way 0 packed apart, compact objects): ABI change.
+
 ## Measuring
 
 Run from bro:
@@ -888,6 +990,10 @@ Run from bro:
 python3 bench/realworld/rw.py time --browser bro-aot --scene three_meshes --n 2565
 ```
 
-`rw.py` rebuilds `app.so` on every invocation. For instruction counts, run
-`perf record -e instructions:u -c 200003` over the same `bro` command line and
-restrict `perf script --time` to the run's `traceWindow`.
+`rw.py` rebuilds `app.so` on every invocation. For per-frame totals, count
+(`perf stat -I 250` over the same `bro` command line, steady intervals) or
+sample at a low rate without call chains, restricted with `perf script
+--time` to the run's `traceWindow`. High-rate `--call-graph=fp` sampling is
+throttled by the kernel and undercounts: it put the frame at 96-111M
+instructions where counting gives 122M. Compare cycles and taken branches,
+not instructions alone.
