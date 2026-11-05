@@ -207,7 +207,8 @@ Six steps toward Chromium's ~58M instructions per three_meshes n=2565 frame
 (bro AOT: ~102M, 7.85 cpu ms). S0 measured where receivers are read; S1 built
 the invariant later steps lean on. S2 carries a guard's answer across calls
 within a function as a layout fact. S4 (built out of order, below S2) made
-the IC stubs' hits cheaper. S3 and S5 are not built.
+the IC stubs' hits cheaper. S5's allocator rule is built (under "Measured
+against V8"); S3 is not.
 
 ### S0: what the hot receivers look like
 
@@ -517,9 +518,9 @@ What this says about the next steps:
 - **S5 (tagged values in registers across collecting calls)** is where the
   caller-side cost is: the frame-slot operands in the table above come from
   values spanning collecting calls, which no change to the stubs touches, as
-  the dropped split showed. brass has the machinery (callee-saved roots saved
-  at the call and reported in the stack map); the unsplittable-gcref rule
-  keeps it unused. Constant rematerialization (the pooled `movabs`) is the
+  the dropped split showed. (Since built: the stack scan's pinning makes a
+  callee-saved register a sound home for them; see "Measured against V8".)
+  Constant rematerialization (the pooled `movabs`) is the
   cheaper half of the same pressure, and shrink-wrapping would take the
   read stub's register saves (8 of its ~40) off every hit.
 - **S3 (receiver-class function versions)** removes stub sites. A read hit
@@ -537,8 +538,217 @@ accessors; method calls mono, mixed, replaced, shadowed, through a slot, on a
 non-callable, on undefined and null, in try; allocation between), through
 the pin matrix's eight rows. brass tests/unit/test_nocollect_calls.cpp: a
 tagged value across a no-GC call keeps its register (x64 and aarch64), one
-that also spans a collecting call keeps its slot, a nocollect callee runs
+that also spans a collecting call keeps it too (S5, below), a nocollect callee runs
 under the JIT, the verifier's refusals, no poll in a nocollect loop.
+
+## Measured against V8
+
+S1, S2 and S4 each moved three_meshes by ~1-2% where they were meant to
+move it by more. So the frame was measured against V8 function by function
+before anything else was built.
+
+**How.** Both runs are `perf record -e instructions:u -c 200003
+--call-graph=fp --user-callchains` of three_meshes n=2565, on the thread that
+runs the scene's JS. bro-aot is restricted to the measured window
+(`traceWindow`), as rw.py does. Chromium 156 runs with `--no-sandbox
+--no-zygote --js-flags=--perf-basic-prof --interpreted-frames-native-stack`.
+Its page has no window marker, so two runs that differ only in measured
+frames (300 and 1500) are subtracted and the difference is divided by 1200.
+V8's embedded builtins (ICs, the write barrier, sort) are resolved through
+the perf map, because they live in the chromium binary's text. Instructions
+per V8 instruction come from a `--perf-prof` jitdump run (`perf inject
+--jit`). "incl" is callee-inclusive: a sample counts for every function on
+its stack, so a callee that V8 inlined and bro did not is compared inside
+its caller. Scripts are in the c8 scratch directory: `chrome_perf.py`,
+`bro_perf.py`, `fnprof.py`, `chr_diff.py`, `fncmp.py`, `insncat.py`,
+`slotkind.py`, `guards.py` and `entry.py`.
+
+**The frame by layer** (M instructions per frame, main or renderer thread):
+
+| | bro-aot | Chromium |
+|---|---|---|
+| total | 104.9 | 51.0 |
+| compiled JS | 76.7 (app.so, of which the stubs are 8.8: prop_get 4.7, method 2.3, sort merge 1.8) | 19.9 |
+| engine builtins | runtime entries 1.7, libm 2.2, gc 0.3 | 16.5 (ICs 7.7, write barrier 3.0, sort 2.0, other 3.8) |
+| runtime / embedder C++ | bronze runtime 9.4, bro webgl 6.2, libc 3.2 | Blink + GL client + V8 C++ 14.0, libc 0.6 |
+| GPU driver | 5.0 (radv, on this thread) | 0 (it runs in the GPU process) |
+
+The gap is in compiled code: 76.7M against V8's 36.4M of JIT code plus
+builtins. The native side is ~26M against ~14.6M, and 5M of that difference
+is a driver that Chromium runs on another process. Inside the native side:
+`glsl::typeInfo` 1.6M, `hostTrampoline` 1.8M, WeakMap lookup 1.6M
+(`findFastIdentity` + `weakMapGet`; V8 0.3M).
+
+**Per function** (M per frame; names matched by their last component; bro's
+renderBufferDirect is `__anon_fn_1418`):
+
+| function | bro self | V8 self | bro incl | V8 incl |
+|---|---|---|---|---|
+| renderObjects | 1.36 | 0.78 | 49.6 | 34.1 |
+| renderBufferDirect | 3.50 | 1.79 (Maglev) | 42.3 | 30.8 |
+| setProgram | 8.91 | 2.48 | 22.9 | 16.1 |
+| projectObject | 2.73 | 1.40 | 13.9 | 2.75 |
+| ⤷ Frustum.intersectsObject (V8 inlines) | 0.62 | — | 6.3 | — |
+| ⤷ intersectsSphere + Vector3.dot (via `__wrapper_`) | 2.15 + 0.90 | — | 3.06 | — |
+| uniform upload: setValue, copyArray, arraysEqual, setValueM4/M3, upload | 10.2 | 4.3 (setValueM4/M3/V3f + TypedArray set) | | |
+| painterSortStable (+ reverse) | 3.41 + 0.66 | 1.55 + 0.31 | | |
+| sort machinery | 1.78 (merge stub) | 2.0 (ArrayPowerSort, MergeAt, SortCompareUserFn) | 5.9 | 4.2 |
+| Object3D.updateMatrixWorld | 2.71 | 1.09 | 3.92 | 2.37 |
+| Matrix4.multiplyMatrices | 2.41 | 0.85 | | |
+| Vector3.applyMatrix4 | 1.93 | 0.59 | | |
+| needsUpdate | 2.52 | 0.87 (Sparkplug) | 2.85 | 1.40 |
+| setMaterial | 2.02 | 0.86 | 5.96 | 2.08 |
+| property / method ICs | 7.0 (two stubs) | 7.7 (IC builtins) | | |
+| write barrier | 0.34 | 3.03 | | |
+
+The IC stubs are not the gap: V8 spends as much in its megamorphic and keyed
+IC builtins. The gap is the compiled functions themselves, 2-5x V8 each, and
+the callees V8 inlines that bro calls: projectObject's subtree alone is
+13.9M against 2.75M.
+
+**What bro's compiled instructions are** (sample-weighted, every function
+with samples; V8 scaled to its 36.4M):
+
+| category | bro | V8 | gap |
+|---|---|---|---|
+| frame-slot moves and operands `[rbp-]` | 21.6 | 2.7 | 18.9 |
+| NaN-box tag tests / boxing / cmov selects | 8.7 | 0.2 | 8.5 |
+| 64-bit constants (`movabs`) | 2.4 | 0.4 | 2.0 |
+| bool materialization (setcc, movzx, `and 1`) | 3.3 | 0.1 | 3.2 |
+| call setup | 1.4 | 0.3 | 1.1 |
+| prologue/epilogue push/pop/ret | 1.1 | 1.2 | 0 |
+| branches | 6.4 | 7.6 | -1.2 |
+| everything else (loads, stores, ALU, compares) | 31.1 | 23.4 | 7.7 |
+
+The frame-slot traffic, split by what the slot holds (`slotkind.py`):
+
+- tagged and other GPR values: 13.3M (stores 7.3, loads 3.6, folded operands
+  2.3);
+- callee-saved save and restore in prologues and epilogues: 3.2M;
+- pooled constants: 2.4M, stored at entry and read as operands;
+- doubles: 2.5M (multiplyMatrices alone 1.0M).
+
+**Mechanisms, in M instructions per frame (they overlap):**
+
+1. **Receiver guards: ~13M.** Every static-slot and IC site guards its
+   receiver with the branch-free keyed-shape idiom: untag by `xor`, a range
+   compare, `cmovb` to the TLS stand-in, load the header and the shape,
+   compare the header, `cmove` to the not-plain shape, then compare a cell
+   addressed through the realm's index. That is ~12.7 instructions
+   (`guards.py`: 5928 sites, 19.4M per frame, ~1.5M guards). V8's map check
+   is `test`/`cmp [obj-1], map` plus two branches, about 4. Most of the
+   tag/cmov category and of the bool category is this idiom and the ANDed
+   terms that feed its single branch.
+2. **Calls V8 inlines: ~10M.** The entry and exit sequences cost 7.0M
+   (`entry.py`; the median entry is 26 instructions: frame, four callee-saved
+   saves, argument stores, stack check, realm index, pooled constants stored
+   to slots). projectObject's subtree (Frustum.intersectsObject →
+   intersectsSphere → Plane.distanceToPoint → Vector3.dot through a
+   `__wrapper_` indirect call, Sphere.applyMatrix4, Sphere.copy) is 11M over
+   V8, which inlines all of it into projectObject.
+3. **Tagged values pinned to frame slots across collecting calls (S5): up
+   to 13.3M of slot traffic, but only ~2M of it removable by the rule
+   alone.** Built (below): a tagged value that spans a GC point may take a
+   callee-saved register. There are four allocatable callee-saved GPRs
+   (r13 holds the TLS block), and an unsplittable tagged interval gets one
+   for its whole life or not at all. The rest needs splittable tagged
+   intervals or fewer calls (item 2).
+4. **Doubles spilled in numeric code: 2.5M** (multiplyMatrices,
+   applyMatrix4, setFromEuler). SysV has no callee-saved XMM registers, and
+   these kernels hold 32 doubles.
+5. **Pooled 64-bit constants: ~4.8M** (`movabs` 2.4M plus their slots
+   2.4M). Most are the guard idiom's tag and limit. Rematerializing them
+   saves only the stores at entry, because a folded `xor rax,[rbp-x]` is
+   free and a rematerialized constant costs one `movabs` per use. What
+   removes them is a guard that compares against immediates (item 1).
+
+Not the gap: the IC stubs (7.0M against V8's 7.7M), the write barrier (V8
+pays 2.7M more), and the comparator-based sort machinery (5.9M against
+4.2M, all of it comparator bodies).
+
+**Ranked by what one change would remove**, guards come first (item 1,
+~13M, plus most of item 5), then inlining and call overhead (item 2), then
+S5. S5 was built first anyway, because it was the brief's expected item, is
+small and sound, and no guard change measured paid on its own (below). It is
+not on main: it moved cpu ms by less than noise and cost the pure-compute
+benches 0.3-0.7%, so it is parked on brass branch `s5-tagged-callee-saved`
+until tagged intervals are splittable.
+
+### Parked: S5, tagged values in callee-saved registers across GC points
+
+The verifier and the stack walker were not the obstacle. Every collection
+that moves or marks first scans the whole thread stack and the captured
+callee-saved registers conservatively and pins what they name
+(brass `heap_pin.cpp`), and bronze already opts into that retention
+(`precise_stack_roots`). So a reference in a callee-saved register across a
+collecting call is sound with no stack-map entry and no store or reload at
+the call: its object neither moves nor dies while the register (or a callee's
+save area, which is a stack word) names it. Only slots are recorded as roots.
+The `CalleeSavedReg` root kind (x64 designated slot, spill/reload around
+calls) was never produced by the allocator and stays unused. brass changes:
+
+- `linear_scan_pieces.cpp run_scan`: a GC reference live across a call
+  competes for a register like any other value (it was forced to its slot).
+- `linear_scan.cpp record_live_gcrefs`: a call's roots are the live
+  references that are in slots.
+- `allocate_blocked`: such a reference, when it holds a register, may be
+  evicted to its slot for its whole life by a value that needs the
+  register, at the weight of its uses, as one read only by copies is.
+  Without this, a receiver taken at entry kept a callee-saved register
+  through a hot loop it reads twice per turn, and typed_array_crunch's
+  computeForces bounds checks lost theirs (+5.3% instructions).
+- `linear_scan_rewrite.cpp`: an x64 compare whose two sides are both in
+  slots reloads the left one and reads the right one in place (`mov r10,
+  slot; cmp r10, slot`), not two reloads and a register compare.
+  Independent of S5, but S5 made such compares hot in computeForces.
+
+Measured, same session, base = these four changes taken out (main-thread
+instructions per frame and cpu ms, two runs each):
+
+| | base | S5 rule only | built |
+|---|---|---|---|
+| three_meshes instructions | 103.48M | 102.31M | 101.49M |
+| three_meshes cpu ms | 7.84, 7.58 | 7.58, 7.51 | 7.78, 7.69 |
+| setProgram | 9.78M | 9.12M | 8.06M |
+| three_skinned instructions | 90.23M | 89.27M | 90.95M |
+| three_skinned cpu ms | 6.64, 6.62 | 6.71, 6.51 | 6.61, 6.55 |
+
+three_meshes falls 1.9%, setProgram 18%. cpu ms moves less than run-to-run
+noise; three_skinned is noise (±2.5M between runs of one build). Frame-slot
+operands, base to built: setProgram 3867 to 3343, copyArray 163 to 154,
+setValue 92 to 84, painterSortStable 275 to 268, updateMatrixWorld 1536 to
+1517; projectObject 1298 to 1376 and setMaterial 777 to 784 rise (receivers
+holding callee-saved registers through straight-line code).
+
+Pure-compute benches, instructions, base to S5 rule only to built: three_math
+109.76M to 110.57M to 110.53M (+0.7%), object_graph 319.15M to 320.09M to
+320.20M (+0.3%), typed_array_crunch 228.27M to 240.28M to 229.14M (+0.4%),
+mesh_churn_2k 371.91M to 372.86M to 372.93M (+0.3%), instanced_mesh_churn
+546.06M to 548.05M to 549.42M (+0.6%); fib, numeric_loop, property_access,
+proto_dispatch(_churn) unchanged. The residual is spread across numeric
+functions (Matrix4.invert, multiplyMatrices: +1.5-3% slot operands, with no
+single cause): an unsplittable receiver that takes a callee-saved register at
+entry keeps it through straight-line code where splittable temporaries would
+use it better. Weighing such a holder by only its register-needing reads
+changed nothing and was taken out. Splittable tagged intervals are the fix,
+and they need per-piece root liveness in the stack maps: a slot recorded as
+a root while its value is in a register piece may still hold a dead object
+from an earlier iteration.
+
+**Tried and dropped: a branchy keyed shape in images.** The keyed-shape
+idiom as two branches to a cold not-plain join instead of two `cmov`s (three
+instructions fewer per guard on the plain path). three_meshes 104.05M with
+the S5 rule alone, 104.36M with this: noise. Taken out.
+
+Tests: brass `test_gc_tagged_roots.cpp` (twelve tagged references across a
+collecting call, some in callee-saved registers and some in slots, under no
+stress, minor, alternate and incremental stress), `test_nocollect_calls.cpp`
+(a tagged value across a collecting call keeps its register and records no
+root), `test_linear_scan_spill_copies.cpp` (six tagged values across a call,
+at least one in a slot; a compare of two spilled values reads the right one
+in place), all 1738 unit tests with `BRASS_GC_VERIFY=1 BRASS_GC_POISON=1`.
+bronze: the oracle's 792 cases infer and no-infer, the pin matrix's eight
+rows over fifteen GC-heavy cases, `wpo` and `codegen_brass`.
 
 ## Measuring
 
