@@ -1,0 +1,416 @@
+diff --git a/docs/type-feedback.md b/docs/type-feedback.md
+index b1e8174..584b478 100644
+--- a/docs/type-feedback.md
++++ b/docs/type-feedback.md
+@@ -196,6 +196,28 @@ the plan where each claim has to be made:
+   cell of its own. Both are guarded as wpo's are: the runtime publishes a cell
+   only after checking an own data slot there, and refuses a store's cell on a
+   shape used as a prototype.
++- **A2, polymorphic family claims** (same place, `claimPolymorphic` in
++  `feedback_apply.cpp`): a site with no dominant shape whose receivers are
++  instances of several classes extending one base, the key at one slot in
++  all of them, gets a family claim whose range admits every observed shape's
++  class (`wpo::familyStampRange` / `familyRangeAgrees`): the family guard
++  (`stamp - (base + lo) <=u span`) and a bare slot access, the rest missing
++  into the site's cache. Per slot the observed shapes put the key at, shapes
++  are taken busiest first while every family in the range declares the key
++  there (writable, for a store); the slot whose range admits the most wins,
++  and it must admit `kPolyCoverPercent` (50%) of the site's executions. A
++  shape name the recorder cut short (`+N`) is matched to the families that
++  begin with its shown keys, narrowed to the one named like its constructor,
++  which also places a key past the cut. Stores are claimed too: the runtime
++  never stamps a shape an object is the prototype of (`class_family.cpp`), so
++  a store into a prototype's slot still reaches the runtime and moves the
++  prototype epoch. `--wpo-stats` prints the sites, claims and why the rest
++  were refused (`feedback: A2`). On three_meshes 9 of the 71 polymorphic sites
++  left without a claim get one (5.9M profiled executions, 4.1M admitted):
++  most polymorphic sites already have wpo's family claims, and the rest read
++  a subclass field each class puts at its own slot (`envMap`, `map`) or a
++  flag most classes lack (`isShaderMaterial`), which no single slot answers.
++  `tests/oracle/cases/poly_family_claims.js`.
+ - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
+   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
+   `bronze il`). The backend then lays the Number test first and moves the
+diff --git a/src/opt/spec/feedback_apply.cpp b/src/opt/spec/feedback_apply.cpp
+index ac58830..d0f9a56 100644
+--- a/src/opt/spec/feedback_apply.cpp
++++ b/src/opt/spec/feedback_apply.cpp
+@@ -2,6 +2,7 @@
+ // direct targets (B) before the passes that copy bodies, and the static-slot
+ // claims (A) and number hints (C) on the finished module.
+ 
++#include <algorithm>
+ #include <set>
+ #include <string_view>
+ #include <unordered_map>
+@@ -75,7 +76,10 @@ public:
+         const auto it = plan_.shapesByIc.find(inst.icIndex);
+         if (it == plan_.shapesByIc.end()) return;
+         const std::string* shape = it->second.dominant(kDominantPercent);
+-        if (shape == nullptr) return;
++        if (shape == nullptr) {
++            claimPolymorphic(inst, it->second);
++            return;
++        }
+         std::vector<std::string_view> keys;
+         bool complete = false;
+         const std::string& key = mod_.keyConstants[inst.keyIndex];
+@@ -136,6 +140,150 @@ public:
+     }
+ 
+ private:
++    // A2, a POLYMORPHIC site (no dominant shape): the receivers' shapes hold
++    // the key at one slot because their classes all extend one base whose
++    // constructor installs it before any subclass field (a common prefix of
++    // the transition tree). The family stamp says exactly that of a shape, in
++    // one word the runtime verified slot by slot (runtime/class_family.cpp),
++    // so the claim is a family range admitting every observed shape's class:
++    // one guard, `stamp - (base + lo) <=u span`, and a bare slot access.
++    //
++    // Shapes are taken busiest first while the range's families still agree
++    // on the slot; the site is claimed when those cover kPolyCoverPercent of
++    // its executions. The rest (a shape without the key, of another class, a
++    // dictionary, an array) miss the guard into the site's cache, as before.
++    void claimPolymorphic(il::Instruction& inst, const NameCounts& names) {
++        if (names.total < kMinExecutions) return;
++        ++stats_.polySites;
++        const std::string& key = mod_.keyConstants[inst.keyIndex];
++        const bool write = inst.op == il::Op::PropSet;
++        struct Seen {
++            uint64_t count;
++            uint32_t slot;
++            uint32_t first, last;
++        };
++        std::vector<Seen> seen;
++        std::set<uint32_t> slots;
++        PolyRefusal why = PolyRefusal::Absent;
++        for (const auto& [name, count] : names.counts) {
++            std::vector<std::string_view> keys;
++            bool complete = false;
++            if (name == "*other*" || !shapeKeys(name, keys, complete)) continue;
++            uint32_t slot = kNone;
++            bool prototypeLike = false;
++            for (uint32_t i = 0; i < keys.size(); ++i) {
++                if (keys[i] == key) slot = i;
++                if (keys[i] == "constructor") prototypeLike = true;
++            }
++            // A store into an object others inherit from must reach the
++            // runtime (claim() above; the runtime never stamps such a shape).
++            if (write && prototypeLike) {
++                refuse(PolyRefusal::Prototype);
++                return;
++            }
++            // A key past a cut-short list may still be one the family the
++            // shape belongs to declares; one the shown keys hold is placed.
++            if (slot == kNone && complete) continue;
++            uint32_t first = 0, last = 0;
++            if (!shapeFamilies(name, keys, complete, &first, &last)) {
++                if (slot != kNone) why = PolyRefusal::NoFamily;
++                continue;
++            }
++            if (slot == kNone) {
++                const auto& fields = mod_.classFamilies[first].fields;
++                for (uint32_t i = 0; i < fields.size() && slot == kNone; ++i) {
++                    if (fields[i].keyIndex == inst.keyIndex) slot = i;
++                }
++                if (slot == kNone) continue;
++            }
++            seen.push_back(Seen{count, slot, first, last});
++            slots.insert(slot);
++        }
++        if (seen.empty()) {
++            refuse(why);
++            return;
++        }
++        // Per slot the shapes put the key at, the busiest first while the
++        // range's families agree; the slot whose range admits the most wins.
++        std::stable_sort(seen.begin(), seen.end(), [](const Seen& a, const Seen& b) { return a.count > b.count; });
++        uint32_t slot = kNone, lo = 0, hi = 0;
++        uint64_t covered = 0;
++        bool disagreed = false;
++        for (const uint32_t s : slots) {
++            uint32_t slo = UINT32_MAX, shi = 0;
++            uint64_t n = 0;
++            for (const Seen& sh : seen) {
++                if (sh.slot != s) continue;
++                const uint32_t nlo = std::min(slo, sh.first), nhi = std::max(shi, sh.last);
++                if (!wpo::familyRangeAgrees(mod_, nlo, nhi, s, inst.keyIndex, write)) {
++                    disagreed = true;
++                    continue;
++                }
++                slo = nlo;
++                shi = nhi;
++                n += sh.count;
++            }
++            if (n > covered) {
++                slot = s;
++                lo = slo;
++                hi = shi;
++                covered = n;
++            }
++        }
++        if (covered * 100 < names.total * kPolyCoverPercent) {
++            refuse(covered == 0 && disagreed ? PolyRefusal::Disagree : PolyRefusal::Coverage);
++            return;
++        }
++        inst.staticSlot = slot;
++        inst.staticSlotGuessed = true;
++        inst.staticCellIndex = 0;
++        inst.familyLo = lo;
++        inst.familySpan = hi - lo;
++        ++stats_.polyClaims;
++        if (write) ++stats_.polyWrites;
++        if (claimedIcs_.insert(inst.icIndex).second) {
++            stats_.polyExecutions += names.total;
++            stats_.polyCovered += covered;
++        }
++    }
++
++    void refuse(PolyRefusal why) { ++stats_.polyRefused[static_cast<size_t>(why)]; }
++
++    // The families the runtime may stamp a shape named `name` with
++    // (wpo::familyStampRange). A cut-short list is begun by every class that
++    // extends the one whose fields it shows; the family named like the
++    // shape's constructor, when the range holds exactly one, is the one its
++    // objects are. Only a prediction: a shape stamped otherwise misses.
++    bool shapeFamilies(const std::string& name, const std::vector<std::string_view>& keys, bool complete,
++                       uint32_t* first, uint32_t* last) const {
++        if (!wpo::familyStampRange(mod_, keySlots(keys), complete, first, last)) return false;
++        if (complete) return true;
++        const std::string_view ctor = std::string_view(name).substr(0, name.find('{'));
++        uint32_t named = kNone;
++        for (uint32_t c = *first; c <= *last; ++c) {
++            std::string_view fam = mod_.classFamilies[c].name;
++            const size_t dot = fam.rfind('.');
++            if (dot != std::string_view::npos) fam = fam.substr(dot + 1);
++            if (fam != ctor) continue;
++            if (named != kNone) return true;
++            named = c;
++        }
++        if (named != kNone) *first = *last = named;
++        return true;
++    }
++
++    // Key names as the module's key indices; a name the module never uses
++    // matches no family field.
++    std::vector<uint32_t> keySlots(const std::vector<std::string_view>& keys) const {
++        std::vector<uint32_t> slots;
++        slots.reserve(keys.size());
++        for (std::string_view k : keys) {
++            const auto it = keyIndex_.find(std::string(k));
++            slots.push_back(it == keyIndex_.end() ? kNone : it->second);
++        }
++        return slots;
++    }
++
+     bool familyOf(const std::vector<std::string_view>& keys, uint32_t slot, uint32_t keyIndex, uint32_t* lo,
+                   uint32_t* span) const {
+         std::vector<uint32_t> slots;
+diff --git a/src/opt/spec/feedback_plan.cpp b/src/opt/spec/feedback_plan.cpp
+index 3d8944d..555417c 100644
+--- a/src/opt/spec/feedback_plan.cpp
++++ b/src/opt/spec/feedback_plan.cpp
+@@ -175,6 +175,12 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
+     out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + ", family " + n(stats.shapeFamily) +
+            " (dominant shape without a claimable slot " + n(stats.shapeRefused) + "); profiled executions " +
+            n(stats.shapeExecutions) + "\n";
++    const auto r = [&](PolyRefusal w) { return n(stats.polyRefused[static_cast<size_t>(w)]); };
++    out += "feedback: A2 polymorphic sites " + n(stats.polySites) + ", family claims " + n(stats.polyClaims) +
++           " (stores " + n(stats.polyWrites) + "; profiled executions " + n(stats.polyExecutions) +
++           ", admitted " + n(stats.polyCovered) + "); refused: key not own " + r(PolyRefusal::Absent) +
++           ", no family " + r(PolyRefusal::NoFamily) + ", families disagree " + r(PolyRefusal::Disagree) +
++           ", coverage " + r(PolyRefusal::Coverage) + ", prototype store " + r(PolyRefusal::Prototype) + "\n";
+     out += "feedback: B direct method targets " + n(stats.directMethods) + " (refused " + n(stats.methodRefused) +
+            "; profiled executions " + n(stats.methodExecutions) + "), closure calls split " +
+            n(stats.closureCalls) + " (profiled executions " + n(stats.closureExecutions) + ")\n";
+diff --git a/src/opt/spec/feedback_plan.h b/src/opt/spec/feedback_plan.h
+index 4ea30b0..11bf7f3 100644
+--- a/src/opt/spec/feedback_plan.h
++++ b/src/opt/spec/feedback_plan.h
+@@ -45,6 +45,11 @@ namespace bronze::spec {
+ inline constexpr uint64_t kMinExecutions = 32;
+ // The share of a property site's executions one shape must have for a claim.
+ inline constexpr uint64_t kDominantPercent = 99;
++// The share of a polymorphic property site's executions the receivers a
++// family claim admits must have (feedback_apply.cpp, claimPolymorphic). A hit
++// saves the cache stub's call (~40-50 instructions), a miss pays the family
++// guard and a taken branch (~15) in front of it, so half is well past even.
++inline constexpr uint64_t kPolyCoverPercent = 50;
+ 
+ struct SpanKey {
+     uint16_t file = 0;
+@@ -112,6 +117,16 @@ ValueKey valueKey(const il::Instruction& inst, uint32_t operand);
+ // add typed entries, which no closure is).
+ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, size_t functionCount);
+ 
++// Why a polymorphic property site got no family claim.
++enum class PolyRefusal : uint8_t {
++    Absent,     // no observed shape holds the key as an own property
++    NoFamily,   // the shapes holding it begin with no registered class layout
++    Disagree,   // their families put the key at different slots
++    Coverage,   // the shapes a range admits ran under kPolyCoverPercent
++    Prototype,  // a store to a shape that looks like a prototype
++    Count
++};
++
+ // What the build did with a plan (`--wpo-stats` prints it).
+ struct FeedbackApplyStats {
+     uint32_t directMethods = 0;    // B: method.call sites given a direct target
+@@ -120,6 +135,11 @@ struct FeedbackApplyStats {
+     uint32_t shapeIdentity = 0;    // A: identity claims
+     uint32_t shapeFamily = 0;      // A: family claims
+     uint32_t shapeRefused = 0;     //    a dominant shape the site cannot claim a slot of
++    uint32_t polySites = 0;        // A2: property sites with no dominant shape
++    uint32_t polyClaims = 0;       //     given a family claim over their shapes
++    uint32_t polyWrites = 0;       //     of which stores
++    uint32_t polyRefused[static_cast<size_t>(PolyRefusal::Count)] = {};
++    uint64_t polyExecutions = 0, polyCovered = 0;  // claimed sites' executions, and the admitted shapes' share
+     uint32_t numberHints = 0;      // C: numeric ops hinted
+     // The profiled executions the claims cover, each identity counted once
+     // however many copies of it were claimed.
+diff --git a/src/opt/wpo/stamp.cpp b/src/opt/wpo/stamp.cpp
+index b220304..e17f6da 100644
+--- a/src/opt/wpo/stamp.cpp
++++ b/src/opt/wpo/stamp.cpp
+@@ -312,18 +312,64 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
+     return plan;
+ }
+ 
+-bool familyClaimFor(const il::Module& mod, const std::vector<uint32_t>& slots, uint32_t slot, uint32_t keyIndex,
+-                    bool write, uint32_t* lo, uint32_t* span) {
++bool familyStampRange(const il::Module& mod, const std::vector<uint32_t>& slots, bool complete, uint32_t* first,
++                      uint32_t* last) {
+     if (mod.classFamilies.empty()) return false;
+-    const auto stamps = possibleStamps(mod, slots, /*exact=*/true);
+-    if (stamps.empty()) return false;
+-    const uint32_t first = stamps.front(), last = stamps.back();
++    if (complete) {
++        const auto stamps = possibleStamps(mod, slots, /*exact=*/true);
++        if (stamps.empty()) return false;
++        *first = stamps.front();
++        *last = stamps.back();
++        return true;
++    }
++    // The keys were cut short: the shape goes on past `slots`, so besides the
++    // most specific family the shown keys hold whole, any family that begins
++    // with every shown key may be the one the runtime picks.
++    size_t best = 0;
++    bool anyShort = false;
++    auto begins = [&](const std::vector<il::Module::ClassFamilyField>& fields) {
++        const size_t n = std::min(fields.size(), slots.size());
++        for (size_t i = 0; i < n; ++i) {
++            if (fields[i].keyIndex != slots[i]) return false;
++        }
++        return true;
++    };
++    for (const auto& fam : mod.classFamilies) {
++        if (fam.fields.size() <= slots.size() && begins(fam.fields)) {
++            best = anyShort ? std::max(best, fam.fields.size()) : fam.fields.size();
++            anyShort = true;
++        }
++    }
++    bool any = false;
++    for (uint32_t c = 0; c < mod.classFamilies.size(); ++c) {
++        const auto& fields = mod.classFamilies[c].fields;
++        if (!begins(fields)) continue;
++        if ((anyShort && fields.size() == best) || fields.size() > slots.size()) {
++            if (!any) *first = c;
++            *last = c;
++            any = true;
++        }
++    }
++    return any;
++}
++
++bool familyRangeAgrees(const il::Module& mod, uint32_t first, uint32_t last, uint32_t slot, uint32_t keyIndex,
++                       bool write) {
++    if (first > last || last >= mod.classFamilies.size()) return false;
+     for (uint32_t c = first; c <= last; ++c) {
+         const auto& fields = mod.classFamilies[c].fields;
+         if (slot >= fields.size() || fields[slot].keyIndex != keyIndex || (write && !fields[slot].writable)) {
+             return false;
+         }
+     }
++    return true;
++}
++
++bool familyClaimFor(const il::Module& mod, const std::vector<uint32_t>& slots, uint32_t slot, uint32_t keyIndex,
++                    bool write, uint32_t* lo, uint32_t* span) {
++    uint32_t first = 0, last = 0;
++    if (!familyStampRange(mod, slots, /*complete=*/true, &first, &last)) return false;
++    if (!familyRangeAgrees(mod, first, last, slot, keyIndex, write)) return false;
+     *lo = first;
+     *span = last - first;
+     return true;
+diff --git a/src/opt/wpo/stamp.h b/src/opt/wpo/stamp.h
+index 20361fb..45764f7 100644
+--- a/src/opt/wpo/stamp.h
++++ b/src/opt/wpo/stamp.h
+@@ -120,6 +120,18 @@ void applyStamps(il::Module& mod, const StampPlan& plan);
+ // contradicts).
+ void applyDirects(il::Module& mod, const StampPlan& plan);
+ 
++// The family ids [first, last] the runtime may stamp a receiver with whose own
++// keys, in slot order, are `slots` (key indices) — or, when `complete` is
++// false (the list was cut short), BEGIN with `slots`, so a family longer than
++// the list that begins with it may be the one. False when no family fits.
++bool familyStampRange(const il::Module& mod, const std::vector<uint32_t>& slots, bool complete, uint32_t* first,
++                      uint32_t* last);
++
++// Does every family in [first, last] declare `keyIndex` at `slot` (writable,
++// for a write)? A family guard admits the whole range, so a claim needs all.
++bool familyRangeAgrees(const il::Module& mod, uint32_t first, uint32_t last, uint32_t slot, uint32_t keyIndex,
++                       bool write);
++
+ // The family range a receiver whose own keys are exactly `slots` (key indices,
+ // in slot order) may be stamped with, when every family in the range declares
+ // `keyIndex` at `slot` (writable for a write): what a site reading or writing
+diff --git a/tests/opt/wpo_test.cpp b/tests/opt/wpo_test.cpp
+index cfeb4c4..0bb2f6d 100644
+--- a/tests/opt/wpo_test.cpp
++++ b/tests/opt/wpo_test.cpp
+@@ -469,6 +469,44 @@ TEST_CASE("receivers of one class family get a family range that declares the ke
+     }
+ }
+ 
++TEST_CASE("a family range for a cut-short key list admits every family that begins with it") {
++    // Preorder: Base {k0, k1(read-only)} -> Sub {.., k2} -> SubSub {.., k3};
++    // Other {k5}. Key indices stand for themselves.
++    il::Module mod;
++    auto fam = [&](std::vector<std::pair<uint32_t, bool>> fields) {
++        il::Module::ClassFamilyEntry e;
++        for (const auto& [k, w] : fields) e.fields.push_back(il::Module::ClassFamilyField{k, w});
++        mod.classFamilies.push_back(e);
++    };
++    fam({{0, true}, {1, false}});
++    fam({{0, true}, {1, false}, {2, true}});
++    fam({{0, true}, {1, false}, {2, true}, {3, true}});
++    fam({{5, true}});
++    uint32_t first = 0, last = 0;
++    // A whole list: the most specific family its keys hold, as the runtime picks.
++    REQUIRE(familyStampRange(mod, {0, 1, 2}, true, &first, &last));
++    CHECK((first == 1 && last == 1));
++    REQUIRE(familyStampRange(mod, {0, 1, 2, 4}, true, &first, &last));
++    CHECK((first == 1 && last == 1));
++    REQUIRE(familyStampRange(mod, {5}, true, &first, &last));
++    CHECK((first == 3 && last == 3));
++    CHECK_FALSE(familyStampRange(mod, {9}, true, &first, &last));
++    // Cut short: the shape goes on, so any longer family may be the one.
++    REQUIRE(familyStampRange(mod, {0, 1}, false, &first, &last));
++    CHECK((first == 0 && last == 2));
++    REQUIRE(familyStampRange(mod, {0}, false, &first, &last));
++    CHECK((first == 0 && last == 2));
++    CHECK_FALSE(familyStampRange(mod, {1}, false, &first, &last));
++    // A guard admits the whole range: every family in it must agree.
++    CHECK(familyRangeAgrees(mod, 0, 2, 0, 0, true));
++    CHECK(familyRangeAgrees(mod, 0, 2, 1, 1, false));
++    CHECK_FALSE(familyRangeAgrees(mod, 0, 2, 1, 1, true));  // read-only: no store
++    CHECK(familyRangeAgrees(mod, 1, 2, 2, 2, true));
++    CHECK_FALSE(familyRangeAgrees(mod, 0, 2, 2, 2, false));  // Base has no slot 2
++    CHECK_FALSE(familyRangeAgrees(mod, 0, 3, 0, 0, false));  // Other puts k5 there
++    CHECK_FALSE(familyRangeAgrees(mod, 2, 4, 0, 0, false));  // past the table
++}
++
+ TEST_CASE("a store into a prototype keeps the generic set") {
+     // The generic set tells the method caches a prototype changed; a static
+     // store would leave `h.m()` calling the method it replaced.
