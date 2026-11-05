@@ -23,6 +23,7 @@
 #include "il_array_method.h"
 
 #include "il_abi.h"
+#include "il_array_sort.h"
 #include "il_lowering.h"
 #include "il_lowering_direct.h"
 #include "il_property.h"
@@ -57,11 +58,12 @@ Value* box_count(Builder& b, Value* n) { return b.build_bitcast_i64_f64(b.build_
 }  // namespace
 
 ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& inst) {
-    if (!lowering || (inst.imm_i64 & bronze::il::Instruction::kMethodRecvArray) == 0) return ArrayInline::None;
-    if (!direct_method_ic_here(lowering) || lowering->run_once()) return ArrayInline::None;
+    if (!lowering || !direct_method_ic_here(lowering) || lowering->run_once()) return ArrayInline::None;
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     if (!pl.enable_inlined_fastpaths()) return ArrayInline::None;
     const std::string key(pl.key_tag(inst.index));
+    if (key == "sort" && inst.param_count == 1) return ArrayInline::Sort;
+    if ((inst.imm_i64 & bronze::il::Instruction::kMethodRecvArray) == 0) return ArrayInline::None;
     if (key == "push" && inst.param_count == 1) return ArrayInline::Push;
     if (key == "shift" && inst.param_count == 0) return ArrayInline::Shift;
     return ArrayInline::None;
@@ -70,7 +72,9 @@ ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& i
 Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv, Value* val,
                                  const std::function<Value*(Builder&)>& slow) {
     BasicBlock* cur = b.current_block();
-    const std::string prefix = std::string(which == ArrayInline::Push ? "arr_push_" : "arr_shift_") +
+    const std::string prefix = std::string(which == ArrayInline::Push    ? "arr_push_"
+                                           : which == ArrayInline::Shift ? "arr_shift_"
+                                                                         : "arr_sort_") +
                                std::to_string(cur->parent()->next_block_id());
     BasicBlock* bb_arr = b.append_block(prefix + "_array");
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
@@ -93,6 +97,19 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    if (which == ArrayInline::Sort) {
+        // An Array with no properties object finds the intrinsic `sort` (the
+        // header says why), and the runtime does everything the builtin does
+        // around the merge, holes and the chain's indices included.
+        b.build_br_if(no_props, bb_fast, bb_slow);
+        b.position_at_end(bb_fast);
+        b.build_br(bb_merge, {b.build_call("bronze_array_sort_merged", Type::i64(),
+                                           {recv, val, b.build_func_addr(kSortMergeStub)})});
+        b.position_at_end(bb_slow);
+        b.build_br(bb_merge, {slow(b)});
+        b.position_at_end(bb_merge);
+        return result;
+    }
     Value* pos = nullptr;
     // And the array index hazard (bronze_abi_tls.h, array_index_hazard): a
     // push writes at `length`, which a setter on the chain would take, and a

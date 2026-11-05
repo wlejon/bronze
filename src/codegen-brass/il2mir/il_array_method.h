@@ -4,7 +4,9 @@
 // inference typed a dense JS Array (il.h `kMethodRecvArray`): the append or
 // the front removal that bronze_array_push / bronze_array_shift make on their
 // own fast path, done at the site, with the call through the method cache and
-// the native as its miss.
+// the native as its miss. And `arr.sort(f)` on any receiver the same test
+// accepts: bronze_array_sort_merged with the module's merge stub
+// (il_array_sort.h).
 //
 // What makes skipping the method lookup sound is the same fact the method
 // cache's EXOTIC Array entry stands on (runtime/rt_method_call.cpp): an Array
@@ -25,11 +27,13 @@ namespace il2mir {
 
 class IlLowering;
 
-enum class ArrayInline { None, Push, Shift };
+enum class ArrayInline { None, Push, Shift, Sort };
 
 // Which inline arm this method call takes, if any: a hinted receiver, `push`
 // with one argument or `shift` with none, in an image build's code that runs
-// more than once.
+// more than once. `sort` with one argument needs no hint: its arm's test is
+// paid once per sort, and the arm is the runtime's sort with the merge run by
+// the module's stub (il_array_sort.h).
 ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& inst);
 
 // The arm in front of `slow` (the site's ordinary call). `val` is the pushed

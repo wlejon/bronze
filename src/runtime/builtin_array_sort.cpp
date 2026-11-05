@@ -19,6 +19,7 @@
 // through ToNumber with NaN as 0, and the default is ToString on both sides
 // and a code-unit comparison — which is why [10, 9, 1] sorts to [1, 10, 9].
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -149,9 +150,32 @@ void mergeRuns(SortContext& c, Value* src, Value* dst, uint32_t lo, uint32_t mid
     while (j < hi) dst[k++] = src[j++];
 }
 
-}  // namespace
+// The frame a module's merge stub reads (bronze_abi_layout.h,
+// BRONZE_ABI_SORT_FRAME_*): the comparator's two-word argv, which the stub
+// fills before each call, then the two halves, the item count and the
+// comparator's rooted slot. Everything the stub holds across a call is an
+// address into a root or a count, so a collection inside the comparator moves
+// nothing it relies on: it re-reads the slots after every call, exactly as
+// mergeRuns does.
+struct MergeFrame {
+    uint64_t pair[2];
+    Value* src;
+    Value* dst;
+    uint64_t count;
+    Value* comparefn;
+};
+static_assert(offsetof(MergeFrame, pair) == BRONZE_ABI_SORT_FRAME_PAIR_OFFSET);
+static_assert(offsetof(MergeFrame, src) == BRONZE_ABI_SORT_FRAME_SRC_OFFSET);
+static_assert(offsetof(MergeFrame, dst) == BRONZE_ABI_SORT_FRAME_DST_OFFSET);
+static_assert(offsetof(MergeFrame, count) == BRONZE_ABI_SORT_FRAME_COUNT_OFFSET);
+static_assert(offsetof(MergeFrame, comparefn) == BRONZE_ABI_SORT_FRAME_FN_OFFSET);
 
-uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+// 23.1.3.30 with the merge phase optionally handed to `merge`, a compiled
+// module's stub (il2mir/il_array_sort.cpp) that runs the same bottom-up merge
+// — the same runs, the same comparisons in the same order, the same
+// undefined rule and the same ToNumber of the answer — calling the comparator
+// from compiled code rather than through rtEnterJs per comparison.
+uint64_t sortWith(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bronze_fn_code merge) {
     RootedArgs args(argc, argv);
     // Step 1: the comparator is validated BEFORE anything is read, so a bad
     // one does not leave a half-snapshot behind.
@@ -217,18 +241,29 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     RootedBlock scratch(itemCount);
     Value* src = items;
     Value* dst = scratch.slots();
-    for (uint32_t width = 1; width < itemCount; width *= 2) {
-        for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
-            const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
-            const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
-            // A comparator that threw ends the SORT, not just the merge — and
-            // the receiver has not been written, so the array the catch sees
-            // is the array the program had.
-            mergeRuns(ctx, src, dst, lo, mid, hi);
+    if (merge && itemCount > 1 && !comparefn.get().isUndefined()) {
+        // One entry for the whole merge; the comparator's slot is a block of
+        // its own so the stub can hold its address (a Rooted's is private).
+        RootedBlock fnSlot(1);
+        fnSlot.slots()[0] = comparefn.get();
+        MergeFrame frame{{0, 0}, src, dst, itemCount, fnSlot.slots()};
+        const uint64_t done = rtEnterJsIn(JsEntryContext::current(), merge, BRONZE_ABI_UNDEFINED_BITS,
+                                          BRONZE_ABI_UNDEFINED_BITS, 0, reinterpret_cast<const uint64_t*>(&frame));
+        src = reinterpret_cast<Value*>(static_cast<uintptr_t>(done));
+    } else {
+        for (uint32_t width = 1; width < itemCount; width *= 2) {
+            for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
+                const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
+                const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
+                // A comparator that threw ends the SORT, not just the merge —
+                // and the receiver has not been written, so the array the
+                // catch sees is the array the program had.
+                mergeRuns(ctx, src, dst, lo, mid, hi);
+            }
+            Value* t = src;
+            src = dst;
+            dst = t;
         }
-        Value* t = src;
-        src = dst;
-        dst = t;
     }
     const Value* sorted = src;
 
@@ -281,4 +316,15 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     return self.get().rawBits();  // sorts IN PLACE and answers the same array
 }
 
+}  // namespace
+
+uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return sortWith(thisBits, argc, argv, nullptr);
+}
+
 }  // namespace bronze::runtime
+
+extern "C" uint64_t bronze_array_sort_merged(uint64_t recv, uint64_t comparefn, bronze_fn_code merge) {
+    const uint64_t argv[1] = {comparefn};
+    return bronze::runtime::sortWith(recv, 1, argv, merge);
+}

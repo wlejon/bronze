@@ -277,6 +277,13 @@
     X(bronze_array_pop,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_array_push,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_array_shift,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    /* `recv.sort(comparefn)` on an Array a site's guard found with no\
+     * properties object (so `sort` is the intrinsic): the builtin, with its\
+     * merge run by the calling module's stub (the FNPTR, entered once with\
+     * the BRONZE_ABI_SORT_FRAME_* frame as argv), which calls the comparator\
+     * from compiled code. Anything the stub does not cover takes the\
+     * builtin's own merge. */ \
+    X(bronze_array_sort_merged,   BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_FNPTR)) \
     X(bronze_array_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_spread,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_rest,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

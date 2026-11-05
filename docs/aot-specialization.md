@@ -77,6 +77,41 @@ Both are presence tests (`if (material.map)`, `if (object.parent)`), the next mo
 common dynamic conditions in three.js. The answer for every value is unchanged:
 bronze has no `[[IsHTMLDDA]]` object.
 
+### 3. `Array.prototype.sort` merged in compiled code
+
+A site `arr.sort(f)` in an image build tests that the receiver is an Array
+with no properties object, which is what makes `sort` the intrinsic (the
+`push`/`shift` arm's test, `il_array_method.cpp`), and calls
+`bronze_array_sort_merged` with the address of the module's merge stub
+`__bronze_sort_merge` (`il2mir/il_array_sort.cpp`). Any other receiver takes
+the site's ordinary method call.
+
+- The runtime (`runtime/builtin_array_sort.cpp`) is the builtin unchanged
+  around the merge: comparator validation, the hole-skipping snapshot into a
+  rooted block, and the write-back with its frozen and sealed refusals. Only
+  the merge is handed over. The stub is entered once per sort, through
+  `rtEnterJsIn`, with a frame (`BRONZE_ABI_SORT_FRAME_*`) of root addresses.
+- The stub is the C++ merge's loop, run by run: the same comparisons in the
+  same order (a comparator that logs sees the same log), undefined last
+  without a call, ToNumber of the answer with NaN as equal, and ties to the
+  left. It calls the comparator as compiled code calls a closure, through the
+  direct entry when the function allows it, else `bronze_dynamic_call`.
+  Whether it may enter directly is asked once per sort.
+- What this removes per comparison is `rtEnterJsIn`, the C++ entry scope, the
+  TLS trampoline and, in bro, the tiered engine's enter hook. The comparator
+  still runs through its wrapper. It is not inlined: the stub is shared by
+  every comparator in the module, and three.js's comparators are too large
+  for inlining to pay anyway (~200 instructions a call on `three_meshes`,
+  mostly polymorphic field reads).
+- On a standalone build of a 1924-item painter sort, cycles fell 11-16% on
+  shuffled lists and 20% on an already-ordered one. The stub's pick is a branch
+  and not a select: the select form was 6% faster on shuffled painter lists
+  and 19% slower than the C++ merge on ordered ones.
+- `tests/oracle/cases/array_sort_compiled_merge.js` covers stability,
+  undefined and holes, throwing and mutating comparators, comparators that are
+  not functions, receivers that are not plain Arrays, the three.js comparators,
+  and the stub's comparison order against the builtin's.
+
 ### Measured
 
 These are windowed `bro-aot` runs. Each "before" figure is the same tree with both
@@ -110,6 +145,9 @@ Estimates are instructions per frame on `three_meshes`. They are not additive wi
 certainty.
 
 1. **`Array.prototype.sort` with a known comparator, specialized in AOT: ~4-5M.**
+   Built as section 3 above, without the comparator specialization: the merge
+   runs in compiled code and the per-comparison runtime entry is gone, but the
+   comparator is not inlined. What follows is the original plan.
    - The site `list.sort(painterSortStable)` compiles to a version guarded by
      "the receiver is a plain Array, `sort` is the intrinsic, and the comparator
      is that function".

@@ -12,6 +12,7 @@
 #include "il_lowering_direct.h"
 
 #include "il_abi.h"
+#include "il_array_sort.h"
 #include "il_lowering.h"
 #include "il_write_barrier.h"
 
@@ -103,7 +104,21 @@ bool direct_method_ic_here(const IlLowering* lowering) {
 Value* lower_closure_call(IlLowering* lowering, Builder& b, Value* callee, Value* this_val,
                           const std::vector<Value*>& boxed_args) {
     const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
-    Value* argv = lowering->stage_argv(b, boxed_args);
+    return lower_closure_call_argv(b, callee, this_val, argc, lowering->stage_argv(b, boxed_args));
+}
+
+Value* closure_enters_directly(Builder& b, Value* callee) {
+    return entry_test(b, tls_block(b), callee, kCallMask, kCallBits).ok;
+}
+
+Value* enter_closure_directly(Builder& b, Value* callee, Value* this_val, uint32_t argc, Value* argv) {
+    Value* fn = b.build_xor(callee, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* code = b.build_load(Type::ptr(), fn, BRONZE_ABI_FN_CODE_OFFSET);
+    Value* env = b.build_load(Type::i64(), fn, BRONZE_ABI_FN_ENV_OFFSET);
+    return call_code(b, code, env, this_val, argc, argv);
+}
+
+Value* lower_closure_call_argv(Builder& b, Value* callee, Value* this_val, uint32_t argc, Value* argv) {
     const std::string prefix = block_prefix(b, "fcall");
     BasicBlock* cur = b.current_block();
     BasicBlock* enter = b.append_block(prefix + "_enter");
@@ -708,6 +723,8 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
     build_prop_get_stub(lowering, mod.create_function(kPropGetStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
     build_prop_set_stub(lowering, mod.create_function(kPropSetStub, Type::void_type(),
                                                       {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()}));
+    build_sort_merge_stub(
+        mod.create_function(kSortMergeStub, Type::i64(), {Type::i64(), Type::i64(), Type::i32(), Type::ptr()}));
 }
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,

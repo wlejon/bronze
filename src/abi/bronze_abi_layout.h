@@ -480,6 +480,19 @@
  * front of a kernel's constant-index reads, and a longer array is not one a
  * scan per visit could pay for. */
 #define BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH 64
+/* The frame bronze_array_sort_merged hands to a module's merge stub
+ * (il2mir/il_array_sort.cpp), which it enters once per sort with the frame as
+ * argv. PAIR is two words, the comparator's argv, which the stub fills before
+ * each call; SRC and DST are the two halves the merge runs between (rooted
+ * blocks, so their slots stay current across a call); COUNT is the number of
+ * items; FN is the address of the rooted slot holding the comparator. The
+ * stub answers the half the sorted list ended in. Pinned in
+ * runtime/builtin_array_sort.cpp. */
+#define BRONZE_ABI_SORT_FRAME_PAIR_OFFSET  0
+#define BRONZE_ABI_SORT_FRAME_SRC_OFFSET   16
+#define BRONZE_ABI_SORT_FRAME_DST_OFFSET   24
+#define BRONZE_ABI_SORT_FRAME_COUNT_OFFSET 32
+#define BRONZE_ABI_SORT_FRAME_FN_OFFSET    40
 /* The whole ArrayHeader, header word included, and the elements block it
  * points at: a heap object of BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK kind whose
  * payload is `capacity` Values, HOLE-filled past `length`. An array literal of

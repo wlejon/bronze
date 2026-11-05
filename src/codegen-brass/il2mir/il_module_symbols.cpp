@@ -52,7 +52,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_super_call_16", "bronze_super_call_n",
         "bronze_dynamic_import", "bronze_iter_value", "bronze_iter_close", "bronze_iter_rest",
         "bronze_iter_delegate", "bronze_async_iter_open", "bronze_async_iter_next", "bronze_async_iter_close",
-        "bronze_pattern_check", "bronze_array_append", "bronze_array_append_hole", "bronze_array_spread",
+        "bronze_pattern_check", "bronze_array_sort_merged", "bronze_array_append", "bronze_array_append_hole", "bronze_array_spread",
         "bronze_object_spread", "bronze_object_rest", "bronze_dynamic_call_spread", "bronze_call_method_spread",
         "bronze_call_method", "bronze_register_method_ic_cells", "__bronze_ic_table", "__bronze_method_ic_sites",
         "bronze_static_shape_publish", "bronze_family_stamp", "bronze_register_class_family",

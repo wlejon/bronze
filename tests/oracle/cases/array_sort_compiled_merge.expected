@@ -1,0 +1,34 @@
+frame 0 true 525 175 35 40
+frame 1 true 525 175 510 112
+frame 2 true 525 175 315 72
+frame 3 true 525 175 305 64
+stable true 0 7 297
+holes 9 [1,2,3,4,5,null,null,null,null] false false false
+all-undefined 3 0
+threw RangeError cmp 6 9,8,7,6,5,4,3,2,1
+threw-valueOf valueOf 9,8,7,6,5,4,3,2,1
+threw-bigint true 9,8,7,6,5,4,3,2,1
+shrink 5 1,2,3,4,5
+grow 4 1,2,3,0
+overwrite 1,2,3,4
+bad true 2,1
+bad true 2,1
+bad true 2,1
+bad true 2,1
+bad true 2,1
+default 1,10,9
+nan 3,1,2
+string 1,2,3
+object 3,2,1
+bound 5,4,2,1
+proxy 1,2,4,5
+class true
+array-like {"0":"a","1":"b","2":"d","length":4} false
+own-sort own -1
+subclass true true 1,2,3
+typed 3,2,-1
+frozen true
+custom custom 1
+proto proto
+same-calls true true 0,0,0,1,1,2,2,3,3,4,4,4,5,5,6,6,7,7,8,8,9,9,9,10,10,11,11,12,12,13,13,13,14,14,15,15,16,16,,
+collect true key0 0 key99

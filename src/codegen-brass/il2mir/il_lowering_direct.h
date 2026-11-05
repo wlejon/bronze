@@ -29,6 +29,17 @@ bool direct_method_ic_here(const IlLowering* lowering);
 Value* lower_closure_call(IlLowering* lowering, Builder& b, Value* callee, Value* this_val,
                           const std::vector<Value*>& boxed_args);
 
+// The same call with the arguments already staged: `argv` addresses `argc`
+// Value words, which both paths read.
+Value* lower_closure_call_argv(Builder& b, Value* callee, Value* this_val, uint32_t argc, Value* argv);
+
+// lower_closure_call_argv's two halves, for a caller that calls one callee
+// many times: the test (true when compiled code may enter `callee` itself;
+// a fact about the function object that no call changes), and the entry of
+// a callee the test accepted, its code and env words read at the call.
+Value* closure_enters_directly(Builder& b, Value* callee);
+Value* enter_closure_directly(Builder& b, Value* callee, Value* this_val, uint32_t argc, Value* argv);
+
 // Builds the module's stubs that the forms below call (once, before any body).
 void emit_direct_stubs(IlLowering* lowering, Module& mod);
 
