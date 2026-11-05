@@ -86,18 +86,16 @@ std::vector<std::vector<std::vector<uint8_t>>> runMembers(const il::Module& mod)
 // gives this code", which holds for a method a prototype holds and not for a
 // function held in the receiver's own slot: two objects of one shape can hold
 // different functions there. So the target must be a function the program
-// stores only on prototypes, the receivers must hold no own property of the
-// key, and no named write may give one any.
+// stores only on prototypes, and the receivers must hold no own property of
+// the key; anything else is an own-slot call (own_callee_calls.h).
 struct OwnHeld {
     std::vector<uint8_t> fn;    // an IL function some non-prototype object holds
-    std::vector<uint8_t> key;   // a key some named write stores
 };
 
 OwnHeld ownHeld(const Solver& s) {
     const il::Module& mod = s.module();
     OwnHeld out;
     out.fn.assign(mod.functions.size(), 0);
-    out.key.assign(s.keys().size(), 0);
     auto hold = [&](const AVal& v) {
         for (ObjId o : v.objs) {
             const AObj& f = s.object(o);
@@ -109,13 +107,6 @@ OwnHeld ownHeld(const Solver& s) {
         if (o.kind == ObjKind::Proto) continue;
         for (const auto& [k, v] : o.fields) hold(v);
         hold(o.elems);
-    }
-    for (const auto& fn : mod.functions) {
-        for (const auto& block : fn.blocks) {
-            for (const auto& inst : block.instructions) {
-                if (inst.op == il::Op::PropSet && inst.keyIndex < out.key.size()) out.key[inst.keyIndex] = 1;
-            }
-        }
     }
     return out;
 }
@@ -143,12 +134,20 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
         ++plan.callWithdrawn;
     }
     ++plan.callCandidates;
-    bool protoHeld = held.fn[target] == 0 && (inst.keyIndex >= held.key.size() || held.key[inst.keyIndex] == 0);
+    // Whether a receiver may hold the callee in an own slot. A named write of
+    // the key elsewhere (`this.setValue = setter` in one class) says nothing
+    // about receivers the prediction saw without one (another class's
+    // prototype `setValue`); and a callee no non-prototype object holds can
+    // never be the closure an own slot answers, so the own-slot split would
+    // miss every call. Either way the DIRECT edge stays sound: its guard is
+    // the method cache's DIRECT entry, which the runtime latches only for a
+    // method found on the chain (rt_method_call.cpp, latchMethodIc).
+    bool ownSlot = held.fn[target] != 0;
     for (ObjId r : s.value(fact.fn, inst.operands[0]).objs) {
         const AObj& o = s.object(r);
-        if (o.fields.count(inst.keyIndex) != 0 || o.accessors.count(inst.keyIndex) != 0 || o.anyKey) protoHeld = false;
+        if (o.fields.count(inst.keyIndex) != 0 || o.accessors.count(inst.keyIndex) != 0 || o.anyKey) ownSlot = true;
     }
-    if (!protoHeld) {
+    if (ownSlot) {
         ++plan.callOwnHeld;
         // The receiver's own slot holds the callee's closure: a call the
         // closure's code word may enter directly (own_callee_calls.h).

@@ -1,0 +1,11 @@
+fallback:false:true:true ctx:true:undefined:undefined
+ReferenceError
+ReferenceError
+ReferenceError
+ReferenceError/2
+42
+undefined:3
+ReferenceError/undefined
+ReferenceError/1/undefined
+1:true:2
+true:b:c

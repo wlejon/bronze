@@ -156,7 +156,7 @@ public:
     // parent hops from `env`, then slot `index`. The TDZ read calls
     // bronze_env_get_tdz only for the uninitialized marker, which throws.
     Value* lower_env_get(Builder& b, Value* env, uint32_t depth, uint32_t index);
-    Value* lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* key);
+    Value* lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, uint32_t key_idx);
     void lower_env_set(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* val, bool val_is_primitive);
 
     // THE SHAPE MEMO (il_shape_memo.cpp): per receiver (an IL value id), the

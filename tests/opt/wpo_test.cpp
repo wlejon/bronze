@@ -694,3 +694,46 @@ TEST_CASE("a call of a factory's own-slot closure enters the predicted function 
     DiagnosticSink vdiags;
     CHECK(il::verify(with, vdiags));
 }
+
+TEST_CASE("a prototype method whose key another class writes as an own slot is a direct target") {
+    // `setValue` is Table's prototype method and Cell's own property (three.js's
+    // WebGLUniforms beside SingleUniform). The receivers at `run` are Table
+    // instances that hold no own `setValue`, and no object but Table's
+    // prototype holds Table's function: the own-slot split could never hit,
+    // and the method cache's direct entry is the guard. `Other` and the
+    // closure's cache keep lowering from guessing the callee itself.
+    const std::string src =
+        "class Table { constructor() { this.map = { a: 1 }; } setValue(n, v) { const u = this.map[n]; return u === undefined ? 0 : u * v; } }\n"
+        "class Cell { constructor(k) { this.setValue = function (n, v) { return k + v; }; } }\n"
+        "class Other { setValue(n, v) { return -v; } }\n"
+        "function Program(make) { let cached; this.getUniforms = function () { if (cached === undefined) cached = make(); return cached; }; }\n"
+        "function run(p, n) { const t = p.getUniforms(); let s = 0; for (let i = 0; i < n; i++) s += t.setValue('a', i); return s; }\n"
+        "console.log(run(new Program(() => new Table()), 10), new Cell(2).setValue('b', 3), new Other().setValue('c', 1));\n";
+    auto shape = [](const il::Module& mod) {
+        size_t closureIs = 0, direct = 0;
+        const il::Function* run = functionNamed(mod, "run");
+        REQUIRE(run != nullptr);
+        for (const auto& block : run->blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == il::Op::ClosureIs) ++closureIs;
+                if (inst.op == il::Op::MethodCall && inst.directTarget != il::Instruction::kNoDirectTarget &&
+                    mod.functions[inst.directTarget].name == "Table.setValue") {
+                    ++direct;
+                }
+            }
+        }
+        for (const auto& frame : run->inlineFrames) {
+            if (mod.functions[frame.callee].name == "Table.setValue") ++direct;
+        }
+        return std::make_pair(closureIs, direct);
+    };
+    const auto [closureIsBefore, directBefore] = shape(buildLower(src, false));
+    CHECK(directBefore == 0);
+    const il::Module with = buildLower(src, true);
+    const auto [closureIs, direct] = shape(with);
+    CHECK(direct >= 1);
+    // The one `closure.is` left is `getUniforms`, a closure in an own slot.
+    CHECK(closureIs <= 1);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(with, vdiags));
+}

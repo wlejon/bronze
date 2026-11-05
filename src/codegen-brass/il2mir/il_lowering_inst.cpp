@@ -298,7 +298,7 @@ bool IlLowering::lower_instruction(
             } else {
                 key_idx = inst_ast.index;
             }
-            res_val = lower_env_get_tdz(b, get_opd(0), inst_ast.depth, inst_ast.index, get_key_id(b, key_idx));
+            res_val = lower_env_get_tdz(b, get_opd(0), inst_ast.depth, inst_ast.index, key_idx);
             break;
         }
 

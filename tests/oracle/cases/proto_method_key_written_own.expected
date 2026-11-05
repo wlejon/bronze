@@ -1,0 +1,14 @@
+20100 600 3 8
+cell:x:7 cell:y:6
+other:a:1 cell:a:2 6
+patched:a:7 0patched:a:0patched:b:1patched:zz:2patched:a:1patched:b:1patched:zz:2
+7
+own:a:2 2 0own:a:0own:b:1own:zz:2
+2
+2
+other:b:9 18
+18
+getter:a:1 getter:b:2 2
+1 2
+true
+6 615

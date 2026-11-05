@@ -305,7 +305,39 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
             stop.erase(v->name);
             continue;
         }
+        // `let x;` initializes the binding to undefined (14.3.1.2) and runs
+        // nothing; `var x;` does nothing at all — a hoisted function of that
+        // name still holds its closure, so a `var` never leaves `stop` here.
+        if (v != nullptr && !v->name.empty() && v->pattern == nullptr && v->init == nullptr) {
+            if (!v->isVar) {
+                names.push_back(v->name);
+                stop.erase(v->name);
+            }
+            continue;
+        }
         if (!widen) break;
+        // A destructuring declaration: its initializer, defaults and computed
+        // keys are code like any other, judged with every name the pattern
+        // binds still in `stop` — a default reading a sibling binding of the
+        // same pattern (`{a = b, b}`) can be its dead zone, and is refused
+        // rather than ordered. Past it, every bound name is initialized.
+        if (v != nullptr && v->pattern != nullptr && v->init != nullptr) {
+            ReachScan scan;
+            detail::visitPatternExprs(v->pattern.get(), scan);
+            v->init->accept(scan);
+            bool dangerous = scan.buildsFunction;
+            for (const auto& name : scan.names) {
+                if (stop.count(name) != 0) dangerous = true;
+            }
+            if (dangerous) break;
+            if (!v->isVar) {
+                for (const auto& name : patternBoundNames(*v->pattern)) {
+                    names.push_back(name);
+                    stop.erase(name);
+                }
+            }
+            continue;
+        }
         // A `var` is not lexical and has no dead zone, so it neither qualifies
         // nor disqualifies — but its initializer is code like any other. A
         // destructuring declaration binds no single name and is refused with

@@ -340,6 +340,61 @@ TEST_CASE("a lexical binding nothing can read before its initializer keeps no de
     CHECK(text.find("env.get %") != std::string::npos);
 }
 
+TEST_CASE("a bare let and a destructuring declaration carry the reach past them") {
+    // `let x;` runs nothing, and a pattern whose initializer and defaults
+    // reach no closure over the record and name no binding in its dead zone
+    // initializes every name it binds: three.js's WebGLRenderer constructor
+    // (`const { canvas = make() } = parameters; let _alpha; ... let _gl`).
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function make() { return 1; }\n"
+        "function R(parameters) {\n"
+        "  const { canvas = make(), depth = true } = parameters;\n"
+        "  let alpha;\n"
+        "  let gl = canvas;\n"
+        "  function read() { return gl + alpha + depth; }\n"
+        "  return read;\n"
+        "}\n"
+        "console.log(R({})());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.get.tdz") == std::string::npos);
+}
+
+TEST_CASE("a pattern default naming a binding in its dead zone stops the reach") {
+    // `b` is bound by the same pattern after the default that reads it, and
+    // `later` is read by a hoisted function the default calls: both reads
+    // keep their check.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function R(o) {\n"
+        "  const { a = b, b } = o;\n"
+        "  let later = 1;\n"
+        "  function read() { return later; }\n"
+        "  return read() + a;\n"
+        "}\n"
+        "function S(o) {\n"
+        "  const { a = early() } = o;\n"
+        "  let later = 1;\n"
+        "  function early() { return later; }\n"
+        "  return a;\n"
+        "}\n"
+        "console.log(R({ b: 1 }), S({}));\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    size_t checks = 0;
+    for (size_t at = text.find("env.get.tdz"); at != std::string::npos; at = text.find("env.get.tdz", at + 1)) ++checks;
+    CHECK(checks >= 2);
+}
+
 TEST_CASE("a call above the declaration keeps every dead zone below it") {
     // The scan STOPS at the first statement that can run user code, and
     // everything after it keeps its check — including a binding whose own

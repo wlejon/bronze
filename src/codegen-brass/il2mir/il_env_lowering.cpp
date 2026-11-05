@@ -48,8 +48,9 @@ Value* IlLowering::lower_env_get(Builder& b, Value* env, uint32_t depth, uint32_
 
 // The TDZ read: the uninitialized marker can never be a program's value, so one
 // compare against it is the whole check (ECMA-262 9.1.1.1.6). The helper is
-// kept for the miss, where it names the binding in the ReferenceError it throws.
-Value* IlLowering::lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* key) {
+// kept for the miss, where it names the binding in the ReferenceError it throws;
+// the name's key id is loaded there too, off the path every read takes.
+Value* IlLowering::lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, uint32_t key_idx) {
     Value* env_bits = ensure_type(env, Type::i64(), b);
     Value* rec = env_record_ptr(b, env_bits, depth);
     Value* bits = b.build_load(Type::i64(), rec, slot_offset(index));
@@ -65,6 +66,8 @@ Value* IlLowering::lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uin
     b.build_br_if(uninit, bb_uninit, {}, bb_merge, {bits});
 
     b.position_at_end(bb_uninit);
+    bb_uninit->set_cold();
+    Value* key = get_key_id(b, key_idx);
     Value* thrown = b.build_call("bronze_env_get_tdz", Type::i64(),
                                  {env_bits, b.build_iconst_i32(static_cast<int32_t>(depth)),
                                   b.build_iconst_i32(static_cast<int32_t>(index)), key});

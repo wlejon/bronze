@@ -14,12 +14,15 @@
 //   0                        never tried. Cannot equal a live shape, so the
 //                            guard misses and the site takes its slow path,
 //                            which is what calls this.
-//   kRefused (1)             tried once and the layout was wrong for the object
-//                            that arrived. Also cannot equal a live shape (a
-//                            shape is 8-aligned arena memory), so the guard
-//                            still just misses — and the slow path stops
-//                            calling this, so a wrong layout costs one probe
-//                            and then nothing.
+//   kRefused (1)             the layout was wrong for the object that arrived
+//                            (a receiver that is no plain object, a dictionary,
+//                            an accessor, a read-only slot for a store), or
+//                            receivers lacked the key at the claimed slot for
+//                            `kMismatchRetries` probes. Also cannot equal a
+//                            live shape (a shape is 8-aligned arena memory), so
+//                            the guard still just misses — and the slow path
+//                            stops calling this, so a wrong layout costs a
+//                            bounded number of probes and then nothing.
 //   anything else            the `Shape*` this site expects.
 //
 // Publishing is deliberately ONE-SHOT and monomorphic. A site that sees two
@@ -32,6 +35,8 @@
 // the inline caches already depend on for their cached shape words, and the
 // reason the collector's payload scan can read one as a number (its top 16 bits
 // are clear) and walk past it.
+
+#include <unordered_map>
 
 #include "abi/bronze_abi.h"
 #include "runtime/heap.h"
@@ -50,6 +55,17 @@ namespace {
 // shape can ever compare equal to this, and the guard needs no extra test to
 // treat a refusal as a miss.
 constexpr uint64_t kRefused = 1;
+
+// A receiver without the key at the claimed slot leaves the cell unpublished
+// rather than refused, so a site first reached by an object still under
+// construction publishes the shape it settles into. The budget is per thread
+// and cell: a site whose receivers never match stops asking after it.
+constexpr uint32_t kMismatchRetries = 64;
+
+bool retriesExhausted(const uint64_t* cell) {
+    thread_local std::unordered_map<const uint64_t*, uint32_t> tries;
+    return ++tries[cell] >= kMismatchRetries;
+}
 }  // namespace
 
 extern "C" {
@@ -107,11 +123,16 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
         return;
     }
     PropertyInfo info;
-    if (!shape->lookupProperty(PropertyKey::forString(key), info)) {
-        *cell = kRefused;
+    const bool found = shape->lookupProperty(PropertyKey::forString(key), info);
+    if (!found || (!info.accessor && info.slot != slot)) {
+        // Not refused yet: an object still being built has not reached the
+        // key, or holds it at another slot than the shape it settles into
+        // (the first read of `props.__version` on a `{}` a later write fills
+        // in), and the next receiver may be the one the claim describes.
+        if (retriesExhausted(cell)) *cell = kRefused;
         return;
     }
-    if (info.accessor || info.slot != slot || (forWrite && !info.writable)) {
+    if (info.accessor || (forWrite && !info.writable)) {
         *cell = kRefused;
         return;
     }
