@@ -14,6 +14,7 @@
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/exception.h"
+#include "runtime/external_store.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -102,6 +103,8 @@ void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
 void clearModuleRegistry() { runtime::rtModuleRegistryClear(); }
 
 void collectGarbage() { runtime::rtHeap().collect(); }
+
+void adjustExternalMemory(int64_t delta) { runtime::rtAdjustExternalMemory(delta); }
 
 size_t releaseIdleHeapMemory() {
     auto& heap = runtime::rtHeap();

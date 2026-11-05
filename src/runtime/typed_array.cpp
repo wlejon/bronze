@@ -520,7 +520,7 @@ ArrayBufferHeader* allocateBuffer(Heap& heap, Shape* shape, uint32_t reserve) {
     if (external) {
         auto* bytes = static_cast<uint8_t*>(std::calloc(reserve, 1));
         if (!bytes) fatal("out of memory allocating ArrayBuffer backing store");
-        runtime::rtAttachNewExternalStore(heap, buf, bytes);
+        runtime::rtAttachNewExternalStore(heap, buf, bytes, reserve);
     } else if (reserve > 0) {
         std::memset(buf->data(), 0, reserve);
     }

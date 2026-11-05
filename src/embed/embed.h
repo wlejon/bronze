@@ -345,6 +345,19 @@ BRONZE_EMBED_API size_t releaseIdleHeapMemory();
 // allocation found eden full. The same contract as collectGarbage.
 BRONZE_EMBED_API void collectYoungGarbage();
 
+// Host memory a JS object keeps alive that the heap cannot see: a handle's
+// pixels, a decoded image's texture. A handle is a few words of heap however
+// much it holds, so a program that makes them and drops them allocates too
+// little for the heap's own trigger, and the memory behind the dead ones
+// waits for a collection that may not come before the process runs out.
+// Reported here (bytes more, or fewer as a negative delta, when it is freed:
+// every addition matched by its removal, on the thread that added it), it
+// counts with the thread's external ArrayBuffer blocks: once the bytes the
+// thread added since its last request pass the larger of 64 MB and what it
+// had live before them, a full collection of its heap is requested, run by
+// its next allocation.
+BRONZE_EMBED_API void adjustExternalMemory(int64_t delta);
+
 // How near the heap is to collecting on its own (brass::gc::Heap::pressure):
 // a minor collection when edenUsed reaches edenCapacity (eden's adaptive
 // limit, which shrinks while much of each eden survives), a full one when

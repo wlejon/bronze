@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <thread>
 
@@ -143,7 +144,10 @@ TEST_CASE("large ArrayBuffer and Float32Array (> 256 MiB) allocate externally an
             CHECK(buf->byteLength == kBytes);
             CHECK(buf->isExternal());
             CHECK(rtExternalStoreCount() == 1);
-            CHECK(heap.used_size() - usedBefore < 4096);
+            // At most a few headers more: the 400 MB of external bytes
+            // request a collection, which the view's allocation runs, so the
+            // heap may also come out smaller.
+            CHECK(heap.used_size() < usedBefore + 4096);
 
             uint8_t* origPtr = buf->data();
             CHECK(ta->get(0) == 0.0);
@@ -179,6 +183,42 @@ TEST_CASE("large ArrayBuffer and Float32Array (> 256 MiB) allocate externally an
         CHECK(rtExternalStoreCount() == 0);
     });
     t.join();
+}
+
+// A thread that makes big buffers and drops them, allocating next to nothing
+// else on its heap (a Worker decoding photos): the external bytes alone bring
+// its collections round, and its stores stay few. Two such threads at once,
+// because the trigger is each thread's own: with one count for the process,
+// each thread's new bytes never passed what was live, mostly the other's
+// uncollected garbage, and neither collected (an image viewer's two decode
+// workers grew 30 MB a photo).
+TEST_CASE("dropped external buffers bring their own thread's collections round") {
+    constexpr uint32_t kBytes = 8u << 20;
+    constexpr int kBuffers = 96;  // 768 MB a thread, if none were freed
+    auto run = [](size_t& most) {
+        Heap heap;
+        LocalShapes shapes;
+        ShadowStackFrame frame;
+        for (int i = 0; i < kBuffers; ++i) {
+            bronze::test::inOwnFrame([&] {
+                auto* buf = ArrayBufferHeader::create(heap, shapes.shape, kBytes);
+                CHECK(buf->isExternal());
+            });
+            bronze::test::scrubStack();
+            // A host's checkpoint between turns runs the deferred finalizers.
+            rtDrainFinalizers();
+            most = std::max(most, rtExternalStoreCount());
+        }
+    };
+    size_t mostA = 0, mostB = 0;
+    std::thread a([&] { run(mostA); });
+    std::thread b([&] { run(mostB); });
+    a.join();
+    b.join();
+    // The trigger is 64 MB past what was live: about eight of these, with a
+    // few more for the stack's conservative pins.
+    CHECK(mostA <= 24);
+    CHECK(mostB <= 24);
 }
 
 TEST_CASE("allocating above kMaxByteLength throws RangeError") {

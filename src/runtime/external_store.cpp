@@ -5,9 +5,11 @@
 
 #include "runtime/external_store.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 
 #include "runtime/exception.h"
@@ -22,12 +24,62 @@ namespace bronze::runtime {
 
 namespace {
 
+// External bytes are memory the collector does not see: a buffer's header is
+// a few words of heap, its block can be 100 MB, and the block is freed only
+// when a collection finds the header dead. A thread that allocates little on
+// the heap (a Worker decoding images it transfers on) would never collect,
+// and keep every block it was ever handed. So the blocks count, per thread:
+// once the bytes a thread made since its last request pass the larger of
+// kExternalMinBytes and what that thread had live before them (the trigger
+// doubling with its live set), a full collection of its heap is requested,
+// which its next allocation runs.
+//
+// Per thread, because only that thread's collection frees what it made: a
+// process-wide total lets two Workers' garbage hold each other's trigger off
+// for good (each one's new bytes never pass everything live). A block is
+// debited to the thread that made it whichever thread frees it (a Worker's
+// pixels transferred to the page), through the counter the store carries,
+// which outlives its thread.
+constexpr uint64_t kExternalMinBytes = 64ull << 20;
+
+struct ExternalCounter {
+    std::atomic<uint64_t> live{0};
+};
+
+thread_local std::shared_ptr<ExternalCounter> t_externalCounter = std::make_shared<ExternalCounter>();
+thread_local uint64_t t_externalSinceRequest = 0;
+
+void noteExternalAdded(Heap& heap, uint64_t bytes) {
+    const uint64_t live = t_externalCounter->live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    t_externalSinceRequest += bytes;
+    const uint64_t before = live > t_externalSinceRequest ? live - t_externalSinceRequest : 0;
+    if (t_externalSinceRequest > std::max(kExternalMinBytes, before)) {
+        t_externalSinceRequest = 0;
+        heap.gc().request_collection(brass::gc::CollectionKind::Full);
+    }
+}
+
+// Clamped at zero: a host's adjustExternalMemory removal may come on a thread
+// other than the one that added it.
+void noteExternalRemoved(ExternalCounter& counter, uint64_t bytes) {
+    uint64_t cur = counter.live.load(std::memory_order_relaxed);
+    while (!counter.live.compare_exchange_weak(cur, cur > bytes ? cur - bytes : 0,
+                                               std::memory_order_relaxed)) {
+    }
+}
+
 struct ExternalStore {
     std::atomic<uint32_t> refs;
     uint8_t* bytes;
     void (*deleter)(void* user, uint8_t* bytes);
     void* user;
+    uint32_t length;  // the block's bytes, for the pressure above
+    std::shared_ptr<ExternalCounter> owner = t_externalCounter;  // the making thread's
 };
+
+void noteNewStore(Heap& heap, const ExternalStore* store) { noteExternalAdded(heap, store->length); }
+
+void noteStoreFreed(const ExternalStore* store) { noteExternalRemoved(*store->owner, store->length); }
 
 // bytes-address → store, so a repeat externalize of a buffer finds the store
 // its externalPtrBits already names (the header has no second word to carry
@@ -65,6 +117,7 @@ void rtReleaseExternalStore(void* store) {
     auto* s = static_cast<ExternalStore*>(store);
     if (s->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         g_externalStores.erase(reinterpret_cast<uint64_t>(s->bytes));
+        noteStoreFreed(s);
         if (s->deleter) s->deleter(s->user, s->bytes);
         delete s;
     }
@@ -100,12 +153,13 @@ ExternalWindow rtExternalizeArrayBuffer(Value bufferOrView) {
         auto* bytes = static_cast<uint8_t*>(std::malloc(capacity ? capacity : 1));
         if (!bytes) return {};
         std::memcpy(bytes, buf->data(), capacity);
-        store = new ExternalStore{{1}, bytes, freeMallocStore, nullptr};
+        store = new ExternalStore{{1}, bytes, freeMallocStore, nullptr, capacity};
         g_externalStores.emplace(reinterpret_cast<uint64_t>(bytes), store);
         buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
         // No bronze allocation between reading the header's address and the
         // registration — malloc is the host's heap, not this one.
         rtRegisterHeapFinalizer(&buf->object.header, store, dropBufferRef, Finalize::Deferred);
+        noteNewStore(rtHeap(), store);
     }
     rtRetainExternalStore(store);
     return {store->bytes + winOff, winLen, store};
@@ -143,19 +197,27 @@ Value rtCreateExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
     ArrayBufferHeader* buf =
         ArrayBufferHeader::createExternal(rtHeap(), rtArrayBufferInstanceShape(), byteLength);
     buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
-    if (!store) {
-        store = new ExternalStore{{1}, bytes, deleter, user};
+    const bool fresh = !store;
+    if (fresh) {
+        store = new ExternalStore{{1}, bytes, deleter, user, byteLength};
         g_externalStores.emplace(reinterpret_cast<uint64_t>(bytes), store);
     }
     rtRegisterHeapFinalizer(&buf->object.header, store, dropBufferRef, Finalize::Deferred);
+    if (fresh) noteNewStore(rtHeap(), store);
     return Value::fromObject(buf);
 }
 
-void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes) {
-    auto* store = new ExternalStore{{1}, bytes, freeMallocStore, nullptr};
+void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes, uint32_t byteLength) {
+    auto* store = new ExternalStore{{1}, bytes, freeMallocStore, nullptr, byteLength};
     g_externalStores.emplace(reinterpret_cast<uint64_t>(bytes), store);
     buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
     rtRegisterHeapFinalizer(heap, &buf->object.header, store, dropBufferRef, Finalize::Deferred);
+    noteNewStore(heap, store);
+}
+
+void rtAdjustExternalMemory(int64_t delta) noexcept {
+    if (delta > 0) noteExternalAdded(rtHeap(), static_cast<uint64_t>(delta));
+    else if (delta < 0) noteExternalRemoved(*t_externalCounter, static_cast<uint64_t>(-delta));
 }
 
 size_t rtExternalStoreCount() noexcept { return g_externalStores.size(); }

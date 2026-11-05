@@ -52,10 +52,23 @@ ExternalWindow rtExternalizeArrayBuffer(Value bufferOrView);
 Value rtCreateExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
                                   void (*deleter)(void* user, uint8_t* bytes), void* user);
 
-// Attach a newly malloc/calloc'd backing store to `buf`, registering its
-// Deferred finalizer on `heap`. Caller must not allocate between creating `buf`
-// and calling this.
-void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes);
+// Attach a newly malloc/calloc'd backing store of `byteLength` bytes to `buf`,
+// registering its Deferred finalizer on `heap`. Caller must not allocate
+// between creating `buf` and calling this.
+//
+// Every new store counts toward a full collection of the making thread's
+// heap: once the external bytes that thread made since its last request pass
+// the larger of 64 MB and its external bytes live before them, one is
+// requested (the next allocation runs it), so a thread that holds big
+// buffers but allocates little still frees them.
+void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes, uint32_t byteLength);
+
+// Host memory a heap object keeps alive outside the heap (a native handle's
+// pixels): `delta` bytes more (positive) or fewer (negative), counted with
+// the calling thread's external stores toward the same full-collection
+// request. Every addition must be matched by its removal when the memory is
+// freed, on the thread that added it.
+void rtAdjustExternalMemory(int64_t delta) noexcept;
 
 // Number of live external stores registered on the current thread.
 size_t rtExternalStoreCount() noexcept;
