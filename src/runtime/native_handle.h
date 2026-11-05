@@ -56,6 +56,11 @@ Value rtMakeHandle(void* data, HandleDestructor dtor, Finalize when, Value proto
 // registries keyed by payload).
 void* rtHandleData(Value handle);
 void* rtHandleDataAnyRealm(Value handle);
+// The internal slot a handle cell keeps its data pointer in (raw bits). For a
+// reader that already KNOWS the value is a handle cell it made — the fast
+// host-call trampoline reads its env cell this way (embed_function.cpp) — and
+// so needs neither the brand nor the realm check.
+inline constexpr uint32_t kHandleDataSlot = 0;
 // The realm slot the handle was made in (0 for none, or a non-handle), and
 // whether that is another realm than the current one.
 uint32_t rtHandleRealmSlot(Value handle);

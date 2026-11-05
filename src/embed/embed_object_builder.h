@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "embed/embed.h"
+#include "embed/embed_fast_function.h"
 
 namespace bronze::embed {
 
@@ -76,6 +77,23 @@ struct ObjectBuilder {
 
     void def(std::string_view name, uint32_t arity, NativeFn fn) {
         Persistent f(makeFunction(std::move(fn), arity, name));
+        obj.set(setProperty(obj.get(), name, f.get()));
+    }
+
+    // def() through the fast host-call path (embed_fast_function.h): `fn` is
+    // any callable with NativeFn's signature, called through a function
+    // pointer with its arguments copied onto the trampoline's stack rather
+    // than rooted. Same contract as def() except that no shadow-stack frame
+    // is opened for the callback.
+    template <typename F>
+    void defFast(std::string_view name, uint32_t arity, F&& fn) {
+        Persistent f(makeFastFunction(std::forward<F>(fn), arity, name));
+        obj.set(setProperty(obj.get(), name, f.get()));
+    }
+
+    void defFast(std::string_view name, uint32_t arity, FastNativeFn fn, void* data,
+                 HandleDestructor dataDtor) {
+        Persistent f(makeFastFunction(fn, data, dataDtor, arity, name));
         obj.set(setProperty(obj.get(), name, f.get()));
     }
 

@@ -51,6 +51,7 @@ thread_local Shape* g_handleShape = nullptr;
 constexpr uint64_t kHandleBrandBits = 0x0000'B805'EAD1'C377ULL;
 constexpr uint32_t kHandleSlotCount = 5;
 constexpr uint32_t kSlotData = 0;
+static_assert(kSlotData == kHandleDataSlot);
 constexpr uint32_t kSlotDestructor = 1;
 constexpr uint32_t kSlotBrand = 2;
 constexpr uint32_t kSlotClassTag = 3;
