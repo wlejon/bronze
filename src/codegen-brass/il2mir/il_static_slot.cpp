@@ -87,6 +87,15 @@ Value* safe_shape_of(Builder& b, Value* plain, Value* recv_base, Value* family_b
 } // namespace
 
 Value* PropertyLoweringHelper::data_addr(Builder& b, const std::string& sym) {
+    // The guard tables' addresses, once per function (IlLowering's hoisting):
+    // every static site of a function reads one of the two.
+    if (static_base_fn_ && !sym.empty() && (sym == static_cells_sym_ || sym == family_base_sym_)) {
+        return static_base_fn_(b, sym == family_base_sym_);
+    }
+    return unshared_data_addr(b, sym);
+}
+
+Value* PropertyLoweringHelper::unshared_data_addr(Builder& b, const std::string& sym) {
     Value* addr = b.build_func_addr(sym);
     return module_delta_fn_ ? b.build_add(addr, module_delta_fn_(b)) : addr;
 }

@@ -202,6 +202,13 @@ public:
     // The function being lowered hands in its table address, computed once
     // at its entry; unset, every site computes its own.
     void set_table_base_fn(std::function<Value*(Builder&)> fn) { table_base_fn_ = std::move(fn); }
+    // Likewise the static-slot guards' two tables (the cells, and the family
+    // base word): `family` names which. Unset, every guard computes its own.
+    void set_static_base_fn(std::function<Value*(Builder&, bool family)> fn) { static_base_fn_ = std::move(fn); }
+    // The table's address computed here, for the function's one shared copy.
+    Value* static_table_addr_here(Builder& b, bool family) {
+        return unshared_data_addr(b, family ? family_base_sym_ : static_cells_sym_);
+    }
 
     // Site `ic_index`, or a null site when the index names none in this
     // module's table (kNoIcIndex, or a module compiled without one).
@@ -471,7 +478,9 @@ private:
     uint32_t family_count_ = 0;
     // A writable table's address on this thread (module_delta_fn_).
     Value* data_addr(Builder& b, const std::string& sym);
+    Value* unshared_data_addr(Builder& b, const std::string& sym);
     std::function<Value*(Builder&)> module_delta_fn_;
+    std::function<Value*(Builder&, bool)> static_base_fn_;
     std::function<Value*(Builder&)> table_base_fn_;
     struct LastTypedGet {
         BasicBlock* merge_bb = nullptr;

@@ -50,6 +50,7 @@ struct InstructionMirror {
     uint32_t envIndex;
     bool envImmutable;
     bool numberHint;
+    uint8_t truthHint;
     uint32_t callEnvHops;
     uint32_t inlineFrame;
     Span span;
@@ -303,7 +304,8 @@ enum InstBits : uint64_t {
     kIcAbsent = 1u << 31,
     kShapeGuarded = uint64_t{1} << 32,
     kNumberHint = uint64_t{1} << 33,
-    kKnownBits = (uint64_t{1} << 34) - 1,
+    kHasTruthHint = uint64_t{1} << 34,
+    kKnownBits = (uint64_t{1} << 35) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -358,6 +360,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.staticSlotGuessed) m |= kStaticSlotGuessed;
     if (inst.envImmutable) m |= kEnvImmutable;
     if (inst.numberHint) m |= kNumberHint;
+    if (inst.truthHint != 0) m |= kHasTruthHint;
 
     w.u8(static_cast<uint8_t>(inst.op));
     w.u8(static_cast<uint8_t>(inst.type));
@@ -389,6 +392,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
         w.var(inst.transitionRunSlot);
     }
     if (m & kHasDefineAdd) w.var(inst.defineAddCell);
+    if (m & kHasTruthHint) w.var(inst.truthHint);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -432,6 +436,11 @@ void readInstruction(Reader& r, Instruction& inst) {
         inst.transitionRunSlot = r.u32();
     }
     if (m & kHasDefineAdd) inst.defineAddCell = r.u32();
+    if (m & kHasTruthHint) {
+        const uint32_t h = r.u32();
+        if (h == 0 || h > 15) r.fail("bad truthiness hint");
+        inst.truthHint = static_cast<uint8_t>(h);
+    }
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());

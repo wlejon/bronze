@@ -113,6 +113,30 @@ public:
         ++stats_.shapeIdentity;
     }
 
+    // C: a truthiness unbox whose every observed value was a Boolean, an
+    // object, undefined or null: the kinds it saw (the Number case is
+    // `hint`'s).
+    void truth(il::Instruction& inst, const std::vector<uint8_t>& observable) {
+        if (inst.op != il::Op::Unbox || inst.type != il::Type::Bool || inst.numberHint || inst.truthHint != 0 ||
+            inst.operands.empty()) {
+            return;
+        }
+        const il::ValueId v = inst.operands[0];
+        if (v >= observable.size() || observable[v] == 0) return;
+        const auto it = plan_.values.find(valueKey(inst, 0));
+        if (it == plan_.values.end() || it->second.total < kMinExecutions) return;
+        const NumberCounts& c = it->second;
+        if (c.bools + c.objects + c.undefineds + c.nulls != c.total) return;
+        uint8_t kinds = 0;
+        if (c.bools) kinds |= il::Instruction::kTruthBool;
+        if (c.objects) kinds |= il::Instruction::kTruthObject;
+        if (c.undefineds) kinds |= il::Instruction::kTruthUndefined;
+        if (c.nulls) kinds |= il::Instruction::kTruthNull;
+        inst.truthHint = kinds;
+        ++stats_.truthHints;
+        if (hinted_.insert(it->first).second) stats_.hintExecutions += c.total;
+    }
+
     // C: one numeric op.
     void hint(il::Instruction& inst, const std::vector<uint8_t>& observable) {
         if (inst.numberHint || !il::observesOperandTags(inst)) return;
@@ -234,6 +258,7 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
                     writer.claim(inst, observable);
                 } else {
                     writer.hint(inst, observable);
+                    writer.truth(inst, observable);
                 }
             }
         }

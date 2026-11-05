@@ -64,10 +64,14 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr || spec_.has_profile());
     prop_lowering_.set_in_process(options.spec_feedback != nullptr);
     prop_lowering_.set_key_names(&options_.key_constants);
-    // Only the table address is shared: it is live across the body anyway
-    // (it replaces the module delta every site read), where a shared key map
-    // address or guard constant would join every guard's state for nothing.
+    // The table addresses are shared, computed once at entry: the IC table,
+    // and the static-slot sites' cell table and family-range table (each
+    // site otherwise computed its realm-relative address afresh). A shared
+    // key map address or guard constant would join every guard's state for
+    // nothing.
     prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
+    prop_lowering_.set_static_base_fn(
+        [this](Builder& b, bool family) { return hoisted(b, family ? Hoist::FamilyBase : Hoist::StaticCells); });
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

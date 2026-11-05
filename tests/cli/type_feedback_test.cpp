@@ -20,6 +20,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "../test_temp_dir.h"
 #include "cli/driver.h"
@@ -233,4 +234,101 @@ TEST_CASE("type feedback: refusals name the flag") {
     err.clear();
     CHECK(build(js, dir / "fb_refuse.exe", err, false, {}, {}, (dir / "missing.tfb").string()) == 1);
     CHECK(err.find("cannot read") != std::string::npos);
+}
+
+namespace {
+
+// Every value kind through untyped truthiness sites: `if (v)`, `!v`, `v ? :`,
+// the join of `a && b` and `a || b`, each reached through an array so no
+// proof types it.
+const char* const kTruthProgram = R"JS(
+function t(v) { if (v) return 1; return 0; }
+function n(v) { return !v ? 1 : 0; }
+function c(v) { return v ? "y" : "n"; }
+function a(v, w) { return v && w ? "B" : "N"; }
+function o(v, w) { return (v || w) ? "O" : "Z"; }
+const fns = [t, n, c, a, o];
+const vals = [
+  0, -0, 1, -1, 0.5, NaN, Infinity, 5e-324, 2 ** 31, 0 | 0, 7 | 0,
+  0n, 1n, -1n, 2n ** 70n, "", "0", "a", true, false, null, undefined,
+  {}, [], function () {}, Symbol("s"), new Boolean(false),
+];
+let out = "";
+for (let r = 0; r < 2; r++) {
+  for (const v of vals) {
+    for (const f of fns) out += f(v, v);
+    out += f4(v, false) + f4(v, null);
+    out += " ";
+  }
+}
+function f4(v, w) { return fns[3](v, w) + fns[4](v, w); }
+console.log(out);
+)JS";
+
+// A profile whose every value site saw `tags` and nothing else.
+bronze::spec::TypeProfile retagged(const bronze::spec::TypeProfile& real, const std::vector<int>& tags) {
+    bronze::spec::TypeProfile out;
+    for (const auto& [key, fn] : real.functions()) {
+        bronze::spec::FunctionFeedback copy = fn;
+        for (auto& [ord, site] : copy.sites) {
+            using K = bronze::il::FeedbackKind;
+            if (site.kind != K::Value && site.kind != K::Param && site.kind != K::This && site.kind != K::Result) {
+                continue;
+            }
+            site.tags = {};
+            site.total = 0;
+            for (int tag : tags) {
+                site.tags[tag] = 1000;
+                site.total += 1000;
+            }
+        }
+        out.put(std::move(copy));
+    }
+    return out;
+}
+
+}  // namespace
+
+// A truthiness site hinted with the kinds a profile saw tests those first; a
+// profile that saw other kinds than the run meets may only cost speed. Each
+// build here takes a profile claiming every value site saw only some of
+// Boolean / object / undefined / null and is fed every kind of value.
+TEST_CASE("type feedback: a wrong truthiness profile changes no answer") {
+    const auto dir = workDir();
+    const auto js = dir / "fb_truth.js";
+    const auto tfb = dir / "fb_truth.tfb";
+    write(js, kTruthProgram);
+    std::error_code ec;
+    std::filesystem::remove(tfb, ec);
+    std::string err;
+    const auto plainExe = dir / "fb_truth_plain.exe";
+    REQUIRE_MESSAGE(build(js, plainExe, err, false, {}, {}, {}) == 0, err);
+    const std::string expected = runOutput(plainExe);
+    REQUIRE(expected.size() > 100);
+
+    const auto fbExe = dir / "fb_truth_fb.exe";
+    REQUIRE_MESSAGE(build(js, fbExe, err, false, {}, tfb.string(), {}) == 0, err);
+    CHECK(runOutput(fbExe) == expected);
+    auto profile = bronze::spec::TypeProfile::parse(read(tfb), &err);
+    REQUIRE_MESSAGE(profile.has_value(), err);
+
+    const std::vector<std::vector<int>> mixes = {
+        {BRONZE_FEEDBACK_TAG_BOOL},
+        {BRONZE_FEEDBACK_TAG_OBJECT},
+        {BRONZE_FEEDBACK_TAG_UNDEFINED},
+        {BRONZE_FEEDBACK_TAG_NULL},
+        {BRONZE_FEEDBACK_TAG_BOOL, BRONZE_FEEDBACK_TAG_UNDEFINED},
+        {BRONZE_FEEDBACK_TAG_OBJECT, BRONZE_FEEDBACK_TAG_NULL, BRONZE_FEEDBACK_TAG_UNDEFINED},
+        {BRONZE_FEEDBACK_TAG_BOOL, BRONZE_FEEDBACK_TAG_OBJECT, BRONZE_FEEDBACK_TAG_NULL,
+         BRONZE_FEEDBACK_TAG_UNDEFINED},
+    };
+    for (size_t i = 0; i < mixes.size(); ++i) {
+        CAPTURE(i);
+        const bronze::spec::TypeProfile wrong = retagged(*profile, mixes[i]);
+        const auto wrongTfb = dir / ("fb_truth_wrong" + std::to_string(i) + ".tfb");
+        write(wrongTfb, wrong.serialize());
+        const auto exe = dir / ("fb_truth_wrong" + std::to_string(i) + ".exe");
+        REQUIRE_MESSAGE(build(js, exe, err, false, {}, {}, wrongTfb.string()) == 0, err);
+        CHECK(runOutput(exe) == expected);
+    }
 }

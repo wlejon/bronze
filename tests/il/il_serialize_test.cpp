@@ -73,6 +73,7 @@ Module fullModule() {
     inst.rawUnbox = true;
     inst.nullishUnbox = true;
     inst.numberBits = true;
+    inst.truthHint = Instruction::kTruthBool | Instruction::kTruthUndefined;
     inst.staticSlot = 2;
     inst.staticCellIndex = 1;
     inst.familyLo = 0;
@@ -124,6 +125,7 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.icPolymorphic);
     CHECK(b.icAbsent);
     CHECK(b.numberBits);
+    CHECK(b.truthHint == a.truthHint);
     CHECK(b.typedTarget == 0);
     CHECK(back.functions[0].typedOrigin == 1);
     CHECK(back.functions[0].typedArgc == 1);

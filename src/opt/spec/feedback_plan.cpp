@@ -133,6 +133,11 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
                         NumberCounts& c = plan.values[valueKey(inst, j)];
                         c.total += fb.total;
                         c.numbers += fb.tags[BRONZE_FEEDBACK_TAG_F64] + fb.tags[BRONZE_FEEDBACK_TAG_I32];
+                        c.bools += fb.tags[BRONZE_FEEDBACK_TAG_BOOL];
+                        c.objects += fb.tags[BRONZE_FEEDBACK_TAG_OBJECT] + fb.tags[BRONZE_FEEDBACK_TAG_ARRAY] +
+                                     fb.tags[BRONZE_FEEDBACK_TAG_TYPEDARRAY] + fb.tags[BRONZE_FEEDBACK_TAG_FUNCTION];
+                        c.undefineds += fb.tags[BRONZE_FEEDBACK_TAG_UNDEFINED];
+                        c.nulls += fb.tags[BRONZE_FEEDBACK_TAG_NULL];
                         ++plan.stats.valueSites;
                         break;
                     }
@@ -178,7 +183,8 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
     out += "feedback: B direct method targets " + n(stats.directMethods) + " (refused " + n(stats.methodRefused) +
            "; profiled executions " + n(stats.methodExecutions) + "), closure calls split " +
            n(stats.closureCalls) + " (profiled executions " + n(stats.closureExecutions) + ")\n";
-    out += "feedback: C number hints " + n(stats.numberHints) + "; profiled executions " +
+    out += "feedback: C number hints " + n(stats.numberHints) + ", truthiness hints " + n(stats.truthHints) +
+           "; profiled executions " +
            n(stats.hintExecutions) + "\n";
     return out;
 }

@@ -32,7 +32,8 @@ namespace bronze::il {
 // 17: feedback.record (il_op.h).
 // 18: numberHint (il.h), from a type-feedback profile.
 // 19: Block::cold (il.h), a profile-guided region's slow copy.
-inline constexpr uint32_t kFormatVersion = 19;
+// 20: truthHint (il.h), from a type-feedback profile.
+inline constexpr uint32_t kFormatVersion = 20;
 
 std::string serializeModule(const Module& module);
 

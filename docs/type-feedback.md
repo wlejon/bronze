@@ -201,7 +201,14 @@ the plan where each claim has to be made:
   `bronze il`). The backend then lays the Number test first and moves the
   generic path to cold blocks (sunk to the function's end); it adds
   Number-first arms for truthiness, `==` and unary `-`. The value's
-  representation does not change.
+  representation does not change. A truthiness `unbox` whose every observed
+  operand was a Boolean, an object, undefined or null gets `truthHint`, the
+  set of those kinds it saw (`!truth(boun)` in `bronze il`): the backend
+  tests exactly those kinds first, each with its answer (a Boolean's low
+  bit, an object true, undefined and null false), and lays the rest of
+  ToBoolean out cold. This covers presence tests (`if (material.map)`),
+  flag fields, and the joins of `a && b`, whose profile is usually
+  {Boolean, undefined}.
 - **D, profile-guided regions** (after inlining and the own-slot calls,
   before transition runs, define-add cells and the claims;
   `src/lower/guard_region.h`, "PROFILE-GUIDED REGIONS"): the guarded-region

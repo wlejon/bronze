@@ -623,7 +623,9 @@ bool IlLowering::lower_instruction(
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::Bool) {
-                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_, inst_ast.number_hint);
+                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_, inst_ast.number_hint,
+                                               inst_ast.truth_hint);
+                note_boolean(res_val);
             } else if (inst_ast.result_type == BronzeType::Str) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 res_val = b.build_call("bronze_unbox_str", Type::i64(), {i_val});
@@ -741,6 +743,15 @@ bool IlLowering::lower_instruction(
             Value* cond = get_opd(0);
             if (!cond || !block_map.count(inst_ast.target.block_id) || !block_map.count(inst_ast.else_target.block_id)) return false;
             cond = ensure_type(cond, Type::i32(), b);
+            // `!c` of a 0/1 value (`cmp.eq %c, false`: `!==`, `!x`) is the
+            // branch on c with its targets swapped: the test brass fuses is
+            // c's own compare, and the side the front end named first stays
+            // the likely one (`if (a !== b)`'s body is the rare side).
+            bool swap = false;
+            if (Value* inner = negated_boolean(cond)) {
+                cond = inner;
+                swap = true;
+            }
             cond = b.build_and(cond, b.build_iconst_i32(1));
             BasicBlock* true_bb = block_map.at(inst_ast.target.block_id);
             BasicBlock* false_bb = block_map.at(inst_ast.else_target.block_id);
@@ -753,7 +764,13 @@ bool IlLowering::lower_instruction(
                 }
                 return args;
             };
-            b.build_br_if(cond, true_bb, get_args(inst_ast.target, true_bb), false_bb, get_args(inst_ast.else_target, false_bb));
+            if (swap) {
+                b.build_br_if(cond, false_bb, get_args(inst_ast.else_target, false_bb), true_bb,
+                              get_args(inst_ast.target, true_bb));
+            } else {
+                b.build_br_if(cond, true_bb, get_args(inst_ast.target, true_bb), false_bb,
+                              get_args(inst_ast.else_target, false_bb));
+            }
             break;
         }
 

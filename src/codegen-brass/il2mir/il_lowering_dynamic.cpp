@@ -12,6 +12,7 @@
 #include "il_lowering.h"
 #include "il_lowering_ops.h"
 #include "il_abi.h"
+#include <vector>
 
 namespace il2mir {
 
@@ -262,7 +263,14 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // NaN, an Int32 or Boolean unless its payload is 0, undefined and null are
 // false and an Object is true (bronze has no [[IsHTMLDDA]] object). Strings,
 // BigInts and the hole read memory or are the helper's.
-Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool hot) {
+//
+// Without a hint the tests are a ladder, each its own branch: a Boolean,
+// then an Object, then undefined and null, then the Numbers and Int32s, then
+// the helper. A hint from a type-feedback profile (`number_hint`, or the
+// kTruth* `kinds` it saw) puts tests for those values first, on the
+// fall-through, and the whole ladder after them in cold blocks; any value
+// still gets its answer there.
+Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_hint, uint8_t kinds) {
     if (helper_only) return b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
     BasicBlock* cur = b.current_block();
     const std::string prefix = "truthy_" + std::to_string(cur->parent()->next_block_id());
@@ -271,58 +279,80 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool hot) {
     Value* result = b.add_block_param(merge, Type::i32());
     BasicBlock* classify = b.append_block(prefix + "_classify");
     BasicBlock* not_obj = b.append_block(prefix + "_notobj");
+    BasicBlock* not_undef = b.append_block(prefix + "_notundef");
     BasicBlock* not_nullish = b.append_block(prefix + "_notnullish");
-    BasicBlock* ladder = hot ? b.append_block(prefix + "_ladder") : nullptr;
+    if (number_hint) kinds = 0;
+    BasicBlock* ladder = number_hint || kinds != 0 ? b.append_block(prefix + "_ladder") : nullptr;
+    // One block per hinted kind after the first, each the previous test's
+    // miss edge (made here: appending a block moves the builder).
+    std::vector<BasicBlock*> hinted;
+    for (uint8_t k : {kTruthBool, kTruthObject, kTruthUndefined, kTruthNull}) {
+        if ((kinds & k) != 0 && !hinted.empty()) hinted.push_back(b.append_block(prefix + "_hint"));
+        if ((kinds & k) != 0 && hinted.empty()) hinted.push_back(cur);
+    }
     b.position_at_end(cur);
 
     auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
-    if (hot) {
-        // A profile saw only Numbers here (`if (count)`, `while (n)`): the
-        // Number's answer first, on the fall-through, and the whole ladder
-        // below in a cold block of its own, entered for anything else.
-        ladder->set_cold();
+    auto is_object = [&] {
+        return b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT));
+    };
+    // The two Boolean values are exactly kBoolTag | 0 and kBoolTag | 1, so
+    // `v - kBoolTag < 2` is "v is a Boolean" and its low bit is its answer.
+    auto is_bool = [&] { return b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2)); };
+    auto bool_answer = [&] { return b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1)); };
+    if (number_hint) {
+        // A profile saw only Numbers here (`if (count)`, `while (n)`).
         Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
         Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
         b.build_br_if(b.build_ule(v, bits(kBronzeNumberMaxBits)), merge, {num_true}, ladder, {});
-        b.position_at_end(ladder);
-        slow->set_cold();
-        classify->set_cold();
-        not_obj->set_cold();
-        not_nullish->set_cold();
+    } else if (kinds != 0) {
+        // Only Booleans, objects and null / undefined (`if (this.visible)`,
+        // `if (material.map)`, the join of `a && b`): each kind seen is one
+        // test, in that order, and its answer.
+        size_t i = 0;
+        for (uint8_t k : {kTruthBool, kTruthObject, kTruthUndefined, kTruthNull}) {
+            if ((kinds & k) == 0) continue;
+            b.position_at_end(hinted[i]);
+            BasicBlock* miss = i + 1 < hinted.size() ? hinted[i + 1] : ladder;
+            ++i;
+            if (k == kTruthBool) {
+                b.build_br_if(is_bool(), merge, {bool_answer()}, miss, {});
+            } else if (k == kTruthObject) {
+                b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, miss, {});
+            } else {
+                const uint64_t tag = k == kTruthUndefined ? kUndefinedTag : kNullTag;
+                b.build_br_if(b.build_eq(v, bits(tag)), merge, {b.build_iconst_i32(0)}, miss, {});
+            }
+        }
     }
-    // A Boolean first, on its own branch: most dynamic conditions are a flag
-    // field (`if (this.matrixAutoUpdate)`, `data.hasOwnGeometry && ...`) that
-    // only ever holds true or false, and the branch-free classifier below
-    // costs ~50 instructions where this costs four. The two Boolean values are
-    // exactly kBoolTag | 0 and kBoolTag | 1, so `v - kBoolTag < 2` is "v is a
-    // Boolean" and its low bit is its answer; every other value falls through
-    // to the classifier unchanged.
-    Value* is_bool = b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2));
-    b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, not_obj, {});
+    if (ladder) {
+        b.position_at_end(ladder);
+        for (BasicBlock* bb : {ladder, slow, classify, not_obj, not_undef, not_nullish}) bb->set_cold();
+    }
+    // A Boolean first: most dynamic conditions are a flag field
+    // (`if (this.matrixAutoUpdate)`) that only ever holds true or false.
+    b.build_br_if(is_bool(), merge, {bool_answer()}, not_obj, {});
     // Then an Object and the two nullish values, each on a branch of its own:
     // the next most common conditions are presence tests (`if (material.map)`,
-    // `object.parent !== null && ...` written as `if (object.parent)`), whose
-    // operand is an object or null/undefined.
+    // `object.parent !== null && ...` written as `if (object.parent)`).
     b.position_at_end(not_obj);
-    b.build_br_if(b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT)), merge,
-                  {b.build_iconst_i32(1)}, not_nullish, {});
+    b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, not_undef, {});
+    b.position_at_end(not_undef);
+    b.build_br_if(b.build_eq(v, bits(kUndefinedTag)), merge, {b.build_iconst_i32(0)}, not_nullish, {});
     b.position_at_end(not_nullish);
-    b.build_br_if(b.build_or(b.build_eq(v, bits(kNullTag)), b.build_eq(v, bits(kUndefinedTag))), merge,
-                  {b.build_iconst_i32(0)}, classify, {});
+    b.build_br_if(b.build_eq(v, bits(kNullTag)), merge, {b.build_iconst_i32(0)}, classify, {});
+    // What is left of the inline answers: a Number or an Int32 (no Boolean,
+    // Object or nullish value comes this far).
     b.position_at_end(classify);
     Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
     // |x| in [1, +Inf] bits: neither a zero nor a NaN.
     Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
     Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
-    static_assert(BRONZE_ABI_TAG_BOOL == BRONZE_ABI_TAG_INT32 + 1, "Int32 and Boolean are adjacent tags");
-    Value* small = b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
-                               bits(uint64_t{2} << BRONZE_ABI_VALUE_TAG_SHIFT));
-    Value* small_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
-    Value* is_obj = b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT));
-    Value* nullish = b.build_or(b.build_eq(v, bits(kNullTag)), b.build_eq(v, bits(kUndefinedTag)));
-    Value* handled = b.build_or(b.build_or(is_num, small), b.build_or(is_obj, nullish));
-    Value* answer = b.build_select(is_num, num_true, b.build_select(small, small_true, is_obj));
-    b.build_br_if(handled, merge, {answer}, slow, {});
+    Value* is_int = b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
+                                bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT));
+    Value* int_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
+    Value* answer = b.build_select(is_num, num_true, int_true);
+    b.build_br_if(b.build_or(is_num, is_int), merge, {answer}, slow, {});
 
     b.position_at_end(slow);
     b.build_br(merge, {b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1))});

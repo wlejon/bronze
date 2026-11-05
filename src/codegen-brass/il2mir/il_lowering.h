@@ -184,6 +184,14 @@ public:
     void memo_restore(std::vector<std::pair<uint32_t, Value*>> m) { shape_memo_ = std::move(m); }
     void memo_kill() { shape_memo_.clear(); }
 
+    // 0/1 values (il_lowering_bool.cpp): a result the dynamic compare and
+    // ToBoolean lowerings merge from comparisons, noted where it is made, so
+    // a branch on its negation can branch on it with its targets swapped.
+    void note_boolean(Value* v) { if (v) boolean_values_.insert(v); }
+    bool is_zero_one(const Value* v) const;
+    // c when `cond` is `eq c, 0` of a 0/1 value c, else null.
+    Value* negated_boolean(Value* cond) const;
+
 private:
     // The memo at a block's start (from its one predecessor's end), after an
     // instruction (kept, or forgotten unless the instruction can move no
@@ -193,7 +201,7 @@ private:
     void memo_end_block(const BronzeBlock& blk);
     // Per-function values computed once at the function's entry and shared
     // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
-    enum class Hoist : uint8_t { IcTable, Count };
+    enum class Hoist : uint8_t { IcTable, StaticCells, FamilyBase, Count };
     Value* hoisted(Builder& b, Hoist kind);
     // Starts a function's hoisting: values go into `block`, after whatever it
     // holds now.
@@ -394,6 +402,7 @@ private:
     std::unordered_set<uint32_t> memo_handler_blocks_;
     bool shape_memo_off_ = false;
     void memo_begin_function(const BronzeFunction& fn_ast);
+    std::unordered_set<const Value*> boolean_values_;
 };
 
 } // namespace il2mir

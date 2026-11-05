@@ -194,6 +194,11 @@ inline constexpr uint32_t kDefineWriteMode = 2;
 // il.h kWriteLiteralElement: an array literal's element store, an
 // assignment's `PropSet` whose miss defines (bronze_prop_define).
 inline constexpr uint32_t kLiteralElementWriteMode = 3;
+// il.h's truthiness hint kinds (il_to_brass_ast.cpp asserts they agree).
+inline constexpr uint8_t kTruthBool = 1;
+inline constexpr uint8_t kTruthObject = 2;
+inline constexpr uint8_t kTruthUndefined = 4;
+inline constexpr uint8_t kTruthNull = 8;
 
 struct BronzeBlockTarget {
     uint32_t block_id = 0;
@@ -215,6 +220,8 @@ struct BronzeInstruction {
     // A type-feedback hint (il.h `numberHint`): the Number arm falls through
     // and the generic path is laid out cold.
     bool number_hint = false;
+    // A truthiness hint (il.h `truthHint`): the kinds (kTruth*) the profile saw.
+    uint8_t truth_hint = 0;
     // PropGet: the element's bits may be held as a double (il.h `numberBits`).
     bool number_bits = false;
     // PropGet/PropSet: a dominating `is.shape` answered the site's static

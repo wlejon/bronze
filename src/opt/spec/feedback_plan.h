@@ -80,6 +80,8 @@ struct NameCounts {
 struct NumberCounts {
     uint64_t total = 0;
     uint64_t numbers = 0;  // f64 + i32
+    // For truthiness hints: Booleans, objects of every kind, undefined, null.
+    uint64_t bools = 0, objects = 0, undefineds = 0, nulls = 0;
 };
 
 struct FeedbackPlanStats {
@@ -121,6 +123,7 @@ struct FeedbackApplyStats {
     uint32_t shapeFamily = 0;      // A: family claims
     uint32_t shapeRefused = 0;     //    a dominant shape the site cannot claim a slot of
     uint32_t numberHints = 0;      // C: numeric ops hinted
+    uint32_t truthHints = 0;       // C: truthiness unboxes hinted with the kinds they saw
     // The profiled executions the claims cover, each identity counted once
     // however many copies of it were claimed.
     uint64_t shapeExecutions = 0, methodExecutions = 0, closureExecutions = 0, hintExecutions = 0;

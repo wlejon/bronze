@@ -475,6 +475,7 @@ bool lower_ops_instruction(
                                  (inst_ast.op == BronzeOp::RelLe) ? "bronze_rel_le" :
                                  (inst_ast.op == BronzeOp::RelGt) ? "bronze_rel_gt" : "bronze_rel_ge";
             res_val = lower_dynamic_relational(b, inst_ast.op, op0, op1, helper, lowering->run_once(), hint);
+            lowering->note_boolean(res_val);
             return true;
         }
 
@@ -506,6 +507,7 @@ bool lower_ops_instruction(
                     res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once(), hint);
                 }
             }
+            if (lowering) lowering->note_boolean(res_val);
             return true;
         }
 
@@ -521,6 +523,7 @@ bool lower_ops_instruction(
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
                 if (hint) {
                     res_val = lower_hinted_loose_eq(b, op0, op1);
+                    if (lowering) lowering->note_boolean(res_val);
                 } else {
                     res_val = b.build_call("bronze_loose_eq", Type::i32(), {op0, op1});
                     res_val = b.build_and(res_val, b.build_iconst_i32(1));

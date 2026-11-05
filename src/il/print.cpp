@@ -910,6 +910,14 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                 // A type-feedback hint (il.h `numberHint`): the Number arm laid
                 // out hot. Only a `--feedback-in` build sets it.
                 if (inst.numberHint) out += " !num";
+                if (inst.truthHint != 0) {
+                    out += " !truth(";
+                    if (inst.truthHint & Instruction::kTruthBool) out += "b";
+                    if (inst.truthHint & Instruction::kTruthObject) out += "o";
+                    if (inst.truthHint & Instruction::kTruthUndefined) out += "u";
+                    if (inst.truthHint & Instruction::kTruthNull) out += "n";
+                    out += ")";
+                }
                 out += "\n";
             }
         }

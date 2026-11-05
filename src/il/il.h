@@ -313,6 +313,16 @@ struct Instruction {
     // Number arm on the fall-through and the generic path out of line (cold);
     // both paths stay, so a wrong hint costs speed and never an answer.
     bool numberHint = false;
+    // A HINT for a truthiness `unbox` (Bool result), from the same profile:
+    // the kinds of value it saw, when every one was a Boolean, an object,
+    // undefined or null (presence tests, `if (material.map)`, and the joins
+    // of `a && b`). The backend tests those kinds first and moves the rest of
+    // ToBoolean out of line; the answer for every value is unchanged.
+    static constexpr uint8_t kTruthBool = 1;
+    static constexpr uint8_t kTruthObject = 2;
+    static constexpr uint8_t kTruthUndefined = 4;
+    static constexpr uint8_t kTruthNull = 8;
+    uint8_t truthHint = 0;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //

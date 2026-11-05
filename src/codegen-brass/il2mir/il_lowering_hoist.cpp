@@ -42,6 +42,12 @@ Value* IlLowering::hoisted(Builder& b, Hoist kind) {
         case Hoist::IcTable:
             v = module_data_addr(b, "__bronze_ic_table");
             break;
+        case Hoist::StaticCells:
+            v = prop_lowering_.static_table_addr_here(b, /*family=*/false);
+            break;
+        case Hoist::FamilyBase:
+            v = prop_lowering_.static_table_addr_here(b, /*family=*/true);
+            break;
         case Hoist::Count:
             break;
     }

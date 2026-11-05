@@ -817,6 +817,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // 4. Lower instructions block by block, in an order where a definition
     // is lowered before its uses (see lowering_order).
     memo_begin_function(fn_ast);
+    boolean_values_.clear();
     for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
         const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];

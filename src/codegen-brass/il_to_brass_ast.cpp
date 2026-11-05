@@ -15,6 +15,11 @@ static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWri
               "the array literal element write mode is one number on both sides");
 static_assert(il2mir::kDefineWriteMode == static_cast<uint32_t>(il::kWriteDefine),
               "the backend's define mode must be the IL's");
+static_assert(il2mir::kTruthBool == il::Instruction::kTruthBool &&
+                  il2mir::kTruthObject == il::Instruction::kTruthObject &&
+                  il2mir::kTruthUndefined == il::Instruction::kTruthUndefined &&
+                  il2mir::kTruthNull == il::Instruction::kTruthNull,
+              "il2mir's truthiness hint kinds mirror il.h");
 
 namespace {
 
@@ -67,6 +72,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
     out.result_id = (inst.result != il::kNoValue) ? inst.result : UINT32_MAX;
     out.result_type = mapType(inst.type);
     out.number_hint = inst.numberHint;
+    out.truth_hint = inst.truthHint;
 
     if (inst.op != il::Op::GlobalGet) {
         out.operands = inst.operands;
