@@ -147,7 +147,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
             // to what it was before copy classes existed.
             if (block.copyClass != CopyClass::Shared) {
                 out += block.copyClass == CopyClass::Fast ? " [fast " : " [slow ";
-                out += std::to_string(block.copyRegion) + "]";
+                out += std::to_string(block.copyRegion) + (block.cold ? " cold]" : "]");
             }
             out += ":\n";
 

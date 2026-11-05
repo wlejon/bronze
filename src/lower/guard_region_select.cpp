@@ -105,6 +105,8 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
 
 }  // namespace
 
+std::vector<il::Type> functionValueTypes(const il::Function& fn) { return valueTypes(fn); }
+
 // PROMOTABLE ARITHMETIC: boxed result, boxed operands. `Pow` is here because
 // its promoted form is `bronze_pow` over two doubles rather than the dynamic
 // helper that has to run 13.15.3 first, and `Neg` because it is the one UNARY
@@ -181,7 +183,8 @@ bool pinProvesNumberAt(const il::Block& block, uint32_t index, il::ValueId value
 // finds a split's renames by walking a block's DOMINATOR chain, so a block that
 // reads the split block's orphaned definitions without being dominated by it
 // would read a name the pruning removed.
-bool dominatesReachable(const Cfg& cfg, const RegionPlan& plan, il::BlockId from) {
+// `stopAtHeader`: for a LOOP region, the blocks reachable before the back edge.
+bool dominatesReachable(const Cfg& cfg, const RegionPlan& plan, il::BlockId from, bool stopAtHeader = false) {
     std::vector<uint8_t> seen(plan.inRegion.size(), 0);
     std::vector<il::BlockId> stack{from};
     seen[from] = 1;
@@ -190,6 +193,7 @@ bool dominatesReachable(const Cfg& cfg, const RegionPlan& plan, il::BlockId from
         stack.pop_back();
         for (il::BlockId s : cfg.succs[b]) {
             if (s >= seen.size() || seen[s] || !plan.inRegion[s]) continue;
+            if (stopAtHeader && s == plan.header) continue;
             if (!cfg.dominates(from, s)) return false;
             seen[s] = 1;
             stack.push_back(s);
@@ -214,7 +218,8 @@ struct Pending {
 // ---------------------------------------------------------------------------
 bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys, const Cfg& cfg,
                    const std::vector<il::Type>& types, const std::vector<DefSite>& defs,
-                   RegionPlan& plan, GuardRegionStats& stats) {
+                   RegionPlan& plan, GuardRegionStats& stats, const RegionFeedback* feedback) {
+    plan.feedback = feedback != nullptr;
     // 1. A handler inside the region, or a region block that IS a handler.
     // Refused both ways: a handler takes no parameters, so there is nowhere for
     // a trampoline's values to arrive, and an edge into the middle of the
@@ -260,7 +265,10 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // 3. The caps.
     size_t regionInsts = 0;
     for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
-    if (plan.blocks.size() > kMaxRegionBlocks || regionInsts > kMaxRegionInsts) {
+    // A profiled region may be twice the size: what it costs is code, and the
+    // profile says the code runs.
+    const size_t capScale = feedback != nullptr ? 2 : 1;
+    if (plan.blocks.size() > capScale * kMaxRegionBlocks || regionInsts > capScale * kMaxRegionInsts) {
         ++stats.refusedGrowth;
         return false;
     }
@@ -269,21 +277,40 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // arithmetic, and a value a checked coercion reads.
     DisjointSet ds(fn.valueCount);
     std::vector<uint8_t> seed(fn.valueCount, 0);
+    // With a profile a seed is an op the run saw only Numbers at (`ProfiledOp`),
+    // compares included, and the hottest one decides whether the region pays.
+    // Arithmetic still UNITES its operands whether or not it seeds: a promoted
+    // result needs promoted operands, and the union is what guarantees it.
+    uint64_t hottestSeed = 0;
     for (il::BlockId b : plan.blocks) {
         for (const auto& inst : fn.blocks[b].instructions) {
+            bool seeds = feedback == nullptr;
+            if (feedback != nullptr) {
+                const ProfiledOp profiled = profiledOp(*feedback, inst, types);
+                seeds = profiled.seed;
+                hottestSeed = std::max(hottestSeed, profiled.executions);
+            }
             if (isPromotableArith(inst, types)) {
-                seed[inst.result] = 1;
+                if (seeds) seed[inst.result] = 1;
                 for (il::ValueId id : inst.operands) {
-                    seed[id] = 1;
+                    if (seeds) seed[id] = 1;
                     ds.unite(inst.result, id);
                 }
             } else if (isCheckedUnboxOf(inst, types)) {
                 // Not united with the result: an `f64` is not a candidate for
                 // anything, so the operand is a component of its own unless
                 // arithmetic joins it to something.
-                seed[inst.operands[0]] = 1;
+                if (seeds) seed[inst.operands[0]] = 1;
+            } else if (feedback != nullptr && seeds && isPromotableCompare(inst, types)) {
+                // Not united either: a compare's operands are two numbers that
+                // meet in a `bool`, not one value.
+                for (il::ValueId id : inst.operands) seed[id] = 1;
             }
         }
+    }
+    if (feedback != nullptr && hottestSeed < kFeedbackHotExecutions) {
+        ++stats.refusedCold;
+        return false;
     }
     // Closed BOTH WAYS over the block-parameter/argument pairs of every edge
     // into a region block, the entry edge included. That is what makes a
@@ -322,6 +349,17 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             const bool poison = (inst.op == il::Op::Box && inst.boxType == il::Type::Str) ||
                                 inst.op == il::Op::ToStr || inst.op == il::Op::ConstBigInt;
             if (poison) componentPoisoned[ds.find(inst.result)] = 1;
+        }
+    }
+    // The profile's poison: an operand the run saw as something other than a
+    // Number, anywhere in the function, takes its whole component with it.
+    if (feedback != nullptr) {
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                for (il::ValueId v : profiledOp(*feedback, inst, types).poisoned) {
+                    if (v < fn.valueCount) componentPoisoned[ds.find(v)] = 1;
+                }
+            }
         }
     }
 
@@ -374,13 +412,29 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
         for (size_t i = 0; i < block.instructions.size(); ++i) {
             const auto& inst = block.instructions[i];
             const auto here = std::pair<il::BlockId, uint32_t>{b, static_cast<uint32_t>(i)};
+            // With a profile an op counts once per operand it tested: a
+            // hinted op's Number arm tests each one, and those tests are what
+            // the guards replace. A compare is two tests and one use, so
+            // counted once it could never pay for its own two guards.
+            const uint32_t weight = feedback != nullptr ? static_cast<uint32_t>(inst.operands.size()) : 1;
             if (isPromotableArith(inst, types) && plan.isCandidate[inst.result]) {
-                ++useCount;
+                useCount += weight;
                 for (il::ValueId id : inst.operands) promotedUses[id].push_back(here);
             } else if (isCheckedUnboxOf(inst, types) && plan.isCandidate[inst.operands[0]]) {
-                const bool reboxedOnly = plan.entryRegion && inst.result < fn.valueCount && !numericUse[inst.result];
+                // With a profile a compared-only coercion still counts: its
+                // ToNumber call leaves the fast copy, and a call point is what
+                // pins every boxed value live across it to a frame slot.
+                const bool reboxedOnly = plan.entryRegion && feedback == nullptr && inst.result < fn.valueCount &&
+                                         !numericUse[inst.result];
                 if (!reboxedOnly) ++useCount;
                 promotedUses[inst.operands[0]].push_back(here);
+            } else if (feedback != nullptr && isPromotableCompare(inst, types) &&
+                       plan.isCandidate[inst.operands[0]] && plan.isCandidate[inst.operands[1]]) {
+                // The fast copy's compare is the double compare (build), so it
+                // is work a guard licenses: the tag tests and the generic
+                // compare's arms are gone, and the answer is a register `bool`.
+                useCount += weight;
+                for (il::ValueId id : inst.operands) promotedUses[id].push_back(here);
             }
             for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
                 if (target->block == il::kNoBlock || target->block >= fn.blocks.size()) continue;
@@ -632,6 +686,19 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             if (b == plan.header || plan.splitsOf[b].empty()) continue;
             if (!dominatesReachable(cfg, plan, b)) plan.repairNames = true;
         }
+    } else if (feedback != nullptr) {
+        // A LOOP region's slow copy keeps its back edge, but a split below a
+        // join is just as unable to name, through its dominator chain, what a
+        // trampoline's path and the header's path both reach: after inlining,
+        // `Frustum.intersectsSphere`'s guards sit in the two arms of the
+        // inlined `distanceToPoint` call, above the compare both arms meet at.
+        // The profile-guided run repairs those names as an entry region does
+        // (guard_region_ssa.cpp); the walk stops at the header, whose own
+        // parameters are what the back edge defines.
+        for (il::BlockId b : plan.blocks) {
+            if (b == plan.header || plan.splitsOf[b].empty()) continue;
+            if (!dominatesReachable(cfg, plan, b, /*stopAtHeader=*/true)) plan.repairNames = true;
+        }
     }
 
     // Last, because the read-run merge above moves points: a split inside a
@@ -664,7 +731,8 @@ bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& 
 
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
-                                      const std::vector<uint8_t>& alreadyBuilt) {
+                                      const std::vector<uint8_t>& alreadyBuilt,
+                                      const RegionFeedback* feedback) {
     std::vector<RegionPlan> plans;
     if (fn.blocks.empty()) return plans;
 
@@ -727,7 +795,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
         if (overlapsBuilt) continue;
         ++stats.regions;
 
-        if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats)) continue;
+        if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats, feedback)) continue;
         // The region's single outside predecessor is where the entry chain is
         // spliced, and the chain RE-PASSES that edge's arguments — on the fast
         // edge as doubles, on a failed guard as the boxes they were. A
@@ -753,7 +821,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
 // ---------------------------------------------------------------------------
 
 bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
-                       GuardRegionStats& stats, RegionPlan& plan) {
+                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback) {
     if (prepped.blocks.size() < 2) return false;
     // Refused by NAME: a coroutine body's every value that crosses a
     // suspension is spilled to its frame and reloaded, so a promoted double
@@ -790,7 +858,7 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 
     const std::vector<il::Type> types = valueTypes(prepped);
     const std::vector<DefSite> defs = computeDefSites(prepped);
-    return analyzeRegion(prepped, keys, cfg, types, defs, plan, stats);
+    return analyzeRegion(prepped, keys, cfg, types, defs, plan, stats, feedback);
 }
 
 }  // namespace bronze::lower

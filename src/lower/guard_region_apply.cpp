@@ -66,6 +66,9 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"ssa", {before.refusedSsa, after.refusedSsa}},
         {"machine", {before.refusedMachine, after.refusedMachine}},
         {"copyPred", {before.refusedCopyPred, after.refusedCopyPred}},
+        {"cold", {before.refusedCold, after.refusedCold}},
+        {"compares", {before.comparesPromoted, after.comparesPromoted}},
+        {"slowCold", {before.slowCopiesCold, after.slowCopiesCold}},
     };
     std::string out;
     for (const auto& [label, counts] : fields) {
@@ -80,25 +83,25 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
 
 }  // namespace
 
-void guardRegionStatsReport(const GuardRegionStats& s) {
+void guardRegionStatsReport(const GuardRegionStats& s, const char* label) {
     const char* env = std::getenv("BRONZE_GUARDED_REGION_STATS");
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
     const uint32_t refused = s.refusedHandler + s.refusedSingleEntry + s.refusedNonNumeric +
                              s.refusedTooFew + s.refusedGrowth + s.refusedPlacement +
                              s.refusedEntrySplit + s.refusedConcatSplit + s.refusedSsa +
-                             s.refusedMachine + s.refusedCopyPred;
+                             s.refusedMachine + s.refusedCopyPred + s.refusedCold;
     std::fprintf(stderr,
-                 "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
+                 "[%s] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
                  "numberClaims=%u numberSkipped=%u elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u shapeTests=%u shapeGuarded=%u blocks=+%u pruned=%u "
-                 "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
-                 "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u)\n",
-                 s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
+                 "compares=%u slowCold=%u refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
+                 "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u, cold %u)\n",
+                 label, s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
                  s.runGuards, s.numberClaims, s.numberSkipped, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted,
-                 s.shapeTests, s.shapeGuarded, s.blocksAdded, s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
+                 s.shapeTests, s.shapeGuarded, s.blocksAdded, s.blocksPruned, s.comparesPromoted, s.slowCopiesCold, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
                  s.refusedEntrySplit, s.refusedConcatSplit, s.refusedSsa, s.refusedMachine,
-                 s.refusedCopyPred);
+                 s.refusedCopyPred, s.refusedCold);
 }
 
 il::Function withPreheader(const il::Function& fn) {
@@ -131,12 +134,26 @@ namespace {
 // per-function trace is the difference between the counters before and after
 // this call, which a body full of `continue` could not report.
 bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
-                     GuardRegionStats& stats) {
+                     GuardRegionStats& stats, const RegionFeedback* feedback) {
     size_t originalInsts = 0;
     for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
     size_t added = 0;
+    // The profile-guided run comes after the static one and after inlining,
+    // which copies bodies with their regions: a block that is already one copy
+    // of a region is the earlier rewrite's output, never a new opportunity.
     std::vector<uint8_t> alreadyBuilt(fn.blocks.size(), 0);
+    bool anyCopy = false;
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (fn.blocks[b].copyClass == il::CopyClass::Shared) continue;
+        alreadyBuilt[b] = 1;
+        anyCopy = true;
+    }
     bool changed = false;
+    if (feedback != nullptr && anyCopy) {
+        const uint32_t marked = markConfirmedSlowCopiesCold(fn, *feedback);
+        stats.slowCopiesCold += marked;
+        changed = marked != 0;
+    }
 
     for (int attempt = 0; attempt < kMaxRegionsPerFunction; ++attempt) {
         // Counted on the FIRST look at a function only. Every later look
@@ -144,7 +161,7 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         // counting those again would report one loop as several.
         GuardRegionStats discard;
         std::vector<RegionPlan> plans =
-            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt);
+            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback);
         if (plans.empty()) break;
 
         const RegionPlan& plan = plans.front();
@@ -174,13 +191,16 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
     }
 
     if (changed) return true;
+    // A whole-function copy of a function holding copies would nest one
+    // region's pair inside another's; not attempted.
+    if (anyCopy) return false;
     // The entry region, on a copy with a preheader in front of it. There is no
     // growth budget to meet here and there cannot be: a whole-function copy
     // exceeds "adds no more than the function had" by construction. The region
     // caps in `analyzeRegion` are the size bound instead.
     il::Function prepped = withPreheader(fn);
     RegionPlan plan;
-    if (!selectEntryRegion(prepped, keys, stats, plan)) return false;
+    if (!selectEntryRegion(prepped, keys, stats, plan, feedback)) return false;
     std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
     const size_t blocksBefore = prepped.blocks.size();
     if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) return false;
@@ -193,7 +213,7 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
 
 }  // namespace
 
-bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
+bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const RegionFeedback* feedback) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
     // A `--census` build is an INSTRUMENT: what it measures is where lowering
@@ -206,11 +226,12 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
     for (il::Function& fn : module.functions) {
         ++stats.functions;
         const GuardRegionStats before = stats;
-        if (examineFunction(fn, module.keyConstants, stats)) changed = true;
+        if (examineFunction(fn, module.keyConstants, stats, feedback)) changed = true;
         if (!guardRegionTraceOn()) continue;
         const std::string delta = traceDelta(before, stats);
         if (!delta.empty()) {
-            std::fprintf(stderr, "[guard-fn] %s %s\n", fn.name.c_str(), delta.c_str());
+            std::fprintf(stderr, "[%s] %s %s\n", feedback != nullptr ? "guard-fb-fn" : "guard-fn", fn.name.c_str(),
+                         delta.c_str());
         }
     }
     return changed;

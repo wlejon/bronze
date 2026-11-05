@@ -202,6 +202,27 @@ the plan where each claim has to be made:
   generic path to cold blocks (sunk to the function's end); it adds
   Number-first arms for truthiness, `==` and unary `-`. The value's
   representation does not change.
+- **D, profile-guided regions** (after inlining and the own-slot calls,
+  before transition runs, define-add cells and the claims;
+  `src/lower/guard_region.h`, "PROFILE-GUIDED REGIONS"): the guarded-region
+  pass runs again with the profile. A region is seeded only by ops every
+  observed operand of which was a Number (arithmetic, checked unboxes, and
+  relational / `==` / `===` compares), its seeds must have run
+  `kFeedbackHotExecutions` (256) times, and an operand seen as anything else
+  poisons its value. The fast copy carries the values as doubles: arithmetic
+  is f64, a compare of two such values is `cmp.*` with a Bool result, loop
+  phis are f64, and nothing on those paths calls a helper or boxes. A guard
+  that fails jumps into the slow copy (the original IL) after the last op
+  that ran, so nothing runs twice: the re-execution licence is the static
+  pass's. Under the profile, loops whose split lands below a join get their
+  slow header's parameters repaired, caps are doubled, and the slow copies
+  and trampolines are marked `cold` (`il::Block::cold`, laid out after the
+  fast path by brass). Regions the static pass built get the same `cold`
+  mark when the profile shows their slow copy idle: no non-Number seen in
+  it, and its busiest site ran at most 1/16th as often as the function was
+  entered (`FeedbackPlan::entries`). `BRONZE_GUARDED_REGION_STATS=1` prints a
+  `[guard-fb]` line; `BRONZE_GUARDED_REGION_TRACE=1` per-function
+  `[guard-fb-fn]` lines.
 
 Thresholds (`feedback_plan.h`): a site needs `kMinExecutions` (32)
 executions; a shape or callee needs `kDominantPercent` (99%) of them.

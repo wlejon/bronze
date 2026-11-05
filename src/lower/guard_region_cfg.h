@@ -80,6 +80,14 @@ bool dominanceHolds(const il::Function& fn);
 // `alreadyBuilt` is renumbered with the blocks.
 uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
 
+// Renumbers the blocks of `fn` (and `alreadyBuilt` with them) so that every
+// block comes after its immediate dominator, keeping the order otherwise. The
+// backend emits blocks in index order and a use must follow its definition
+// (`dominanceHolds`); a name repair that puts a parameter on a join below the
+// block reading it, a loop's latch above its body's join, needs this. Every
+// block must be reachable (run after `pruneUnreachable`).
+void orderAfterDominators(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
+
 // A list of renames, and the name a value has under it.
 using Rename = std::vector<std::pair<il::ValueId, il::ValueId>>;
 inline il::ValueId renamed(const Rename& map, il::ValueId v) {

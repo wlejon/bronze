@@ -64,6 +64,7 @@ struct BlockMirror {
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
     CopyClass copyClass;
+    bool cold;
     uint32_t copyRegion;
     BlockId handler;
 };
@@ -463,6 +464,7 @@ void writeBlock(Writer& w, const Block& b) {
         w.u8(static_cast<uint8_t>(p.type));
     }
     w.u8(static_cast<uint8_t>(b.copyClass));
+    w.u8(b.cold ? 1 : 0);
     w.var(static_cast<uint32_t>(b.copyRegion + 1u));
     w.var(static_cast<uint32_t>(b.handler + 1u));
     w.var(b.instructions.size());
@@ -479,6 +481,7 @@ void readBlock(Reader& r, Block& b) {
     const uint8_t cc = r.u8();
     if (cc > static_cast<uint8_t>(CopyClass::Slow)) r.fail("bad copy class");
     b.copyClass = static_cast<CopyClass>(cc);
+    b.cold = r.u8() != 0;
     b.copyRegion = static_cast<uint32_t>(r.u32() - 1u);
     b.handler = static_cast<BlockId>(r.u32() - 1u);
     b.instructions.resize(r.count());

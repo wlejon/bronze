@@ -449,6 +449,11 @@ struct Block {
     // region are known to be mutually exclusive. `Shared` always carries
     // `kNoCopyRegion`; the two together are the block's copy identity.
     CopyClass copyClass = CopyClass::Shared;
+    // A block a recorded run says is not taken: the slow copy and trampolines
+    // of a PROFILE-GUIDED region (lower/guard_region.h). The backend lays it
+    // out cold, after the function's main line; it is a layout hint and never
+    // changes what the block does.
+    bool cold = false;
     uint32_t copyRegion = kNoCopyRegion;
     // Where control goes if something inside this block throws: the innermost
     // enclosing handler, or `kNoBlock` for "leave the function". It sits on

@@ -121,7 +121,7 @@ public:
         for (uint32_t j = 0; j < inst.operands.size(); ++j) {
             const il::ValueId v = inst.operands[j];
             if (v >= observable.size() || observable[v] == 0) continue;
-            const auto it = plan_.values.find(ValueKey{spanKey(inst.span), inst.op, j});
+            const auto it = plan_.values.find(valueKey(inst, j));
             if (it == plan_.values.end() || it->second.total < kMinExecutions ||
                 it->second.numbers != it->second.total) {
                 return;

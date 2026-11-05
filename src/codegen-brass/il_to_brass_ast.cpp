@@ -683,6 +683,7 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
             il2mir::BronzeBlock bblk;
             bblk.id = block.id;
             bblk.handler_id = (block.handler != il::kNoBlock) ? block.handler : UINT32_MAX;
+            bblk.cold = block.cold;
 
             bblk.params.reserve(block.params.size());
             for (const auto& p : block.params) {

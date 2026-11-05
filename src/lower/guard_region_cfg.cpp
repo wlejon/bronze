@@ -280,6 +280,48 @@ bool dominanceHolds(const il::Function& fn) {
     return true;
 }
 
+void orderAfterDominators(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
+    const Cfg cfg = buildCfg(fn);
+    const size_t n = fn.blocks.size();
+    std::vector<il::BlockId> order;
+    order.reserve(n);
+    std::vector<uint8_t> placed(n, 0);
+    for (size_t start = 0; start < n; ++start) {
+        // The block's dominator chain, nearest last, then the block: every
+        // block lands after its immediate dominator and otherwise keeps its
+        // place.
+        std::vector<il::BlockId> chain;
+        for (il::BlockId b = static_cast<il::BlockId>(start); b != il::kNoBlock && !placed[b]; b = cfg.idom[b]) {
+            chain.push_back(b);
+        }
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            placed[*it] = 1;
+            order.push_back(*it);
+        }
+    }
+    std::vector<il::BlockId> remap(n, il::kNoBlock);
+    for (size_t i = 0; i < n; ++i) remap[order[i]] = static_cast<il::BlockId>(i);
+    bool same = true;
+    for (size_t i = 0; i < n; ++i) same = same && remap[i] == i;
+    if (same) return;
+    std::vector<il::Block> blocks(n);
+    std::vector<uint8_t> built(n, 1);
+    for (size_t b = 0; b < n; ++b) {
+        il::Block block = std::move(fn.blocks[b]);
+        block.id = remap[b];
+        if (block.handler != il::kNoBlock) block.handler = remap[block.handler];
+        for (auto& inst : block.instructions) {
+            for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                if (t->block != il::kNoBlock && t->block < n) t->block = remap[t->block];
+            }
+        }
+        built[remap[b]] = b < alreadyBuilt.size() ? alreadyBuilt[b] : 1;
+        blocks[remap[b]] = std::move(block);
+    }
+    fn.blocks = std::move(blocks);
+    alreadyBuilt = std::move(built);
+}
+
 uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
     const Cfg cfg = buildCfg(fn);
     std::vector<il::BlockId> remap(fn.blocks.size(), il::kNoBlock);

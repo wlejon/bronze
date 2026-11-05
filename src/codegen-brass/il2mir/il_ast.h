@@ -284,6 +284,8 @@ struct BronzeBlock {
     uint32_t id = 0;
     std::vector<std::pair<uint32_t, BronzeType>> params;
     uint32_t handler_id = UINT32_MAX;
+    // il::Block::cold: laid out after the function's main line.
+    bool cold = false;
     std::vector<BronzeInstruction> instructions;
 };
 

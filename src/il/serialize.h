@@ -31,7 +31,8 @@ namespace bronze::il {
 // 16: is.shape, and prop.get/prop.set carry shapeGuarded (il.h).
 // 17: feedback.record (il_op.h).
 // 18: numberHint (il.h), from a type-feedback profile.
-inline constexpr uint32_t kFormatVersion = 18;
+// 19: Block::cold (il.h), a profile-guided region's slow copy.
+inline constexpr uint32_t kFormatVersion = 19;
 
 std::string serializeModule(const Module& module);
 

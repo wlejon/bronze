@@ -129,6 +129,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     uint32_t emittedGuards = 0;
     uint32_t emittedShapeTests = 0;
     uint32_t foldedCount = 0;
+    uint32_t comparesPromoted = 0;
 
     // ---- value identity in the copies ------------------------------------
     // Every value the region defines gets a second name for the fast copy, and
@@ -474,12 +475,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             // entry guard.
             classify(slowHeadId[b], il::CopyClass::Slow);
             for (il::BlockId tail : slowTailId[b]) classify(tail, il::CopyClass::Slow);
+            // A profiled region's slow copy is what a failed guard runs, and
+            // the profile says the guards hold: it goes out of line.
+            out[slowHeadId[b]].cold = plan.feedback;
+            for (il::BlockId tail : slowTailId[b]) out[tail].cold = plan.feedback;
         } else {
             // Outside this region, so it keeps whatever a PREVIOUS rewrite of
             // this function made it — the preheader, the exits and the blocks
             // of another region's pair all pass through here unchanged.
             out[slowHeadId[b]].copyClass = src.blocks[b].copyClass;
             out[slowHeadId[b]].copyRegion = src.blocks[b].copyRegion;
+            out[slowHeadId[b]].cold = src.blocks[b].cold;
         }
     }
     for (il::BlockId id : entryTestId) {
@@ -500,7 +506,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         // A trampoline is FAST: it reads the fast copy's values and boxes them,
         // and what it hands to the slow tail it hands as block ARGUMENTS, which
         // are uses on this side of the edge.
-        for (il::BlockId id : trampolineId[b]) classify(id, il::CopyClass::Fast);
+        for (il::BlockId id : trampolineId[b]) {
+            classify(id, il::CopyClass::Fast);
+            out[id].cold = plan.feedback;
+        }
         for (il::BlockId id : exitTrampolineId[b]) {
             if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
         }
@@ -714,6 +723,13 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 const bool promotedArith =
                     inst.result != il::kNoValue && candidateOf[inst.result] != nullptr &&
                     candidateOf[inst.result]->kind == CandidateKind::Promoted;
+                // The profile-guided run's compares: over two candidates, the
+                // ordered double compare (guard_region.h, "PROFILE-GUIDED
+                // REGIONS"). Selection counted it as promoted work on the
+                // same test.
+                const bool promotedCompare = plan.feedback && isPromotableCompare(inst, types) &&
+                                             candidateOf[inst.operands[0]] != nullptr &&
+                                             candidateOf[inst.operands[1]] != nullptr;
                 if (inst.result != il::kNoValue) {
                     inst.numberBits = numberBitsOf[inst.result] != 0;
                     inst.result = fastOf[inst.result];
@@ -726,6 +742,12 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 if (promotedArith) {
                     inst.type = il::Type::F64;
                     for (il::ValueId& id : inst.operands) id = fastF64(id);
+                } else if (promotedCompare) {
+                    inst.op = promotedCompareOp(inst.op);
+                    inst.immI32 = 0;
+                    inst.numberHint = false;
+                    for (il::ValueId& id : inst.operands) id = fastF64(id);
+                    ++comparesPromoted;
                 } else {
                     for (il::ValueId& id : inst.operands) id = fastDyn(id, part, &boxCache);
                 }
@@ -886,6 +908,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             ++stats.refusedEntrySplit;
             return false;
         }
+        // A loop region's repair can put a join's parameter in a block
+        // numbered after the latch that reads it.
+        if (plan.feedback && !plan.entryRegion) orderAfterDominators(rewritten, built);
     }
     if (!dominanceHolds(rewritten)) {
         ++stats.refusedSsa;
@@ -904,6 +929,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     stats.numberClaims += claimCount;
     stats.numberSkipped += skippedCount;
     stats.unboxFolded += foldedCount;
+    stats.comparesPromoted += comparesPromoted;
     stats.shapeTests += emittedShapeTests;
     stats.shapeGuarded += plan.shapeGuardedCount;
     stats.blocksPruned += pruned;

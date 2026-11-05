@@ -159,7 +159,7 @@ static bool functions_are_identical(const BronzeFunction& a, const BronzeFunctio
     for (size_t i = 0; i < a.blocks.size(); ++i) {
         const auto& ba = a.blocks[i];
         const auto& bb = b.blocks[i];
-        if (ba.id != bb.id || ba.params != bb.params || ba.handler_id != bb.handler_id) return false;
+        if (ba.id != bb.id || ba.params != bb.params || ba.handler_id != bb.handler_id || ba.cold != bb.cold) return false;
         if (ba.instructions.size() != bb.instructions.size()) return false;
         for (size_t j = 0; j < ba.instructions.size(); ++j) {
             if (!instructions_are_identical(ba.instructions[j], bb.instructions[j])) return false;
@@ -820,6 +820,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
         const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];
+        // The IL's own cold mark (a profiled region's slow copy): brass sinks
+        // it, and the blocks only it enters go with it.
+        if (blk_ast.cold) bb->set_cold();
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();

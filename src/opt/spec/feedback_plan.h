@@ -55,12 +55,16 @@ struct SpanKey {
     }
 };
 
+// The result type is part of the identity: `a && b` gives its `unbox.bool`
+// truthiness tests and the `unbox.f64` coercions inside it one span, and a
+// Boolean seen by the first is no evidence about the second.
 struct ValueKey {
     SpanKey span;
     il::Op op = il::Op::Add;
+    il::Type type = il::Type::Void;
     uint32_t operand = 0;
     bool operator<(const ValueKey& o) const {
-        return std::tie(span, op, operand) < std::tie(o.span, o.op, o.operand);
+        return std::tie(span, op, type, operand) < std::tie(o.span, o.op, o.type, o.operand);
     }
 };
 
@@ -89,6 +93,9 @@ struct FeedbackPlan {
     std::unordered_map<uint32_t, NameCounts> methodsByIc;  // method.call callees
     std::map<SpanKey, NameCounts> dynamicCallees;          // call.dynamic callees
     std::map<ValueKey, NumberCounts> values;               // operands of numeric ops
+    // Function name -> the times its entry site ran (a probe function's
+    // name is the final module's).
+    std::unordered_map<std::string, uint64_t> entries;
     // Callee name (`<name>@<hash>`) -> module function index, for the names
     // that resolve to exactly one function of the module the probe copied.
     std::unordered_map<std::string, uint32_t> callees;
@@ -96,6 +103,8 @@ struct FeedbackPlan {
 };
 
 SpanKey spanKey(const Span& span);
+// Operand `operand` of `inst`, as a value observation is filed.
+ValueKey valueKey(const il::Instruction& inst, uint32_t operand);
 
 // Reads `profile` against `probe`, the module after its final passes, as the
 // recorded build had it. `functionCount` is how many functions the module had

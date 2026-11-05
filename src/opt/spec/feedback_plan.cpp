@@ -90,6 +90,10 @@ SpanKey spanKey(const Span& span) {
     return SpanKey{span.file, span.begin, span.end};
 }
 
+ValueKey valueKey(const il::Instruction& inst, uint32_t operand) {
+    return ValueKey{spanKey(inst.span), inst.op, inst.type, operand};
+}
+
 FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, size_t functionCount) {
     FeedbackPlan plan;
     plan.stats.profileFunctions = static_cast<uint32_t>(profile.functions().size());
@@ -104,7 +108,11 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
         // them observes the k-th observable operand.
         uint32_t lastBlock = UINT32_MAX, lastInst = UINT32_MAX, nth = 0;
         for (const il::FeedbackSite& s : il::enumerateFeedbackSites(probe, fn)) {
-            if (s.block == il::FeedbackSite::kEntrySite) continue;
+            if (s.block == il::FeedbackSite::kEntrySite) {
+                const auto it = ff->sites.find(s.ordinal);
+                if (s.kind == il::FeedbackKind::Entry && it != ff->sites.end()) plan.entries[fn.name] += it->second.total;
+                continue;
+            }
             const il::Instruction& inst = fn.blocks[s.block].instructions[s.inst];
             if (s.kind == il::FeedbackKind::Value) {
                 if (s.block != lastBlock || s.inst != lastInst) nth = 0;
@@ -122,7 +130,7 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
                         const il::ValueId v = inst.operands[j];
                         if (v >= observable.size() || observable[v] == 0) continue;
                         if (seen++ != k) continue;
-                        NumberCounts& c = plan.values[ValueKey{spanKey(inst.span), inst.op, j}];
+                        NumberCounts& c = plan.values[valueKey(inst, j)];
                         c.total += fb.total;
                         c.numbers += fb.tags[BRONZE_FEEDBACK_TAG_F64] + fb.tags[BRONZE_FEEDBACK_TAG_I32];
                         ++plan.stats.valueSites;

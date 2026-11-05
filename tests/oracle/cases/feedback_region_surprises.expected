@@ -1,0 +1,14 @@
+numbers 3000
+odd false/true false/true false/true true/true false/true false/false false/true false/true false/true true/true true/true true/true true/true false/true false/true false/true
+calls v3,v3,v3,v3,w,w,w,w
+sorted 980
+mixed 1 0 NaN 1 -1 1 1 1 NaN 0 1 NaN 1 1 NaN -1 -1 NaN -1 NaN NaN -2 -1 -1 0 -1 -53 -3 1 1 NaN 1 0 1 1 2147483648 2147483647 2147483647 2147483648 2147483647 2147483648 2147483648 -2 -1 -1 53 -1 0 50 -2 -1 -1 3 -1 -50 0
+calls v3,v3,v3,v3
+hits 400
+string constant false true
+valueOf constant true dot,dot,dot,dot,dot,dot,dot,dot,dot,dot,dot,v3,dot,dot
+undefined constant true 7
+nan radius true string radius true
+carried 39 110
+carried odd 39 89
+carried valueOf object 90 dot,dot,dot,dot,v3,dot,dot,dot,dot,dot,dot,v9

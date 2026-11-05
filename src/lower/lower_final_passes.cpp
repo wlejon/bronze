@@ -8,6 +8,9 @@
 // also why `bronze il` shows the transformed IL: `lowerModule` is the single
 // funnel both `runIl` and `runBuild` come through.
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <set>
 #include <string>
@@ -27,9 +30,36 @@
 #include "lower/typed_entry.h"
 #include "lower/typed_loop_version.h"
 #include "opt/spec/feedback_plan.h"
+#include "il/print.h"
 #include "opt/wpo/wpo.h"
 
 namespace bronze::lower {
+
+namespace {
+
+// BRONZE_FINAL_IL_DUMP=<substr>[,...]: the final IL of every function whose
+// name contains one of them, after the last pass, on stderr. A diagnostic.
+void dumpFinalIl(const il::Module& mod) {
+    const char* spec = std::getenv("BRONZE_FINAL_IL_DUMP");
+    if (spec == nullptr || *spec == 0) return;
+    const std::string all = spec;
+    for (const il::Function& fn : mod.functions) {
+        bool hit = false;
+        for (size_t at = 0; at <= all.size() && !hit;) {
+            const size_t comma = std::min(all.find(',', at), all.size());
+            const std::string part = all.substr(at, comma - at);
+            if (!part.empty() && fn.name.find(part) != std::string::npos) hit = true;
+            at = comma + 1;
+        }
+        if (!hit) continue;
+        il::Module one;
+        one.keyConstants = mod.keyConstants;
+        one.functions.push_back(fn);
+        std::fputs(il::print(one).c_str(), stderr);
+    }
+}
+
+}  // namespace
 
 // With a `--feedback-in` profile the passes run twice. First on a copy of the
 // module: its final IL is the recorded build's, whose keys the profile names,
@@ -107,6 +137,33 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     if (wholeProgram && build.stats) {
         report += "wpo-own: own-slot calls entered directly " + std::to_string(ownCalls) + "\n";
     }
+    // A profile's guarded regions (D), on what inlining finished: the values
+    // the run saw only as Numbers, carried as doubles behind one guard
+    // (guard_region.h, "PROFILE-GUIDED REGIONS"). Before the passes that hand
+    // out per-site cells (transition runs, define-add, the claims), so each
+    // copy gets its own.
+    if (plan != nullptr) {
+        RegionFeedback regionFeedback;
+        regionFeedback.operand = [plan](const il::Instruction& inst, uint32_t operand) {
+            OperandFeedback out;
+            const auto it = plan->values.find(spec::valueKey(inst, operand));
+            if (it == plan->values.end()) return out;
+            out.executions = it->second.total;
+            if (it->second.numbers != it->second.total) {
+                out.verdict = OperandFeedback::Other;
+            } else if (it->second.total >= spec::kMinExecutions) {
+                out.verdict = OperandFeedback::Number;
+            }
+            return out;
+        };
+        regionFeedback.entries = [plan](const il::Function& fn) -> uint64_t {
+            const auto it = plan->entries.find(fn.name);
+            return it == plan->entries.end() ? 0 : it->second;
+        };
+        GuardRegionStats feedbackRegions;
+        applyGuardedRegions(mod, &feedbackRegions, &regionFeedback);
+        guardRegionStatsReport(feedbackRegions, "guard-fb");
+    }
     // After every pass that copies instructions: a copied run would share
     // its cells with the original (transition_runs.h).
     markTransitionRuns(mod);
@@ -127,6 +184,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         if (build.stats) report += layoutFactReport(layoutStats) + layoutPerFn;
     }
     if (plan != nullptr && wholeProgram && build.stats) report += spec::feedbackReport(*plan, feedbackStats);
+    if (!probe) dumpFinalIl(mod);
     return true;
 }
 

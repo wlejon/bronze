@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -282,7 +283,69 @@ struct GuardRegionStats {
     // region in this same function, so the entry chain's re-passes of that
     // edge's arguments would cross a copy boundary (il.h `CopyClass`).
     uint32_t refusedCopyPred = 0;
+    // Profile-guided run only: a region whose profiled seeds all ran fewer
+    // than `kFeedbackHotExecutions` times, and compares promoted.
+    uint32_t refusedCold = 0;
+    uint32_t comparesPromoted = 0;
+    // Earlier (static) regions whose slow copies the profile marked cold.
+    uint32_t slowCopiesCold = 0;
 };
+
+// ---------------------------------------------------------------------------
+// PROFILE-GUIDED REGIONS (`--feedback-in`, docs/type-feedback.md "Consumers", D)
+//
+// The pass above decides what to promote from the IL alone, and it runs
+// before guarded inlining, so a kernel whose arithmetic arrives in an inlined
+// body (`Frustum.intersectsSphere` around `Plane.distanceToPoint`) or whose
+// work is compares (`painterSortStable`'s `!==` chain) is a region it never
+// sees. With a profile the same machinery runs a SECOND time, after inlining,
+// on the blocks the first run left alone, and the profile is what seeds it:
+//
+//   - a seed is an op whose every Dynamic operand the profiled run saw only as
+//     a Number, at least `kMinExecutions` times (the C hint's own test): the
+//     arithmetic and checked unboxes the static pass seeds from, and now the
+//     RELATIONAL and EQUALITY compares (`rel.*`, `strict.eq`, `loose.eq`);
+//   - a component holding any operand the run saw as something else is
+//     poisoned, so a value the profile knows to be a string never gets a guard
+//     that is known to fail;
+//   - a component with no profiled seed is not promoted at all: the static
+//     pass speculates on IL shape, this one only on what was observed.
+//
+// In the fast copy a compare whose operands are all candidates becomes the
+// ordered double compare it is on Numbers (`rel.lt` -> `cmp.lt`, `strict.eq`
+// and `loose.eq` -> `cmp.eq`: NaN unequal to itself, +0 equal to -0, exactly
+// 7.2.14/7.2.15 on two Numbers), whose `bool` feeds the branch directly. So a
+// value read, compared and subtracted is one test and three register ops.
+//
+// What the fallback rests on is the pass above, unchanged: a guard is an
+// `is.number` branch, its false edge enters the slow copy at the split with the
+// values computed so far re-boxed, and the slow copy is the original IL. A
+// call or property read whose result is a candidate is guarded after it ran,
+// at its first promoted use, so the slow copy is entered PAST it and never runs
+// it again; the only reads a slow copy re-runs are the read runs' and shape
+// runs' loads, under the licences the sections above give (no getter can be
+// reached by a load behind `is.dense_array` or `is.shape`).
+//
+// Regions here may be larger (twice the caps) and must contain a seed the
+// run executed at least `kFeedbackHotExecutions` times: the copy is code size,
+// and only a hot op pays it back.
+// ---------------------------------------------------------------------------
+
+// The profile's answer for operand `operand` of `inst`: `Number` when every
+// observation was a Number and there were at least `kMinExecutions` of them,
+// `Other` when any was not, `Unknown` when the site was not observed (or too
+// rarely). `executions` is how many times it ran.
+struct OperandFeedback {
+    enum Verdict : uint8_t { Unknown, Number, Other };
+    Verdict verdict = Unknown;
+    uint64_t executions = 0;
+};
+struct RegionFeedback {
+    std::function<OperandFeedback(const il::Instruction&, uint32_t operand)> operand;
+    // The times the function was entered in the recorded run (0: unknown).
+    std::function<uint64_t(const il::Function&)> entries;
+};
+inline constexpr uint64_t kFeedbackHotExecutions = 256;
 
 // Rewrites every function of `module` in place. Returns true when it changed
 // anything. `stats` is optional.
@@ -291,11 +354,48 @@ struct GuardRegionStats {
 // would leave a use its definition does not dominate is discarded whole and the
 // original kept (`refusedSsa`), so a shape this chunk cannot repair is a missed
 // optimisation rather than a miscompile.
-bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr);
+//
+// With `feedback`, the profile-guided run (above): only blocks no earlier
+// rewrite made a copy of are considered, and only profiled seeds count.
+bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr,
+                         const RegionFeedback* feedback = nullptr);
 
 // Prints the counters to stderr under `BRONZE_GUARDED_REGION_STATS=1`, and does
-// nothing otherwise.
-void guardRegionStatsReport(const GuardRegionStats& stats);
+// nothing otherwise. `label` names the run (`guard`, `guard-fb`).
+void guardRegionStatsReport(const GuardRegionStats& stats, const char* label = "guard");
+
+// A `rel.*`, `strict.eq` or `loose.eq` over two Dynamic operands: the compares
+// the profile-guided run promotes. A `strict.eq` that is an identity DISPATCH
+// (il.h `kStrictEqIdentityDispatch`) is not one: its false edge promises nothing.
+bool isPromotableCompare(const il::Instruction& inst, const std::vector<il::Type>& types);
+// The double compare a promotable compare becomes over two Numbers.
+il::Op promotedCompareOp(il::Op op);
+
+// What the profile says about one op of a region (guard_region_feedback.cpp):
+// whether it SEEDS (a promotable op every operand of which was a Number), the
+// executions behind that, and the operands it POISONS (seen as non-Numbers).
+struct ProfiledOp {
+    bool seed = false;
+    uint64_t executions = 0;
+    std::vector<il::ValueId> poisoned;
+};
+// The type of every value in `fn`, by id (params, block params, results).
+std::vector<il::Type> functionValueTypes(const il::Function& fn);
+
+// The profile's verdict on the regions an earlier pass built in `fn` without
+// it (the static run, or a callee's copies inlining carried in). The recorded
+// run was built with those same regions, so its counters in a slow copy count
+// the slow copy's own executions. A region whose slow copy saw no operand
+// other than a Number, in a function entered `kFeedbackHotExecutions` times or
+// more, and whose busiest slow-copy site ran at most 1/16th as often as the
+// function was entered, has its slow blocks and the trampolines into them
+// marked `cold`, so the backend lays them out after the fast path. A layout
+// hint only: nothing about what runs changes, and a wrong verdict costs a
+// taken branch, never a result.
+uint32_t markConfirmedSlowCopiesCold(il::Function& fn, const RegionFeedback& feedback);
+
+ProfiledOp profiledOp(const RegionFeedback& feedback, const il::Instruction& inst,
+                      const std::vector<il::Type>& types);
 
 // ---------------------------------------------------------------------------
 // The two halves, split where the question changes: `guard_region_select.cpp`
@@ -341,6 +441,9 @@ struct Candidate {
 
 // One selected region, and everything the rewrite needs to know about it.
 struct RegionPlan {
+    // Built by the profile-guided run: compares over candidates are promoted
+    // in the fast copy (see "PROFILE-GUIDED REGIONS").
+    bool feedback = false;
     // The whole-function region, whose `entryPred` is a synthesised preheader
     // rather than a block the function had. Only the counters and the caps read
     // it; the rewrite is the same rewrite.
@@ -563,7 +666,7 @@ il::Function withPreheader(const il::Function& fn);
 // has already been applied to. False when there is none to take, with the
 // reason counted in `stats`.
 bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
-                       GuardRegionStats& stats, RegionPlan& plan);
+                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback = nullptr);
 
 // Selects the regions of one function, innermost-first, and returns them in
 // header order. Empty when the function has none. Counts its own refusals.
@@ -576,7 +679,8 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 // is the region this pass just built, a second time.
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
-                                      const std::vector<uint8_t>& alreadyBuilt);
+                                      const std::vector<uint8_t>& alreadyBuilt,
+                                      const RegionFeedback* feedback = nullptr);
 
 // Applies one plan to `fn`. Returns false when the rewrite would not have been
 // dominance-correct, in which case `fn` is untouched. `alreadyBuilt` is
