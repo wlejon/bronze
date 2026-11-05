@@ -464,6 +464,17 @@ std::optional<il::Module> Lowerer::lower() {
             if (build.stats) wholeProgram_->report += layoutFactReport(layoutStats) + layoutPerFn;
         }
     }
+    // The type-feedback instrument, after everything: its sites are the final
+    // IL's own (lower_feedback.h), and the build that reads the profile back
+    // enumerates them at this same point. Nothing runs after it, so no pass
+    // ever sees a record.
+    if (feedback_ != nullptr && !feedback_->outPath.empty()) {
+        std::string err;
+        if (!instrumentFeedback(ilModule_, feedback_->outPath, &err)) {
+            diags_.error(Span{}, err);
+            return std::nullopt;
+        }
+    }
     return ilModule_;
 }
 
@@ -787,11 +798,13 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const std::string& censusOutPath,
                                       const NativeManifest* nativeManifest,
                                       const InlineGuardedOptions& inlineGuarded,
-                                      WholeProgramOptions* wholeProgram) {
+                                      WholeProgramOptions* wholeProgram,
+                                      const FeedbackOptions* feedback) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
                     assumeNoBigInt, pins, censusOutPath, nativeManifest);
     lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
     lowerer.setWholeProgram(wholeProgram);
+    lowerer.setFeedback(feedback);
     return lowerer.lower();
 }
 

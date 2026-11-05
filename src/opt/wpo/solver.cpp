@@ -767,7 +767,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             result(opts_.predict ? AVal::prim(kUndef) : globalValue(inst.keyIndex));
             break;
         case Op::ImmutableAssign: case Op::PrivateMisuse: primResult(kUndef); break;
-        case Op::PinGuard: case Op::CensusRecord: case Op::IterClose: case Op::KeepAlive:
+        case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::IterClose: case Op::KeepAlive:
         case Op::Print: case Op::PrintErr: case Op::PrintSpread: case Op::PrintSpreadErr:
             break;
         case Op::PrivateNew: result(AVal::obj(alloc(curSite_, kTagMain, ObjKind::Other))); break;

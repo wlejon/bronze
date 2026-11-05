@@ -72,6 +72,13 @@ public:
     void setInlineGuarded(bool on) { inlineGuarded_ = on; }
     // The whole-program optimizer's two runs (lower.h WholeProgramOptions).
     void setWholeProgram(WholeProgramOptions* options) { wholeProgram_ = options; }
+    // The type-feedback instrument and the profile read back (lower_feedback.h).
+    void setFeedback(const FeedbackOptions* options) { feedback_ = options; }
+    // The `--feedback-in` profile, or null: what a pass that specializes on
+    // observed types asks (docs/type-feedback.md, "Consumers").
+    const spec::TypeProfile* feedbackProfile() const {
+        return feedback_ != nullptr ? feedback_->profile : nullptr;
+    }
 
 private:
     const ast::Module& astModule_;
@@ -91,6 +98,7 @@ private:
     DirectMethodTable directMethods_;
     bool inlineGuarded_ = false;
     WholeProgramOptions* wholeProgram_ = nullptr;
+    const FeedbackOptions* feedback_ = nullptr;
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
     // The class name inference gives `receiver`'s object type, or empty.
     std::unordered_map<std::string, std::string> fieldClassGuesses() const;

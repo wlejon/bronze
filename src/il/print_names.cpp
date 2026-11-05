@@ -117,6 +117,7 @@ const char* opName(Op op) {
         case Op::ImmutableAssign: return "immutable.assign";
         case Op::PinGuard: return "pin.guard";
         case Op::CensusRecord: return "census.record";
+        case Op::FeedbackRecord: return "feedback.record";
         case Op::ClassExtend: return "class.extend";
         case Op::PrivateNew: return "private.new";
         case Op::PrivateHas: return "private.has";

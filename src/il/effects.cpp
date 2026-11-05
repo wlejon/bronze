@@ -68,6 +68,9 @@ bool canThrow(const Instruction& inst) {
         // flow would be one whose readings are about itself, so it never
         // raises and the backend emits no exception test after it.
         case Op::CensusRecord:
+        // The type-feedback recorder (src/runtime/type_feedback.h), for the
+        // census's reason.
+        case Op::FeedbackRecord:
         // Allocation and the environment: they can collect, and a failure to
         // allocate is fatal rather than catchable (there is no `RangeError:
         // out of memory` in bronze, and inventing one would let a program
@@ -260,6 +263,12 @@ bool canCollect(const Instruction& inst) {
         case Op::MathUnary:
         // A use of its operands that emits no code.
         case Op::KeepAlive:
+        // The type-feedback recorder classifies a tag and names a shape or a
+        // callee from immortal shape and string memory; it allocates only in
+        // its own C++ tables, never on the JS heap. It runs after every pass
+        // that asks this (lower/lower_feedback.cpp), and says so anyway so a
+        // backend reading it keeps a receiver proof across one.
+        case Op::FeedbackRecord:
         // Tag tests and loads, no allocation.
         case Op::MethodIcIs:
         case Op::AccessorIcIs:

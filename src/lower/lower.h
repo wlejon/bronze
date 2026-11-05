@@ -7,6 +7,7 @@
 #include "ast/ast.h"
 #include "il/il.h"
 #include "lower/inline_guarded.h"
+#include "lower/lower_feedback.h"
 #include "opt/wpo/wpo.h"
 #include "support/diagnostics.h"
 #include "types/pins.h"
@@ -92,7 +93,8 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const std::string& censusOutPath = {},
                                       const NativeManifest* nativeManifest = nullptr,
                                       const InlineGuardedOptions& inlineGuarded = {},
-                                      WholeProgramOptions* wholeProgram = nullptr);
+                                      WholeProgramOptions* wholeProgram = nullptr,
+                                      const FeedbackOptions* feedback = nullptr);
 
 // The kind a TypeScript annotation claims, as the lattice states it: `number`,
 // an array type, a class's instances (an object), an alias followed to what

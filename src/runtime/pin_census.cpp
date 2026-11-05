@@ -12,9 +12,11 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "abi/bronze_feedback_site.h"
 #include "runtime/array.h"
 #include "runtime/object.h"
 #include "runtime/rt_state.h"
+#include "runtime/type_feedback.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -194,6 +196,13 @@ std::string tally(const Target& t) {
 
 void censusRegister(const char* outPath, const uint32_t* table, uint32_t count,
                     const uint32_t* keyMap) {
+    // A type-feedback build registers through this entry point too
+    // (abi/bronze_feedback_site.h): its table opens with a marker row whose
+    // site word has the feedback bit, and the path is the profile's.
+    if (table != nullptr && count != 0 && (table[1] & BRONZE_FEEDBACK_FLAG) != 0) {
+        typeFeedbackRegister(outPath, table, count, keyMap);
+        return;
+    }
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_targets == nullptr) {
         g_targets = new std::map<std::string, Target>();
@@ -222,6 +231,10 @@ void censusRegister(const char* outPath, const uint32_t* table, uint32_t count,
 }
 
 void censusRecord(uint32_t keyId, uint32_t siteInfo, uint64_t valueBits) {
+    if ((siteInfo & BRONZE_FEEDBACK_FLAG) != 0) {
+        typeFeedbackRecord(keyId, siteInfo, valueBits);
+        return;
+    }
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_targets == nullptr) return;
     const uint32_t kind = siteInfo & BRONZE_ABI_CENSUS_KIND_MASK;

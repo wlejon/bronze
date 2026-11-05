@@ -379,6 +379,7 @@ private:
                     break;
                 case Op::PinGuard:
                 case Op::CensusRecord:
+                case Op::FeedbackRecord:
                 case Op::KeepAlive:
                     break;
                 case Op::IsNumber:

@@ -23,6 +23,7 @@ bronze_add_module(runtime
         shape_census.cpp
         slot_repr.cpp
         pin_census.cpp
+        type_feedback.cpp
         fatal.cpp
         abi_guard.cpp
         number_format.cpp

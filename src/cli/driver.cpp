@@ -153,7 +153,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& importMapPath, bool inferStats,
           bool assumeNoBigInt, const std::string& pinsPath, const std::string& censusOutPath,
           bool pinsAllowObserved, const std::string& nativeManifestPath,
-          const std::string& nativeLibPath) {
+          const std::string& nativeLibPath, const std::string& feedbackOutPath) {
     // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -233,6 +233,13 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
         !hasHostBoundary(hostGlobalsPath, /*emitObj=*/false, /*emitShared=*/false);
 
     lower::InferStatsCollector statsCollector;
+    lower::FeedbackOptions feedback;
+    std::optional<spec::TypeProfile> feedbackProfile;
+    if (std::string err; !prepareFeedback(feedbackOutPath, {}, censusOutPath, feedbackProfile, feedback, err)) {
+        if (outString) *outString = err;
+        else std::fputs(err.c_str(), stderr);
+        return 1;
+    }
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
@@ -242,7 +249,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*on=*/true});
+                                       lower::InlineGuardedOptions{/*on=*/true},
+                                       nullptr, &feedback);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -276,7 +284,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
              const std::string& specProfilePath, bool wpoStats,
-             const std::string& wpoStatsFilter, bool wpoStatsPerSite) {
+             const std::string& wpoStatsFilter, bool wpoStatsPerSite,
+             const std::string& feedbackOutPath, const std::string& feedbackInPath) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -408,6 +417,16 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     wholeProgram.build.perSite = wpoStatsPerSite;
     wholeProgram.build.filter = wpoStatsFilter;
     lower::InferStatsCollector statsCollector;
+    // Read before the compile, like every manifest: a bad profile is a fact
+    // about the invocation.
+    lower::FeedbackOptions feedback;
+    std::optional<spec::TypeProfile> feedbackProfile;
+    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, censusOutPath,
+                                          feedbackProfile, feedback, err)) {
+        if (errOut) *errOut = err;
+        else std::fputs(err.c_str(), stderr);
+        return 1;
+    }
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
@@ -418,7 +437,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
                                        lower::InlineGuardedOptions{/*on=*/true},
-                                       &wholeProgram);
+                                       &wholeProgram, &feedback);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -725,6 +744,9 @@ int runDriver(int argc, char** argv) {
         std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
+        std::string feedbackOutPath;
+        std::string feedbackInPath;
+        std::string flagErr;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
@@ -748,24 +770,11 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (arg == "--pins") {
-                if (i + 1 < argc) {
-                    pinsPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --pins\n");
-                }
-            } else if (arg.rfind("--pins=", 0) == 0) {
-                pinsPath = arg.substr(7);
-                if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
-            } else if (arg == "--census") {
-                if (i + 1 < argc) {
-                    censusOutPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --census\n");
-                }
-            } else if (arg.rfind("--census=", 0) == 0) {
-                censusOutPath = arg.substr(9);
-                if (censusOutPath.empty()) return fail("error: missing argument for --census\n");
+            } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
+                       takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
+                       takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
+                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
+                if (!flagErr.empty()) return fail(flagErr);
             } else if (arg == "--pins-allow-observed") {
                 pinsAllowObserved = true;
             } else if (arg == "--module-root") {
@@ -798,9 +807,10 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
+        if (!feedbackInPath.empty()) return fail("error: --feedback-in is a `build` flag\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
                      inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved,
-                     nativeManifestPath);
+                     nativeManifestPath, {}, feedbackOutPath);
     }
 
     if (command == "build") {
@@ -829,6 +839,9 @@ int runDriver(int argc, char** argv) {
         bool wpoStats = false;
         bool wpoStatsPerSite = false;
         std::string wpoStatsFilter;
+        std::string feedbackOutPath;
+        std::string feedbackInPath;
+        std::string flagErr;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -891,24 +904,11 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (arg == "--pins") {
-                if (i + 1 < argc) {
-                    pinsPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --pins\n");
-                }
-            } else if (arg.rfind("--pins=", 0) == 0) {
-                pinsPath = arg.substr(7);
-                if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
-            } else if (arg == "--census") {
-                if (i + 1 < argc) {
-                    censusOutPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --census\n");
-                }
-            } else if (arg.rfind("--census=", 0) == 0) {
-                censusOutPath = arg.substr(9);
-                if (censusOutPath.empty()) return fail("error: missing argument for --census\n");
+            } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
+                       takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
+                       takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
+                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
+                if (!flagErr.empty()) return fail(flagErr);
             } else if (arg == "--pins-allow-observed") {
                 pinsAllowObserved = true;
             } else if (arg == "--module-root") {
@@ -962,7 +962,7 @@ int runDriver(int argc, char** argv) {
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
-                        wpoStatsFilter, wpoStatsPerSite);
+                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath);
     }
 
     return fail(kUsage);

@@ -2,6 +2,8 @@
 #include "cli/driver.h"
 
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string_view>
@@ -16,6 +18,48 @@ int fail(const std::string& message) {
 void reportWarnings(const DiagnosticSink& diags, const SourceSet& sources) {
     if (diags.all().empty()) return;
     std::fputs(diags.render(sources).c_str(), stderr);
+}
+
+bool takeFlagValue(const std::string& arg, const char* name, int& i, int argc, char** argv,
+                   std::string& out, std::string& err) {
+    err.clear();
+    const size_t n = std::strlen(name);
+    if (arg == name) {
+        if (i + 1 < argc) out = argv[++i];
+        else err = "error: missing argument for " + std::string(name) + "\n";
+        return true;
+    }
+    if (arg.size() > n && arg.compare(0, n, name) == 0 && arg[n] == '=') {
+        out = arg.substr(n + 1);
+        if (out.empty()) err = "error: missing argument for " + std::string(name) + "\n";
+        return true;
+    }
+    return false;
+}
+
+bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feedbackInPath,
+                     const std::string& censusOutPath, std::optional<spec::TypeProfile>& profile,
+                     lower::FeedbackOptions& options, std::string& err) {
+    if (!feedbackOutPath.empty() && !censusOutPath.empty()) {
+        err = "error: --feedback-out and --census are two instruments on one runtime channel; "
+              "build one at a time\n";
+        return false;
+    }
+    if (!feedbackOutPath.empty()) {
+        std::error_code ec;
+        const auto abs = std::filesystem::absolute(feedbackOutPath, ec);
+        options.outPath = ec ? feedbackOutPath : abs.string();
+    }
+    if (!feedbackInPath.empty()) {
+        std::string loadErr;
+        profile = spec::TypeProfile::load(feedbackInPath, &loadErr);
+        if (!profile) {
+            err = "error: --feedback-in: " + loadErr + "\n";
+            return false;
+        }
+        options.profile = &*profile;
+    }
+    return true;
 }
 
 bool readFile(const std::string& path, std::string& out) {

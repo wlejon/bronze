@@ -606,6 +606,19 @@ enum class Op : uint8_t {
     // no epoch is. Loads only, cannot throw; impure like `layout.epoch`
     // (never merged, hoisted or dropped).
     LayoutFact,
+    // `feedback.record [<value>], <key_const_index>, <immI32: site info>`:
+    // hands one observation to the type-feedback recorder
+    // (src/runtime/type_feedback.h, docs/type-feedback.md). The key is the
+    // function's feedback key and the info word packs the site's kind and
+    // ordinal (abi/bronze_feedback_site.h); an `entry` site has no operand.
+    //
+    // Emitted only under `--feedback-out`, by lower/lower_feedback.cpp, as
+    // the LAST thing lowering does — so the sites are the final IL's own and
+    // no pass ever sees one. Void; it never throws and never collects: the
+    // recorder classifies the value's tag and names its shape or callee from
+    // immortal shape and string memory, allocating nothing on the JS heap. An
+    // instrument that could change control flow would be measuring itself.
+    FeedbackRecord,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

@@ -380,9 +380,12 @@ bool IlLowering::lower_instruction(
         }
 
         case BronzeOp::CensusRecord: {
+            // A type-feedback ENTRY site observes no value (il_op.h,
+            // `feedback.record`); every census site has one.
             Value* val = get_opd(0);
-            if (!val) break;
-            val = ensure_type(val, Type::i64(), b);
+            if (!val && !inst_ast.operands.empty()) break;
+            val = val ? ensure_type(val, Type::i64(), b)
+                      : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
             uint32_t key_idx = 0;
             if (!inst_ast.string_literal.empty()) {
                 for (size_t k = 0; k < options_.key_constants.size(); ++k) {
@@ -395,7 +398,7 @@ bool IlLowering::lower_instruction(
                 key_idx = inst_ast.index;
             }
             Value* key_val = get_key_id(b, key_idx);
-            Value* site_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64));
+            Value* site_val = b.build_iconst_i32(static_cast<int32_t>(static_cast<uint32_t>(inst_ast.imm_i64)));
             b.build_call("bronze_census_record", Type::void_type(), {key_val, site_val, val});
             break;
         }

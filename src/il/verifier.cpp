@@ -1,6 +1,7 @@
 #include "il/verifier.h"
 #include "il/verifier_proofs.h"
 #include "abi/bronze_abi.h"
+#include "il/feedback_site.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -763,7 +764,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             }
             continue;
         }
-        if (!verifyFunction(fn, diags)) {
+        if (!verifyFunction(fn, diags) || !verifyFeedbackRecords(fn, diags)) {
             return false;
         }
     }

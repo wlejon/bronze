@@ -15,7 +15,7 @@ bool isImpureForLoopPropHoist(const il::Instruction& inst) {
         case il::Op::CmpGe: case il::Op::CmpEq: case il::Op::CmpNe:
         case il::Op::NumTruthy: case il::Op::StrictEq: case il::Op::IsNullish:
         case il::Op::IsNumber: case il::Op::IsDenseArray: case il::Op::TypeOf:
-        case il::Op::Box: case il::Op::MathUnary: case il::Op::CensusRecord:
+        case il::Op::Box: case il::Op::MathUnary: case il::Op::CensusRecord: case il::Op::FeedbackRecord:
         case il::Op::KeepAlive: case il::Op::PinGuard: case il::Op::PatternCheck:
         case il::Op::PrivateMisuse: case il::Op::CreateObject: case il::Op::CreateArray:
         case il::Op::CreateFunction: case il::Op::FunctionRef: case il::Op::EnvCreate:

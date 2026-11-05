@@ -16,6 +16,7 @@
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
 #include "runtime/module_registry.h"
+#include "runtime/type_feedback.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
@@ -128,6 +129,8 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
     } else if (Value moduleIntrinsic = rtModuleRegistryIntrinsic(keyStr);
                moduleIntrinsic.isObject()) {
         out = moduleIntrinsic;
+    } else if (Value feedback = rtTypeFeedbackIntrinsic(keyStr); feedback.isObject()) {
+        out = feedback;
     } else {
         return false;
     }

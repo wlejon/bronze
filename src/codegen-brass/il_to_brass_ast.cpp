@@ -423,6 +423,15 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
+        // The census's own call (abi/bronze_feedback_site.h): the whole site
+        // word, whose top bit routes it to the type-feedback recorder, and the
+        // function key by INDEX — a feedback build has a record per site and
+        // the by-name lookup the census uses is a scan of the key table.
+        case il::Op::FeedbackRecord:
+            out.op = il2mir::BronzeOp::CensusRecord;
+            out.imm_i64 = static_cast<int64_t>(static_cast<uint32_t>(inst.immI32));
+            out.index = inst.keyIndex;
+            break;
         case il::Op::ClassExtend: out.op = il2mir::BronzeOp::ClassExtend; break;
         case il::Op::PrivateNew: out.op = il2mir::BronzeOp::PrivateNew; break;
         case il::Op::PrivateHas:

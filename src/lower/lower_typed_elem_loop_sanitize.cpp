@@ -284,6 +284,7 @@ bool isSafeInstForInBoundsLoop(const il::Instruction& inst, il::ValueId recv,
         case il::Op::TypeOf:
         case il::Op::Box:
         case il::Op::CensusRecord:
+        case il::Op::FeedbackRecord:
         case il::Op::KeepAlive:
         case il::Op::PinGuard:
         case il::Op::EnvGet:

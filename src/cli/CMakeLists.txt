@@ -2,7 +2,7 @@ add_library(bronze_cli STATIC driver.cpp link.cpp driver_helpers.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::check bronze::codegen bronze::modules bronze::codegen_brass bronze::wpo)
+target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::check bronze::codegen bronze::modules bronze::codegen_brass bronze::wpo bronze::spec)
 add_dependencies(bronze_cli bronze_rt)
 
 if(MSVC)
@@ -29,6 +29,7 @@ if(BRONZE_BUILD_TESTS)
                                    ../../tests/cli/performance_now_test.cpp
                                    ../../tests/cli/pin_barrier_test.cpp
                                    ../../tests/cli/pin_census_test.cpp
+                                   ../../tests/cli/type_feedback_test.cpp
                                    ../../tests/cli/numeric_arith_boundary_test.cpp
                                    ../../tests/cli/lowering_determinism_test.cpp
                                    ../../tests/cli/large_arg_call_test.cpp

@@ -19,7 +19,7 @@ bool isPureUse(il::Op op) {
         case il::Op::Print:
         case il::Op::PrintErr: case il::Op::MethodSlotFn: case il::Op::ClosureIs: case il::Op::Branch:
         case il::Op::PatternCheck: case il::Op::ElemGetTyped: case il::Op::ElemSetTyped:
-        case il::Op::CensusRecord: case il::Op::PinGuard:
+        case il::Op::CensusRecord: case il::Op::FeedbackRecord: case il::Op::PinGuard:
             return true;
         default:
             return false;

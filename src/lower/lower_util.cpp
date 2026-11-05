@@ -153,7 +153,12 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            // call because the generated source calls them as ordinary
            // functions, which is what keeps `modules/link.cpp` generating
            // SOURCE rather than hand-built AST.
-           name == "__bronze_module_publish" || name == "__bronze_module_lookup";
+           name == "__bronze_module_publish" || name == "__bronze_module_lookup" ||
+           // The type-feedback profile's flush (runtime/type_feedback.h), for
+           // a host or a page that ends its process without running atexit.
+           // A program calls it by name, so it resolves like a builtin; in a
+           // build without `--feedback-out` it writes nothing and answers false.
+           name == "__bronze_feedback_flush";
 }
 
 // The `file:` URL of one module of the graph, for `import.meta.url`

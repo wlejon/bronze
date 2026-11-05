@@ -77,7 +77,10 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
           bool assumeNoBigInt = false, const std::string& pinsPath = {},
           const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
           const std::string& nativeManifestPath = {},
-          const std::string& nativeLibPath = {});
+          const std::string& nativeLibPath = {},
+          // `--feedback-out`: the IL of a type-feedback build
+          // (docs/type-feedback.md), its `feedback.record` sites visible.
+          const std::string& feedbackOutPath = {});
 // `nativeManifestPath` is `--native-manifest`: the JSON embed::writeNativeManifest
 // printed from a host's registry (or a directory of them), naming the JS paths
 // the program may call as direct native calls and their C signatures
@@ -155,7 +158,12 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // census of the final IL (src/opt/wpo/wpo.h) to stdout; with a
              // filter, every site of the functions whose name contains it.
              bool wpoStats = false, const std::string& wpoStatsFilter = {},
-             bool wpoStatsPerSite = false);
+             bool wpoStatsPerSite = false,
+             // `--feedback-out <file.tfb>`: instrument the program so that a
+             // run writes a type-feedback profile there; `--feedback-in
+             // <file.tfb>`: read one back for the passes that consume it
+             // (docs/type-feedback.md). Neither changes the build otherwise.
+             const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli
