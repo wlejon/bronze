@@ -68,8 +68,8 @@ Value* IlLowering::load_module_delta(Builder& b) {
                      : b.build_call("bronze_tls_block_addr", Type::i64(), {});
     Value* deltas = b.build_load(Type::i64(), tls, kBronzeTlsModuleDeltasOff);
     Value* slot = b.build_load(Type::i64(), b.build_func_addr(module_sym("__bronze_module_slot")), 0);
-    Value* entry = b.build_add(deltas, b.build_shl(slot, b.build_iconst_i64(3)));
-    return b.build_load(Type::i64(), entry, 0);
+    // One scaled-index load: `mov rax, [deltas + slot*8]`.
+    return b.build_load_indexed(Type::i64(), deltas, slot, 8);
 }
 
 Value* IlLowering::module_delta(Builder& b) {
