@@ -974,7 +974,7 @@ GC verify/poison, the oracle (infer and no-infer), bronze `wpo`,
 **Ranked from here.**
 1. Hot code size (~1.3 ms frontend plus the instruction gap): frame-slot
    traffic (splittable tagged intervals), pooled constants, rel32 tails;
-   the 90% hot set from 157 KB toward 60 KB.
+   the 90% hot set from 157 KB toward 60 KB. Continued in [aot-codesize.md](aot-codesize.md).
 2. Taken branches left (~1.1M a frame): IC stub way hits out of line,
    the plain-object guard's `je` to an out-of-line shape test.
 3. Calls V8 inlines (1.07M calls against 0.58M; projectObject's subtree).
