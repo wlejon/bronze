@@ -911,7 +911,7 @@ bool lower_property_instruction(
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             res_val = lowering->run_once() ? prop_lowering.lower_elem_get_call(b, obj_val, idx_val)
-                                           : prop_lowering.lower_elem_get(b, obj_val, idx_val);
+                                           : prop_lowering.lower_elem_get(b, obj_val, idx_val, inst_ast.imm_i64);
             return true;
         }
 
@@ -953,7 +953,7 @@ bool lower_property_instruction(
             if (lowering->run_once()) {
                 prop_lowering.lower_elem_set_call(b, obj_val, idx_val, val, inst_ast.index);
             } else {
-                prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index);
+                prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index, inst_ast.imm_i64);
             }
             return true;
         }

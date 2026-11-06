@@ -134,6 +134,7 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::IsDenseArray:
         case BronzeOp::IsNumberArray:
         case BronzeOp::IsTypedArray:
+        case BronzeOp::IsArray:
         case BronzeOp::IsNullish:
         case BronzeOp::TypeOf:
         case BronzeOp::InstanceOf:
@@ -616,6 +617,16 @@ bool lower_ops_instruction(
             }
             Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
             res_val = lowering->prop_lowering().lower_is_typed_array(b, src, inst_ast.imm_i64);
+            return true;
+        }
+
+        // The elem ops it licenses are inline paths too.
+        case BronzeOp::IsArray: {
+            if (!lowering->prop_lowering().enable_inlined_fastpaths()) {
+                res_val = b.build_iconst_i32(0);
+                return true;
+            }
+            res_val = lowering->prop_lowering().lower_is_array(b, lowering->ensure_type(get_opd(0), Type::i64(), b));
             return true;
         }
 

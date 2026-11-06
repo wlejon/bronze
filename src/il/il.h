@@ -433,8 +433,14 @@ inline constexpr int32_t kWriteDefine = 2;
 // the fast paths stay.
 inline constexpr int32_t kWriteLiteralElement = 3;
 
+// An `elem.set` carries element flags above its mode (il_pin.h
+// kElemFlagArrayReceiver, kElemFlagProvenIntegralIndex).
+inline constexpr int32_t kWriteModeMask = 0xFF;
+inline constexpr int32_t kElemSetFlagBits = kWriteModeMask | kElemFlagArrayReceiver | kElemFlagProvenIntegralIndex;
+inline int32_t writeMode(const Instruction& inst) { return inst.immI32 & kWriteModeMask; }
+
 inline bool isDefineWrite(const Instruction& inst) {
-    return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && inst.immI32 == kWriteDefine;
+    return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && writeMode(inst) == kWriteDefine;
 }
 
 // A static-slot claim on a receiver whose class is PROVEN, which is what an IL

@@ -184,6 +184,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::IsTypedArray;
             out.imm_i64 = inst.immI32;
             break;
+        case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
         case il::Op::IsNumberArray:
             out.op = il2mir::BronzeOp::IsNumberArray;
             out.imm_i64 = inst.immI32;
@@ -288,10 +289,15 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
                 out.callee_name = ctx.fnName(inst.directTarget);
             }
             break;
-        case il::Op::ElemGet: out.op = il2mir::BronzeOp::ElemGet; break;
+        // The element flags (il_pin.h) in imm_i64; an elem.set's mode in index.
+        case il::Op::ElemGet:
+            out.op = il2mir::BronzeOp::ElemGet;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::ElemSet:
             out.op = il::isDefineWrite(inst) ? il2mir::BronzeOp::ElemDefine : il2mir::BronzeOp::ElemSet;
-            out.index = static_cast<uint32_t>(inst.immI32);
+            out.index = static_cast<uint32_t>(il::writeMode(inst));
+            out.imm_i64 = inst.immI32 & ~il::kWriteModeMask;
             break;
         case il::Op::ElemGetTyped:
             out.op = il2mir::BronzeOp::ElemGetTyped;

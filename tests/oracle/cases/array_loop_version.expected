@@ -1,0 +1,22 @@
+copy ["1","2.5","x","null","undefined","[object Object]","2","true","0","NaN"]
+eq true false true
+from f32 [1.5,2.5,3.5]
+into f64 [7,8,9]
+from array-like ["a","b"]
+into object {"0":4,"1":5}
+holes "3:true:undefined"
+inherited [1,"inherited",3]
+setter [[10,11,12,13,14,"g5",16],1]
+getter [null,"inherited",null,null,null,"g5",null]
+grow 100 198
+props [[1,2,3],"p"]
+frozen [0,0]
+sealed [1]
+strict frozen: true
+shrink [1,2,null,null]
+grow in loop [1,2,10,20,100,200,1000,2000]
+neg ["minus",10,20]
+frac [null,"frac",null]
+big [null,"big"]
+negzero [10,20]
+sum 6 6 0123 6

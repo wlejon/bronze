@@ -619,6 +619,16 @@ enum class Op : uint8_t {
     // immortal shape and string memory, allocating nothing on the JS heap. An
     // instrument that could change control flow would be measuring itself.
     FeedbackRecord,
+    // a: bool = is.array b. Whether `b` is an Array exotic object: its heap
+    // kind, fixed when it is allocated, so a test that held once holds for as
+    // long as the same value is in hand, across calls and collections alike.
+    // That is the licence an `elem.get` / `elem.set` on the true edge carries
+    // as kElemFlagArrayReceiver (il_pin.h): its inline path skips the tag and
+    // header tests and keeps every other one (bounds, holes, the props word),
+    // since those change with the array. The typed-loop versioning pass
+    // (lower/typed_loop_version.h, "PLAIN ARRAYS") is its only producer.
+    // Header loads only: cannot throw, cannot collect.
+    IsArray,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

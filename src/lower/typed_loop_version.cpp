@@ -10,6 +10,7 @@
 #include "il/il_pin.h"
 #include "il/verifier_proofs.h"
 #include "lower/guard_region_cfg.h"
+#include "lower/typed_loop_index_proof.h"
 
 namespace bronze::lower {
 
@@ -21,6 +22,8 @@ namespace {
 constexpr size_t kMaxLoopInstructions = 200;
 constexpr int32_t kKindFloat32 = BRONZE_ABI_TA_KIND_FLOAT32;
 constexpr int32_t kKindFloat64 = BRONZE_ABI_TA_KIND_FLOAT64;
+// The plain Array copy's kind, outside every element kind's range.
+constexpr int32_t kKindArray = -1;
 
 bool tracing() {
     static const bool on = std::getenv("BRONZE_TYPED_LOOP_VERSION_TRACE") != nullptr;
@@ -256,6 +259,8 @@ private:
             il::ValueId number;  // the f64 the value was boxed from, or kNoValue
         };
         std::vector<SetSite> sets;
+        std::vector<std::pair<il::BlockId, uint32_t>> arrayOps;  // every such get and set
+        std::vector<il::ValueId> arrayReceivers;
         for (il::BlockId b : loop.blocks) {
             const il::Block& blk = fn_.blocks[b];
             for (uint32_t i = 0; i < blk.instructions.size(); ++i) {
@@ -268,6 +273,11 @@ private:
                 if (inst.operands.size() < 2 || !invariantReceiver(inst.operands[0])) continue;
                 const il::ValueId idx = numberSource(fn_, defs, inst.operands[1], /*allowI32=*/true);
                 if (idx == il::kNoValue) continue;
+                arrayOps.push_back({b, i});
+                if (std::find(arrayReceivers.begin(), arrayReceivers.end(), inst.operands[0]) ==
+                    arrayReceivers.end()) {
+                    arrayReceivers.push_back(inst.operands[0]);
+                }
                 if (inst.op == il::Op::ElemGet) {
                     if (inst.result != il::kNoValue) getIndex[inst.result] = idx;
                 } else if (inst.operands.size() == 3) {
@@ -326,8 +336,8 @@ private:
             addReceiver(fn_.blocks[sets[s].block].instructions[sets[s].index].operands[0]);
             ++typedOps;
         }
-        if (typedOps == 0) return false;
         std::sort(receivers.begin(), receivers.end());
+        std::sort(arrayReceivers.begin(), arrayReceivers.end());
 
         // The kinds to copy for. A view's kind never changes, so a typed op
         // anywhere in the function on one of these receivers names the only
@@ -380,6 +390,44 @@ private:
             });
             if (kinds.empty()) return false;
         }
+        if (typedOps == 0) kinds.clear();
+        // PLAIN ARRAYS: one more copy, in which every element op on an
+        // invariant receiver by a Number index is flagged as an Array's, for
+        // a loop no typed op anywhere says is over a view.
+        bool arrayPlan = !provenKind && !arrayOps.empty();
+        for (const auto& blk : fn_.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if ((inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) && !inst.operands.empty() &&
+                    std::binary_search(arrayReceivers.begin(), arrayReceivers.end(), inst.operands[0])) {
+                    arrayPlan = false;
+                }
+            }
+        }
+        if (kinds.empty() && !arrayPlan) return false;
+        // Its bound compares: `rel.* (box.f64 x), L`, L the same value on
+        // every iteration, is `cmp.*` against L unboxed once on the copy's
+        // entry, behind an is.number test of it there.
+        std::vector<NumCompare> numCompares;
+        for (il::BlockId b : arrayPlan ? loop.blocks : std::vector<il::BlockId>{}) {
+            const il::Block& blk = fn_.blocks[b];
+            for (uint32_t i = 0; i < blk.instructions.size(); ++i) {
+                const il::Instruction& inst = blk.instructions[i];
+                if ((inst.op != il::Op::RelLt && inst.op != il::Op::RelLe && inst.op != il::Op::RelGt &&
+                     inst.op != il::Op::RelGe) ||
+                    inst.operands.size() != 2 || inst.result == il::kNoValue) {
+                    continue;
+                }
+                for (uint32_t side = 0; side < 2; ++side) {
+                    const il::ValueId x = numberSource(fn_, defs, inst.operands[1 - side], /*allowI32=*/false);
+                    const il::ValueId e = x == il::kNoValue ? il::kNoValue
+                                                             : invariantEntry(cfg, loop, defs, types, inst.operands[side]);
+                    if (e != il::kNoValue) {
+                        numCompares.push_back({b, i, side, x, e, il::kNoValue});
+                        break;
+                    }
+                }
+            }
+        }
 
         // A copy in which nothing can run code or collect — every instruction
         // left in it is a typed op, arithmetic, a test or a `length` read of
@@ -423,11 +471,12 @@ private:
         std::vector<il::BlockId> copiedBlocks = loop.blocks;
         copiedBlocks.insert(copiedBlocks.end(), stubs.begin(), stubs.end());
         const il::Function original = fn_;
-        std::vector<std::pair<int32_t, il::BlockId>> entries;
+        std::vector<Entry> entries;
         struct Copy {
             il::BlockId header;
             std::vector<il::ValueId> lengths;
             std::vector<std::pair<il::BlockId, uint32_t>> sites;
+            bool array = false;
         };
         std::vector<Copy> copies;
         for (const int32_t kind : kinds) {
@@ -458,14 +507,53 @@ private:
             fn_.blocks[entry].instructions = std::move(reads);
             jump.target.block = header;
             fn_.blocks[entry].instructions.push_back(std::move(jump));
-            entries.push_back({kind, entry});
+            entries.push_back({kind, entry, receivers, pristine});
         }
-        enterThrough(loop, receivers, pristine, entries);
+        if (arrayPlan) {
+            const il::BlockId entry = appendBlockLike(loop.preheader);
+            std::vector<il::ValueId> numbers;
+            for (NumCompare& c : numCompares) {
+                for (const NumCompare& d : numCompares) {
+                    if (d.entry == c.entry && d.unboxed != il::kNoValue) c.unboxed = d.unboxed;
+                }
+                if (c.unboxed != il::kNoValue) continue;
+                c.unboxed = static_cast<il::ValueId>(fn_.valueCount++);
+                numbers.push_back(c.entry);
+                il::Instruction unbox;
+                unbox.op = il::Op::Unbox;
+                unbox.type = il::Type::F64;
+                unbox.result = c.unboxed;
+                unbox.operands = {c.entry};
+                unbox.rawUnbox = true;
+                fn_.blocks[entry].instructions.push_back(std::move(unbox));
+            }
+            const std::unordered_map<il::ValueId, bool> noGets;
+            const decltype(sets) noSets;
+            const std::vector<uint8_t> noSetOk;
+            const std::unordered_map<il::ValueId, il::ValueId> none;
+            typedSites_.clear();
+            numCompares_ = &numCompares;
+            const il::BlockId header =
+                copy(copiedBlocks, copied, loop.header, kKindArray, noGets, noSets, noSetOk, none, none, &arrayOps);
+            numCompares_ = nullptr;
+            copies.push_back({header, {}, typedSites_, true});
+            il::Instruction jump = fn_.blocks[loop.preheader].instructions.back();
+            jump.target.block = header;
+            fn_.blocks[entry].instructions.push_back(std::move(jump));
+            entries.push_back({kKindArray, entry, arrayReceivers, {}, numbers});
+        }
+        enterThrough(loop, entries);
         size_t integral = 0;
-        if (!copies.front().lengths.empty()) {
+        bool prove = false;
+        for (const Copy& c : copies) prove |= c.array || !c.lengths.empty();
+        if (prove) {
             const Cfg after = buildCfg(fn_);
             const std::vector<DefSite> afterDefs = computeDefSites(fn_);
-            for (const Copy& c : copies) integral += proveIntegralIndices(after, afterDefs, c.header, c.lengths, c.sites);
+            for (const Copy& c : copies) {
+                if (c.array || !c.lengths.empty()) {
+                    integral += proveIntegralIndices(fn_, after, afterDefs, c.header, c.lengths, c.sites, c.array);
+                }
+            }
         }
         if (!dominanceHolds(fn_)) {
             fn_ = original;
@@ -478,149 +566,12 @@ private:
         cold_.insert(cold_.end(), loop.blocks.begin(), loop.blocks.end());
         if (tracing()) {
             std::fprintf(stderr,
-                         "[typed-loop] %s: b%u, %zu receivers, %zu typed ops, %zu length reads on entry, "
-                         "%zu integral indices\n",
-                         fn_.name.c_str(), loop.header, receivers.size(), typedOps, lengthReads.size(), integral);
+                         "[typed-loop] %s: b%u, %zu receivers, %zu typed ops, %zu array ops, %zu length reads on "
+                         "entry, %zu integral indices\n",
+                         fn_.name.c_str(), loop.header, receivers.size(), typedOps, arrayPlan ? arrayOps.size() : 0,
+                         lengthReads.size(), integral);
         }
         return true;
-    }
-
-    // INTEGRAL INDICES. A typed op whose index is proven a finite safe
-    // integer skips the round trip that tests it (il_pin.h,
-    // kElemFlagProvenIntegralIndex), and the shape that proves it is the one
-    // a counted loop over a view has: the index is `p` or `p + k`, where `p`
-    // is the copy header's parameter, enters as an integral constant, is only
-    // ever advanced by a non-negative integral constant, and the access is
-    // reached only through the true edge of `p < L` with `L` an entry
-    // `length` read — a pristine view's length, below 2^32. Then `p` is in
-    // [-2^31, 2^32) at the access, and `p + k` with |k| <= 2^31 is integral
-    // and exact. Returns how many ops were flagged.
-    size_t proveIntegralIndices(const Cfg& cfg, const std::vector<DefSite>& defs, il::BlockId header,
-                                const std::vector<il::ValueId>& lengths,
-                                const std::vector<std::pair<il::BlockId, uint32_t>>& sites) {
-        constexpr double kStepBound = 2147483648.0;
-        const auto defOf = [&](il::ValueId v) -> const il::Instruction* {
-            if (v >= defs.size() || defs[v].block == il::kNoBlock || defs[v].index == UINT32_MAX) return nullptr;
-            return &fn_.blocks[defs[v].block].instructions[defs[v].index];
-        };
-        const auto constIn = [&](il::ValueId v, double lo, double hi) {
-            const il::Instruction* d = defOf(v);
-            // The range first: it refuses NaN, and the cast is then defined.
-            return d && d->op == il::Op::ConstF64 && d->immF64 >= lo && d->immF64 <= hi &&
-                   d->immF64 == static_cast<double>(static_cast<int64_t>(d->immF64));
-        };
-        // `v` with block-parameter copies seen through: a parameter whose
-        // every incoming argument is the same value is that value.
-        const auto through = [&](il::ValueId v) {
-            for (int hops = 0; hops < 8; ++hops) {
-                if (v >= defs.size() || defs[v].block == il::kNoBlock || defs[v].index != UINT32_MAX) return v;
-                const il::BlockId b = defs[v].block;
-                if (b == header) return v;
-                const il::ValueId in = soleIncoming(cfg, b, v);
-                if (in == il::kNoValue) return v;
-                v = in;
-            }
-            return v;
-        };
-        const il::Block& h = fn_.blocks[header];
-        // p: a header parameter of the counted shape.
-        std::vector<il::ValueId> counters;
-        for (size_t k = 0; k < h.params.size(); ++k) {
-            const il::ValueId p = h.params[k].id;
-            if (h.params[k].type != il::Type::F64) continue;
-            bool ok = !cfg.preds[header].empty();
-            for (il::BlockId pred : cfg.preds[header]) {
-                const il::ValueId in = incomingArg(pred, header, k);
-                if (in == il::kNoValue) {
-                    ok = false;
-                } else if (!cfg.dominates(header, pred)) {
-                    ok &= constIn(in, -kStepBound, kStepBound);
-                } else {
-                    const il::Instruction* step = defOf(in);
-                    ok &= step && step->op == il::Op::Add && step->type == il::Type::F64 && step->operands.size() == 2 &&
-                          ((through(step->operands[0]) == p && constIn(step->operands[1], 0, kStepBound)) ||
-                           (through(step->operands[1]) == p && constIn(step->operands[0], 0, kStepBound)));
-                }
-                if (!ok) break;
-            }
-            if (ok) counters.push_back(p);
-        }
-        if (counters.empty()) return 0;
-        // The bounded edges: `br (cmp.lt|le p, unbox L), T, _` with T entered
-        // from nowhere else.
-        std::vector<std::pair<il::ValueId, il::BlockId>> bounded;  // (p, T)
-        for (const il::Block& blk : fn_.blocks) {
-            if (blk.instructions.empty() || !cfg.dominates(header, blk.id)) continue;
-            const il::Instruction& br = blk.instructions.back();
-            if (br.op != il::Op::Branch || cfg.preds[br.target.block].size() != 1) continue;
-            const il::Instruction* cmp = defOf(br.operands[0]);
-            if (!cmp || (cmp->op != il::Op::CmpLt && cmp->op != il::Op::CmpLe) || cmp->operands.size() != 2) continue;
-            const il::Instruction* bound = defOf(cmp->operands[1]);
-            if (!bound || bound->op != il::Op::Unbox || bound->operands.size() != 1 ||
-                std::find(lengths.begin(), lengths.end(), bound->operands[0]) == lengths.end()) {
-                continue;
-            }
-            const il::ValueId p = through(cmp->operands[0]);
-            if (std::find(counters.begin(), counters.end(), p) != counters.end()) bounded.push_back({p, br.target.block});
-        }
-        size_t flagged = 0;
-        for (const auto& [b, i] : sites) {
-            il::Instruction& op = fn_.blocks[b].instructions[i];
-            il::ValueId p = through(op.operands[1]);
-            if (const il::Instruction* d = defOf(p);
-                d && d->op == il::Op::Add && d->type == il::Type::F64 && d->operands.size() == 2) {
-                if (constIn(d->operands[1], -kStepBound, kStepBound)) {
-                    p = through(d->operands[0]);
-                } else if (constIn(d->operands[0], -kStepBound, kStepBound)) {
-                    p = through(d->operands[1]);
-                }
-            }
-            for (const auto& [q, t] : bounded) {
-                if (q == p && cfg.dominates(t, b)) {
-                    op.immI32 |= il::kElemFlagProvenIntegralIndex;
-                    ++flagged;
-                    break;
-                }
-            }
-        }
-        return flagged;
-    }
-
-    // The argument `pred` passes for parameter `k` of `to`, or kNoValue when
-    // it reaches `to` some other way (a handler) or on both edges differently.
-    il::ValueId incomingArg(il::BlockId pred, il::BlockId to, size_t k) const {
-        const il::Block& pb = fn_.blocks[pred];
-        if (pb.instructions.empty()) return il::kNoValue;
-        const il::Instruction& t = pb.instructions.back();
-        il::ValueId v = il::kNoValue;
-        const auto take = [&](const il::BlockTarget& tgt) {
-            if (tgt.block != to) return true;
-            if (k >= tgt.args.size()) return false;
-            if (v != il::kNoValue && v != tgt.args[k]) return false;
-            v = tgt.args[k];
-            return true;
-        };
-        if (t.op == il::Op::Jump) {
-            if (!take(t.target)) return il::kNoValue;
-        } else if (t.op == il::Op::Branch) {
-            if (!take(t.target) || !take(t.elseTarget)) return il::kNoValue;
-        }
-        return v;
-    }
-
-    // The one value every predecessor of `b` passes for its parameter `v`.
-    il::ValueId soleIncoming(const Cfg& cfg, il::BlockId b, il::ValueId v) const {
-        const il::Block& blk = fn_.blocks[b];
-        size_t k = 0;
-        while (k < blk.params.size() && blk.params[k].id != v) ++k;
-        if (k == blk.params.size() || cfg.preds[b].empty()) return il::kNoValue;
-        il::ValueId sole = il::kNoValue;
-        for (il::BlockId pred : cfg.preds[b]) {
-            const il::ValueId in = incomingArg(pred, b, k);
-            if (in == il::kNoValue || (sole != il::kNoValue && in != sole)) return il::kNoValue;
-            sole = in;
-        }
-        return sole;
     }
 
     il::BlockId appendBlockLike(il::BlockId like) {
@@ -711,10 +662,13 @@ private:
     // it; returns the copy of `header`.
     // `replaced` maps a value the loop computes to one the copy reads in its
     // place (an entry `length` read); its instruction is not copied.
+    // `arrayOps`, for the plain Array copy: the element ops it flags
+    // kElemFlagArrayReceiver, every other instruction copied as it is.
     template <typename GetOk, typename Sets, typename SetOk, typename GetIndex>
     il::BlockId copy(const std::vector<il::BlockId>& blocks, const std::vector<uint8_t>& copied,
                      il::BlockId header, int32_t kind, const GetOk& getOk, const Sets& sets, const SetOk& setOk,
-                     const GetIndex& getIndex, const std::unordered_map<il::ValueId, il::ValueId>& replaced) {
+                     const GetIndex& getIndex, const std::unordered_map<il::ValueId, il::ValueId>& replaced,
+                     const std::vector<std::pair<il::BlockId, uint32_t>>* arrayOps = nullptr) {
         std::vector<il::BlockId> bmap(fn_.blocks.size(), il::kNoBlock);
         const il::BlockId base = static_cast<il::BlockId>(fn_.blocks.size());
         for (size_t k = 0; k < blocks.size(); ++k) bmap[blocks[k]] = base + static_cast<il::BlockId>(k);
@@ -777,7 +731,27 @@ private:
                 inst.target = mapT(orig.target);
                 inst.elseTarget = mapT(orig.elseTarget);
                 if (inst.result != il::kNoValue) inst.result = mapV(orig.result);
-                if (orig.op == il::Op::ElemGet && typedOf.count(orig.result)) {
+                const NumCompare* cmp = nullptr;
+                for (size_t n = 0; numCompares_ != nullptr && n < numCompares_->size(); ++n) {
+                    if ((*numCompares_)[n].block == b && (*numCompares_)[n].index == i) cmp = &(*numCompares_)[n];
+                }
+                if (arrayOps && std::find(arrayOps->begin(), arrayOps->end(), std::make_pair(b, i)) != arrayOps->end()) {
+                    inst.immI32 |= il::kElemFlagArrayReceiver;
+                    typedSites_.push_back({out.id, static_cast<uint32_t>(out.instructions.size())});
+                } else if (cmp != nullptr) {
+                    il::Instruction c;
+                    c.op = orig.op == il::Op::RelLt   ? il::Op::CmpLt
+                           : orig.op == il::Op::RelLe ? il::Op::CmpLe
+                           : orig.op == il::Op::RelGt ? il::Op::CmpGt
+                                                      : il::Op::CmpGe;
+                    c.type = il::Type::Bool;
+                    c.result = inst.result;
+                    c.span = inst.span;
+                    c.operands = {il::kNoValue, il::kNoValue};
+                    c.operands[cmp->side] = cmp->unboxed;
+                    c.operands[1 - cmp->side] = mapV(cmp->number);
+                    inst = std::move(c);
+                } else if (orig.op == il::Op::ElemGet && typedOf.count(orig.result)) {
                     // %xf = elem.get.typed r, i ; %x = box.f64 %xf, for the
                     // uses the folded test leaves unreachable.
                     il::Instruction get = inst;
@@ -822,14 +796,23 @@ private:
         return bmap[header];
     }
 
+    // One copy's way in: its kind, its entry block, the receivers tested for
+    // it, and those also tested for the chain an entry `length` read
+    // answers from.
+    struct Entry {
+        int32_t kind;
+        il::BlockId block;
+        std::vector<il::ValueId> receivers;
+        std::vector<il::ValueId> pristine;
+        std::vector<il::ValueId> numbers;  // tested is.number after the receivers
+    };
+
     // The preheader's `jump h(args)` becomes a chain of tests, one block per
-    // (kind, receiver): every receiver of `kind` leads into that kind's entry
-    // block, and the first that is not falls through to the next kind and,
-    // last, to the original loop. A receiver in `pristine` is also tested for
-    // the chain its entry `length` read answers from.
-    void enterThrough(const Loop& loop, const std::vector<il::ValueId>& receivers,
-                      const std::vector<il::ValueId>& pristine,
-                      const std::vector<std::pair<int32_t, il::BlockId>>& entries) {
+    // (copy, receiver): every receiver of a copy's kind leads into that copy's
+    // entry block, and the first that is not falls through to the next copy
+    // and, last, to the original loop. A view kind's test is is.typed_array,
+    // the Array copy's is.array.
+    void enterThrough(const Loop& loop, const std::vector<Entry>& entries) {
         il::Block& pre = fn_.blocks[loop.preheader];
         const il::Instruction jump = pre.instructions.back();
         pre.instructions.pop_back();
@@ -837,46 +820,100 @@ private:
         const uint32_t region = pre.copyRegion;
         const il::BlockId handler = pre.handler;
 
-        const size_t tests = entries.size() * receivers.size();
-        std::vector<il::BlockId> testBlock(tests);
-        testBlock[0] = loop.preheader;
-        for (size_t t = 1; t < tests; ++t) {
-            il::Block blk;
-            blk.id = static_cast<il::BlockId>(fn_.blocks.size());
-            blk.copyClass = cls;
-            blk.copyRegion = region;
-            blk.handler = handler;
-            testBlock[t] = blk.id;
-            fn_.blocks.push_back(std::move(blk));
+        std::vector<std::vector<il::BlockId>> test(entries.size());
+        for (size_t e = 0; e < entries.size(); ++e) {
+            for (size_t r = 0; r < entries[e].receivers.size() + entries[e].numbers.size(); ++r) {
+                if (e == 0 && r == 0) {
+                    test[e].push_back(loop.preheader);
+                    continue;
+                }
+                il::Block blk;
+                blk.id = static_cast<il::BlockId>(fn_.blocks.size());
+                blk.copyClass = cls;
+                blk.copyRegion = region;
+                blk.handler = handler;
+                test[e].push_back(blk.id);
+                fn_.blocks.push_back(std::move(blk));
+            }
         }
         for (size_t e = 0; e < entries.size(); ++e) {
-            for (size_t r = 0; r < receivers.size(); ++r) {
-                const size_t t = e * receivers.size() + r;
-                il::Instruction test = jump;
-                test.op = il::Op::IsTypedArray;
-                test.type = il::Type::Bool;
-                test.result = static_cast<il::ValueId>(fn_.valueCount++);
-                test.operands = {receivers[r]};
-                test.immI32 = entries[e].first;
-                if (std::find(pristine.begin(), pristine.end(), receivers[r]) != pristine.end()) {
-                    test.immI32 |= il::kTypedArrayPristineLength;
+            const Entry& en = entries[e];
+            const size_t n = en.receivers.size() + en.numbers.size();
+            for (size_t r = 0; r < n; ++r) {
+                il::Instruction t = jump;
+                const bool number = r >= en.receivers.size();
+                const il::ValueId v = number ? en.numbers[r - en.receivers.size()] : en.receivers[r];
+                t.op = number ? il::Op::IsNumber : en.kind == kKindArray ? il::Op::IsArray : il::Op::IsTypedArray;
+                t.type = il::Type::Bool;
+                t.result = static_cast<il::ValueId>(fn_.valueCount++);
+                t.operands = {v};
+                t.immI32 = number || en.kind == kKindArray ? 0 : en.kind;
+                if (!number && std::find(en.pristine.begin(), en.pristine.end(), v) != en.pristine.end()) {
+                    t.immI32 |= il::kTypedArrayPristineLength;
                 }
-                test.target = {};
-                test.elseTarget = {};
+                t.target = {};
+                t.elseTarget = {};
                 il::Instruction br = jump;
                 br.op = il::Op::Branch;
-                br.operands = {test.result};
-                br.target = il::BlockTarget{r + 1 < receivers.size() ? testBlock[t + 1] : entries[e].second, {}};
-                br.elseTarget = e + 1 < entries.size() ? il::BlockTarget{testBlock[(e + 1) * receivers.size()], {}}
+                br.operands = {t.result};
+                br.target = il::BlockTarget{r + 1 < n ? test[e][r + 1] : en.block, {}};
+                br.elseTarget = e + 1 < entries.size() ? il::BlockTarget{test[e + 1][0], {}}
                                                        : il::BlockTarget{loop.header, jump.target.args};
-                fn_.blocks[testBlock[t]].instructions.push_back(std::move(test));
-                fn_.blocks[testBlock[t]].instructions.push_back(std::move(br));
+                fn_.blocks[test[e][r]].instructions.push_back(std::move(t));
+                fn_.blocks[test[e][r]].instructions.push_back(std::move(br));
             }
         }
     }
 
+    // A bound compare of the Array copy: the instruction, which operand is
+    // the invariant one, the f64 the other was boxed from, that operand's
+    // value on entry, and its unbox in the copy's entry block.
+    struct NumCompare {
+        il::BlockId block;
+        uint32_t index;
+        uint32_t side;
+        il::ValueId number;
+        il::ValueId entry;
+        il::ValueId unboxed;
+    };
+
+    // What dynamic `v` is on entry to the loop when it is the same value on
+    // every iteration: itself when defined outside the loop, the preheader's
+    // argument for a header parameter every back edge passes on unchanged
+    // (through block-parameter copies); else kNoValue.
+    il::ValueId invariantEntry(const Cfg& cfg, const Loop& loop, const std::vector<DefSite>& defs,
+                               const std::vector<il::Type>& types, il::ValueId v) const {
+        if (v >= types.size() || types[v] != il::Type::Dynamic || v >= defs.size()) return il::kNoValue;
+        if (defs[v].block == il::kNoBlock || !loop.inLoop[defs[v].block]) return v;
+        if (defs[v].block != loop.header || defs[v].index != UINT32_MAX) return il::kNoValue;
+        const il::Block& h = fn_.blocks[loop.header];
+        size_t k = 0;
+        while (k < h.params.size() && h.params[k].id != v) ++k;
+        if (k == h.params.size()) return il::kNoValue;
+        il::ValueId entry = il::kNoValue;
+        for (il::BlockId pred : cfg.preds[loop.header]) {
+            il::ValueId a = incomingArg(fn_, pred, loop.header, k);
+            if (!loop.inLoop[pred]) {
+                if (pred != loop.preheader) return il::kNoValue;
+                entry = a;
+                continue;
+            }
+            for (int hops = 0; hops < 8 && a != v && a != il::kNoValue; ++hops) {
+                if (a >= defs.size() || defs[a].block == il::kNoBlock || defs[a].index != UINT32_MAX ||
+                    defs[a].block == loop.header || !loop.inLoop[defs[a].block]) {
+                    return il::kNoValue;
+                }
+                a = soleIncoming(fn_, cfg, defs[a].block, a);
+            }
+            if (a != v) return il::kNoValue;
+        }
+        return entry != il::kNoValue && entry < types.size() && types[entry] == il::Type::Dynamic ? entry
+                                                                                                  : il::kNoValue;
+    }
+
     il::Function& fn_;
     const std::vector<std::string>& keys_;
+    const std::vector<NumCompare>* numCompares_ = nullptr;
     std::vector<il::BlockId> cold_;
     // The typed ops the last copy() made, by position in the copy.
     std::vector<std::pair<il::BlockId, uint32_t>> typedSites_;

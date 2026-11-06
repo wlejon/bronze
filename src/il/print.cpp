@@ -555,6 +555,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::ElemGet:
                         out += "elem.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        if (inst.immI32 != 0) out += ", " + std::to_string(inst.immI32);
                         break;
                     case Op::ElemSet:
                         out += "elem.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

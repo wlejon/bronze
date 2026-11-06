@@ -43,7 +43,7 @@ bool transparent(const il::Instruction& inst, const std::vector<il::Type>& types
         case il::Op::ConstF64: case il::Op::ConstI32: case il::Op::ConstBool:
         case il::Op::ConstUndefined: case il::Op::ConstNull:
         case il::Op::Box: case il::Op::StrictEq: case il::Op::IsNullish:
-        case il::Op::IsNumber: case il::Op::IsDenseArray: case il::Op::IsTypedArray:
+        case il::Op::IsNumber: case il::Op::IsDenseArray: case il::Op::IsTypedArray: case il::Op::IsArray:
         case il::Op::IsNumberArray: case il::Op::IsShape: case il::Op::TypeOf:
         case il::Op::Jump: case il::Op::Branch: case il::Op::FunctionRef:
         case il::Op::KeepAlive: case il::Op::MethodIcIs: case il::Op::AccessorIcIs:

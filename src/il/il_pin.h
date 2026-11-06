@@ -57,8 +57,14 @@ inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 //   - `kElemFlagProvenInBounds`: the index operand is statically proven to
 //     satisfy `0 <= idx < view.length` on an unmutated TypedArray view,
 //     licensing the backend to skip the unsigned bounds check.
+//   - `kElemFlagArrayReceiver` (on `ElemGet` / `ElemSet`): the receiver is
+//     an Array, tested by a dominating `is.array` (il_op.h), so the inline
+//     path skips its tag and header compares; `kElemFlagProvenIntegralIndex`
+//     beside it says the boxed index is an integral Number. On `ElemSet` the
+//     flags sit above the write mode (il.h kWriteModeMask).
 inline constexpr int32_t kElemKindMask = 0xFFFF;
 inline constexpr int32_t kElemFlagProvenIntegralIndex = 1 << 16;
 inline constexpr int32_t kElemFlagProvenInBounds = 1 << 17;
+inline constexpr int32_t kElemFlagArrayReceiver = 1 << 18;
 
 }  // namespace bronze::il

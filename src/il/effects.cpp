@@ -114,6 +114,7 @@ bool canThrow(const Instruction& inst) {
         // Two loads off the receiver's header, the receiver's guarded by its
         // tag.
         case Op::IsTypedArray:
+        case Op::IsArray:
         // Header loads, and on a miss a scan of at most
         // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements that raises nothing.
         case Op::IsNumberArray:
@@ -274,6 +275,7 @@ bool canCollect(const Instruction& inst) {
         case Op::AccessorIcIs:
         case Op::IsShape:
         case Op::IsTypedArray:
+        case Op::IsArray:
         // The claim's scan rewrites an Int32 box as a double in place: a
         // store of a Number, which allocates nothing.
         case Op::IsNumberArray:

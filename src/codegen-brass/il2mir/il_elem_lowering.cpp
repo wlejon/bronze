@@ -232,10 +232,11 @@ Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
 
 } // namespace
 
-Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
+Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index, int64_t flags) {
     if (!enable_inlined_fastpaths_) {
         return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
     }
+    if (elem_array_receiver(flags)) return lower_elem_get_array(b, obj, index, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -462,12 +463,14 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
 //    else — Float16, the BigInt kinds, a non-Number value, NaN or a huge
 //    magnitude into an integer kind, a fraction into Uint8Clamped, any index
 //    out of bounds (a discard the helper makes) — takes the helper.
-void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
+void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict,
+                                            int64_t flags) {
     Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
     if (!enable_inlined_fastpaths_) {
         b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
         return;
     }
+    if (elem_array_receiver(flags)) return lower_elem_set_array(b, obj, index, val, strict, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -961,8 +964,9 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
     return result;
 }
 
-void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok) {
-    const ElemIndex idx = elem_index(b, index);
+void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok,
+                                                   bool proven_integral) {
+    const ElemIndex idx = elem_index(b, index, proven_integral);
     out_i64 = idx.i64;
     out_ok = idx.ok;
 }

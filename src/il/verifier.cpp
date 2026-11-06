@@ -868,8 +868,9 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                 // claim on one would answer it with a Set. Write modes past
                 // the three are no mode at all.
                 if ((inst.op == Op::PropSet || inst.op == Op::ElemSet) &&
-                    (inst.immI32 < kWriteSloppy || inst.immI32 > kWriteLiteralElement ||
-                     (inst.op == Op::ElemSet && inst.immI32 == kWriteLiteralElement) ||
+                    (writeMode(inst) > kWriteLiteralElement ||
+                     (inst.immI32 & ~(inst.op == Op::ElemSet ? kElemSetFlagBits : kWriteModeMask)) != 0 ||
+                     (inst.op == Op::ElemSet && writeMode(inst) == kWriteLiteralElement) ||
                      (isDefineWrite(inst) && (inst.directTarget != Instruction::kNoDirectTarget ||
                                               inst.staticSlot != Instruction::kNoStaticSlot)))) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " in write mode " +

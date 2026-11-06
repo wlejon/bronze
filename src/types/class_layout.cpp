@@ -81,6 +81,42 @@ public:
     bool sawThisReflection = false;
     // A name introduced for the first time under a branch that violates layout.
     bool sawConditionalNewField = false;
+    // `this` used as a VALUE — `const _this = this`, `f(this)`, `[this]` —
+    // rather than as the object of a member access or a method call. Once it
+    // has escaped, any call may install fields through the alias
+    // (WebGLRenderer's initGLContext writes `_this.capabilities` and six more
+    // between `toneMappingExposure` and `xr`), so `openAt` is how many names
+    // were installed at the first call after the escape: the order is known
+    // up to there and not past it.
+    bool thisEscaped = false;
+    size_t openAt = SIZE_MAX;
+
+    void visit(const ast::ThisExpr&) override { thisEscaped = true; }
+    // `return this` (a chained setter inlined from the constructor) hands
+    // `this` back to its caller, which already has it; a comparison reads it.
+    // The stamp checks the prefix at run time, so what is missed here costs a
+    // stamp, never a wrong slot.
+    void visit(const ast::ReturnStmt& n) override {
+        if (n.value && !isThis(n.value.get())) n.value->accept(*this);
+    }
+    void visit(const ast::MemberAccess& n) override {
+        if (!isThis(n.object.get())) n.object->accept(*this);
+    }
+    void visit(const ast::IndexAccess& n) override {
+        if (!isThis(n.object.get())) n.object->accept(*this);
+        n.index->accept(*this);
+    }
+    void visit(const ast::NewExpr& n) override {
+        Walker::visit(n);
+        noteCallAfterEscape();
+    }
+    void visit(const ast::TaggedTemplate& n) override {
+        Walker::visit(n);
+        noteCallAfterEscape();
+    }
+    void noteCallAfterEscape() {
+        if (thisEscaped) openAt = std::min(openAt, names.size());
+    }
 
     void visit(const ast::FunctionExpr& n) override {
         if (n.isArrow) Walker::visit(n);
@@ -151,6 +187,13 @@ public:
             branched([&] { n.rhs->accept(*this); });
             return;
         }
+        const bool compares = n.op == ast::BinaryOp::Eq || n.op == ast::BinaryOp::StrictEq ||
+                              n.op == ast::BinaryOp::Ne || n.op == ast::BinaryOp::StrictNe;
+        if (compares) {
+            if (!isThis(n.lhs.get())) n.lhs->accept(*this);
+            if (!isThis(n.rhs.get())) n.rhs->accept(*this);
+            return;
+        }
         Walker::visit(n);
     }
     void visit(const ast::Unary& n) override {
@@ -169,9 +212,17 @@ public:
         Walker::visit(n);
     }
     void visit(const ast::Call& n) override {
+        // The modelled reflections name `this` as an argument without letting
+        // it escape: what they install is counted here.
+        const bool escapedBefore = thisEscaped;
+        const size_t openBefore = openAt;
+        const size_t installedBefore = names.size();
         if (const auto* defined = modellableThisDefine(n)) {
             for (const auto& entry : *defined) add(entry.first, entry.second);
             Walker::visit(n);
+            thisEscaped = escapedBefore;
+            openAt = openBefore;
+            noteCallAfterEscape();
             return;
         }
         if (const auto* accessors = modellableThisAccessor(n)) {
@@ -181,6 +232,9 @@ public:
                 }
             }
             Walker::visit(n);
+            thisEscaped = escapedBefore;
+            openAt = openBefore;
+            noteCallAfterEscape();
             return;
         }
         if (isThisReflectionCall(n)) sawThisReflection = true;
@@ -203,6 +257,9 @@ public:
             noteThisCall(sm->property);
         }
         Walker::visit(n);
+        // An escaped `this` may gain fields anywhere inside the call,
+        // including in front of what an inlined method body installed.
+        if (thisEscaped) openAt = std::min(openAt, installedBefore);
     }
 
     // Callee name -> how many fields were installed when the call was made.
@@ -257,6 +314,8 @@ private:
         sawUnmodellableWrite = sawUnmodellableWrite || other.sawUnmodellableWrite;
         sawThisReflection = sawThisReflection || other.sawThisReflection;
         sawConditionalNewField = sawConditionalNewField || other.sawConditionalNewField;
+        thisEscaped = thisEscaped || other.thisEscaped;
+        openAt = std::min(openAt, other.openAt);
         for (const auto& lf : other.lateFields) {
             if (std::find(lateFields.begin(), lateFields.end(), lf) == lateFields.end()) {
                 lateFields.push_back(lf);
@@ -599,6 +658,7 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                 cl.lateFields = base.lateFields;
                 cl.lateMethods = base.lateMethods;
                 cl.lateCallTail = base.lateCallTail;
+                cl.openTail = base.openTail;
             }
         }
     } else if (f != nullptr && f->hasSuperExpr) {
@@ -623,8 +683,17 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     }
 
     if (proven && f != nullptr && f->methods != nullptr) {
-        auto add = [&fields, &fieldWritable](const std::string& name, bool isWritable) {
-            if (std::find(fields.begin(), fields.end(), name) == fields.end()) {
+        // Past an open tail (the base's or this constructor's own, below) a
+        // new name's slot is unknown: it is a late field.
+        auto add = [&fields, &fieldWritable, &cl](const std::string& name, bool isWritable) {
+            if (std::find(fields.begin(), fields.end(), name) != fields.end()) return;
+            if (cl.openTail) {
+                if (std::find(cl.lateFields.begin(), cl.lateFields.end(), name) == cl.lateFields.end()) {
+                    cl.lateFields.push_back(name);
+                }
+                return;
+            }
+            {
                 fields.push_back(name);
                 fieldWritable.push_back(isWritable);
             }
@@ -659,9 +728,15 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                     proven = false;
                     refusal = "constructor assigns a field conditionally";
                 } else {
+                    // Past `openAt` the slots are unknown: those fields are
+                    // the class's, but land wherever the escaped `this`'s
+                    // writers put them, so they are late fields, and the
+                    // order is open after the last one claimed.
                     for (size_t i = 0; i < walker.names.size(); ++i) {
+                        if (i == walker.openAt) cl.openTail = true;
                         add(walker.names[i], walker.writable[i]);
                     }
+                    if (walker.openAt != SIZE_MAX) cl.openTail = true;
                     for (const auto& lf : walker.lateFields) {
                         if (std::find(cl.lateFields.begin(), cl.lateFields.end(), lf) ==
                             cl.lateFields.end()) {

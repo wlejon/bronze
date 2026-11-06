@@ -338,10 +338,13 @@ public:
                                                             : std::string_view();
     }
 
+    // `flags` are the element flags (il_pin.h): with kElemFlagArrayReceiver
+    // the receiver is a proven Array (il_elem_array.cpp).
     Value* lower_elem_get(
         Builder& b,
         Value* obj,
-        Value* index
+        Value* index,
+        int64_t flags = 0
     );
 
     Value* lower_elem_get_typed(
@@ -358,8 +361,14 @@ public:
         Value* obj,
         Value* index,
         Value* val,
-        uint32_t strict
+        uint32_t strict,
+        int64_t flags = 0
     );
+    // The proven-Array forms and `is.array` (il_elem_array.cpp).
+    static bool elem_array_receiver(int64_t flags);
+    Value* lower_elem_get_array(Builder& b, Value* obj, Value* index, int64_t flags);
+    void lower_elem_set_array(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict, int64_t flags);
+    Value* lower_is_array(Builder& b, Value* obj);
 
     void lower_elem_set_typed(
         Builder& b,
@@ -488,7 +497,8 @@ public:
                               Value*& hit, Value*& slot_word);
 
     // Helpers for batched element-offset runs (il_lowering_elem_run.cpp).
-    void emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok);
+    void emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok,
+                               bool proven_integral = false);
     Value* unbox_known_number(Builder& b, Value* val, Value*& out_ok);
     Value* box_number(Builder& b, Value* f64_val);
     void object_payload(Builder& b, Value* obj, Value*& out_ptr, Value*& out_is_obj);

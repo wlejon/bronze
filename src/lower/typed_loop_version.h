@@ -69,6 +69,19 @@ namespace bronze::lower {
 // big, which sits inside a handler's region, or which is a guarded region's
 // SLOW copy is left alone.
 //
+// PLAIN ARRAYS. The same loop's element ops — every `elem.get` / `elem.set`
+// (not a define) on a receiver defined outside the loop by a boxed Number
+// index, whatever its value's uses — get one more copy, entered behind one
+// `is.array` test per receiver after the view kinds' tests failed, in which
+// each is flagged kElemFlagArrayReceiver (il_pin.h): an Array's heap kind is
+// as fixed as a view's, so the copy's ops skip the tag and header compares
+// the generic path makes per access, and keep every test that changes with
+// the array (bounds, holes, the props word), whatever the loop calls. A
+// counter index in it is flagged kElemFlagProvenIntegralIndex with no bound
+// (typed_loop_index_proof.h says why none is owed). No copy is made when a
+// typed op anywhere names one of the receivers: then it is a view.
+// `three.js`'s uniform cache (`copyArray`, `arraysEqual`) is what it is for.
+//
 // `BRONZE_TYPED_LOOP_VERSION_TRACE=1` prints one line per loop versioned.
 // `cold` receives the blocks of each original loop versioned, by function
 // name (applyTypedEntries, which runs in between, adds functions): the

@@ -93,6 +93,15 @@ struct ClassLayout {
     // and installs anything of its own.
     bool lateCallTail = false;
 
+    // The constructor lets `this` escape (`const _this = this`, `f(this)`)
+    // and calls something after: from that call on, fields may be installed
+    // through the alias in an order nothing here sees. `fields` stops at the
+    // call, and the constructor's later `this.x = ...` names are late fields.
+    // A class extending this one inherits the open tail: its own fields are
+    // late fields too. The family stamp checks the prefix at run time, so a
+    // name missed here costs a stamp, never a wrong slot.
+    bool openTail = false;
+
     // Some other class in the program declares `extends` this one. Its
     // instances are then not the only instances its METHODS run on, and `this`
     // inside them holds a subclass's shape — a different shape, even though the
