@@ -15,9 +15,10 @@ namespace bronze {
 
 std::atomic<uint64_t> g_shapeTransitions{0};
 
-Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
+Shape* Shape::createRoot(NonMovingArena& arena, Value proto, uint32_t inlineSlots) {
     Shape* root = arena.create<Shape>();
     root->prototype = proto;
+    root->setInlineSlots(inlineSlots);
     // This is the ONE moment an object becomes a prototype — every route to one
     // (a class, `Object.create`, `Object.setPrototypeOf`) ends in a root shape
     // carrying it — so it is where the mark is applied rather than at each of
@@ -118,6 +119,8 @@ void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     }
     Shape* fresh = arena.create<Shape>();
     fresh->prototype = proto;
+    // The object keeps its storage, so its new root keeps the capacity.
+    fresh->setInlineSlots(protoShape->inline_slots);
     fresh->used_as_prototype = true;
     runtime::rtRegisterRootShape(fresh);
     runtime::noteShapeLeave(protoShape, fresh, ShapeLeave::BecomePrototype);
@@ -199,9 +202,9 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     if (next_shape != nullptr) {
         out_slot = next_shape->slot_index;
     } else {
-        uint32_t next_slot = nextSlotIndex();
+        uint32_t next_slot = nextSlotIndex(is_accessor ? 2u : 1u);
 
-        if (next_slot + (is_accessor ? 1u : 0u) >= kDictionaryThreshold) {
+        if (slotsBefore(next_slot, inline_slots) + (is_accessor ? 1u : 0u) >= kDictionaryThreshold) {
             // The add paths (setProp, defineAccessor) convert the object to
             // dictionary mode before they get here, so this is a tripwire
             // for a caller that minted a transition without asking.

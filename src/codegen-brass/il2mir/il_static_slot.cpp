@@ -240,11 +240,11 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
 // before the shape word was stored (setProp's ensureSlots ordering), and the
 // guard has agreed the receiver carries such a shape.
 Value* PropertyLoweringHelper::static_slot_base(Builder& b, Value* ptr, uint32_t slot, int32_t& off) {
-    if (slot < kBronzeObjInlineSlots) {
+    if (slot < kBronzeObjOverflowSlot) {
         off = static_cast<int32_t>(kBronzeObjSlotsOffset + slot * 8);
         return ptr;
     }
-    off = static_cast<int32_t>(kBronzeHdrBytes + (slot - kBronzeObjInlineSlots) * 8);
+    off = static_cast<int32_t>(kBronzeHdrBytes + (slot - kBronzeObjOverflowSlot) * 8);
     return b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset), iconst(b, kPayloadMask));
 }
 

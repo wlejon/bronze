@@ -87,6 +87,44 @@ TEST_CASE("ObjectHeader property access and inline cache") {
     CHECK(res_a_ic.asNumber() == 10.0);
 }
 
+TEST_CASE("a root's inline capacity sizes its objects and numbers overflow slots from the split") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    constexpr uint32_t kCap = 8;
+    Shape* root = Shape::createRoot(arena, Value::fromUndefined(), kCap);
+    CHECK(root->inline_slots == kCap);
+    CHECK((root->bare_header >> 32) == BRONZE_ABI_PLAIN_OBJECT_BYTES + 8 * (kCap - ObjectHeader::kInlineSlots));
+    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena, root));
+    CHECK(obj.get()->isBarePlain());
+
+    constexpr uint32_t kProps = 20;
+    for (uint32_t i = 0; i < kProps; ++i) {
+        std::string name = "q" + std::to_string(i);
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, name)));
+        Rooted<Value> val(Value::fromDouble(static_cast<double>(i) + 0.5));
+        obj = obj.get()->setProp(heap, arena, key, val);
+    }
+    // The first kCap keys inline, the rest numbered from the overflow split.
+    CHECK(obj.get()->shape->slot_index == ObjectHeader::kOverflowSlot + (kProps - 1 - kCap));
+    CHECK(obj.get()->shape->inline_slots == kCap);
+    CHECK(obj.get()->overflowCapacity() >= kProps - kCap);
+    CHECK(obj.get()->isBarePlain());
+    for (uint32_t i = 0; i < kProps; ++i) {
+        std::string name = "q" + std::to_string(i);
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, name)));
+        CHECK(obj.get()->getProp(heap, key).asNumber() == static_cast<double>(i) + 0.5);
+    }
+    // A capacity never goes below the default nor above the split.
+    CHECK(Shape::clampInlineSlots(0) == ObjectHeader::kInlineSlots);
+    CHECK(Shape::clampInlineSlots(2) == ObjectHeader::kInlineSlots);
+    CHECK(Shape::clampInlineSlots(40) == ObjectHeader::kOverflowSlot);
+    // An accessor pair never straddles the inline end.
+    CHECK(Shape::placeSlot(kCap - 1, 2, kCap) == ObjectHeader::kOverflowSlot);
+    CHECK(Shape::placeSlot(kCap - 2, 2, kCap) == kCap - 2);
+}
+
 TEST_CASE("properties beyond the inline slots spill to the overflow block") {
     NonMovingArena arena;
     Heap heap;

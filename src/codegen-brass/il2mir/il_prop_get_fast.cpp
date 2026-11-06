@@ -51,9 +51,9 @@ Value* object_tagged(Builder& b, Value* word) {
 
 // PropertyLoweringHelper::load_slot with the overflow block's tag shifted off.
 Value* load_slot(Builder& b, Value* ptr, Value* slot) {
-    Value* is_inline = b.build_ult(slot, imm(b, kBronzeObjInlineSlots));
+    Value* is_inline = b.build_ult(slot, imm(b, kBronzeObjOverflowSlot));
     Value* overflow = payload(b, b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset));
-    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjInlineSlots * 8 - kBronzeHdrBytes;
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjOverflowSlot * 8 - kBronzeHdrBytes;
     Value* base = b.build_select(is_inline, ptr, b.build_sub(overflow, imm(b, kShift)));
     return b.build_load_indexed(Type::i64(), base, slot, 8, kBronzeObjSlotsOffset);
 }

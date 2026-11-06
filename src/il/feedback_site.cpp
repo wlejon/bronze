@@ -1,5 +1,7 @@
 #include "il/feedback_site.h"
 
+#include "abi/bronze_abi.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -247,7 +249,9 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
     h.u64((fn.needsEnv ? 1u : 0u) | (fn.needsThis ? 2u : 0u) | (fn.needsArguments ? 4u : 0u) |
           (fn.isStrict ? 8u : 0u) | (fn.isGenerator ? 16u : 0u) | (fn.hasRestParam ? 32u : 0u));
     h.u64(static_cast<uint64_t>(static_cast<int64_t>(fn.coroKind)));
-    h.u64(fn.fnFlags);
+    // Not the inline-slot prediction (BRONZE_ABI_FN_INLINE_SLOTS_SHIFT): a
+    // sizing hint that changes no site, so a profile outlives its retuning.
+    h.u64(fn.fnFlags & ~(uint32_t{BRONZE_ABI_FN_INLINE_SLOTS_MASK} << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT));
     if (fn.typedOrigin != Function::kNoTypedOrigin) h.str(fnName(fn.typedOrigin));
     h.u64(fn.blocks.size());
     for (const Block& block : fn.blocks) {
@@ -269,7 +273,8 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
             uint64_t f64bits = 0;
             std::memcpy(&f64bits, &inst.immF64, sizeof f64bits);
             h.u64(f64bits);
-            h.u64(static_cast<uint32_t>(inst.immI32));
+            // create.object's immI32 is its inline-slot prediction, as above.
+            h.u64(inst.op == Op::CreateObject ? 0u : static_cast<uint32_t>(inst.immI32));
             h.u64(static_cast<uint64_t>(inst.boxType));
             key(inst.keyIndex);
             if (namesCallee(inst.op)) h.str(fnName(inst.calleeIndex));

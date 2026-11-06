@@ -2,6 +2,7 @@
 
 #include "abi/bronze_abi.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -141,10 +142,12 @@ void markTransitionRuns(il::Module& module) {
                 // A literal's keys start at slot 0 when nothing before the run
                 // has touched it since it was made in this block.
                 bool freshLiteral = false;
+                size_t creator = 0;
                 if (def != facts.defOp.end() && def->second == il::Op::CreateObject) {
                     for (size_t d = i; d-- > 0;) {
                         if (insts[d].result == recv) {
                             freshLiteral = true;
+                            creator = d;
                             break;
                         }
                         if (usesValue(insts[d], recv)) break;
@@ -179,6 +182,16 @@ void markTransitionRuns(il::Module& module) {
                 }
                 if (!consecutive && !freshLiteral) continue;
 
+                if (freshLiteral) {
+                    // The run's slots are 0.. on the literal's root, and the
+                    // runtime publishes only a run whose slots are
+                    // contiguous: every one inline, so the literal asks for
+                    // that many (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT).
+                    il::Instruction& made = insts[creator];
+                    const auto want = static_cast<int32_t>(
+                        std::min<size_t>(sites.size(), BRONZE_ABI_OBJ_OVERFLOW_SLOT));
+                    if (want > BRONZE_ABI_OBJ_INLINE_SLOTS && made.immI32 < want) made.immI32 = want;
+                }
                 il::Instruction& head = insts[i];
                 head.transitionRunCell = module.staticSiteCount;
                 head.transitionRunLength = static_cast<uint32_t>(last - i + 1);

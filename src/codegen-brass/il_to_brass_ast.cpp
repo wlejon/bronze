@@ -342,7 +342,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::Construct;
             out.param_count = inst.operands.empty() ? 0 : static_cast<uint32_t>(inst.operands.size() - 1);
             break;
-        case il::Op::CreateObject: out.op = il2mir::BronzeOp::CreateObject; break;
+        case il::Op::CreateObject:
+            out.op = il2mir::BronzeOp::CreateObject;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::CoroStart:
             out.op = il2mir::BronzeOp::CoroStart;
             out.callee_name = ctx.fnName(inst.calleeIndex);

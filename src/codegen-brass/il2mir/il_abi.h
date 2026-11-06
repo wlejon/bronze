@@ -69,7 +69,7 @@ constexpr uint32_t kBronzeIcSiteSize = BRONZE_ABI_IC_SITE_SIZE;
 // inline property paths address an overflow slot through.
 constexpr int32_t kBronzeObjOverflowOffset = BRONZE_ABI_OBJ_OVERFLOW_OFFSET;
 constexpr int32_t kBronzeObjSlotsOffset = BRONZE_ABI_OBJ_SLOTS_OFFSET;
-constexpr int64_t kBronzeObjInlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+constexpr int64_t kBronzeObjOverflowSlot = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
 constexpr int64_t kBronzeHdrBytes = BRONZE_ABI_HDR_BYTES;
 // Every Number's bits are at most this; every other value's are above it.
 constexpr uint64_t kBronzeNumberMaxBits = BRONZE_ABI_NUMBER_MAX_BITS;

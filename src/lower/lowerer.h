@@ -512,6 +512,8 @@ private:
                                     il::Function& ilFn, bool bindsOwnName = false,
                                     const std::string& inferredName = {});
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
+    // The inline capacity predicted for `name`'s instances (lower_class.cpp).
+    uint32_t classInstanceInlineSlots(const std::string& name) const;
     std::optional<Value> lowerSuperLookupStart(const ast::SuperMember& sm, il::Function& ilFn);
     bool emitDerivedCtorReturn(Value val, const ast::ReturnStmt* site, il::Function& ilFn);
 

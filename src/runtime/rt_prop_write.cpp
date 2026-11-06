@@ -341,7 +341,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         fn->prototype = valVal;
         // Instances made from here on get the new prototype; ones already made
         // keep their shape, and so keep the old one.
-        fn->instance_shape = rtNewRootShape(valVal);
+        fn->instance_shape = rtNewRootShape(valVal, rtInstanceInlineSlots(fn));
         return;
     }
 

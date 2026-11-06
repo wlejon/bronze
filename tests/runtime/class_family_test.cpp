@@ -117,13 +117,20 @@ TEST_CASE("class family stamps the most specific matching layout") {
     CHECK(mod.base == BRONZE_ABI_FAMILY_FIRST_ID);
     CHECK(classFamilyCount() == 4);
 
-    Shape* root = Shape::createRoot(arena);
+    // Room inline for every field, as the compiler sizes a class's instances
+    // (rt_state.h rtInstanceInlineSlots): a family claims position i at slot
+    // i, which past the inline Values only holds from the split on.
+    Shape* root = Shape::createRoot(arena, Value::fromUndefined(), 8);
     // The deepest full prefix match wins, which is what lets one stamp serve
     // both the base's sites and the subclass's own.
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, base)) == mod.base + 0);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, mid)) == mod.base + 1);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, leaf)) == mod.base + 2);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, sib)) == mod.base + 3);
+    // At four inline Values the leaf's fifth field is slot 16, not 4: the leaf
+    // is no longer a prefix, and the shape stamps as the deepest class that is.
+    Shape* narrow = Shape::createRoot(arena);
+    CHECK(classFamilyIdFor(shapeWith(arena, heap, narrow, leaf)) == mod.base + 1);
 
     // A LATE field — one a method installs after construction — leaves the
     // prefix intact, so the shape is still the class it was.

@@ -236,10 +236,10 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
         uint32_t slot = static_cast<uint32_t>(slotWord);
         uint32_t depth = static_cast<uint32_t>(slotWord >> 32);
         if (depth != 0) return "transition_inherited_slot";
-        if (slot >= BRONZE_ABI_OBJ_INLINE_SLOTS) {
+        if (slot >= BRONZE_ABI_OBJ_OVERFLOW_SLOT) {
             if (!obj->overflow.isObject()) return "transition_overflow_alloc_needed";
             uint32_t cap = obj->overflowCapacity();
-            if (slot - BRONZE_ABI_OBJ_INLINE_SLOTS >= cap) return "transition_overflow_growth_needed";
+            if (slot - BRONZE_ABI_OBJ_OVERFLOW_SLOT >= cap) return "transition_overflow_growth_needed";
         }
         if (ic->cached_shape->slot_index != slot) {
             return "transition_key_mismatch";

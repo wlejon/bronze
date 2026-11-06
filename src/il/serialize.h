@@ -34,7 +34,9 @@ namespace bronze::il {
 // 19: Block::cold (il.h), a profile-guided region's slow copy.
 // 20: truthHint (il.h), from a type-feedback profile.
 // 21: icChain (il.h), from a type-feedback profile.
-inline constexpr uint32_t kFormatVersion = 22;
+// 23: create.object's immI32 and fnFlags bits 8..12 carry an inline-slot
+//     prediction (BRONZE_ABI_FN_INLINE_SLOTS_SHIFT); slots split at 16.
+inline constexpr uint32_t kFormatVersion = 23;
 
 std::string serializeModule(const Module& module);
 

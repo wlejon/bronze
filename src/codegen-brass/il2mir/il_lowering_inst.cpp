@@ -457,8 +457,16 @@ bool IlLowering::lower_instruction(
         }
 
         case BronzeOp::CreateObject: {
-            res_val = run_once_ ? b.build_call("bronze_create_object", Type::i64(), {})
-                                : alloc_lowering_.lower_create_object(b);
+            // imm_i64: the literal's predicted inline slots (lower_object.cpp).
+            const uint32_t want = inst_ast.imm_i64 > 0 ? static_cast<uint32_t>(inst_ast.imm_i64) : 0u;
+            if (run_once_) {
+                const bool tlab = alloc_lowering_.enable_tlab();
+                alloc_lowering_.set_enable_tlab(false);
+                res_val = alloc_lowering_.lower_create_object(b, want);
+                alloc_lowering_.set_enable_tlab(tlab);
+            } else {
+                res_val = alloc_lowering_.lower_create_object(b, want);
+            }
             break;
         }
 

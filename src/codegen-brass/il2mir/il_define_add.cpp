@@ -40,8 +40,6 @@ namespace {
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-constexpr int64_t kBarePlainHeader =
-    (int64_t{BRONZE_ABI_PLAIN_OBJECT_BYTES} << (8 * BRONZE_ABI_HDR_SIZE_OFFSET)) | kPlainHeaderLow;
 constexpr int32_t kCell = static_cast<int32_t>(sizeof(uint64_t));
 } // namespace
 
@@ -78,12 +76,17 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
     receiver_shape(b, obj, plain, ptr, shape, &base);
     Value* cells = cells_at();
     Value* end = b.build_load(Type::i64(), cells, BRONZE_ABI_DEFINE_ADD_END * kCell);
-    Value* bare = b.build_eq(b.build_load(Type::i64(), base, 0), b.build_iconst_i64(kBarePlainHeader));
+    Value* header = b.build_load(Type::i64(), base, 0);
+    Value* is_plain = b.build_eq(b.build_trunc_i32(header), b.build_iconst_i32(kPlainHeaderLow));
     // Zero is an unfilled site: no shape is at address zero.
     Value* filled = b.build_ne(end, b.build_iconst_i64(0));
-    b.build_br_if(b.build_and(bare, filled), bb_check, bb_helper);
+    b.build_br_if(b.build_and(is_plain, filled), bb_check, bb_helper);
 
+    // Bare: the whole header word is the one a plain object with no internal
+    // slots has at its shape's capacity (shape.h `bare_header`), read only
+    // now that the plain kind has said the shape word is a shape.
     b.position_at_end(bb_check);
+    Value* bare = b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET));
     Value* is_child = b.build_eq(b.build_load(Type::i64(), end, BRONZE_ABI_SHAPE_PARENT_OFFSET), shape);
     Value* not_dict =
         b.build_eq(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET), b.build_iconst_i64(0));
@@ -94,7 +97,7 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
                                                      : b.build_call("bronze_tls_block_addr", Type::i64(), {});
     Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), cells, BRONZE_ABI_DEFINE_ADD_EPOCH * kCell),
                                  b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
-    Value* ok = b.build_and(b.build_and(is_child, not_dict), b.build_and(not_proto, epoch_ok));
+    Value* ok = b.build_and(b.build_and(b.build_and(is_child, bare), not_dict), b.build_and(not_proto, epoch_ok));
     if (!val_is_number) {
         // END's own node says whether it made the slot a double; the bits of
         // a boxed Number are the double's, so only a non-Number is refused.
@@ -107,7 +110,7 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
 
     b.position_at_end(bb_room);
     Value* slot = b.build_zext_i64(b.build_load(Type::i32(), end, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET));
-    Value* is_inline = b.build_ult(slot, b.build_iconst_i64(kBronzeObjInlineSlots));
+    Value* is_inline = b.build_ult(slot, b.build_iconst_i64(kBronzeObjOverflowSlot));
     Value* overflow = b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset);
     Value* block = b.build_xor(overflow, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* has_block = b.build_ult(block, b.build_iconst_i64(kPayloadLimit));
@@ -116,7 +119,7 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
     Value* capacity =
         b.build_lshr(b.build_sub(size, b.build_iconst_i64(BRONZE_ABI_HDR_BYTES)), b.build_iconst_i64(3));
     Value* fits = b.build_and(
-        has_block, b.build_ult(b.build_sub(slot, b.build_iconst_i64(kBronzeObjInlineSlots)), capacity));
+        has_block, b.build_ult(b.build_sub(slot, b.build_iconst_i64(kBronzeObjOverflowSlot)), capacity));
     b.build_br_if(b.build_or(is_inline, fits), bb_store, bb_helper);
 
     // The shape first, then the value (the new slot already holds undefined),

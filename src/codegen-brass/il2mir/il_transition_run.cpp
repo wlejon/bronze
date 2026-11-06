@@ -36,9 +36,7 @@ namespace {
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-constexpr int64_t kBarePlainHeader =
-    (int64_t{BRONZE_ABI_PLAIN_OBJECT_BYTES} << (8 * BRONZE_ABI_HDR_SIZE_OFFSET)) |
-    ((BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT);
+constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kCell = static_cast<int32_t>(sizeof(uint64_t));
 
 bool scalar(BronzeType t) {
@@ -143,8 +141,8 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     }
     if (sites.size() < 2 || sites.back() != end - 1) return refuse("does not end at a write");
     const uint32_t last_slot = first.run_slot + static_cast<uint32_t>(sites.size()) - 1;
-    const bool overflow = last_slot >= kBronzeObjInlineSlots;
-    const uint64_t need = overflow ? last_slot + 1 - kBronzeObjInlineSlots : 0;
+    const bool overflow = last_slot >= kBronzeObjOverflowSlot;
+    const uint64_t need = overflow ? last_slot + 1 - kBronzeObjOverflowSlot : 0;
 
     // Values defined in the run with a use past it: one join parameter each.
     std::unordered_map<uint32_t, uint32_t> uses_in_run;
@@ -185,12 +183,13 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     prop_lowering_.receiver_shape(b, obj, plain, ptr, shape, &recv_base);
     Value* cells = b.build_add(prop_lowering_.static_cells_addr(b),
                                iconst(b, uint64_t{first.run_cell} * sizeof(uint64_t)));
-    Value* bare = b.build_eq(b.build_load(Type::i64(), recv_base, 0), b.build_iconst_i64(kBarePlainHeader));
+    Value* header = b.build_load(Type::i64(), recv_base, 0);
+    Value* plain_kind = b.build_eq(b.build_trunc_i32(header), b.build_iconst_i32(kPlainHeaderLow));
     Value* start = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_START * kCell);
     // What the publish is told the run started from; 0 for any receiver it
-    // must refuse anyway.
-    Value* start_seen = b.build_select(bare, shape, iconst(b, 0));
-    b.build_br_if(b.build_and(bare, b.build_eq(shape, start)), bb_check, bb_slow);
+    // must refuse anyway (the publish asks the bare question itself).
+    Value* start_seen = b.build_select(plain_kind, shape, iconst(b, 0));
+    b.build_br_if(b.build_and(plain_kind, b.build_eq(shape, start)), bb_check, bb_slow);
 
     // Second half, now that `shape` is the published start: the prototype
     // chain as it was verified, the start no prototype's, each value fit for
@@ -201,6 +200,9 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
                            b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
     ok = b.build_and(ok, b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET)),
                                     iconst(b, 0)));
+    // Bare: no internal slots, the whole header word the start shape's own
+    // (shape.h `bare_header`), read now that the shape is the start.
+    ok = b.build_and(ok, b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET)));
     Value* end_shape = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_END * kCell);
     Value* doubles = nullptr;
     for (size_t k = 0; k < sites.size(); ++k) {
@@ -291,9 +293,9 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
             Value* val = ensure_type(get_val_by_id(val_id, b, fast_map), Type::i64(), b);
             Value* base = cur_ptr;
             int32_t off = static_cast<int32_t>(kBronzeObjSlotsOffset + slot * 8);
-            if (slot >= kBronzeObjInlineSlots) {
+            if (slot >= kBronzeObjOverflowSlot) {
                 base = cur_block;
-                off = static_cast<int32_t>(kBronzeHdrBytes + (slot - kBronzeObjInlineSlots) * 8);
+                off = static_cast<int32_t>(kBronzeHdrBytes + (slot - kBronzeObjOverflowSlot) * 8);
             }
             const bool need_barrier = !is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val);
             prop_lowering_.store_with_barrier(b, base, off, val, need_barrier, prefix);

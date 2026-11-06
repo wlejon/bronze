@@ -129,8 +129,10 @@ uint32_t Dictionary::allocateSlots(uint32_t width) {
         freeSlots.pop_back();
         return slot;
     }
-    uint32_t slot = nextSlot;
-    nextSlot += width;
+    // Placed as a shape node's slot is (Shape::placeSlot): the object's
+    // inline slots first, then the overflow block's, numbered from the split.
+    uint32_t slot = Shape::placeSlot(nextSlot, width, inlineSlots);
+    nextSlot = slot + width;
     return slot;
 }
 
@@ -161,6 +163,9 @@ static Shape* createDictionaryShape(NonMovingArena& arena, Shape* from) {
     Shape* dict = arena.create<Shape>();
     dict->root = from->root;
     dict->dict = arena.create<Dictionary>();
+    // The object keeps its storage, and with it its inline capacity.
+    dict->setInlineSlots(from->inline_slots);
+    dict->dict->inlineSlots = from->inline_slots;
     dict->used_as_prototype = from->used_as_prototype;
     return dict;
 }

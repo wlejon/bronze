@@ -52,7 +52,14 @@ struct ObjShape {
     // Why `exact` is false, for the census.
     std::string why;
 
-    // The slot `key` has on every object of the site, or -1.
+    // The inline capacity the runtime gives the site's objects (bronze_abi.h
+    // BRONZE_ABI_OBJ_OVERFLOW_SLOT): a literal's create.object immI32, a class
+    // instance's fnFlags prediction, 16 for a class prototype, else 4.
+    uint32_t inlineSlots = 4;
+
+    // The slot `key` has on every object of the site, or -1: its position in
+    // `seq`, inline while it is under `inlineSlots`, then numbered from the
+    // overflow split (Shape::placeSlot).
     int slotOf(uint32_t key) const;
 };
 

@@ -548,7 +548,7 @@ static bool applyFunctionDescriptor(Rooted<Value>& self, PropertyKey name,
         }
         auto* fn = self.get().asObject<FunctionHeader>();
         fn->prototype = value.get();
-        fn->instance_shape = rtNewRootShape(value.get());
+        fn->instance_shape = rtNewRootShape(value.get(), rtInstanceInlineSlots(fn));
     }
     if (d.hasWritable && !d.wantWritable) {
         self.get().asObject<FunctionHeader>()->prototype_readonly = true;
@@ -732,7 +732,7 @@ namespace {
 Shape* defineAddStart(Value objVal, const uint64_t* cells) {
     if (cells == nullptr || !objVal.isObject()) return nullptr;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != HeapKind::Plain || hdr->size != BRONZE_ABI_PLAIN_OBJECT_BYTES) return nullptr;
+    if (hdr->flags != HeapKind::Plain || !reinterpret_cast<ObjectHeader*>(hdr)->isBarePlain()) return nullptr;
     Shape* start = reinterpret_cast<ObjectHeader*>(hdr)->shape;
     if (start == nullptr || start->isDictionary() || start->used_as_prototype) return nullptr;
     if (rtIsArrayPrototypeShape(start) || rtRealmOfGlobal(objVal) != nullptr) return nullptr;
@@ -742,7 +742,7 @@ Shape* defineAddStart(Value objVal, const uint64_t* cells) {
 void publishDefineAdd(Value objVal, Shape* start, PropertyKey key, const DecodedDescriptor& d, uint64_t* cells) {
     if (!objVal.isObject() || runtime::censusFillsSuppressed()) return;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != HeapKind::Plain || hdr->size != BRONZE_ABI_PLAIN_OBJECT_BYTES) return;
+    if (hdr->flags != HeapKind::Plain || !reinterpret_cast<ObjectHeader*>(hdr)->isBarePlain()) return;
     const Shape* end = reinterpret_cast<ObjectHeader*>(hdr)->shape;
     if (end == nullptr || end->isDictionary() || end->parent != start || end->accessor) return;
     // Defines run user code only before this helper, so the shape it started

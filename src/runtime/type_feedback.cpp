@@ -235,7 +235,8 @@ std::string protoName(Value proto) {
 }
 
 // A shape's stable name: `<prototype>{k1,k2,...}`, its own keys in the order
-// they were added (a dictionary is `<prototype>{dict}`). Two shapes that differ
+// they were added (a dictionary is `<prototype>{dict}`), with `#N` before the
+// brace for an inline capacity N other than the default 4. Two shapes that differ
 // only in attributes or slot representation share a name, which is the
 // granularity a specialization guards on anyway. Cached by the shape, which is
 // immortal and non-moving.
@@ -247,7 +248,11 @@ uint32_t shapeName(State& s, const ObjectHeader* obj) {
     const Shape* root = sh->root;
     auto pit = s.protoNames.find(root);
     if (pit == s.protoNames.end()) pit = s.protoNames.emplace(root, protoName(sh->prototypeValue())).first;
-    std::string name = pit->second + "{";
+    std::string name = pit->second;
+    // A capacity other than the default is part of the name: the same keys
+    // sit at other slots past it (shape.h `Shape::placeSlot`).
+    if (sh->inline_slots != Shape::kDefaultInlineSlots) name += "#" + std::to_string(sh->inline_slots);
+    name += "{";
     if (sh->isDictionary()) {
         name += "dict";
     } else {

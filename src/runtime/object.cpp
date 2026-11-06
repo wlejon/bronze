@@ -148,22 +148,24 @@ bool keyCouldBeArrayIndex(PropertyKey key) noexcept {
 
 namespace {
 
-// The payload of an object with no internal slots: the fields after the heap
-// header, plus the inline property slots. Anything past it is an internal slot,
-// which is how `internalSlotCount` recovers the number from `header.size`
-// without a field of its own — a field would be one more word on every `{}`
-// literal in a program to describe a thing almost none of them have.
+// The payload of an object with the default inline slots and no internal
+// ones: the fields after the heap header, plus the inline property slots.
+// Anything past an object's inline slots (its shape's count) is an internal
+// slot, which is how `internalSlotCount` recovers the number from
+// `header.size` without a field of its own — a field would be one more word on
+// every `{}` literal in a program to describe a thing almost none of them have.
 constexpr size_t kObjectBasePayload =
     (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) + ObjectHeader::kInlineSlots * sizeof(Value);
 
 // The inline `new` fast path allocates this exact object — header word,
-// shape, overflow, four undefined inline slots — as raw stores against the
-// bump cursor, so the total is an ABI fact. It must also be what
-// Heap::allocate would have written into header.size (the trace bounds an
-// object's Value words by that field), which the 8-alignment half of the
-// assert pins.
+// shape, overflow, the shape's undefined inline slots — as raw stores against
+// the bump cursor, so the total is an ABI fact: the size the shape's
+// `bare_header` carries. It must also be what Heap::allocate would have
+// written into header.size (the trace bounds an object's Value words by that
+// field), which the 8-alignment half of the assert pins.
 static_assert(sizeof(HeapObjectHeader) + kObjectBasePayload == BRONZE_ABI_PLAIN_OBJECT_BYTES);
 static_assert(BRONZE_ABI_PLAIN_OBJECT_BYTES % 8 == 0);
+static_assert((Shape::bareHeaderFor(Shape::kDefaultInlineSlots) >> 32) == BRONZE_ABI_PLAIN_OBJECT_BYTES);
 
 }  // namespace
 
@@ -177,7 +179,13 @@ ObjectHeader* ObjectHeader::createWithInternalSlots(Heap& heap, NonMovingArena& 
     if (!shape) {
         fatal("object creation without a shape (the shape carries the prototype)");
     }
-    size_t payload_bytes = kObjectBasePayload + count * sizeof(Value);
+    // Internal slots sit at fixed offsets after the DEFAULT inline slots, so
+    // an object that has any must be at a shape with that many.
+    const uint32_t inline_slots = shape->inline_slots;
+    if (count != 0 && inline_slots != kInlineSlots) {
+        fatal("internal: internal slots on a shape with a non-default inline capacity");
+    }
+    size_t payload_bytes = kObjectBasePayload + (inline_slots - kInlineSlots + count) * sizeof(Value);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object, layout);
     auto* obj = reinterpret_cast<ObjectHeader*>(raw_hdr);
     obj->shape = shape;
@@ -187,7 +195,7 @@ ObjectHeader* ObjectHeader::createWithInternalSlots(Heap& heap, NonMovingArena& 
     // loop: every payload word is a Value, and `undefined` is what an unset
     // internal slot reads as.
     HeapValue* slots = obj->slotsData();
-    for (uint32_t i = 0; i < kInlineSlots + count; ++i) {
+    for (uint32_t i = 0; i < inline_slots + count; ++i) {
         slots[i] = Value::fromUndefined();
     }
     return obj;
@@ -236,10 +244,12 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
 
 // Slot indices [0, count) must be addressable. An accessor occupies two, so
 // the caller's "highest slot" and "slot count" differ by more than one and
-// the arithmetic belongs here rather than at each call site.
+// the arithmetic belongs here rather than at each call site. A slot below the
+// split is an inline one, which the object's shape only ever names when the
+// object has it (Shape::placeSlot), so only the overflow part can need room.
 ObjectHeader* ObjectHeader::ensureSlots(Heap& heap, Rooted<Value>& self, uint32_t count) {
-    if (count <= kInlineSlots) return self.get().asObject<ObjectHeader>();
-    return ensureOverflow(heap, self, count - kInlineSlots);
+    if (count <= kOverflowSlot) return self.get().asObject<ObjectHeader>();
+    return ensureOverflow(heap, self, count - kOverflowSlot);
 }
 
 ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
@@ -670,7 +680,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // transition tree is the wrong structure for it: every lookup that misses
     // its cache walks a chain as long as the key count. The table it moves to
     // is hashed (dictionary.h), and the move is one-way, exactly as a delete's.
-    if (!shape->isDictionary() && shape->nextSlotIndex() >= Shape::kDictionaryThreshold) {
+    if (!shape->isDictionary() && shape->slotsUsedAfterAdd() > Shape::kDictionaryThreshold) {
         runtime::ShapeLeaveReason why(ShapeLeave::Threshold);
         toDictionary(arena, self);
     }

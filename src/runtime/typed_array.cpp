@@ -501,6 +501,11 @@ namespace {
 // holding what recycled memory last had there.
 void initObjectPrefix(ObjectHeader& object, uint16_t kind, Shape* shape) {
     if (!shape) fatal("view creation without a shape (the shape carries the prototype)");
+    // The fields after the prefix are at fixed offsets past the DEFAULT inline
+    // slots (rtAllocateNativeBaseInstance keeps every shape it hands here so).
+    if (shape->inline_slots != ObjectHeader::kInlineSlots) {
+        fatal("internal: a buffer or view on a shape with a non-default inline capacity");
+    }
     object.header.flags = kind;
     object.shape = shape;
     object.overflow = Value::fromUndefined();

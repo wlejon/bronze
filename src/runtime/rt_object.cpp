@@ -151,18 +151,19 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
             HeapKind::carriesShape(protoHdr->flags)) {
             Shape::markObjectAsPrototype(rtArena(), reinterpret_cast<ObjectHeader*>(protoHdr));
         }
-        fnVal.get().asObject<FunctionHeader>()->instance_shape = rtNewRootShape(proto.get());
+        FunctionHeader* live = fnVal.get().asObject<FunctionHeader>();
+        live->instance_shape = rtNewRootShape(proto.get(), rtInstanceInlineSlots(live));
         return;
     }
 
-    Shape* protoShape = rtNewRootShape(rtObjectPrototype());
+    Shape* protoShape = rtNewRootShape(rtObjectPrototype(), rtPrototypeInlineSlots(fn));
     protoShape->used_as_prototype = true;
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
     proto->header.flags = HeapKind::Plain;
 
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
     fn->prototype = Value::fromObject(proto);
-    fn->instance_shape = rtNewRootShape(fn->prototype);
+    fn->instance_shape = rtNewRootShape(fn->prototype, rtInstanceInlineSlots(fn));
     rtInstallPrototypeConstructor(fnVal);
 }
 
@@ -251,6 +252,17 @@ uint64_t bronze_create_object() {
     return Value::fromObject(obj).rawBits();
 }
 
+// A literal the compiler predicted `inlineSlots` own properties for: an empty
+// object on Object.prototype's root of that capacity (rt_state.h
+// rtPlainObjectShapeSized), which also publishes the root into the TLS block
+// for the inline path's next allocation.
+uint64_t bronze_create_object_sized(uint32_t inlineSlots) {
+    recordHelperCall("bronze_create_object");
+    ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShapeSized(inlineSlots));
+    obj->header.flags = HeapKind::Plain;
+    return Value::fromObject(obj).rawBits();
+}
+
 uint64_t bronze_create_array(uint32_t length) {
     recordHelperCall("bronze_create_array");
     // The floor is ABI: generated code's inline literal (llvm_construct.cpp)
@@ -317,8 +329,9 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
             rtThrowTypeError("Class extends value does not have valid prototype property");
             return;
         }
-        ObjectHeader* proto =
-            ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(protoParent.get()));
+        ObjectHeader* proto = ObjectHeader::create(
+            rtHeap(), rtArena(),
+            rtNewRootShape(protoParent.get(), rtPrototypeInlineSlots(derived.get().asObject<FunctionHeader>())));
         proto->header.flags = HeapKind::Plain;
         Rooted<Value> protoRoot{Value::fromObject(proto)};
         ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(base.get()));
@@ -326,7 +339,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
         fn->prototype = protoRoot.get();
         fn->properties = Value::fromObject(props);
-        fn->instance_shape = rtNewRootShape(protoRoot.get());
+        fn->instance_shape = rtNewRootShape(protoRoot.get(), rtInstanceInlineSlots(fn));
         fn->parent = base.get();
         rtInstallPrototypeConstructor(derived);
         return;
@@ -370,7 +383,9 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // program emptied by hand (`F.prototype = 1` in sloppy code).
     Rooted<Value> baseProto{base.get().asObject<FunctionHeader>()->prototype};
     if (!baseProto.get().isObject()) baseProto.set(Value::fromNull());
-    ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProto.get()));
+    ObjectHeader* proto = ObjectHeader::create(
+        rtHeap(), rtArena(),
+        rtNewRootShape(baseProto.get(), rtPrototypeInlineSlots(derived.get().asObject<FunctionHeader>())));
     proto->header.flags = HeapKind::Plain;
     Rooted<Value> protoRoot{Value::fromObject(proto)};
 
@@ -381,7 +396,9 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
     fn->prototype = protoRoot.get();
     fn->properties = Value::fromObject(props);
-    fn->instance_shape = rtNewRootShape(protoRoot.get());
+    // After rtInheritNativeBase above: a class reaching a native base
+    // allocates exotic objects, which keep the default inline slots.
+    fn->instance_shape = rtNewRootShape(protoRoot.get(), rtInstanceInlineSlots(fn));
     // 15.7.14 step 6: the derived constructor's own [[Prototype]] IS the base
     // constructor. The statics chain above is what makes an inherited static
     // RESOLVE; this is what makes `Object.getPrototypeOf(D)` say so, and the

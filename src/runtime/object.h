@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 
 #include "abi/bronze_abi.h"
@@ -265,12 +266,21 @@ struct ObjectHeader {
     HeapObjectHeader header;
     Shape* shape{nullptr};
     // Undefined, or an Object-tagged pointer to the HEADER of a heap block
-    // of Values holding slots kInlineSlots and up. Stored as a Value so the
+    // of Values holding slots kOverflowSlot and up. Stored as a Value so the
     // generic GC payload scan forwards it like any other slot; header, not
     // payload, because every heap reference in a Value points at a header.
     HeapValue overflow;
 
-    static constexpr uint32_t kInlineSlots = 4;
+    // The DEFAULT number of inline property slots: an ordinary `{}`'s, and
+    // every object's that carries internal slots — those sit right after
+    // these at fixed offsets (map.h, regexp.h, typed_array.h). How many inline
+    // slots a given object has is its shape's `inline_slots`, chosen when the
+    // object is allocated (bronze_abi.h, BRONZE_ABI_OBJ_OVERFLOW_SLOT).
+    static constexpr uint32_t kInlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+    // The slot-number split: a slot below it is inline, slot kOverflowSlot +
+    // i is the overflow block's Value i. Also the most inline slots any
+    // object has.
+    static constexpr uint32_t kOverflowSlot = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
 
     // A cycle in a prototype chain would hang the property path rather than
     // crash it, so every walk over it is bounded and says so by name. Real
@@ -286,9 +296,10 @@ struct ObjectHeader {
     // the object carries that are not properties and cannot be reached as any.
     //
     // They live immediately after the inline property slots, where the property
-    // path cannot address them: a slot index below `kInlineSlots` is an inline
-    // property and every index at or above it is resolved against `overflow`,
-    // so nothing a shape or a dictionary can name lands here. That is the whole
+    // path cannot address them: such an object has the default kInlineSlots
+    // inline slots (its shape says so, and creation refuses any other), slot
+    // numbers past those are placed from kOverflowSlot and resolved against
+    // `overflow`, so nothing a shape or a dictionary can name lands here. That is the whole
     // point. An internal slot is invisible to `Object.keys`, to `for-in`, to
     // `getOwnPropertyNames` AND to `getOwnPropertySymbols`; spelling one as a
     // property under a reserved name buys the first two and nothing else, which
@@ -462,6 +473,11 @@ struct ObjectHeader {
     static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t needed);
     static ObjectHeader* ensureSlots(Heap& heap, Rooted<Value>& self, uint32_t count);
 
+    // A plain object with no internal slots: the header word its shape's
+    // `bare_header` names, which is the test generated code's inline adds
+    // make (an internal slot is not a place a property may go).
+    bool isBarePlain() const noexcept;
+
     // A property slot's value.
     //
     // Unchanged by stage R1, and that is the point rather than an oversight. A
@@ -499,10 +515,10 @@ struct ObjectHeader {
     // of which is a property write and all of which would be wrong to route
     // through the generalization above.
     inline Value rawSlot(uint32_t index) const {
-        if (index < kInlineSlots) {
+        if (index < kOverflowSlot) {
             return slotsData()[index];
         }
-        uint32_t oi = index - kInlineSlots;
+        uint32_t oi = index - kOverflowSlot;
         if (oi >= overflowCapacity()) {
             fatal("object slot index beyond overflow capacity (corrupt shape?)");
         }
@@ -510,11 +526,11 @@ struct ObjectHeader {
     }
 
     inline void rawSetSlot(uint32_t index, Value val) {
-        if (index < kInlineSlots) {
+        if (index < kOverflowSlot) {
             slotsData()[index] = val;
             return;
         }
-        uint32_t oi = index - kInlineSlots;
+        uint32_t oi = index - kOverflowSlot;
         if (oi >= overflowCapacity()) {
             fatal("object slot index beyond overflow capacity (corrupt shape?)");
         }
@@ -548,15 +564,23 @@ struct ObjectHeader {
 // they were two calls per read, 15 % of a host-method call loop.
 //
 // The base payload is the plain object's: the fields after the heap header,
-// plus the inline property slots. Anything past it is an internal slot, which
-// is how the count is recovered from `header.size` without a field of its own
-// — a field would be one more word on every `{}` literal in a program to
-// describe a thing almost none of them have.
+// plus the inline property slots its shape gives it. Anything past it is an
+// internal slot, which is how the count is recovered from `header.size`
+// without a field of its own — a field would be one more word on every `{}`
+// literal in a program to describe a thing almost none of them have.
 inline uint32_t ObjectHeader::internalSlotCount() const noexcept {
-    constexpr size_t kBasePayload = BRONZE_ABI_PLAIN_OBJECT_BYTES - sizeof(HeapObjectHeader);
+    const size_t basePayload = (shape != nullptr ? (shape->bare_header >> 32) : BRONZE_ABI_PLAIN_OBJECT_BYTES) -
+                               sizeof(HeapObjectHeader);
     const size_t payload = header.size - sizeof(HeapObjectHeader);
-    if (payload <= kBasePayload) return 0;
-    return static_cast<uint32_t>((payload - kBasePayload) / sizeof(Value));
+    if (payload <= basePayload) return 0;
+    return static_cast<uint32_t>((payload - basePayload) / sizeof(Value));
+}
+
+inline bool ObjectHeader::isBarePlain() const noexcept {
+    uint64_t word = 0;
+    static_assert(sizeof(HeapObjectHeader) == sizeof(word));
+    std::memcpy(&word, &header, sizeof(word));
+    return shape != nullptr && word == shape->bare_header;
 }
 
 inline Value ObjectHeader::internalSlot(uint32_t index) const {
@@ -605,5 +629,7 @@ static_assert(offsetof(ObjectHeader, overflow) == BRONZE_ABI_OBJ_OVERFLOW_OFFSET
 static_assert(sizeof(ObjectHeader) == BRONZE_ABI_OBJ_SLOTS_OFFSET,
               "inline slots start immediately after ObjectHeader");
 static_assert(ObjectHeader::kInlineSlots == BRONZE_ABI_OBJ_INLINE_SLOTS);
+static_assert(ObjectHeader::kOverflowSlot == Shape::kOverflowSlot &&
+              ObjectHeader::kInlineSlots == Shape::kDefaultInlineSlots);
 
 }  // namespace bronze

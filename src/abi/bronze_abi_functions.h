@@ -49,6 +49,7 @@
     X(bronze_unbox_bool,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_unbox_str,           BRONZE_ABI_CSTR, (BRONZE_ABI_U64)) \
     X(bronze_create_object,       BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
+    X(bronze_create_object_sized, BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     /* `coro.start`: a coroutine body's fresh brass frame (a raw address)\
      * and its BRONZE_ABI_CORO_* kind; answers the generator object or the\
      * async function's promise. */ \

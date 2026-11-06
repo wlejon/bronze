@@ -8,10 +8,42 @@
 #include <string>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "ast/clone.h"
 #include "lower/lowerer.h"
+#include "types/result.h"
 
 namespace bronze::lower {
+
+namespace {
+
+// The own properties a class's instances are predicted to carry: the fields
+// its construction installs (the base's prefix included) and those a method
+// adds later. An unproven layout's list may stop short of its base's prefix,
+// so the base's own prediction is added to it then. Depth-bounded against a
+// cyclic `extends`, which the table does not resolve but need not trust.
+uint32_t predictedInstanceFields(const types::ClassLayoutTable& table, const types::ClassLayout* layout,
+                                 int depth = 0) {
+    if (layout == nullptr || depth > 32) return 0;
+    uint32_t n = static_cast<uint32_t>(layout->fields.size() + layout->lateFields.size());
+    if (!layout->layoutProven && !layout->superName.empty()) {
+        n += predictedInstanceFields(table, table.byName(layout->superName), depth + 1);
+    }
+    return n;
+}
+
+}  // namespace
+
+// The inline capacity a class's instances are allocated with (bronze_abi.h
+// BRONZE_ABI_FN_INLINE_SLOTS_SHIFT): every predicted field inline, up to the
+// overflow split; 0, the runtime default, for a class predicted to fit it.
+uint32_t Lowerer::classInstanceInlineSlots(const std::string& name) const {
+    if (inference_ == nullptr || name.empty()) return 0;
+    const types::ClassLayout* layout = inference_->classLayouts.byName(name);
+    const uint32_t n = predictedInstanceFields(inference_->classLayouts, layout);
+    if (n <= BRONZE_ABI_OBJ_INLINE_SLOTS) return 0;
+    return n > BRONZE_ABI_OBJ_OVERFLOW_SLOT ? BRONZE_ABI_OBJ_OVERFLOW_SLOT : n;
+}
 
 // Reads `<ctor>.prototype`, the object every instance method is stored on.
 Lowerer::Value Lowerer::emitPrototypeOf(Value ctorVal, il::Function& ilFn) {
@@ -210,6 +242,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     if (!ctorVal) return std::nullopt;
     ilModule_.functions[lastClosureFnIndex_].displayName = shownName.empty() ? "<anonymous>" : shownName;
     ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_CONSTRUCTOR;
+    if (const uint32_t cap = classInstanceInlineSlots(name); cap != 0) {
+        ilModule_.functions[lastClosureFnIndex_].fnFlags |= cap << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT;
+    }
 
     // `extends` REPLACES the prototype object (the prototype lives on the
     // shape), so it has to be linked before a single method is stored.

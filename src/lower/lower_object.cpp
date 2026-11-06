@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "lower/lowerer.h"
 #include "lower/native_manifest.h"
 
@@ -34,6 +35,24 @@ const std::string* devirtualizedKey(const types::InferenceResult* inference,
     return inference->moduleLiterals.backingKey(id->name, property);
 }
 
+// The inline slots a literal asks for (create.object's immI32): one per
+// property it spells, two per accessor, nothing for a spread or a
+// `__proto__:`, capped at the overflow split. 0, the runtime default, for a
+// literal that fits it. A repeated key over-counts, which costs a word.
+uint32_t literalInlineSlots(const ast::ObjectLit& objLit) {
+    uint32_t n = 0;
+    for (const auto& prop : objLit.props) {
+        if (dynamic_cast<const ast::SpreadElement*>(prop.value.get()) != nullptr) continue;
+        if (!prop.computed() && !prop.shorthand && !prop.isMethod && prop.accessor == ast::AccessorKind::None &&
+            prop.key == "__proto__") {
+            continue;
+        }
+        n += prop.accessor != ast::AccessorKind::None ? 2u : 1u;
+    }
+    if (n <= BRONZE_ABI_OBJ_INLINE_SLOTS) return 0;
+    return n > BRONZE_ABI_OBJ_OVERFLOW_SLOT ? BRONZE_ABI_OBJ_OVERFLOW_SLOT : n;
+}
+
 }  // namespace
 
 std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objLit,
@@ -52,6 +71,7 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
     inst.op = il::Op::CreateObject;
     inst.type = il::Type::Dynamic;
     inst.result = res;
+    inst.immI32 = static_cast<int32_t>(literalInlineSlots(*objLit));
     emitInst(ilFn, inst);
 
     if (needsHomeEnv) {

@@ -135,6 +135,13 @@ typedef struct bronze_tls_block {
      * fills it from what the site installed. In the block itself rather than
      * behind a pointer, so a probe is pinned-register relative. */
     uint64_t mega_prop[BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS];
+    /* An object literal's root shape by its inline capacity: entry N is the
+     * root over %Object.prototype% whose objects have N inline slots
+     * (BRONZE_ABI_OBJ_INLINE_SLOTS..BRONZE_ABI_OBJ_OVERFLOW_SLOT; the entry
+     * for BRONZE_ABI_OBJ_INLINE_SLOTS is `plain_shape`), or 0 until the
+     * runtime has made it. What a sized literal's inline allocation reads;
+     * a 0 entry takes the helper, which makes it. */
+    uint64_t plain_shapes[17]; /* BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1 */
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -157,6 +164,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_YOUNG_BASE_OFF                136
 #define BRONZE_TLS_YOUNG_SPAN_OFF                144
 #define BRONZE_TLS_MEGA_PROP_OFF                 152
+#define BRONZE_TLS_PLAIN_SHAPES_OFF              (BRONZE_TLS_MEGA_PROP_OFF + \
+    8 * BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS)
 
 /*
  * ---- the pinned register -----------------------------------------------

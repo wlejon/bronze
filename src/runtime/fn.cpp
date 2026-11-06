@@ -36,6 +36,12 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->arity = arity;
     fn->length = 0;
     fn->function_flags = static_cast<uint8_t>(function_flags);
+    // The bits above the flag byte are the compiler's instance-capacity
+    // prediction for this code (bronze_abi.h, BRONZE_ABI_FN_INLINE_SLOTS_SHIFT),
+    // which the instance root shape is made with when one is.
+    if ((function_flags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) != 0) {
+        runtime::rtNoteInstanceInlineSlots(reinterpret_cast<const void*>(code), function_flags);
+    }
     // Explicit, like every field here: the memory is a raw heap block, so a
     // field the constructor-syntax initializers name is still garbage until
     // this function writes it.

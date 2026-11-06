@@ -24,10 +24,6 @@ constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 static_assert((kPlainHeaderLow & 1) == 1 && BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_STEP % 2 == 0,
               "the TLS block stands in for a non-object only while no epoch reads as a header");
-// The whole header word of a plain object with no internal slots: the kind
-// word above, and its size, BRONZE_ABI_PLAIN_OBJECT_BYTES, in the high half.
-constexpr int64_t kBarePlainHeader =
-    (int64_t{BRONZE_ABI_PLAIN_OBJECT_BYTES} << (8 * BRONZE_ABI_HDR_SIZE_OFFSET)) | kPlainHeaderLow;
 
 // A non-object's header and shape words, for a module that runs in this
 // process: the zeroed block's header is no object's, so its reads refuse
@@ -82,8 +78,8 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // shape at 0 and the (depth << 32 | slot) word at 8, which is below
     // 2^32 exactly when the entry names an own data property — the
     // accessor, absent, f64 and depth bits all live in the high half, so the
-    // one unsigned compare refuses them. A slot past
-    // BRONZE_ABI_OBJ_INLINE_SLOTS is in the overflow block, which a shape
+    // one unsigned compare refuses them. A slot at or past
+    // BRONZE_ABI_OBJ_OVERFLOW_SLOT is in the overflow block, which a shape
     // match proves is as large as the shape needs (slot_base).
     //
     // The guard is ONE branch, not a tag branch followed by a shape
@@ -390,10 +386,10 @@ void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, const IcSite& site
 // slot, else its overflow block shifted back by the inline slots and the
 // block's header.
 Value* PropertyLoweringHelper::slot_base(Builder& b, Value* ptr, Value* slot_word) {
-    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots));
+    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot));
     Value* overflow = b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
                                   b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
-    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjInlineSlots * 8 - kBronzeHdrBytes;
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjOverflowSlot * 8 - kBronzeHdrBytes;
     Value* shifted = b.build_sub(overflow, b.build_iconst_i64(kShift));
     return b.build_select(is_inline, ptr, shifted);
 }
@@ -415,13 +411,13 @@ Value* PropertyLoweringHelper::load_slot_br(Builder& b, Value* ptr, Value* slot_
     BasicBlock* bb_join = b.append_block(prefix + "_value");
     Value* val = b.add_block_param(bb_join, Type::i64());
     b.position_at_end(cur);
-    b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots)), bb_in, bb_out);
+    b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot)), bb_in, bb_out);
     b.position_at_end(bb_in);
     b.build_br(bb_join, {b.build_load_indexed(Type::i64(), ptr, slot_word, 8, kBronzeObjSlotsOffset)});
     b.position_at_end(bb_out);
     Value* overflow = b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
                                   b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
-    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjInlineSlots * 8 - kBronzeHdrBytes;
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjOverflowSlot * 8 - kBronzeHdrBytes;
     b.build_br(bb_join, {b.build_load_indexed(Type::i64(), overflow, slot_word, 8, kBronzeObjSlotsOffset - kShift)});
     b.position_at_end(bb_join);
     return val;
@@ -492,7 +488,10 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
 
     b.position_at_end(bb_node);
     Value* header = b.build_load(Type::i64(), ptr, 0);
-    Value* is_bare = b.build_eq(header, b.build_iconst_i64(kBarePlainHeader));
+    // Bare: the whole header word is the one a plain object with no internal
+    // slots has at its shape's inline capacity (shape.h `bare_header`). The
+    // arm's `plain` test has already said the shape word is a shape.
+    Value* is_bare = b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET));
     Value* is_child = b.build_eq(b.build_load(Type::i64(), cached, BRONZE_ABI_SHAPE_PARENT_OFFSET), shape);
     Value* own_slot = b.build_eq(
         b.build_zext_i64(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET)), slot_word);
@@ -517,7 +516,7 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     // reaches the slot. A word that is no block reads the object's own header
     // instead, and the select throws that answer away.
     b.position_at_end(bb_room);
-    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots));
+    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot));
     Value* overflow = b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset);
     Value* block = b.build_xor(overflow, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* has_block = b.build_ult(block, b.build_iconst_i64(kPayloadLimit));
@@ -525,7 +524,7 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     Value* size = b.build_zext_i64(b.build_load(Type::i32(), block_base, BRONZE_ABI_HDR_SIZE_OFFSET));
     Value* capacity = b.build_lshr(b.build_sub(size, b.build_iconst_i64(BRONZE_ABI_HDR_BYTES)),
                                    b.build_iconst_i64(3));
-    Value* fits = b.build_and(has_block, b.build_ult(b.build_sub(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots)),
+    Value* fits = b.build_and(has_block, b.build_ult(b.build_sub(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot)),
                                                      capacity));
     b.build_br_if(b.build_or(is_inline, fits), bb_store, bb_helper);
 

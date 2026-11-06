@@ -1,0 +1,37 @@
+bodies 508700
+body a=1,b=2,c=3,d=4,e=5,f=6,g=7,h=8
+moving a=2,b=3,c=4,d=5,e=6,f=7,g=8,h=9,vx=4,vy=6,vz=8
+wide 190 0 15 16 19 20
+grown 108 4324 32 529 17
+mixed reads 6700
+small x=1,y=2
+lit p0=0,p1=1,p2=2,p3=3,p4=4,p5=5,p6=6,p7=7,p8=8
+big 0 5 19 20
+huge 0 15 16 18 19
+filled 15750
+filled one a=3,b=4,c=5,d=6,e=7,f=8,g=9
+lit grown p0=0,p1=1,p2=2,p3=3,p4=4,p5=5,p6=6,p7=7,p8=8,p9=9,p10=10
+accessor literal 70 4 5 a,b,c,g,d,e
+deleted a=100,b=101,d=103,e=104,g=106,h=107,c=back,z=z
+deleted sum 201back103104undefined106107
+literal deleted a=1,c=3,d=4,e=5,f=6,g=7,n0=0,n1=1,n2=2,n4=4,n5=5,n6=6,n7=7,n8=8,n9=9
+defined 42 198 99 12
+defined literal a=1,b=2,c=got,d=4,e=5,x=x
+dictionary 22500 0 7 after 159
+frozen 3 12 true
+sealed a=1,b=2,c=3,d=4,e=5,f=60
+proxy 7 trapped 14 11
+on proxy 1 6 p:missing
+reflect true 52 undefined
+map subclass v 1 1 6
+map via reflect true 1 6
+set proto 4 11 added proto
+proto literal yes 5 5
+function ctor 6 7 19 3
+many methods 153 17 3
+late method late
+spread a=1,b=2,c=3,d=4,e=5,f=6,g=7,h=8,vx=2,vy=3,vz=4,extra=1
+assigned 21 8 2 7
+json {"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"vx":2,"vy":3,"vz":4}
+parsed 18 19
+kept 6680653

@@ -111,8 +111,8 @@
 #define BRONZE_ABI_IC_WAYS 4
 #define BRONZE_ABI_IC_SITE_SIZE (BRONZE_ABI_IC_ENTRY_SIZE * BRONZE_ABI_IC_WAYS)
 /* slot and depth are adjacent and little-endian, so the single u64 at
- * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
- * therefore ONE compare meaning "own property, in an inline slot" — the
+ * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < OBJ_OVERFLOW_SLOT`
+ * is therefore ONE compare meaning "own property, in an inline slot" — the
  * exact envelope the inline fast path covers. Reading only the low half
  * would forget the depth and return an ancestor's slot off the receiver,
  * which is the bug the cached depth exists to prevent. */
@@ -159,7 +159,7 @@
  * same slot — per-instance closures, and every host function an embedder
  * hangs on an object — so nothing about the callee may be cached. The entry
  * caches only WHERE the method lives: generated code loads the receiver's
- * slot (inline or overflow, split at BRONZE_ABI_OBJ_INLINE_SLOTS), verifies
+ * slot (inline or overflow, split at BRONZE_ABI_OBJ_OVERFLOW_SLOT), verifies
  * the value is a Function, and calls its CURRENT code with its CURRENT env
  * and arity — the same universal dispatch bronze_dynamic_call performs, so a
  * swapped-in non-function still reaches the helper's TypeError. No heap word
@@ -565,12 +565,28 @@
 #define BRONZE_ABI_BUF_EXTPTR_OFFSET    72
 #define BRONZE_ABI_BUF_DATA_OFFSET      80
 
-/* ObjectHeader: the shape word, then the out-of-line overflow Value, then
- * kInlineSlots inline Values. */
+/* ObjectHeader: the shape word, then the out-of-line overflow Value, then the
+ * object's inline Values. How many inline Values an object has is a fact of
+ * its SHAPE (Shape::inline_slots, below), fixed when the object is allocated:
+ * BRONZE_ABI_OBJ_INLINE_SLOTS for an ordinary `{}` and for every exotic
+ * object (whose internal slots sit right after them at fixed offsets), and up
+ * to BRONZE_ABI_OBJ_OVERFLOW_SLOT for an instance whose constructor's
+ * predicted layout, or a literal's key count, asked for more.
+ *
+ * SLOT NUMBERS do not depend on that count, which is what lets generated code
+ * split inline from overflow with a constant: a slot below
+ * BRONZE_ABI_OBJ_OVERFLOW_SLOT is the inline Value at that index, and slot
+ * BRONZE_ABI_OBJ_OVERFLOW_SLOT + i is Value i of the overflow block. An
+ * object with N inline Values numbers its properties 0..N-1 and continues at
+ * BRONZE_ABI_OBJ_OVERFLOW_SLOT, leaving N..OVERFLOW_SLOT-1 unused
+ * (Shape::placeSlot). So the K-th property is slot K whenever its object has
+ * room for all of them inline or has the full OVERFLOW_SLOT inline — the
+ * dense numbering compile-time layouts predict. */
 #define BRONZE_ABI_OBJ_SHAPE_OFFSET      8
 #define BRONZE_ABI_OBJ_OVERFLOW_OFFSET  16
 #define BRONZE_ABI_OBJ_SLOTS_OFFSET     24
 #define BRONZE_ABI_OBJ_INLINE_SLOTS      4
+#define BRONZE_ABI_OBJ_OVERFLOW_SLOT    16
 
 /* Shape (runtime/shape.h): the fields the two inline IC fast paths read, all
  * deliberately laid out BEFORE the transitions vector so no standard-library
@@ -597,6 +613,10 @@
 #define BRONZE_ABI_SHAPE_PROTO_OFFSET      32
 #define BRONZE_ABI_SHAPE_DICT_OFFSET       40
 #define BRONZE_ABI_SHAPE_USEDPROTO_OFFSET  48
+/* Shape::inline_slots (u8): how many inline Values an object at this shape
+ * has. Every node of a transition tree, and the dictionary shape an object of
+ * it moves to, carries its root's. */
+#define BRONZE_ABI_SHAPE_INLINE_SLOTS_OFFSET 49
 /* Shape::family_stamp — the layout-family id `bronze_family_stamp` writes and
  * a family guard reads. It lives on the SHAPE and not on the object because
  * that is where the fact belongs: every object at a shape has that shape's
@@ -661,6 +681,13 @@
 #define BRONZE_ABI_SHAPE_REPR_OFFSET        72
 #define BRONZE_ABI_SLOT_REPR_BOXED           0
 #define BRONZE_ABI_SLOT_REPR_DOUBLE          1
+/* Shape::bare_header — the whole HeapObjectHeader word of a plain object with
+ * no internal slots at this shape: the plain kind word, and in the high half
+ * the size its inline slots give it. What the inline add paths compare a
+ * receiver's header with (no internal slot to step on, and exactly the inline
+ * slots the shape numbers), and where the inline `new` fast path takes the
+ * size it allocates. */
+#define BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET 80
 
 /* FunctionHeader::code — the identity the Math direct-dispatch guard compares
  * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */
@@ -691,11 +718,22 @@
 #define BRONZE_ABI_FN_FLAGS_WORD_OFFSET     64
 #define BRONZE_ABI_FN_REALM_SHIFT           40
 
-/* Total bytes of a plain object with no internal slots — header, shape word,
- * overflow word, and the kInlineSlots inline Values — which is the one size
- * the inline `new` fast path allocates. Already 8-aligned, so it is also the
- * exact amount the bump cursor advances. Pinned in runtime/object.cpp. */
+/* Total bytes of a plain object with no internal slots and the default
+ * BRONZE_ABI_OBJ_INLINE_SLOTS inline Values — header, shape word, overflow
+ * word, inline Values. One with N inline Values is 8 * (N -
+ * BRONZE_ABI_OBJ_INLINE_SLOTS) bytes more, which its shape's bare_header
+ * carries. Already 8-aligned, so it is also the exact amount the bump cursor
+ * advances. Pinned in runtime/object.cpp. */
 #define BRONZE_ABI_PLAIN_OBJECT_BYTES    56
+
+/* The high bits of the u32 function-flags argument of bronze_create_function
+ * and bronze_function_singleton (never stored in FunctionHeader's flag byte):
+ * how many inline slots the compiler predicts an instance of this constructor
+ * needs, or 0 for no prediction (BRONZE_ABI_OBJ_INLINE_SLOTS). The runtime
+ * gives the function's instance root shape that capacity, clamped to
+ * [BRONZE_ABI_OBJ_INLINE_SLOTS, BRONZE_ABI_OBJ_OVERFLOW_SLOT]. */
+#define BRONZE_ABI_FN_INLINE_SLOTS_SHIFT    8
+#define BRONZE_ABI_FN_INLINE_SLOTS_MASK     0x1Fu
 
 /* One entry of a module's fn-singleton table: the code pointer, then the Value.
  * An entry answers a mention only when its code word matches the mention's own

@@ -110,6 +110,14 @@ public:
     // not be, a prototype whose shape is unmarked, is what `addProperty`'s
     // propagation and `createRoot`'s marking exist to rule out.
     bool used_as_prototype{false};
+    // How many inline Values an object at this shape has (object.h): fixed
+    // when the object is allocated, so every shape the object can ever be at
+    // carries the same number — a child copies its parent's, a dictionary
+    // shape the one it came from, and a root is given it when it is made
+    // (createRoot). It decides where the next property's slot goes
+    // (`placeSlot`): the inline Values first, then the overflow block, whose
+    // slots are numbered from kOverflowSlot whatever this is.
+    uint8_t inline_slots{kDefaultInlineSlots};
     // Which proven class layout this shape's own properties BEGIN with, as the
     // process-wide id `bronze_family_stamp` assigns — or `UNSTAMPED` (never
     // asked) or `NONE` (asked, and no registered class's field list is a prefix
@@ -173,11 +181,43 @@ public:
     // address the run's cell holds, never at an offset, so it is no ABI.
     // Monotone, like the two words above.
     uint32_t run_overflow_hint{0};
+    // The header word of a plain object with no internal slots at this shape
+    // (bronze_abi.h BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET): what generated code's
+    // inline adds compare a receiver's header with, and the size its inline
+    // `new` allocates. Follows `inline_slots`, set with it.
+    uint64_t bare_header{bareHeaderFor(kDefaultInlineSlots)};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build
     // configurations — so nothing the backend reads may sit after one.
     std::vector<ShapeTransition> transitions;
+
+    // The slot-number split (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT): a slot
+    // below it is an inline Value, slot kOverflowSlot + i is Value i of the
+    // overflow block. Also the most inline Values any object has.
+    static constexpr uint32_t kOverflowSlot = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
+    // An ordinary object's inline Values, and every exotic object's: their
+    // internal slots sit right after these at fixed offsets.
+    static constexpr uint32_t kDefaultInlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+
+    // A requested capacity made one an object can have: 0 (no request) and
+    // anything below the default is the default, anything above the split
+    // is the split.
+    static constexpr uint32_t clampInlineSlots(uint32_t n) noexcept {
+        return n < kDefaultInlineSlots ? kDefaultInlineSlots : n > kOverflowSlot ? kOverflowSlot : n;
+    }
+    static constexpr uint64_t bareHeaderFor(uint32_t inlineSlots) noexcept {
+        const uint64_t bytes = BRONZE_ABI_PLAIN_OBJECT_BYTES + 8u * (inlineSlots - kDefaultInlineSlots);
+        return (bytes << 32) | (uint64_t{BRONZE_ABI_OBJ_FLAGS_PLAIN} << 16) | BRONZE_ABI_TAG_OBJECT;
+    }
+    // Where a property `width` slots wide goes when the first free slot
+    // number is `next`, on an object with `inlineSlots` inline Values: there
+    // when it fits inline or is already past the split, else at the split.
+    // An accessor pair never straddles the two, and the numbers between the
+    // inline Values and the split are never handed out.
+    static constexpr uint32_t placeSlot(uint32_t next, uint32_t width, uint32_t inlineSlots) noexcept {
+        return next < kOverflowSlot && next + width > inlineSlots ? kOverflowSlot : next;
+    }
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
     Shape(Shape* parent_shape, PropertyKey prop_key, uint32_t slot, Shape* root_shape,
@@ -192,20 +232,37 @@ public:
           configurable(is_configurable),
           root(root_shape),
           prototype(Value::fromUndefined()),
+          inline_slots(parent_shape != nullptr ? parent_shape->inline_slots
+                                               : static_cast<uint8_t>(kDefaultInlineSlots)),
           double_slots(parent_shape == nullptr
                            ? 0u
                            : parent_shape->double_slots |
                                  ((slot_repr == SlotRepr::Double && slot < kSlotReprLimit)
                                       ? (uint64_t{1} << slot)
                                       : 0u)),
-          repr(slot_repr) {}
+          repr(slot_repr),
+          bare_header(parent_shape != nullptr ? parent_shape->bare_header
+                                              : bareHeaderFor(kDefaultInlineSlots)) {}
 
     // Creates a root shape whose instances have `proto` as their
     // prototype. A root carrying a non-undefined prototype also has to be
     // handed to the collector, and only the owner of the arena knows
     // whether its lifetime matches a heap's — so registration is the
     // caller's job (see newRootShape in rt_helpers), not this one's.
-    static Shape* createRoot(NonMovingArena& arena, Value proto = Value::fromUndefined());
+    //
+    // `inlineSlots` is how many inline Values every object of the tree has
+    // (clampInlineSlots applies); an object is allocated to its shape's count,
+    // so an EXOTIC object's root — internal slots at fixed offsets after the
+    // default inline Values — must keep the default.
+    static Shape* createRoot(NonMovingArena& arena, Value proto = Value::fromUndefined(),
+                             uint32_t inlineSlots = kDefaultInlineSlots);
+
+    // Give this (fresh, childless) shape `inlineSlots` inline Values.
+    void setInlineSlots(uint32_t inlineSlots) noexcept {
+        const uint32_t n = clampInlineSlots(inlineSlots);
+        inline_slots = static_cast<uint8_t>(n);
+        bare_header = bareHeaderFor(n);
+    }
 
     // Mark `obj` as somebody's prototype, the one entry every route to a
     // prototype takes (createRoot above, and the callers that hand an object
@@ -250,10 +307,26 @@ public:
 
     // How many slots this node's own property occupies.
     uint32_t slotWidth() const noexcept { return accessor ? 2u : 1u; }
-    // The first slot a property added after this one may use. A root shape
-    // owns no property, so the first property added to it takes slot 0.
-    uint32_t nextSlotIndex() const noexcept {
+    // One past the last slot an object at this shape uses: what its storage
+    // must cover. A root shape owns no property, so it is 0.
+    uint32_t slotEnd() const noexcept {
         return !key.valid() ? 0u : slot_index + slotWidth();
+    }
+    // The slot a property `width` slots wide added after this one takes.
+    uint32_t nextSlotIndex(uint32_t width = 1) const noexcept {
+        return placeSlot(slotEnd(), width, inline_slots);
+    }
+    // How many slots precede `slot` on an object with `inlineSlots` inline
+    // Values: the slot number with the unused gap before the split taken out.
+    // What the dictionary threshold counts, so it is the same number of
+    // properties whatever the capacity.
+    static constexpr uint32_t slotsBefore(uint32_t slot, uint32_t inlineSlots) noexcept {
+        return slot >= kOverflowSlot ? slot - (kOverflowSlot - inlineSlots) : slot;
+    }
+    // The slots an object at this shape uses once a property `width` wide is
+    // added: what the dictionary threshold is compared against.
+    uint32_t slotsUsedAfterAdd(uint32_t width = 1) const noexcept {
+        return slotsBefore(nextSlotIndex(width), inline_slots) + width;
     }
 
     // Does slot `index` of an object at this shape hold a raw double? One AND
@@ -353,6 +426,11 @@ static_assert(offsetof(Shape, root) == BRONZE_ABI_SHAPE_ROOT_OFFSET);
 static_assert(offsetof(Shape, prototype) == BRONZE_ABI_SHAPE_PROTO_OFFSET);
 static_assert(offsetof(Shape, dict) == BRONZE_ABI_SHAPE_DICT_OFFSET);
 static_assert(offsetof(Shape, used_as_prototype) == BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
+static_assert(offsetof(Shape, inline_slots) == BRONZE_ABI_SHAPE_INLINE_SLOTS_OFFSET);
+static_assert(offsetof(Shape, bare_header) == BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET);
+static_assert(BRONZE_ABI_OBJ_OVERFLOW_SLOT <= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
+              BRONZE_ABI_OBJ_OVERFLOW_SLOT < 256,
+              "the split must be a slot the representation bitmap covers and inline_slots can hold");
 static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
 // Stage R2's raw-f64 loads test this word against the slot they are about to
 // read, so it is ABI the moment it exists rather than the moment it is first

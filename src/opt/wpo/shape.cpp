@@ -1,5 +1,7 @@
 #include "opt/wpo/shape.h"
 
+#include "abi/bronze_abi.h"
+
 #include <algorithm>
 
 namespace bronze::wpo {
@@ -29,13 +31,24 @@ bool isPureUse(il::Op op) {
 }  // namespace
 
 int ObjShape::slotOf(uint32_t key) const {
-    int slot = 0;
+    uint32_t slot = 0;
     for (const auto& e : seq) {
-        if (e.key == key) return slot;
-        slot += e.accessor ? 2 : 1;
+        const uint32_t width = e.accessor ? 2u : 1u;
+        if (slot < BRONZE_ABI_OBJ_OVERFLOW_SLOT && slot + width > inlineSlots) slot = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
+        if (e.key == key) return static_cast<int>(slot);
+        slot += width;
     }
     return -1;
 }
+
+namespace {
+
+uint32_t clampInline(uint32_t n) {
+    if (n < BRONZE_ABI_OBJ_INLINE_SLOTS) return BRONZE_ABI_OBJ_INLINE_SLOTS;
+    return n > BRONZE_ABI_OBJ_OVERFLOW_SLOT ? BRONZE_ABI_OBJ_OVERFLOW_SLOT : n;
+}
+
+}  // namespace
 
 ShapeAnalysis::ShapeAnalysis(Solver& solver) : solver_(solver) {
     protoKey_ = solver_.key("prototype");
@@ -142,6 +155,15 @@ void ShapeAnalysis::computeObject(ObjId id) {
     }
     ObjShape& s = shapes_[id];
     s.modelled = true;
+    if (o.kind == ObjKind::Plain) {
+        s.inlineSlots = clampInline(creator.immI32 > 0 ? static_cast<uint32_t>(creator.immI32) : 0u);
+    } else if (o.kind == ObjKind::Instance && o.fn < mod.functions.size()) {
+        const uint32_t flags = mod.functions[o.fn].fnFlags;
+        s.inlineSlots =
+            clampInline((flags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) & BRONZE_ABI_FN_INLINE_SLOTS_MASK);
+    } else if (o.fn < mod.functions.size() && (mod.functions[o.fn].fnFlags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0) {
+        s.inlineSlots = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
+    }
     s.seq = out.exit.seq;
     s.exact = out.exit.valid && out.exit.exact;
     s.partial = out.exit.partial;

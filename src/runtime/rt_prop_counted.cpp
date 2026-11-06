@@ -37,11 +37,11 @@ extern "C" uint64_t bronze_prop_poly_scan(uint64_t objBits, uint64_t* site, uint
         if (load64(entry + BRONZE_ABI_IC_SHAPE_OFFSET) != shape) continue;
         const uint64_t slot = load64(entry + BRONZE_ABI_IC_SLOT_OFFSET);
         if (slot >= kOwnDataLimit) return 0;
-        if (slot < BRONZE_ABI_OBJ_INLINE_SLOTS) {
+        if (slot < BRONZE_ABI_OBJ_OVERFLOW_SLOT) {
             return reinterpret_cast<uintptr_t>(obj) + BRONZE_ABI_OBJ_SLOTS_OFFSET + slot * 8;
         }
         const uint64_t overflow = load64(obj + BRONZE_ABI_OBJ_OVERFLOW_OFFSET) & kPayloadMask;
-        return overflow + BRONZE_ABI_HDR_BYTES + (slot - BRONZE_ABI_OBJ_INLINE_SLOTS) * 8;
+        return overflow + BRONZE_ABI_HDR_BYTES + (slot - BRONZE_ABI_OBJ_OVERFLOW_SLOT) * 8;
     }
     return 0;
 }

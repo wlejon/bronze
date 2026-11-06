@@ -314,7 +314,8 @@ private:
             for (ObjId o : recv.objs) {
                 if (s_.object(o).escaped) escaped = true;
                 const ObjShape& sh = shapes_.shape(o);
-                if (!shapes_.singleShape(o) || !(sh.seq == first.seq) || !(s_.object(o).proto == firstProto)) {
+                if (!shapes_.singleShape(o) || !(sh.seq == first.seq) || sh.inlineSlots != first.inlineSlots ||
+                    !(s_.object(o).proto == firstProto)) {
                     single = false;
                 }
             }

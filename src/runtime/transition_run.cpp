@@ -68,8 +68,8 @@ bool chainAdmitsAdd(ObjectHeader* receiver, PropertyKey key) {
 }
 
 uint32_t overflowNeed(const Shape* end) {
-    const uint32_t slots = end->nextSlotIndex();
-    return slots > ObjectHeader::kInlineSlots ? slots - ObjectHeader::kInlineSlots : 0;
+    const uint32_t slots = end->slotEnd();
+    return slots > ObjectHeader::kOverflowSlot ? slots - ObjectHeader::kOverflowSlot : 0;
 }
 
 }  // namespace
@@ -92,7 +92,7 @@ void bronze_transition_run_publish(uint64_t objBits, uint64_t startBits, uint64_
     if (!objVal.isObject() || startBits == 0 || count == 0) return refuse();
     auto* hdr = objVal.asObject<HeapObjectHeader>();
     // A plain object with no internal slots: the header the guard compares.
-    if (hdr->flags != HeapKind::Plain || hdr->size != BRONZE_ABI_PLAIN_OBJECT_BYTES) return refuse();
+    if (hdr->flags != HeapKind::Plain || !reinterpret_cast<ObjectHeader*>(hdr)->isBarePlain()) return refuse();
     // A global object's writes go through the global cache's invalidation.
     // Asked of every live realm without making one: rtCurrentRealm would
     // create the default realm here, moving the thread's realm slot under
@@ -120,11 +120,11 @@ void bronze_transition_run_publish(uint64_t objBits, uint64_t startBits, uint64_
     // Where the fast copy reads how big a block to give a receiver that has
     // none: a class's root learns the most any of its runs needed, so the
     // first run of a constructor allocates for the later ones; the plain
-    // root is every literal's, so a literal's run asks only for its own.
+    // roots are every literal's, so a literal's run asks only for its own.
     Shape* root = end->root;
     const uint32_t need = overflowNeed(end);
     uint32_t* capacity = nullptr;
-    if (root != nullptr && root != rtPlainObjectShape()) {
+    if (root != nullptr && !rtIsPlainObjectRoot(root)) {
         if (root->run_overflow_hint < need) root->run_overflow_hint = need;
         capacity = &root->run_overflow_hint;
     } else {

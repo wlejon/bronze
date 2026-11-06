@@ -17,16 +17,23 @@ public:
     [[nodiscard]] bool enable_tlab() const noexcept { return enable_tlab_; }
     void set_enable_tlab(bool enable) noexcept { enable_tlab_ = enable; }
 
-    Value* lower_create_object(Builder& b);
+    // A literal's object; `inline_slots` > 4 asks for that many inline slots
+    // (create.object's immI32, its predicted size), from the thread's sized
+    // Object.prototype root.
+    Value* lower_create_object(Builder& b, uint32_t inline_slots = 0);
     Value* lower_create_array(Builder& b, Value* size_val, uint32_t param_count);
     Value* lower_env_create(Builder& b, Value* parent_val, Value* size_val, uint32_t param_count);
     // A plain object with no internal slots and `shape`, bumped out of the
     // thread's allocation window when `precondition` holds and the window has
     // room; otherwise a branch to `miss`. Ends in `fast` (empty, the caller's
-    // own block) with the object initialized as ObjectHeader::create leaves
+    // own block), or for a capacity read off the shape in a block after it,
+    // with the object initialized as ObjectHeader::create leaves
     // one, and answers its Value bits. Nothing in it is a GC point, so the
-    // caller's derived values stay valid up to its next call.
-    Value* bump_plain_object(Builder& b, Value* shape, Value* precondition, BasicBlock* miss, BasicBlock* fast);
+    // caller's derived values stay valid up to its next call. `inline_slots`
+    // is the shape's capacity when the caller knows it; 0 reads it from the
+    // shape (shape.h `bare_header`), which `precondition` must guard.
+    Value* bump_plain_object(Builder& b, Value* shape, Value* precondition, BasicBlock* miss, BasicBlock* fast,
+                             uint32_t inline_slots = 0);
     // An object's overflow block of `capacity` (an i64) slots, every one
     // undefined, as ObjectHeader::ensureOverflow leaves a new one: bumped out
     // of the thread's window when it has room, else a branch to `miss`. Ends
@@ -34,7 +41,7 @@ public:
     Value* bump_slot_block(Builder& b, Value* capacity, BasicBlock* miss, BasicBlock* fast);
 
 private:
-    Value* lower_create_object_bronze(Builder& b);
+    Value* lower_create_object_bronze(Builder& b, uint32_t inline_slots);
     Value* lower_create_array_bronze(Builder& b, Value* size_val, uint32_t param_count);
     Value* lower_env_create_bronze(Builder& b, Value* parent_val, Value* size_val, uint32_t param_count);
 

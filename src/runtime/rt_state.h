@@ -22,6 +22,7 @@
 
 namespace bronze {
 class Realm;
+struct FunctionHeader;
 }
 
 namespace bronze::runtime {
@@ -30,8 +31,9 @@ Heap& rtHeap();
 NonMovingArena& rtArena();
 
 // A root shape registered with the collector, for a builtin that needs its
-// own hidden class rather than the one every `{}` literal shares.
-Shape* rtNewRootShape(Value proto);
+// own hidden class rather than the one every `{}` literal shares. Objects of
+// its tree have `inlineSlots` inline slots (Shape::createRoot).
+Shape* rtNewRootShape(Value proto, uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS);
 
 // The root shape for objects whose prototype is `proto`, memoized on the
 // prototype's identity. `Object.create(p)` in a loop must not mint a hidden
@@ -46,6 +48,26 @@ size_t rtUserPrototypeShapeCount();
 Shape* rtPlainObjectShape();
 Shape* rtCurrentPlainObjectShape();
 void rtRegisterRootShape(Shape* shape);
+
+// The same root for a literal whose objects have `inlineSlots` inline slots
+// (clamped as Shape::clampInlineSlots does): one per capacity, so literals of
+// one size share a tree. The default capacity's is rtPlainObjectShape().
+Shape* rtPlainObjectShapeSized(uint32_t inlineSlots);
+// Whether `root` is one of those.
+bool rtIsPlainObjectRoot(const Shape* root);
+
+// How many inline slots `new F()` gives an instance of the function F, which
+// is the capacity its instance root shape is made with: what the compiler
+// predicted for F's code (bronze_create_function's flag bits,
+// BRONZE_ABI_FN_INLINE_SLOTS_SHIFT), the default when it predicted nothing,
+// and always the default for a function whose instances are exotic objects
+// (a native base: internal slots at fixed offsets).
+uint32_t rtInstanceInlineSlots(const FunctionHeader* fn);
+// The same for the `prototype` object the runtime makes for F: a class's
+// carries its methods, so it gets the most; any other function's the default.
+uint32_t rtPrototypeInlineSlots(const FunctionHeader* fn);
+// Records the prediction carried by `fnFlags` for `code`, if there is one.
+void rtNoteInstanceInlineSlots(const void* code, uint32_t fnFlags);
 
 // A property key by the index lowering assigned it. The string form is for
 // comparisons; the header form is the arena-interned key the property path

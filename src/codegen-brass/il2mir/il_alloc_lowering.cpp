@@ -15,11 +15,23 @@ static Value* bronze_tls_addr(Builder& b) {
     return b.build_call("bronze_tls_block_addr", Type::i64(), {});
 }
 
-Value* AllocLoweringHelper::lower_create_object(Builder& b) {
-    if (!enable_tlab_) {
-        return b.build_call("bronze_create_object", Type::i64(), {});
-    }
-    return lower_create_object_bronze(b);
+// The capacity a literal asks for: 0 (the default root) unless it is more
+// than the default, capped at the overflow split.
+static uint32_t literal_inline_slots(uint32_t want) {
+    if (want <= BRONZE_ABI_OBJ_INLINE_SLOTS) return 0;
+    return want > BRONZE_ABI_OBJ_OVERFLOW_SLOT ? BRONZE_ABI_OBJ_OVERFLOW_SLOT : want;
+}
+
+static Value* create_object_call(Builder& b, uint32_t inline_slots) {
+    if (inline_slots == 0) return b.build_call("bronze_create_object", Type::i64(), {});
+    return b.build_call("bronze_create_object_sized", Type::i64(),
+                        {b.build_iconst_i32(static_cast<int32_t>(inline_slots))});
+}
+
+Value* AllocLoweringHelper::lower_create_object(Builder& b, uint32_t inline_slots) {
+    inline_slots = literal_inline_slots(inline_slots);
+    if (!enable_tlab_) return create_object_call(b, inline_slots);
+    return lower_create_object_bronze(b, inline_slots);
 }
 
 Value* AllocLoweringHelper::lower_create_array(Builder& b, Value* size_val, uint32_t param_count) {
@@ -95,6 +107,13 @@ constexpr uint64_t make_header_word(size_t size_bytes, uint64_t flags, uint64_t 
     return (static_cast<uint64_t>(size_bytes) << 32) | ((flags & 0xFFFFULL) << 16) | (tag & 0xFFFFULL);
 }
 
+// A plain object's full header word for `inline_slots` slots (shape.h
+// `Shape::bareHeaderFor`).
+constexpr uint64_t bareHeaderFor(uint32_t inline_slots) {
+    return make_header_word(PLAIN_OBJECT_BYTES + 8u * (inline_slots - BRONZE_ABI_OBJ_INLINE_SLOTS), OBJ_FLAGS_PLAIN,
+                            TAG_OBJECT);
+}
+
 } // namespace bronze_heap_abi
 
 // Stores the collector's header for a bronze object of `bronze_bytes` (its
@@ -109,34 +128,73 @@ static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronz
 
 
 Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* precondition,
-                                              BasicBlock* miss, BasicBlock* bb_fast) {
+                                              BasicBlock* miss, BasicBlock* bb_fast, uint32_t inline_slots) {
     using namespace bronze_heap_abi;
     Value* tls_addr = bronze_tls_addr(b);
+    // The object's bronze bytes: a constant for a known capacity, else its
+    // shape's bare header (shape.h `bare_header`) read once the precondition
+    // has said the shape is there to read.
+    Value* header_word = nullptr;
+    Value* bytes = nullptr;
+    if (inline_slots != 0) {
+        const uint64_t word = static_cast<uint64_t>(bareHeaderFor(inline_slots));
+        header_word = b.build_iconst_i64(static_cast<int64_t>(word));
+        bytes = b.build_iconst_i64(static_cast<int64_t>(word >> 32));
+    } else {
+        BasicBlock* bb_cur = b.current_block();
+        Function* fn = bb_cur->parent();
+        BasicBlock* bb_sized = b.append_block("tlab_plain_sized_" + std::to_string(fn->next_block_id()));
+        b.position_at_end(bb_cur);
+        b.build_br_if(precondition, bb_sized, miss);
+        b.position_at_end(bb_sized);
+        precondition = nullptr;
+        header_word = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET);
+        bytes = b.build_lshr(header_word, b.build_iconst_i64(32));
+    }
     Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
     Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
-    Value* new_cursor =
-        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + PLAIN_OBJECT_BYTES)));
+    Value* new_cursor = b.build_add(b.build_add(cur_cursor, bytes), b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
     Value* can_fit = b.build_ule(new_cursor, cur_limit);
-    b.build_br_if(b.build_and(can_fit, precondition), bb_fast, miss);
+    b.build_br_if(precondition ? b.build_and(can_fit, precondition) : can_fit, bb_fast, miss);
 
     // Fast path: bump pointer and initialize plain object
     b.position_at_end(bb_fast);
     b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
-    store_gc_header(b, tls_addr, cur_cursor, PLAIN_OBJECT_BYTES);
+    Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
+    b.build_store(Type::i64(), cur_cursor, 0, b.build_or(cell, bytes));
     Value* obj_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
 
-    // HeapObjectHeader at obj_ptr (offset 0):
-    // tag = Tag::Object, flags = HeapKind::Plain, size = 56
-    constexpr uint64_t HEADER_WORD = make_header_word(PLAIN_OBJECT_BYTES, OBJ_FLAGS_PLAIN, TAG_OBJECT);
-    b.build_store(Type::i64(), obj_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(HEADER_WORD)));
+    // HeapObjectHeader at obj_ptr (offset 0): Tag::Object, HeapKind::Plain
+    // and the size, which is the shape's bare header word.
+    b.build_store(Type::i64(), obj_ptr, 0, header_word);
 
     // ObjectHeader: the shape at 8, the overflow word at 16, and the inline
-    // slots at 24..55, every Value undefined (ObjectHeader::create).
+    // slots from 24, every Value undefined (ObjectHeader::create).
     b.build_store(Type::i64(), obj_ptr, 8, shape);
     Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
     b.build_store(Type::i64(), obj_ptr, 16, undef_val);
-    for (int i = 0; i < 4; ++i) {
-        b.build_store(Type::i64(), obj_ptr, 24 + i * 8, undef_val);
+    constexpr uint32_t kMinSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+    const uint32_t unrolled = inline_slots != 0 ? inline_slots : kMinSlots;
+    for (uint32_t i = 0; i < unrolled; ++i) {
+        b.build_store(Type::i64(), obj_ptr, static_cast<int32_t>(24 + i * 8), undef_val);
+    }
+    if (inline_slots == 0) {
+        // The slots past the fourth, when the shape has them: a short loop
+        // over the words from PLAIN_OBJECT_BYTES to the object's end.
+        BasicBlock* bb_cur = b.current_block();
+        Function* fn = bb_cur->parent();
+        const std::string prefix = "tlab_plain_fill_" + std::to_string(fn->next_block_id());
+        BasicBlock* bb_loop = b.append_block(prefix + "_loop");
+        BasicBlock* bb_done = b.append_block(prefix + "_done");
+        Value* off = b.add_block_param(bb_loop, Type::i64());
+        b.position_at_end(bb_cur);
+        Value* first = b.build_iconst_i64(static_cast<int64_t>(PLAIN_OBJECT_BYTES));
+        b.build_br_if(b.build_ult(first, bytes), bb_loop, {first}, bb_done, {});
+        b.position_at_end(bb_loop);
+        b.build_store(Type::i64(), b.build_add(obj_ptr, off), 0, undef_val);
+        Value* next = b.build_add(off, b.build_iconst_i64(8));
+        b.build_br_if(b.build_ult(next, bytes), bb_loop, {next}, bb_done, {});
+        b.position_at_end(bb_done);
     }
 
     // NaN-box Tag::Object (0xFFF1ULL << 48)
@@ -190,7 +248,7 @@ Value* AllocLoweringHelper::bump_slot_block(Builder& b, Value* capacity, BasicBl
     return blk;
 }
 
-Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
+Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b, uint32_t inline_slots) {
     using namespace bronze_heap_abi;
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
@@ -203,14 +261,20 @@ Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(bb_current);
-    Value* plain_shape = b.build_load(Type::i64(), bronze_tls_addr(b), TLS_PLAIN_SHAPE_OFF);
+    // The sized roots sit in the TLS block's `plain_shapes`, zero until the
+    // runtime has made the one asked for (bronze_create_object_sized).
+    const int32_t shape_off = inline_slots == 0
+                                  ? TLS_PLAIN_SHAPE_OFF
+                                  : static_cast<int32_t>(BRONZE_TLS_PLAIN_SHAPES_OFF + 8 * inline_slots);
+    Value* plain_shape = b.build_load(Type::i64(), bronze_tls_addr(b), shape_off);
     Value* has_shape = b.build_ne(plain_shape, b.build_iconst_i64(0));
-    Value* obj_val = bump_plain_object(b, plain_shape, has_shape, bb_fallback, bb_fast);
+    Value* obj_val = bump_plain_object(b, plain_shape, has_shape, bb_fallback, bb_fast,
+                                       inline_slots == 0 ? BRONZE_ABI_OBJ_INLINE_SLOTS : inline_slots);
     b.build_br(bb_merge, {obj_val});
 
     // Fallback path
     b.position_at_end(bb_fallback);
-    Value* fallback_val = b.build_call("bronze_create_object", Type::i64(), {});
+    Value* fallback_val = create_object_call(b, inline_slots);
     b.build_br(bb_merge, {fallback_val});
 
     // Merge block

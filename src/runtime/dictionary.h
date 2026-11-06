@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "runtime/property_key.h"
 #include "runtime/string.h"
 
@@ -92,6 +93,10 @@ public:
     // One past the highest slot ever handed out — the object's slot storage
     // must cover it.
     uint32_t nextSlot{0};
+
+    // The object's inline slot count (Shape::inline_slots), which decides
+    // where a fresh slot goes (allocateSlots).
+    uint32_t inlineSlots{BRONZE_ABI_OBJ_INLINE_SLOTS};
 
     // [[Extensible]] (6.1.7.2). False after `Object.freeze` /
     // `Object.preventExtensions`, and the reason those move an object here:

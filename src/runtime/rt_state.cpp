@@ -151,8 +151,8 @@ static void pushRootShape(Shape* root) {
     }
 }
 
-Shape* rtNewRootShape(Value proto) {
-    Shape* root = Shape::createRoot(rtArena(), proto);
+Shape* rtNewRootShape(Value proto, uint32_t inlineSlots) {
+    Shape* root = Shape::createRoot(rtArena(), proto, inlineSlots);
     pushRootShape(root);
     return root;
 }
@@ -245,6 +245,34 @@ Shape* rtPlainObjectShape() {
 
 Shape* rtCurrentPlainObjectShape() {
     return g_plainObjectShape;
+}
+
+// The sized literal roots, by capacity; the default capacity's entry is
+// g_plainObjectShape. Mirrored into the TLS block's plain_shapes for the
+// inline allocation of a sized literal.
+static thread_local Shape* g_plainObjectShapes[Shape::kOverflowSlot + 1] = {};
+
+Shape* rtPlainObjectShapeSized(uint32_t inlineSlots) {
+    const uint32_t n = Shape::clampInlineSlots(inlineSlots);
+    if (n == Shape::kDefaultInlineSlots) {
+        Shape* shape = rtPlainObjectShape();
+        bronze_tls_block_addr()->plain_shapes[n] = reinterpret_cast<uint64_t>(shape);
+        return shape;
+    }
+    if (!g_plainObjectShapes[n]) {
+        Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype(), n);
+        pushRootShape(shape);
+        g_plainObjectShapes[n] = shape;
+        bronze_tls_block_addr()->plain_shapes[n] = reinterpret_cast<uint64_t>(shape);
+    }
+    return g_plainObjectShapes[n];
+}
+
+bool rtIsPlainObjectRoot(const Shape* root) {
+    if (root == nullptr) return false;
+    if (root == g_plainObjectShape) return true;
+    const uint32_t n = root->inline_slots;
+    return n <= Shape::kOverflowSlot && g_plainObjectShapes[n] == root;
 }
 
 void rtRegisterRootShape(Shape* shape) {
@@ -912,6 +940,10 @@ static void releaseThreadDynamicModules() {
 void rtTeardownThreadState() {
     g_plainObjectShape = nullptr;
     bronze_tls_block_addr()->plain_shape = 0;
+    for (uint32_t n = 0; n <= Shape::kOverflowSlot; ++n) {
+        g_plainObjectShapes[n] = nullptr;
+        bronze_tls_block_addr()->plain_shapes[n] = 0;
+    }
 
     if (g_threadHeap) {
         std::lock_guard<std::mutex> lock(g_heapStateMu);

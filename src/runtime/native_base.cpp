@@ -117,7 +117,15 @@ Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor) {
     // kind below but an array allocates from — an ordinary object with
     // internal slots, whose [[Prototype]] is its shape's.
     rtEnsureFunctionPrototype(ctor);
-    Shape* const shape = ctor.get().asObject<FunctionHeader>()->instance_shape;
+    Shape* shape = ctor.get().asObject<FunctionHeader>()->instance_shape;
+    // An exotic object's internal slots sit after the DEFAULT inline slots,
+    // so its shape must have that many. A NewTarget that is an ordinary class
+    // (`Reflect.construct(Map, [], C)`) has a root sized for C's own
+    // instances; the exotic one takes the memoized root over the same
+    // prototype instead.
+    if (shape != nullptr && shape->inline_slots != Shape::kDefaultInlineSlots) {
+        shape = rtRootShapeForPrototype(shape->prototypeValue());
+    }
     switch (kind) {
         case NativeBase::Array: {
             Rooted<Value> proto{ctor.get().asObject<FunctionHeader>()->prototype};

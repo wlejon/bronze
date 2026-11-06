@@ -3,11 +3,13 @@
 // claims (A) and number hints (C) on the finished module.
 
 #include <algorithm>
+#include <charconv>
 #include <set>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "abi/bronze_abi.h"
 #include "il/feedback_site.h"
 #include "il/key.h"
 #include "opt/spec/feedback_plan.h"
@@ -24,9 +26,24 @@ constexpr uint32_t kNone = UINT32_MAX;
 // its keys, in slot order. False for a dictionary, a receiver named by kind
 // (`array`, `number`, ...) or an unparsable name. `complete` is false when the
 // recorder cut the list short (`+N`).
-bool shapeKeys(const std::string& name, std::vector<std::string_view>& keys, bool& complete) {
+bool shapeKeys(const std::string& name, std::vector<std::string_view>& keys, bool& complete,
+               uint32_t* inlineSlots = nullptr) {
     const size_t open = name.find('{');
     if (open == std::string::npos || name.empty() || name.back() != '}') return false;
+    if (inlineSlots != nullptr) {
+        // `#N` before the brace: an inline capacity other than the default.
+        *inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+        const size_t hash = name.rfind('#', open);
+        if (hash != std::string::npos) {
+            uint32_t n = 0;
+            const auto [end, ec] = std::from_chars(name.data() + hash + 1, name.data() + open, n);
+            if (ec != std::errc() || end != name.data() + open || n < BRONZE_ABI_OBJ_INLINE_SLOTS ||
+                n > BRONZE_ABI_OBJ_OVERFLOW_SLOT) {
+                return false;
+            }
+            *inlineSlots = n;
+        }
+    }
     const std::string_view body = std::string_view(name).substr(open + 1, name.size() - open - 2);
     if (body == "dict" || body == "?") return false;
     keys.clear();
@@ -81,13 +98,19 @@ public:
         bool complete = false;
         const std::string& key = mod_.keyConstants[inst.keyIndex];
         uint32_t slot = kNone;
+        uint32_t index = kNone;
+        uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
         bool prototypeLike = false;
-        if (shapeKeys(*shape, keys, complete)) {
+        if (shapeKeys(*shape, keys, complete, &inlineSlots)) {
             for (uint32_t i = 0; i < keys.size(); ++i) {
-                if (keys[i] == key) slot = slot == kNone ? i : kNone - 1;
+                if (keys[i] == key) index = index == kNone ? i : kNone - 1;
                 if (keys[i] == "constructor") prototypeLike = true;
             }
         }
+        // The key's position is its slot while inline; past the shape's
+        // capacity the slots number from the overflow split.
+        slot = index;
+        if (index < kNone - 1 && index >= inlineSlots) slot = BRONZE_ABI_OBJ_OVERFLOW_SLOT + (index - inlineSlots);
         const bool write = inst.op == il::Op::PropSet;
         // A write to an object others inherit from must reach the runtime,
         // which moves the prototype epoch (the runtime also refuses to publish
@@ -101,7 +124,9 @@ public:
         inst.staticSlotGuessed = true;
         if (claimedIcs_.insert(inst.icIndex).second) stats_.shapeExecutions += it->second.total;
         uint32_t lo = 0, span = 0;
-        if (!write && complete && familyOf(keys, slot, inst.keyIndex, &lo, &span)) {
+        // A family claims position i at slot i, which a shape whose capacity
+        // splits its keys earlier never has (class_family.cpp).
+        if (!write && complete && slot == index && familyOf(keys, slot, inst.keyIndex, &lo, &span)) {
             inst.staticCellIndex = 0;
             inst.familyLo = lo;
             inst.familySpan = span;

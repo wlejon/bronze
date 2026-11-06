@@ -32,6 +32,13 @@ PropertyKey arenaKey(NonMovingArena& arena, Heap& heap, const std::string& s) {
         StringHeader::internToArena(arena, tmp.get().asString<StringHeader>()));
 }
 
+// The slot the i-th single-slot property takes at the default capacity: the
+// inline Values first, then the overflow block numbered from the split
+// (Shape::placeSlot).
+uint32_t slotOfIndex(uint32_t i) {
+    return i < ObjectHeader::kInlineSlots ? i : ObjectHeader::kOverflowSlot + (i - ObjectHeader::kInlineSlots);
+}
+
 // A key the dictionary has never been handed: a fresh heap string, matched by
 // content, which is what `o[k]` with a computed `k` presents.
 PropertyKey probeKey(Heap& heap, Rooted<Value>& holder, const std::string& s) {
@@ -59,7 +66,7 @@ TEST_CASE("dictionary finds by content through a hashed index") {
     for (uint32_t i = 0; i < n; i += 97) {
         const DictEntry* e = d.find(probeKey(heap, holder, "k" + std::to_string(i)));
         REQUIRE(e != nullptr);
-        CHECK(e->slot == i);
+        CHECK(e->slot == slotOfIndex(i));
     }
     CHECK(d.find(probeKey(heap, holder, "k" + std::to_string(n))) == nullptr);
     CHECK(d.find(probeKey(heap, holder, "")) == nullptr);
@@ -89,17 +96,17 @@ TEST_CASE("a removed key is a tombstone the probe crosses and the order keeps") 
         if (i == 5) continue;
         const DictEntry* e = d.find(probeKey(heap, holder, "k" + std::to_string(i)));
         REQUIRE(e != nullptr);
-        CHECK(e->slot == i);
+        CHECK(e->slot == slotOfIndex(i));
     }
     // The freed slot is what the next single-slot add receives, and the
     // re-added key goes to the END: a delete then a re-add is a new insertion
     // in enumeration order.
     const uint32_t slot = d.allocateSlots(1);
-    CHECK(slot == 5);
+    CHECK(slot == slotOfIndex(5));
     d.add(arenaKey(arena, heap, "k5"), slot, true, false);
     CHECK(d.entries.size() == 17);
     CHECK(d.entries.back().key.matches(probeKey(heap, holder, "k5")));
-    CHECK(d.find(probeKey(heap, holder, "k5"))->slot == 5);
+    CHECK(d.find(probeKey(heap, holder, "k5"))->slot == slotOfIndex(5));
 }
 
 TEST_CASE("the table compacts once the dead outnumber the living") {
@@ -124,7 +131,7 @@ TEST_CASE("the table compacts once the dead outnumber the living") {
     uint32_t expect = 1;
     for (const DictEntry& e : d.entries) {
         if (!e.live()) continue;
-        CHECK(e.slot == expect);
+        CHECK(e.slot == slotOfIndex(expect));
         CHECK(e.key.matches(probeKey(heap, holder, "k" + std::to_string(expect))));
         expect += 2;
     }
@@ -185,7 +192,7 @@ TEST_CASE("an object crossing the threshold becomes a dictionary in place") {
             StringHeader::createFromUTF8(heap, ("k" + std::to_string(i)).c_str())));
         PropertyInfo info;
         REQUIRE(obj->shape->lookupProperty(PropertyKey::fromValue(key.get()), info));
-        CHECK(info.slot == i);
+        CHECK(info.slot == slotOfIndex(i));
         CHECK(obj->getSlot(info.slot).asNumber() == static_cast<double>(i));
     }
     std::vector<PropertyKey> keys = obj->shape->ownKeysInInsertionOrder();
