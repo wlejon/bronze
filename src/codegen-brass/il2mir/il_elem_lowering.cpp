@@ -22,7 +22,6 @@ namespace {
 constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-constexpr uint64_t kPayloadLimit = uint64_t{1} << 48;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;

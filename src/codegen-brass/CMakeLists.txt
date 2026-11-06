@@ -15,6 +15,8 @@ if(NOT TARGET brass)
     bro_dependency(brass)
     set(BRASS_ROOT "${brass_SOURCE_DIR}" CACHE PATH "brass source tree" FORCE)
     set(_BRONZE_BRASS_ROOT_CHOSEN "${brass_SOURCE_DIR}" CACHE INTERNAL "")
+elseif(DEFINED brass_SOURCE_DIR AND NOT BRASS_ROOT)
+    set(BRASS_ROOT "${brass_SOURCE_DIR}" CACHE PATH "brass source tree" FORCE)
 endif()
 
 add_library(bronze_codegen_brass STATIC

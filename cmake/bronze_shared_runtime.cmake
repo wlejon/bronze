@@ -74,6 +74,9 @@ add_library(bronze::runtime_shared ALIAS bronze_runtime_shared)
 target_include_directories(bronze_runtime_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
     target_include_directories(bronze_runtime_shared PUBLIC "${BRASS_ROOT}/include")
+elseif(TARGET brass)
+    target_include_directories(bronze_runtime_shared PUBLIC
+        $<TARGET_PROPERTY:brass,INTERFACE_INCLUDE_DIRECTORIES>)
 endif()
 
 target_link_libraries(bronze_runtime_shared PRIVATE
