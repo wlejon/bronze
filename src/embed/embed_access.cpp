@@ -77,6 +77,7 @@ const char* accessKindName(AccessKind kind) {
         case AccessKind::EnvWrite: return "env-write";
         case AccessKind::DesktopRead: return "desktop-read";
         case AccessKind::DesktopWrite: return "desktop-write";
+        case AccessKind::ReadDerived: return "read-derived";
     }
     return "?";
 }

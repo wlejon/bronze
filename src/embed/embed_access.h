@@ -67,6 +67,12 @@ enum class AccessKind : uint8_t {
     EnvWrite,      // subject: an environment variable's name
     DesktopRead,   // subject: the user's desktop configuration read ("the recent files")
     DesktopWrite,  // subject: the change to it ("set the default app for text/plain to ...")
+    // subject: an absolute path a library made for the program from a file it
+    // may read (a thumbnail in a shared cache) and handed it to read. Not a
+    // question: the host lets the program read that path from now on, for
+    // as long as it runs, and answers "". Ask it only after the source's
+    // Read was allowed.
+    ReadDerived,
 };
 
 const char* accessKindName(AccessKind kind);  // "read", "write", "spawn", ...
