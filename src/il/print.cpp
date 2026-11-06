@@ -240,6 +240,10 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         if (inst.icMonomorphic) out += ", mono";
                         if (inst.icPolymorphic) out += ", poly";
                         if (inst.icAbsent) out += ", absent";
+                        if (inst.icChain != 0) {
+                            out += ", chain " + std::to_string(inst.icChain & Instruction::kChainWaysMask);
+                            if (inst.icChain & Instruction::kChainProto) out += "+proto";
+                        }
                         // The receiver is a class- or function-declaration BINDING, so it
                         // can be a function object with members in a statics box: a hint,
                         // not a proof, but it decides whether the backend emits the arm
@@ -507,6 +511,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             out += " typed @" + std::to_string(inst.typedTarget);
                         }
                         if (inst.immI32 & Instruction::kMethodRecvArray) out += ", array-recv";
+                        if (inst.immI32 & Instruction::kMethodPolyShapes) out += ", poly-recv";
                         if (inst.immI32 & Instruction::kMethodOwnCallee) out += ", own-callee";
                         size_t argc = inst.operands.size() > 1 ? inst.operands.size() - 1 : 0;
                         out += ", " + std::to_string(argc);

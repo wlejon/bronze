@@ -187,7 +187,15 @@ the plan where each claim has to be made:
   is the guard (its direct entry names the code only for a receiver whose
   lookup finds it). A `call.dynamic` with one profiled callee is split on
   `closure.is` (`applyClosureCalls`): the direct entry on a match, the generic
-  call on the other side.
+  call on the other side. From the receivers a method site saw: when their
+  key lists hold the key (an own slot, the method cache's SLOT form, which a
+  direct target's guard never matches), one callee becomes an own-slot callee
+  (`applyOwnCalleeCalls`) and several get `kMethodOwnCallee`, the SLOT form
+  dispatched at the site; two or more shapes set `kMethodPolyShapes`
+  (`poly-recv` in `bronze il`), so a way-0 miss tests the cache's way 1 at the
+  site before the method stub. A predicted direct target at a site whose run
+  called a native (a name with no `@hash`, such as `array.push`) is dropped:
+  its guard would miss every time.
 - **A, static-slot claims** (after `wpo::optimizeForBuild`, before the layout
   facts spend claims): a `prop.get`/`prop.set` the whole-program pass left
   unclaimed, whose receivers had one dominant shape, claims the key's slot in
@@ -209,6 +217,17 @@ the plan where each claim has to be made:
   ToBoolean out cold. This covers presence tests (`if (material.map)`),
   flag fields, and the joins of `a && b`, whose profile is usually
   {Boolean, undefined}.
+- **E, inline way chains** (with A, after `wpo::optimizeForBuild`): a
+  `prop.get` of a named key whose receivers were one to four plain shapes
+  (each at least 1%, no `*other*`, no dictionary) gets `icChain`
+  (`chain N[+proto]` in `bronze il`): the backend compares the receiver's
+  shape with that many of the site's cache ways inline, in fill order, and
+  answers from the way that matches, an own data slot, a negative entry at
+  the current prototype epoch (`undefined`), or with `+proto` (some receiver
+  lacked the key and the read returned something else) a data slot one
+  prototype link up at the current epoch. Everything else is the property
+  stub, laid out cold (`il_prop_get_chain.cpp`). A site of one shape that A
+  already claimed is left to its claim.
 - **D, profile-guided regions** (after inlining and the own-slot calls,
   before transition runs, define-add cells and the claims;
   `src/lower/guard_region.h`, "PROFILE-GUIDED REGIONS"): the guarded-region

@@ -358,6 +358,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     Value* mega_fn = b.add_block_param(mega_callee, Type::i64());
     BasicBlock* exotic = b.append_block(prefix + "_exotic");
     BasicBlock* exotic_box = b.append_block(prefix + "_exotic_box");
+    BasicBlock* exotic_code = b.append_block(prefix + "_exotic_code");
     BasicBlock* enter = b.append_block(prefix + "_enter");
     Value* enter_code = b.add_block_param(enter, Type::ptr());
     Value* enter_env = b.add_block_param(enter, Type::i64());
@@ -487,7 +488,14 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         Value* kind_ok = b.build_eq(b.build_zext_i64(b.build_load(Type::i32(), base, 0)), want_low);
         Value* entry_ok = b.build_and(b.build_ne(b.build_and(arity0, direct_bit), zero),
                                       b.build_ult(arity0, b.build_iconst_i64(kSlotFormLimit)));
-        b.build_br_if(b.build_and(b.build_and(box_form, is_obj), b.build_and(kind_ok, entry_ok)), exotic_box, slow);
+        Value* code_form = b.build_eq(form, b.build_iconst_i64(static_cast<int64_t>(
+                                                 BRONZE_ABI_METHOD_IC_EXOTIC_BIT | BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT)));
+        Value* latched = b.build_and(is_obj, b.build_and(kind_ok, entry_ok));
+        BasicBlock* not_box = b.append_block(prefix + "_exotic_notbox");
+        b.position_at_end(exotic);
+        b.build_br_if(b.build_and(box_form, latched), exotic_box, not_box);
+        b.position_at_end(not_box);
+        b.build_br_if(b.build_and(code_form, latched), exotic_code, slow);
     }
     b.position_at_end(exotic_box);
     {
@@ -498,6 +506,29 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord);
         Value* env = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
         b.build_br_if(box_is_obj, slow, {}, enter, {code, env});
+    }
+
+    // EXOTIC with the CODE guard: a typed-array view (its shape word against
+    // the latched Shape*, `view.set(...)`) or a global constructor's static
+    // (its code word, `Array.isArray(...)`). Entered here only while the
+    // entry's epoch is the thread's: a view's entry always carries one, and
+    // a constructor's carries one once its statics live in a box the program
+    // may write (rt_method_call.cpp, latchExoticMethodIc); one that carries
+    // none (zero, never an epoch) is the runtime's to answer. A native is
+    // entered without its padding only with at least its arity in arguments,
+    // as methodIcHit's `native` arm enters it.
+    b.position_at_end(exotic_code);
+    {
+        Value* aux_at = b.build_add(ptr, b.build_lshr(w0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_BOX_SHIFT)));
+        Value* aux_ok = b.build_eq(b.build_load(Type::i64(), aux_at, 0),
+                                   b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_AUX_WORD * kWord));
+        Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord),
+                                     b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+        Value* arity = b.build_and(arity0, b.build_iconst_i64(0x7FFFFFFFLL));
+        Value* args_ok = b.build_ule(arity, b.build_zext_i64(argc));
+        Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord);
+        Value* env = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
+        b.build_br_if(b.build_and(aux_ok, b.build_and(epoch_ok, args_ok)), enter, {code, env}, slow, {});
     }
 
     b.position_at_end(enter);
@@ -753,71 +784,6 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
                                                       {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()}));
     build_sort_merge_stub(
         mod.create_function(kSortMergeStub, Type::i64(), {Type::i64(), Type::i64(), Type::i32(), Type::ptr()}));
-}
-
-// The stub's DIRECT arm for way 0 (build_method_call_stub), at the site: the
-// receiver a plain object of way 0's shape, a DIRECT latch (the arity word's
-// direct bit, no slot form) and its epoch the thread's, then the latched code
-// and env entered here. Five of six method stub calls on three_meshes were
-// this arm, and the stub's call, frame and dispatch were most of its cost.
-// Everything else calls the stub, which tests way 0 again and goes on.
-static Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t argc,
-                                       Value* argv, Value* site) {
-    (void)lowering;
-    const std::string prefix = block_prefix(b, "mway0");
-    BasicBlock* cur = b.current_block();
-    BasicBlock* object = b.append_block(prefix + "_object");
-    BasicBlock* enter = b.append_block(prefix + "_enter");
-    BasicBlock* stub = b.append_block(prefix + "_stub_cold");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-    stub->set_cold();
-    // Tests by shifts against immediates, not masks: brass keeps a 64-bit
-    // constant live from its first definition, and a large caller then held
-    // each mask in a register or a stack slot across its whole body.
-    auto imm = [&](int64_t v) { return b.build_iconst_i64(v); };
-
-    b.position_at_end(cur);
-    b.build_br_if(b.build_eq(b.build_lshr(recv, imm(48)), imm(BRONZE_ABI_TAG_OBJECT)), object, stub);
-
-    // A plain object of way 0's shape; the arity word's bit 31 (the direct
-    // bit) its highest set bit (no SLOT form above it); the latch's epoch.
-    b.position_at_end(object);
-    Value* ptr = b.build_lshr(b.build_shl(recv, imm(16)), imm(16));
-    static_assert(BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT == (uint64_t{1} << 31) &&
-                      BRONZE_ABI_METHOD_IC_SLOT_SHIFT == 32,
-                  "the DIRECT form's test is one shift");
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* ok = b.build_and(
-        b.build_and(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
-                    b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), site, 0))),
-        b.build_and(b.build_eq(b.build_lshr(arity0, imm(31)), imm(1)),
-                    b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord), epoch)));
-    b.build_br_if(ok, enter, stub);
-
-    b.position_at_end(enter);
-    Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord);
-    Value* env = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ENV_WORD * kWord);
-    b.build_br(merge, {call_code(b, code, env, recv, argc, argv)});
-
-    b.position_at_end(stub);
-    b.build_br(merge, {b.build_call(kMethodCallStub, Type::i64(),
-                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site})});
-
-    b.position_at_end(merge);
-    return result;
-}
-
-Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
-                            const std::vector<Value*>& boxed_args, Value* site) {
-    Value* argv = lowering->stage_argv(b, boxed_args);
-    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
-    // The inline arm calls through a register, which a block with a handler
-    // cannot invoke, and is only size in code that runs once.
-    if (direct_entry_here(lowering)) return lower_method_way0_direct(lowering, b, recv, key_id, argc, argv, site);
-    return b.build_call(kMethodCallStub, Type::i64(),
-                        {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site});
 }
 
 // The stub's SLOT arm (build_method_call_stub) at the site, in front of the

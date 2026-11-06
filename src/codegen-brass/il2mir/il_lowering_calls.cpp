@@ -353,7 +353,11 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     Value* argv = lowering->stage_argv(b, boxed_args);
     Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(args.size()));
     Value* key_id = lowering->get_key_id(b, inst.index);
-    b.build_br(merge, {b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site})});
+    // The guard's miss is the method stub where the module has one: the
+    // receivers a polymorphic site's two DIRECT ways do not hold are still
+    // answered from the thread's table or a SLOT entry without the runtime.
+    const char* miss_call = direct_method_ic_here(lowering) ? "__bronze_method_call_ic" : "bronze_call_method";
+    b.build_br(merge, {b.build_call(miss_call, Type::i64(), {recv, key_id, argc_val, argv, site})});
 
     b.position_at_end(fast);
     std::vector<Value*> call_args = {lowering->ensure_type(recv, params[0], b)};
@@ -604,6 +608,7 @@ bool lower_call_instruction(
                 can_direct = (direct_fn->param_types().size() == argc + 1);
             }
 
+            const bool poly_recv = (inst_ast.imm_i64 & bronze::il::Instruction::kMethodPolyShapes) != 0;
             // Code that runs once dispatches generically: the direct form's
             // guard is only size there.
             if (can_direct && lowering && lowering->run_once()) can_direct = false;
@@ -615,7 +620,7 @@ bool lower_call_instruction(
                     res_val = lower_array_method_inline(
                         lowering, b, arr, recv, args.empty() ? nullptr : args[0], [&](Builder& bb) {
                             return lower_method_call_ic(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
-                                                        args, site);
+                                                        args, site, poly_recv);
                         });
                     break;
                 }
@@ -641,11 +646,11 @@ bool lower_call_instruction(
                 if (direct_method_ic_here(lowering)) {
                     if ((inst_ast.imm_i64 & bronze::il::Instruction::kMethodOwnCallee) != 0 && !lowering->run_once()) {
                         res_val = lower_method_slot_inline(lowering, b, recv, args, site, [&](Builder& bb) {
-                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site);
+                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, poly_recv);
                         });
                         break;
                     }
-                    res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site);
+                    res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site, poly_recv);
                     break;
                 }
                 Value* argv = lowering->stage_argv(b, args);

@@ -254,6 +254,10 @@ struct BronzeInstruction {
     // A read predicted to answer `undefined` for some receivers (il.h
     // `icAbsent`): way 0's own-data or negative entry inline.
     bool is_absent = false;
+    // A read a profile saw meet 1..4 shapes (il.h `icChain`): that many ways
+    // tested inline, own data and negative entries (and a one-link prototype
+    // data entry with kChainProto) answered there.
+    uint8_t ic_chain = 0;
     // PropGet/PropSet with a `static_slot`: which guard licenses it (il.h
     // `staticCellIndex`, `familyLo`/`familySpan`). An identity site compares
     // the receiver's shape with its module cell `static_cell`; a family site

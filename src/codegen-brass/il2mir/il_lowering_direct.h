@@ -49,8 +49,11 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod);
 // its latch recorded BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT; anything else is
 // bronze_call_method, which reads the same words. The dispatch is the
 // module's one stub function (il_lowering_direct.cpp), which the site calls.
+// `way1`: the site met more than one receiver shape (il.h
+// `kMethodPolyShapes`), so a way-0 miss tests way 1's DIRECT entry at the
+// site, out of line, before the stub.
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
-                            const std::vector<Value*>& boxed_args, Value* site);
+                            const std::vector<Value*>& boxed_args, Value* site, bool way1 = false);
 
 // `recv.key(...args)` at a site whose key a receiver may hold in an own slot
 // (il.h `kMethodOwnCallee`): the method cache's SLOT form dispatched here —

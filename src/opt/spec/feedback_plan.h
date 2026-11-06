@@ -84,6 +84,12 @@ struct NumberCounts {
     uint64_t bools = 0, objects = 0, undefineds = 0, nulls = 0;
 };
 
+// What a property read returned: how often, and how often `undefined`.
+struct ReadResults {
+    uint64_t total = 0;
+    uint64_t undefineds = 0;
+};
+
 struct FeedbackPlanStats {
     uint32_t profileFunctions = 0;
     uint32_t matchedFunctions = 0;
@@ -93,6 +99,8 @@ struct FeedbackPlanStats {
 struct FeedbackPlan {
     std::unordered_map<uint32_t, NameCounts> shapesByIc;   // prop.get / prop.set receivers
     std::unordered_map<uint32_t, NameCounts> methodsByIc;  // method.call callees
+    std::unordered_map<uint32_t, NameCounts> methodShapesByIc;  // method.call receivers
+    std::unordered_map<uint32_t, ReadResults> readResultsByIc;  // prop.get results
     std::map<SpanKey, NameCounts> dynamicCallees;          // call.dynamic callees
     std::map<ValueKey, NumberCounts> values;               // operands of numeric ops
     // Function name -> the times its entry site ran (a probe function's
@@ -124,17 +132,30 @@ struct FeedbackApplyStats {
     uint32_t shapeRefused = 0;     //    a dominant shape the site cannot claim a slot of
     uint32_t numberHints = 0;      // C: numeric ops hinted
     uint32_t truthHints = 0;       // C: truthiness unboxes hinted with the kinds they saw
+    uint32_t chainReads = 0;       // E: reads given an inline way chain (icChain)
+    uint32_t chainProto = 0;       //    of them, with the one-link prototype arm
+    uint32_t ownCallees = 0;       // B: method.call sites split on an own slot's closure
+    uint32_t ownSlotSites = 0;     // B: own-slot sites with no one closure, dispatched at the site
+    uint32_t nativeTargetsDropped = 0;  // B: predicted direct targets the run saw a native callee at
     // The profiled executions the claims cover, each identity counted once
     // however many copies of it were claimed.
     uint64_t shapeExecutions = 0, methodExecutions = 0, closureExecutions = 0, hintExecutions = 0;
+    uint64_t chainExecutions = 0;
 };
 
 // B, method calls: a direct target for each method.call whose callee the
 // profile names alone and that nothing planned (no direct target, no
 // own-slot callee), on the terms a whole-program direct target has. Runs
 // before the passes that copy callee bodies, so they see it.
-void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan,
-                                const std::unordered_map<uint32_t, uint32_t>& ownCallees, FeedbackApplyStats* stats);
+// A site whose receivers the run saw hold the key as their own gets an
+// own-slot callee instead (`ownCallees`, split on the slot's closure later),
+// and a site the prediction gave one keeps it unless every receiver the run
+// saw inherited the key; with no one closure in the slot the site gets
+// kMethodOwnCallee. A site that met two or more shapes gets
+// kMethodPolyShapes, and a predicted direct target where the run called a
+// native is dropped.
+void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::unordered_map<uint32_t, uint32_t>& ownCallees,
+                                FeedbackApplyStats* stats);
 
 // B, closure calls: the function a `call.dynamic` should be split on (its
 // one profiled callee), or UINT32_MAX (lower/own_callee_calls.h does the
@@ -143,7 +164,9 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 
 // A and C over the finished module: a guarded static-slot claim for each
 // property site left without one whose receivers had one dominant shape, and
-// `numberHint` on each numeric op whose every Dynamic operand was a Number.
+// `numberHint` on each numeric op whose every Dynamic operand was a Number;
+// and E, an inline way chain (`icChain`) on each read that met 1..4 plain
+// shapes.
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats);
 
 std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& stats);

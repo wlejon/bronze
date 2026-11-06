@@ -147,7 +147,15 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
                     addNames(plan.shapesByIc[inst.icIndex], fb.shapes, fb.total);
                     ++plan.stats.shapeSites;
                     break;
+                case il::FeedbackKind::Result:
+                    if (inst.op == il::Op::PropGet) {
+                        ReadResults& r = plan.readResultsByIc[inst.icIndex];
+                        r.total += fb.total;
+                        r.undefineds += fb.tags[BRONZE_FEEDBACK_TAG_UNDEFINED];
+                    }
+                    break;
                 case il::FeedbackKind::Method:
+                    addNames(plan.methodShapesByIc[inst.icIndex], fb.shapes, fb.total);
                     addNames(plan.methodsByIc[inst.icIndex], fb.targets, fb.total);
                     ++plan.stats.methodSites;
                     break;
@@ -186,6 +194,10 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
     out += "feedback: C number hints " + n(stats.numberHints) + ", truthiness hints " + n(stats.truthHints) +
            "; profiled executions " +
            n(stats.hintExecutions) + "\n";
+    out += "feedback: E inline way chains " + n(stats.chainReads) + " (prototype arm " + n(stats.chainProto) +
+           "; profiled executions " + n(stats.chainExecutions) + "), own-slot callees " + n(stats.ownCallees) +
+           ", own-slot sites " + n(stats.ownSlotSites) + ", native-callee targets dropped " +
+           n(stats.nativeTargetsDropped) + "\n";
     return out;
 }
 

@@ -291,12 +291,19 @@ struct Instruction {
     //   kMethodOwnCallee  the key names a class method AND is written as an
     //                     own property somewhere in the module (three.js's
     //                     `_onChangeCallback`, a prototype no-op until
-    //                     `_onChange(cb)` stores a closure on the instance):
+    //                     `_onChange(cb)` stores a closure on the instance),
+    //                     or a type-feedback profile saw the site's
+    //                     receivers hold the key as their own with no one
+    //                     closure in it (opt/spec/feedback_apply.cpp):
     //                     the method cache's SLOT form, for a callee held in
     //                     the receiver's own slot, is dispatched at the site
     //                     (il_lowering_direct.h, lower_method_slot_inline).
+    //   kMethodPolyShapes a type-feedback profile saw the site meet more than
+    //                     one receiver shape: a way-0 miss tests the cache's
+    //                     way 1 at the site before the method stub.
     static constexpr int32_t kMethodRecvArray = 1;
     static constexpr int32_t kMethodOwnCallee = 2;
+    static constexpr int32_t kMethodPolyShapes = 4;
     // StrictEq `immI32`: a DISPATCH test (lower_keyed_field_store.cpp), whose
     // true edge is correct exactly when the operands are the same String and
     // whose false edge is correct for ANY operands. So a backend may answer it
@@ -323,6 +330,16 @@ struct Instruction {
     static constexpr uint8_t kTruthUndefined = 4;
     static constexpr uint8_t kTruthNull = 8;
     uint8_t truthHint = 0;
+    // PropGet: a HINT from a type-feedback profile, the receiver shapes the
+    // site met (1..4, at least 1% of its executions each): the backend tests
+    // that many of the cache's ways inline, in fill order, answering an own
+    // data slot or, while the prototype epoch holds, a negative entry from
+    // whichever names the receiver's shape, and with kChainProto also a data
+    // property one prototype link up; the stub after. The ways are what the
+    // runtime filled, so a wrong hint costs the tests and never an answer.
+    static constexpr uint8_t kChainWaysMask = 7;
+    static constexpr uint8_t kChainProto = 8;
+    uint8_t icChain = 0;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //

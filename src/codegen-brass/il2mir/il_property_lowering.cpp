@@ -335,6 +335,7 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // only hot functions are optimized at all. Code that runs once
     // (IlLowering::run_once) calls the helper, which caches as well.
     const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+    if (Value* v = prop_lowering.lower_prop_get_chain(b, obj_val, inst_ast, site, lowering->run_once(), carry)) return v;
     // `x.length` where nothing proved what `x` is: an Array answers
     // from its header (10.4.2's exotic `length`, which the runtime's
     // read answers the same way for every array, `arguments`

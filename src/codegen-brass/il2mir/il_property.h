@@ -258,6 +258,15 @@ public:
     // TLS register. Requires a real site.
     Value* lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
 
+    // A read a profile saw meet 1..4 shapes (il.h `icChain`,
+    // il_prop_get_chain.cpp): that many ways compared inline, the matching
+    // one's own data slot, negative entry or (kChainProto) one-link
+    // prototype data answered there, the stub for the rest. An image's only:
+    // null (nothing emitted) for a read without a chain, a site or IC stubs,
+    // and for code that runs once.
+    Value* lower_prop_get_chain(Builder& b, Value* obj, const BronzeInstruction& inst_ast, const IcSite& site,
+                                bool run_once, const MemoCarry* carry);
+
     // The memo carry the next mono or absent read takes (and clears), so
     // that the read keeps the shape memo across its join; null leaves the
     // read as it was, the memo forgotten after it.
