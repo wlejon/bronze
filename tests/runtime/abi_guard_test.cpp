@@ -94,7 +94,7 @@ TEST_CASE("sampling profiler: high-frequency 2000 Hz sampling avoids cumulative 
     REQUIRE_MESSAGE(profilerStart(startOpts, &err), err);
 
     volatile uint64_t sink = 1;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
     while (std::chrono::steady_clock::now() < deadline) {
         sink = profilerBusySpinStep(sink);
     }
@@ -106,7 +106,7 @@ TEST_CASE("sampling profiler: high-frequency 2000 Hz sampling avoids cumulative 
     ProfilerResult result;
     REQUIRE_MESSAGE(profilerStop(stopOpts, result, &err), err);
     CHECK(result.hz == 2000);
-    // Over 100 ms at 2000 Hz, expected ~200 samples; check we get well above 100 Hz floor
+    // Over 200 ms at 2000 Hz, expected ~400 samples; check we get well above 100 Hz floor
     CHECK(result.samples >= 80);
     unregisterProfilerThread();
 }

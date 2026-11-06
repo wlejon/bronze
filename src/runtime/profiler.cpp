@@ -689,14 +689,20 @@ void samplerBody(Session& s) {
                     ::WaitForSingleObject(timer, 5);
                 }
             } else {
-                ::SwitchToThread();
+                YieldProcessor();
             }
 #else
             const int64_t remUs = static_cast<int64_t>((nextDue - relMs) * 1000.0);
-            if (remUs > 1000) {
+            if (remUs > 600) {
                 std::this_thread::sleep_for(std::chrono::microseconds(remUs - 500));
             } else {
+#if defined(__x86_64__)
+                asm volatile("pause" ::: "memory");
+#elif defined(__aarch64__)
+                asm volatile("yield" ::: "memory");
+#else
                 std::this_thread::yield();
+#endif
             }
 #endif
             continue;
