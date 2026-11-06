@@ -823,8 +823,37 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
 // The LeftFirst argument is what keeps the SWAPPED pair honest: `a > b` hands
 // IsLessThan (b, a) and false, so the conversions still run on `a` first, which
 // is the order a program with a `valueOf` on both sides can watch.
+// The operands IsLessThan converts to Numbers with no user code and nothing
+// allocated (7.1.1 ToPrimitive leaves a primitive alone, 7.1.4 ToNumber):
+// a Number, undefined (NaN), null (+0) and a Boolean. A pair of them is
+// compared here, without the roots and the conversions the general path
+// opens; three.js compares an undefined field with 0 on every draw. The C++
+// comparison of a NaN is false, which is each operator's answer for
+// IsLessThan's undefined.
+static inline bool plainRelNumber(Value v, double& out) {
+    if (v.isNumber()) {
+        out = v.asNumber();
+        return true;
+    }
+    if (v.isUndefined()) {
+        out = std::numeric_limits<double>::quiet_NaN();
+        return true;
+    }
+    if (v.isNull()) {
+        out = 0.0;
+        return true;
+    }
+    if (v.isBool()) {
+        out = v.asBool() ? 1.0 : 0.0;
+        return true;
+    }
+    return false;
+}
+
 bool bronze_rel_lt(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_lt");
+    double na, nb;
+    if (plainRelNumber(Value(aBits), na) && plainRelNumber(Value(bBits), nb)) return na < nb;
     Rooted<Value> a{Value(aBits)};
     Rooted<Value> b{Value(bBits)};
     return isLessThan(a, b, /*leftFirst=*/true) == LessThan::True;
@@ -832,6 +861,8 @@ bool bronze_rel_lt(uint64_t aBits, uint64_t bBits) {
 
 bool bronze_rel_gt(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_gt");
+    double na, nb;
+    if (plainRelNumber(Value(aBits), na) && plainRelNumber(Value(bBits), nb)) return na > nb;
     Rooted<Value> a{Value(aBits)};
     Rooted<Value> b{Value(bBits)};
     return isLessThan(b, a, /*leftFirst=*/false) == LessThan::True;
@@ -839,6 +870,8 @@ bool bronze_rel_gt(uint64_t aBits, uint64_t bBits) {
 
 bool bronze_rel_le(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_le");
+    double na, nb;
+    if (plainRelNumber(Value(aBits), na) && plainRelNumber(Value(bBits), nb)) return na <= nb;
     Rooted<Value> a{Value(aBits)};
     Rooted<Value> b{Value(bBits)};
     return isLessThan(b, a, /*leftFirst=*/false) == LessThan::False;
@@ -846,6 +879,8 @@ bool bronze_rel_le(uint64_t aBits, uint64_t bBits) {
 
 bool bronze_rel_ge(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_ge");
+    double na, nb;
+    if (plainRelNumber(Value(aBits), na) && plainRelNumber(Value(bBits), nb)) return na >= nb;
     Rooted<Value> a{Value(aBits)};
     Rooted<Value> b{Value(bBits)};
     return isLessThan(a, b, /*leftFirst=*/true) == LessThan::False;
