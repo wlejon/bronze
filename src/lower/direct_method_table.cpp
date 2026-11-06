@@ -155,6 +155,12 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
         for (auto& block : fn.blocks) {
             for (auto& inst : block.instructions) {
                 if (inst.op != il::Op::MethodCall) continue;
+                // A receiver inference typed a dense JS Array finds the
+                // method on Array.prototype, not on the one class that
+                // declares the name (`array.push(x)` beside a user `push`):
+                // the guess would only miss, and it would take the site's
+                // inline Array arm (il_array_method.cpp) away.
+                if ((inst.immI32 & il::Instruction::kMethodRecvArray) != 0) continue;
                 const auto site = sites_.find(inst.icIndex);
                 if (site == sites_.end()) continue;
                 const std::string cls =

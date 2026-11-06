@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace bronze {
@@ -44,6 +45,17 @@ size_t formatJsNumber(double x, char* out) {
     if (std::isinf(x)) {
         std::memcpy(out + pos, "Infinity", 8);
         return pos + 8;
+    }
+    // An integer below 2^53: its shortest round-trip digits are its exact
+    // decimal digits (the spacing of doubles there is at most 1, so no other
+    // integer, and so no shorter digit string padded with zeros, rounds to
+    // it), and Number::toString prints them with no exponent (n <= 21).
+    if (x < 9007199254740992.0) {
+        const auto whole = static_cast<uint64_t>(x);
+        if (static_cast<double>(whole) == x) {
+            const auto res = std::to_chars(out + pos, out + pos + 20, whole);
+            return static_cast<size_t>(res.ptr - out);
+        }
     }
 
     char digits[20];

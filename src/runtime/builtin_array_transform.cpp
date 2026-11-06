@@ -197,12 +197,17 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     if (len == 0) return rtMakeString("").rawBits();
 
-    Rooted<Value> sep{rtMakeString(",")};
-    if (args.count() > 0 && !args[0].isUndefined()) sep.set(rtValueToString(args[0]));
+    // The default separator is appended as its byte, with no string made.
+    const bool comma = args.count() == 0 || args[0].isUndefined();
+    Rooted<Value> sep{Value::fromUndefined()};
+    if (!comma) sep.set(rtValueToString(args[0]));
 
     JoinBuffer result;
     for (uint32_t i = 0; i < len; ++i) {
-        if (i > 0) result.append(sep.get().asString<StringHeader>());
+        if (i > 0) {
+            if (comma) result.appendAscii(",", 1);
+            else result.append(sep.get().asString<StringHeader>());
+        }
         // An array's own element, read straight out of it when no prototype
         // holds an index (a hole then reads as one); otherwise the generic
         // read, which may run a getter. Asked per element because an

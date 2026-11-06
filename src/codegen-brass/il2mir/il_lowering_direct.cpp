@@ -373,6 +373,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* exotic = b.append_block(prefix + "_exotic");
     BasicBlock* exotic_box = b.append_block(prefix + "_exotic_box");
     BasicBlock* exotic_code = b.append_block(prefix + "_exotic_code");
+    BasicBlock* fn_recv = b.append_block(prefix + "_fnrecv");
     BasicBlock* enter = b.append_block(prefix + "_enter");
     Value* enter_code = b.add_block_param(enter, Type::ptr());
     Value* enter_env = b.add_block_param(enter, Type::i64());
@@ -514,7 +515,45 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         b.position_at_end(exotic);
         b.build_br_if(b.build_and(box_form, latched), exotic_box, not_box);
         b.position_at_end(not_box);
-        b.build_br_if(b.build_and(code_form, latched), exotic_code, slow);
+        b.build_br_if(b.build_and(code_form, latched), exotic_code, fn_recv);
+    }
+
+    // A FUNCTION receiver's SLOT entry (latchFunctionStaticsMethodIc): way 0
+    // names the shape of the receiver's statics box and the slot holding the
+    // callee, `Quaternion.slerpFlat(...)` on a class. Answered as methodIcHit
+    // answers it, a plain box of that shape holds the key at that slot, and
+    // the callee read there is entered as the SLOT arm enters one, where the
+    // runtime would have taken bronze_dynamic_call's C++ entry.
+    b.position_at_end(fn_recv);
+    {
+        BasicBlock* fobj = b.append_block(prefix + "_fnrecv_obj");
+        BasicBlock* fbox = b.append_block(prefix + "_fnrecv_box");
+        BasicBlock* fshape = b.append_block(prefix + "_fnrecv_shape");
+        BasicBlock* fslot = b.append_block(prefix + "_fnrecv_slot");
+        b.position_at_end(fn_recv);
+        Value* is_obj = b.build_eq(b.build_lshr(recv, b.build_iconst_i64(48)),
+                                   b.build_iconst_i64(BRONZE_ABI_TAG_OBJECT));
+        b.build_br_if(b.build_and(is_obj, b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))), fobj, slow);
+        b.position_at_end(fobj);
+        b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kFunctionHeaderLow)), fbox,
+                      slow);
+        b.position_at_end(fbox);
+        Value* box = b.build_load(Type::i64(), ptr, BRONZE_ABI_FN_PROPERTIES_OFFSET);
+        Value* box_ptr = b.build_xor(box, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        b.build_br_if(b.build_ult(box_ptr, b.build_iconst_i64(kPayloadLimit)), fshape, slow);
+        b.position_at_end(fshape);
+        Value* box_ok = b.build_and(
+            b.build_eq(b.build_load(Type::i32(), box_ptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
+            b.build_eq(b.build_load(Type::i64(), box_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), w0));
+        b.build_br_if(box_ok, fslot, slow);
+        b.position_at_end(fslot);
+        Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                                       b.build_iconst_i64(1));
+        Value* callee = pl.load_slot_br(b, box_ptr, slot_word);
+        const EntryTest t = entry_test_br(b, tls, callee, kCallMask, kCallBits, slow);
+        Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+        Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+        b.build_br_if(t.ok, enter, {code, env}, slow, {});
     }
     b.position_at_end(exotic_box);
     {
