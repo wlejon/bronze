@@ -141,17 +141,18 @@ TEST_CASE("a module round-trips through its binary encoding") {
 }
 
 // The decoder refuses an op number past the enum's last member, so the last
-// one added has to be inside that bound: `math.random` was added after
-// `object.proto`, and a module holding one has to decode.
+// one added has to be inside that bound: `is.array` was added after
+// `feedback.record`, and a module holding one has to decode.
 TEST_CASE("the newest op decodes") {
     Module m;
     m.name = "rand";
     Function fn;
     fn.name = "r";
     fn.returnType = Type::F64;
-    fn.valueCount = 1;
+    fn.valueCount = 2;
     Block b;
     b.instructions.push_back({Op::MathRandom, Type::F64, 0, {}, 0, 0, 0});
+    b.instructions.push_back({Op::IsArray, Type::Bool, 1, {0}, 0, 0, 0});
     b.instructions.push_back({Op::Ret, Type::Void, kNoValue, {0}, 0, 0, 0});
     fn.blocks.push_back(b);
     m.functions.push_back(fn);
@@ -160,6 +161,7 @@ TEST_CASE("the newest op decodes") {
     std::string err;
     REQUIRE_MESSAGE(deserializeModule(bytes, back, err), err);
     CHECK(back.functions[0].blocks[0].instructions[0].op == Op::MathRandom);
+    CHECK(back.functions[0].blocks[0].instructions[1].op == Op::IsArray);
     CHECK(print(back) == print(m));
 }
 
