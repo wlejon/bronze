@@ -20,7 +20,6 @@
 #include "il/il.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/tls_block.h"
 #include "runtime/value.h"
 #include "support/diagnostics.h"
 
@@ -123,31 +122,18 @@ void addBinaryDynamicFn(bronze::il::Module& m, const std::string& name, bronze::
     m.functions.push_back(std::move(fn));
 }
 
-namespace {
 // A raw-signature JIT function reads its NaN-box constants through the pinned
-// TLS register (r13, bronze_abi_tls.h BRONZE_TLS_CONSTANTS), which only
-// bronze_enter_js sets; call it the way a compiled caller would, with r13 set.
-__attribute__((noinline)) uint64_t callPinned(uint64_t (*fn)(double), double d) {
-    uint64_t bits;
+// TLS register (r13 on x64, x28 on aarch64; bronze_abi_tls.h BRONZE_TLS_CONSTANTS),
+// which bronze_enter_js sets; enter through rtEnterJs so the pinned register is
+// loaded on every architecture and ABI before calling the raw-signature target.
+uint64_t callPinned(uint64_t (*fn)(double), double d) {
+    uint64_t bits = 0;
     std::memcpy(&bits, &d, sizeof bits);
-    void* tls = bronze::runtime::rtTls();
-    uint64_t r;
-    __asm__ volatile(
-        "mov %%rsp, %%rbx\n\t"
-        "sub $128, %%rsp\n\t"
-        "and $-16, %%rsp\n\t"
-        "mov %[tls], %%r13\n\t"
-        "movq %[bits], %%xmm0\n\t"
-        "call *%[fn]\n\t"
-        "mov %%rbx, %%rsp\n\t"
-        : "=a"(r)
-        : [fn] "r"(fn), [tls] "r"(tls), [bits] "r"(bits)
-        : "rbx", "r13", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2", "xmm3",
-          "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
-          "memory", "cc");
-    return r;
+    auto thunk = +[](uint64_t fnAddr, uint64_t rawBits, uint32_t, const uint64_t*) -> uint64_t {
+        return reinterpret_cast<uint64_t (*)(double)>(fnAddr)(bitsToF64(rawBits));
+    };
+    return bronze::rtEnterJs(thunk, reinterpret_cast<uint64_t>(fn), bits, 0, nullptr);
 }
-}  // namespace
 
 void addUnaryDynamicFn(bronze::il::Module& m, const std::string& name, bronze::il::Op op,
                        bronze::il::Type paramType, bronze::il::Type opType) {

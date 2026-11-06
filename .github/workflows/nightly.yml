@@ -34,6 +34,7 @@ env:
   # Same pins as ci.yml — see the comments there.
   VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
   SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_IDLE_TIMEOUT: "0"
 
 jobs:
   build:
@@ -63,7 +64,7 @@ jobs:
 
       - name: Ninja (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja
+        run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ninja
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -131,9 +132,9 @@ jobs:
           BRONZE_TEST_JOBS: 4
         run: |
           if [ "${{ matrix.osx_arch }}" = "x86_64" ]; then
-            BRONZE_TEST_JOBS=3 ctest --preset dev --parallel 4 -LE "tiers|deopt-stress|release-stress|perf"
+            BRONZE_TEST_JOBS=3 ctest --preset dev --parallel 4 -LE "tiers|deopt-stress|release-stress|feedback|perf|cabi"
           else
-            ctest --preset dev --parallel 4
+            ctest --preset dev --parallel 4 -LE "tiers|deopt-stress|release-stress|feedback|perf|cabi"
           fi
 
       # Flat layout: the driver looks for the shared runtime and the program

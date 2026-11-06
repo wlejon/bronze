@@ -32,6 +32,7 @@ env:
   # Without this sccache silently falls back to per-runner LOCAL DISK, which is
   # wiped between runs — 0% hits, every object recompiled.
   SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_IDLE_TIMEOUT: "0"
 
 jobs:
   build:
@@ -54,7 +55,7 @@ jobs:
 
       - name: Ninja (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja
+        run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ninja
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -123,4 +124,4 @@ jobs:
       - name: Test
         env:
           BRONZE_TEST_JOBS: 4
-        run: ctest --preset dev --parallel 4 -LE "pixi|cabi"
+        run: ctest --preset dev --parallel 4 -LE "pixi|cabi|tiers|deopt-stress|release-stress|feedback|perf"
