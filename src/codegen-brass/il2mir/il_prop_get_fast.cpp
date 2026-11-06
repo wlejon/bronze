@@ -150,8 +150,8 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
             constexpr int32_t kEntry = static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
             static_assert(BRONZE_ABI_IC_ENTRY_SIZE == 24, "an entry is three words");
             for (int w = BRONZE_ABI_IC_WAYS - 1; w > 0; --w) {
-                for (int32_t word = 0; word < kEntry; word += 8) {
-                    b.build_store(Type::i64(), site, w * kEntry + word, b.build_load(Type::i64(), site, (w - 1) * kEntry + word));
+                for (int32_t off = 0; off < kEntry; off += 8) {
+                    b.build_store(Type::i64(), site, w * kEntry + off, b.build_load(Type::i64(), site, (w - 1) * kEntry + off));
                 }
             }
             b.build_store(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET, shape);
