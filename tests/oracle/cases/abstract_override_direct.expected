@@ -1,0 +1,4 @@
+sum 16620.000000
+calls 400,400,400,400,400,400,400,400,400
+late 37.218750
+threw abstract interpolate_ called with 0.5

@@ -227,6 +227,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_fn_recv = inst.icFnRecv;
             out.static_slot = inst.staticSlot;
             out.static_cell = inst.staticCellIndex;
+            out.static_regrow = inst.staticRegrow;
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.is_family = inst.familyLo != il::Instruction::kNoFamily;
@@ -275,6 +276,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_fn_recv = inst.icFnRecv;
             out.static_slot = inst.staticSlot;
             out.static_cell = inst.staticCellIndex;
+            out.static_regrow = inst.staticRegrow;
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.imm_i64 = inst.immI32;
@@ -309,6 +311,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = inst.op == il::Op::IsShape ? il2mir::BronzeOp::IsShape : il2mir::BronzeOp::LayoutFact;
             out.static_slot = inst.staticSlot;
             out.static_cell = inst.staticCellIndex;
+            out.static_regrow = inst.staticRegrow;
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.is_family = inst.familyLo != il::Instruction::kNoFamily;

@@ -270,6 +270,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                        std::to_string(inst.familyLo + inst.familySpan);
                             } else {
                                 out += "@" + std::to_string(inst.staticCellIndex);
+                                if (inst.staticRegrow) out += " regrow";
                             }
                             // A dominating `is.shape` answered the guard: the
                             // site is a bare load or store. With a layout fact
@@ -460,6 +461,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                        std::to_string(inst.familyLo + inst.familySpan);
                             } else {
                                 out += "@" + std::to_string(inst.staticCellIndex);
+                                if (inst.staticRegrow) out += " regrow";
                             }
                             // A dominating `is.shape` answered the guard: the
                             // site is a bare load or store. With a layout fact

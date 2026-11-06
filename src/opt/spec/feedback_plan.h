@@ -128,6 +128,7 @@ struct FeedbackApplyStats {
     uint32_t methodRefused = 0;    //    one profiled callee the direct edge cannot enter
     uint32_t closureCalls = 0;     // B: call.dynamic sites split on their closure
     uint32_t shapeIdentity = 0;    // A: identity claims
+    uint32_t shapeRegrow = 0;      //    of them, cells that may latch an unfinished object (staticRegrow)
     uint32_t shapeFamily = 0;      // A: family claims
     uint32_t shapeRefused = 0;     //    a dominant shape the site cannot claim a slot of
     uint32_t numberHints = 0;      // C: numeric ops hinted

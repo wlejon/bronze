@@ -120,6 +120,7 @@ struct Claim {
     uint32_t familyLo = il::Instruction::kNoFamily;
     uint32_t familySpan = 0;
     uint32_t icIndex = 0;
+    bool regrow = false;
 
     bool same(const Claim& o) const {
         if (familyLo != il::Instruction::kNoFamily || o.familyLo != il::Instruction::kNoFamily) {
@@ -138,6 +139,7 @@ Claim claimOf(const il::Instruction& inst) {
         c.familySpan = inst.familySpan;
     } else {
         c.cell = inst.staticCellIndex;
+        c.regrow = inst.staticRegrow;
     }
     return c;
 }
@@ -420,6 +422,7 @@ bool rewriteFunction(il::Function& fn, FunctionCounts& counts) {
                 fact.operands = {recv};
                 fact.staticSlot = c.slot;
                 fact.staticCellIndex = c.cell;
+                fact.staticRegrow = c.regrow;
                 fact.familyLo = c.familyLo;
                 fact.familySpan = c.familySpan;
                 fact.icIndex = c.icIndex;

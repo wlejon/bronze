@@ -49,6 +49,8 @@ struct StampEntry {
     StampForm form = StampForm::None;
     uint32_t familyLo = 0;
     uint32_t familySpan = 0;
+    // Identity: the receiver's shape is not certain (il.h staticRegrow).
+    bool regrow = false;
 };
 
 // A method call's predicted single callee (il.h `directTarget`): the

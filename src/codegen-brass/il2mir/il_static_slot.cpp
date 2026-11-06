@@ -320,11 +320,16 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
         Value* cells = data_addr(b, static_cells_sym_);
         const int32_t off = static_cast<int32_t>(site.cell * sizeof(uint64_t));
         Value* cell = b.build_load(Type::i64(), cells, off);
-        BasicBlock* bb_grown = b.append_block(prefix + "_grown_cold");
-        b.position_at_end(bb_cur);
-        b.build_br_if(b.build_eq(cell, iconst(b, 0)), bb_call, bb_grown);
-        b.position_at_end(bb_grown);
-        emit_static_regrow(b, obj, cell, cells, off, bb_call, bb_cont, prefix);
+        if (site.regrow) {
+            BasicBlock* bb_grown = b.append_block(prefix + "_grown_cold");
+            b.position_at_end(bb_cur);
+            b.build_br_if(b.build_eq(cell, iconst(b, 0)), bb_call, bb_grown);
+            b.position_at_end(bb_grown);
+            emit_static_regrow(b, obj, cell, cells, off, bb_call, bb_cont, prefix);
+        } else {
+            b.position_at_end(bb_cur);
+            b.build_br_if(b.build_eq(cell, iconst(b, 0)), bb_call, bb_cont);
+        }
         b.position_at_end(bb_call);
         b.build_call("bronze_static_shape_publish", Type::void_type(),
                      {obj, runtime_key(b, key_index), b.build_add(cells, b.build_iconst_i64(off)),

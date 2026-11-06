@@ -111,6 +111,28 @@ public:
         inst.staticCellIndex = mod_.staticSiteCount++;
         inst.familyLo = il::Instruction::kNoFamily;
         inst.familySpan = 0;
+        // The run also met a shape the claimed one grew from, by one or two
+        // keys: an object read here before it was finished, whose shape the
+        // cell can latch first (il.h staticRegrow).
+        if (complete) {
+            for (const auto& [name, count] : it->second.counts) {
+                (void)count;
+                if (&name == shape) continue;
+                std::vector<std::string_view> before;
+                bool whole = false;
+                if (!shapeKeys(name, before, whole) || !whole || before.size() >= keys.size() ||
+                    before.size() + 2 < keys.size() ||
+                    std::string_view(name).substr(0, name.find('{')) !=
+                        std::string_view(*shape).substr(0, shape->find('{'))) {
+                    continue;
+                }
+                if (std::equal(before.begin(), before.end(), keys.begin())) {
+                    inst.staticRegrow = true;
+                    ++stats_.shapeRegrow;
+                    break;
+                }
+            }
+        }
         ++stats_.shapeIdentity;
     }
 

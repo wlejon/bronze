@@ -185,7 +185,8 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
                       n(plan.stats.matchedFunctions) + "; sites value " + n(plan.stats.valueSites) + ", shape " +
                       n(plan.stats.shapeSites) + ", method " + n(plan.stats.methodSites) + ", target " +
                       n(plan.stats.targetSites) + "; callee names resolved " + n(plan.callees.size()) + "\n";
-    out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + ", family " + n(stats.shapeFamily) +
+    out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + " (regrow " +
+           n(stats.shapeRegrow) + "), family " + n(stats.shapeFamily) +
            " (dominant shape without a claimable slot " + n(stats.shapeRefused) + "); profiled executions " +
            n(stats.shapeExecutions) + "\n";
     out += "feedback: B direct method targets " + n(stats.directMethods) + " (refused " + n(stats.methodRefused) +

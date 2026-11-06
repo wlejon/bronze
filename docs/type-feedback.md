@@ -210,12 +210,17 @@ the plan where each claim has to be made:
   shape used as a prototype. An identity cell latches the first receiver's
   shape, and that may be an object still being built (three.js's
   `materialProperties`, whose `uniforms` site first meets the record before
-  its last keys). A miss on a published cell therefore tests, out of line,
-  whether the receiver's shape grew from the cell's shape one or two keys on
-  (its parent or grandparent is the cell); if so the site clears the cell and
-  publishes again for the receiver (`emit_static_regrow`,
+  its last keys). Where that can happen, a miss on a published cell tests,
+  out of line, whether the receiver's shape grew from the cell's shape one or
+  two keys on (its parent or grandparent is the cell); if so the site clears
+  the cell and publishes again for the receiver (`emit_static_regrow`,
   `il_static_slot.cpp`). The runtime's publish checks are unchanged, and any
-  other miss keeps the cell.
+  other miss keeps the cell. The test is emitted only for cells marked
+  `staticRegrow` (`@N regrow` in `bronze il`): an identity claim whose profile
+  also saw a shape the claimed one grew from by one or two keys (same
+  prototype, its key list a prefix), and wpo's identity claims on one
+  allocation site whose shape it could not fix; every other cell's miss
+  tests only for an empty cell.
 - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
   `bronze il`). The backend then lays the Number test first and moves the

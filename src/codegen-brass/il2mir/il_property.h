@@ -54,9 +54,12 @@ struct StaticSlotSite {
     uint32_t cell = 0;
     uint32_t family_lo = BronzeInstruction::kNoFamily;
     uint32_t family_span = 0;
+    // An identity cell that may latch an object under construction (il.h
+    // `staticRegrow`): its fill re-latches a grown shape.
+    bool regrow = false;
 
     static StaticSlotSite of(const BronzeInstruction& inst) {
-        return {inst.static_slot, inst.static_cell, inst.family_lo, inst.family_span};
+        return {inst.static_slot, inst.static_cell, inst.family_lo, inst.family_span, inst.static_regrow};
     }
     bool none() const { return slot == BronzeInstruction::kNoStaticSlot; }
     bool family() const { return family_lo != BronzeInstruction::kNoFamily; }

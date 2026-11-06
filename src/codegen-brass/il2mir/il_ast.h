@@ -265,6 +265,8 @@ struct BronzeInstruction {
     // `family_lo .. family_lo + family_span`.
     static constexpr uint32_t kNoFamily = UINT32_MAX;
     uint32_t static_cell = 0;
+    // il.h `staticRegrow`.
+    bool static_regrow = false;
     uint32_t family_lo = kNoFamily;
     uint32_t family_span = 0;
     // PropSet: the first write of a transition run (il.h `transitionRunCell`,

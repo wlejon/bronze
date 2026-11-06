@@ -111,6 +111,55 @@ OwnHeld ownHeld(const Solver& s) {
     return out;
 }
 
+// Whether `target`, held under `key` by a prototype, is the method of no
+// object the program makes: no instance or literal finds it first on its
+// chain, and at least one finds another function under the key (a
+// subclass's override). An abstract base method (three.js's
+// Interpolant.interpolate_, which only throws) is the callee of no real
+// receiver, so a direct edge to it misses into the method cache every call.
+bool overriddenBelow(const Solver& s, uint32_t key, uint32_t target) {
+    const size_t n = s.objectCount();
+    // 1: holds target under the key, 2: holds another function under it.
+    auto holds = [&](const AObj& o) {
+        const auto f = o.fields.find(key);
+        if (f == o.fields.end()) return 0;
+        int h = 0;
+        for (ObjId v : f->second.objs) {
+            const AObj& fo = s.object(v);
+            if (fo.kind == ObjKind::Function) h |= fo.fn == target ? 1 : 2;
+        }
+        return h == 0 ? 0 : (h & 1) ? 1 : 2;
+    };
+    bool any = false;
+    for (ObjId id = 0; id < n && !any; ++id) {
+        const AObj& o = s.object(id);
+        any = o.kind == ObjKind::Proto && holds(o) == 1;
+    }
+    if (!any) return false;
+    bool overridden = false;
+    for (ObjId id = 0; id < n; ++id) {
+        const AObj& o = s.object(id);
+        if (o.kind != ObjKind::Instance && o.kind != ObjKind::Plain) continue;
+        // The chain level by level, to the first that holds the key.
+        std::vector<ObjId> level(o.proto.objs.begin(), o.proto.objs.end());
+        for (int depth = 0; depth < 16 && !level.empty(); ++depth) {
+            int found = 0;
+            std::vector<ObjId> next;
+            for (ObjId p : level) {
+                found |= holds(s.object(p));
+                for (ObjId q : s.object(p).proto.objs) next.push_back(q);
+            }
+            if (found & 1) return false;   // an instance whose method it is
+            if (found) {
+                overridden = true;
+                break;
+            }
+            level = std::move(next);
+        }
+    }
+    return overridden;
+}
+
 void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, StampPlan& plan) {
     // An unknown target beside one known callee (an escaped receiver whose
     // prototype the prediction still sees) is planned like a single one: the
@@ -118,11 +167,29 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     // only for a receiver whose lookup really finds it.
     const bool single = fact.call == CallClass::Single ||
                         (fact.call == CallClass::UnknownTarget && s.options().predict);
-    if (!single || fact.targets.size() != 1) return;
     const il::Module& mod = s.module();
     const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
     if (inst.op != il::Op::MethodCall) return;
+    // Lowering's guess (the receiver's class's method) that subclasses the
+    // program instantiates override: their receivers miss its guard, so the
+    // site keeps the method cache alone.
+    if (inst.directTarget != il::Instruction::kNoDirectTarget && fact.call != CallClass::Single &&
+        overriddenBelow(s, inst.keyIndex, inst.directTarget)) {
+        plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+        ++plan.callWithdrawn;
+        return;
+    }
+    if (!single || fact.targets.size() != 1) return;
     const uint32_t target = fact.targets[0];
+    // A callee the receivers were not all seen to reach (escaped ones beside
+    // it) and that subclasses override is no prediction to stand on.
+    if (fact.call == CallClass::UnknownTarget && overriddenBelow(s, inst.keyIndex, target)) {
+        if (inst.directTarget != il::Instruction::kNoDirectTarget) {
+            plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+            ++plan.callWithdrawn;
+        }
+        return;
+    }
     if (inst.directTarget != il::Instruction::kNoDirectTarget) {
         // Lowering's guess names the method its receiver's CLASS has under
         // the key; the prediction saw the receivers, and their callee is
@@ -253,6 +320,7 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
         if (mod.classFamilies.empty()) {
             if (recv.objs.size() == 1) {
                 e.form = StampForm::Identity;
+                e.regrow = true;
                 plan.entries.push_back(e);
                 ++plan.identityInexact;
                 continue;
@@ -281,6 +349,7 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
             // share one shape, which a cell can hold.
             if (recv.objs.size() == 1) {
                 e.form = StampForm::Identity;
+                e.regrow = true;
                 plan.entries.push_back(e);
                 ++plan.identityInexact;
                 continue;
@@ -356,6 +425,7 @@ void applyStamps(il::Module& mod, const StampPlan& plan) {
             inst.staticCellIndex = mod.staticSiteCount++;
             inst.familyLo = il::Instruction::kNoFamily;
             inst.familySpan = 0;
+            inst.staticRegrow = e.regrow;
         } else {
             inst.staticCellIndex = 0;
             inst.familyLo = e.familyLo;

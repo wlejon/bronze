@@ -224,6 +224,14 @@ struct Instruction {
     // those passes ask. `{get p() {...}, set p(v) {...}}` passed where a class
     // instance was guessed is the case: `n.p = v; return n.p` must call both.
     bool staticSlotGuessed = false;
+    // An identity cell (`staticCellIndex`, no family) that may latch an
+    // object still being built: one allocation site whose keys are added
+    // after it is exposed (the interprocedural pass could not fix its shape),
+    // or a profile that saw, besides the claimed shape, one it grew from. Its
+    // fill re-latches a receiver whose shape grew from the cell's by one or
+    // two keys (il_static_slot.cpp emit_static_regrow); any other cell's
+    // fill tests nothing past the empty cell.
+    bool staticRegrow = false;
     // PropSet: the FIRST site of a TRANSITION RUN (lower/transition_runs.h), a
     // stretch of writes that adds `transitionRunSites` keys to one receiver
     // with nothing between them that can run user code, throw, or read the
