@@ -448,6 +448,9 @@ extern "C" {
 
 uint64_t bronze_iter_open(uint64_t srcBits) {
     recordHelperCall("bronze_iter_open");
+    if (const Value forIn = rtOpenForInRecord(Value(srcBits)); !forIn.isUndefined()) {
+        return forIn.rawBits();
+    }
     return rtOpenIterator(Value(srcBits)).rawBits();
 }
 
@@ -532,6 +535,9 @@ bool bronze_iter_step(uint64_t recBits) {
         if (stepped) return true;
         rec->done = Value::fromBool(true);
         rec->current = Value::fromUndefined();
+        // A for-in's record is dead once its step answers done (the loop
+        // branches to its exit), so it goes back to the pool it came from.
+        if (kind == IterRecordHeader::Array) rtReleaseForInRecord(recRoot.get());
         return false;
     }
 

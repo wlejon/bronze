@@ -15,6 +15,7 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/realm.h"
+#include "runtime/tls_block.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
@@ -193,8 +194,17 @@ void* cellDataInThisRealm(ObjectHeader* obj) {
     // Another app's handle is not this realm's to use: what one app made (a
     // DOM node, a canvas, a scene) never reaches into another's natives. A
     // realm of the same ownership group (the app's own frames) is the app.
+    //
+    // The current realm is read from the TLS block's copy (realm_slot), the
+    // word a call from compiled code trusts for the same question, rather
+    // than from the realm stack: this runs for every handle a host binding
+    // unwraps (bro's WebGL natives, ~7 a draw), and the stack read was an
+    // out-of-line call each time.
     const auto owner = static_cast<uint32_t>(obj->internalSlot(kSlotRealm).rawBits());
-    if (owner != 0 && owner != rtCurrentRealmSlot() && !rtRealmSlotInCurrentGroup(owner)) return nullptr;
+    if (owner != 0 && owner != static_cast<uint32_t>(rtTls()->realm_slot) &&
+        !rtRealmSlotInCurrentGroup(owner)) {
+        return nullptr;
+    }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(kSlotData).rawBits()));
 }
 

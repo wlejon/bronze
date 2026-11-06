@@ -1,0 +1,6 @@
+p:0:1 q#1:1 q2#2:1 p:3:2 q#4:2 q2#5:2 p:6:3 q#7:3 q2#8:3 p:9:4 q#10:4 q2#11:4
+replaced1 p:2:5 q2#3:5 replaced4
+TypeError
+p:6:6 replaced7
+p:0:7 replaced1 proto2 p:3:8 replaced4 proto5 p:6:9 replaced7 proto8
+patched1 p:2:10 replaced3

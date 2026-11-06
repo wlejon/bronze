@@ -33,6 +33,12 @@ InlineCache* rtMegaPropProbe(const Shape* shape, uint32_t keyIndex) noexcept;
 // Records the entry `site` holds for `shape` after a full lookup, if any.
 void rtMegaPropFill(const InlineCacheSite* site, const Shape* shape, uint32_t keyIndex) noexcept;
 
+// Records an OWN data slot of `shape` for `keyIndex`: what a method site's
+// SLOT entry already proved (a shape is a key-to-slot map), put back in the
+// table after a later read evicted the pair, so the site's stub answers it
+// again without the helper.
+void rtMegaPropFillOwnSlot(Shape* shape, uint32_t keyIndex, uint32_t slot) noexcept;
+
 // The WRITE half: a set site's one entry (way 0) for `shape`, under a key
 // space of its own — a read entry says nothing about writability, so the two
 // must never answer each other. An entry for an adding store names the shape

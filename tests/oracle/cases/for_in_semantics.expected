@@ -1,0 +1,11 @@
+2,10,b,a,shadow,01,inherited
+2,10,b,a,shadow,01,inherited
+2,10,b,a,shadow,01,inherited
+shadow
+p,q 4
+p,q 4
+own,inherited,shadow
+own,inherited,shadow,later
+own,inherited,shadow
+own,other
+shadow,m,inherited

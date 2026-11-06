@@ -1,0 +1,12 @@
+xx xy xz yx yy yz zx zy zz
+x6,y6,[x5,y5,[x4,y4,[x3,y3,[x2,y2,[x1,y1,[x0,y0,z0],z1],z2],z3],z4],z5],z6
+x,y,z x,y,z
+out x
+x,y,z
+x x,y,z x y y x,y,z z true z true
+x p q undefined
+y p q undefined
+z p q undefined
+p q true
+0,1,2 0,1  
+3000

@@ -89,6 +89,63 @@ extern "C" {
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                               InlineCacheSite* site);
 
+// A NAME that no Array has: `v.x` and `v.r` of three.js's `setValueV3f`
+// asked of an array uniform (`ambientLightColor`), once each per material
+// refresh. An array without a named-property box answers a non-index,
+// non-`length` key from two places only, `Array.prototype`'s C table (fixed:
+// decorating it is a hard error, rt_prop_write.cpp) and `Object.prototype`'s
+// own properties (its [[Prototype]] is null). So "absent" is a fact about the
+// key and the current realm's `Object.prototype` alone, and it holds while that
+// object's shape and the prototype-mutation epoch both do: an add moves the
+// shape, and a dictionary define or a prototype edit moves the epoch. Without
+// it every such read was the by-name walk with a string made per call.
+//
+// Direct-mapped by key index. The shape is an immortal arena node and the
+// epoch a counter, so an entry holds no heap pointer and needs no root.
+struct ArrayAbsentMemo {
+    static constexpr uint32_t kSlots = 32;
+    struct Slot {
+        uint32_t keyIndex = UINT32_MAX;
+        const Shape* objectProtoShape = nullptr;
+        uint64_t epoch = 0;
+    };
+    Slot slots[kSlots];
+};
+thread_local ArrayAbsentMemo t_arrayAbsent;
+
+static const Shape* currentObjectProtoShape() {
+    const Value proto = rtObjectPrototypeIfBuilt();
+    if (!proto.isObject()) return nullptr;
+    return proto.asObject<ObjectHeader>()->shape;
+}
+
+static bool arrayAbsentHit(uint32_t keyIndex) {
+    const ArrayAbsentMemo::Slot& slot = t_arrayAbsent.slots[keyIndex % ArrayAbsentMemo::kSlots];
+    if (slot.keyIndex != keyIndex || slot.epoch != protoMutationEpoch()) return false;
+    const Shape* protoShape = currentObjectProtoShape();
+    return protoShape && slot.objectProtoShape == protoShape;
+}
+
+// Called after the walk answered `undefined` for a box-less array: records the
+// absence only once each of the two places is proven not to hold the key —
+// no table method, no unbuilt member (which the walk refuses by name), and no
+// own property of `Object.prototype`, a data property holding `undefined` or
+// an accessor included.
+static void arrayAbsentFill(uint32_t keyIndex) {
+    if (censusFillsSuppressed()) return;
+    const Shape* protoShape = currentObjectProtoShape();
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!protoShape || !keyHeader) return;
+    const std::string& keyStr = rtKeyString(keyIndex);
+    if (rtArrayMethodId(keyStr) != UINT32_MAX || rtArrayMemberUnimplemented(keyStr)) return;
+    PropertyInfo info;
+    if (const_cast<Shape*>(protoShape)->lookupProperty(PropertyKey::forString(keyHeader), info)) return;
+    ArrayAbsentMemo::Slot& slot = t_arrayAbsent.slots[keyIndex % ArrayAbsentMemo::kSlots];
+    slot.keyIndex = keyIndex;
+    slot.objectProtoShape = protoShape;
+    slot.epoch = protoMutationEpoch();
+}
+
 static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
     recordPropGetMiss(objBits, keyIndex, icEntry);
@@ -218,6 +275,13 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             }
             if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
+            }
+            if (!reinterpret_cast<const ArrayHeader*>(fastHdr)->properties.isObject()) {
+                if (arrayAbsentHit(keyIndex)) return BRONZE_ABI_UNDEFINED_BITS;
+                const uint64_t result =
+                    propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+                if (result == BRONZE_ABI_UNDEFINED_BITS) arrayAbsentFill(keyIndex);
+                return result;
             }
         }
     } else if (objVal.isString()) {

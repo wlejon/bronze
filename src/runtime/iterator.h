@@ -85,6 +85,14 @@ namespace bronze::runtime {
 // 4 defines for a value with no @@iterator method.
 Value rtOpenIterator(Value source);
 
+// A for-in's record (rt_enumerate.cpp): when `source` is the key array
+// `bronze_for_in_keys` just returned, an Array-kind record over it, reused
+// from the thread's pool when one is free; otherwise undefined, and the open
+// is the ordinary one. `rtReleaseForInRecord` takes back an exhausted record
+// that came from here (any other record is left alone).
+Value rtOpenForInRecord(Value source);
+void rtReleaseForInRecord(Value record);
+
 // 7.4.3 GetIteratorFromMethod, for a caller that has already fetched the
 // `[Symbol.iterator]` method — `Array.from` over a Proxy, whose GetMethod is
 // one observable `get` trap that must not run twice. `method` is callable;

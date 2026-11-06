@@ -24,6 +24,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/builtin_object.h"
 #include "runtime/exception.h"
@@ -146,16 +147,27 @@ Value nextLinkOf(ObjectHeader* holder) {
 // non-moving, so the walk allocates nothing and no raw pointer here has to
 // survive a collection.
 void collectChainStringKeys(ObjectHeader* holder, std::vector<StringHeader*>& keys) {
+    // Every own name a level reports, enumerable or not: 14.7.5.6's `visited`
+    // set, which is what lets a NON-enumerable own property shadow an
+    // enumerable inherited one of the same name (proxyChainForInKeys below
+    // keeps the same two lists for the same reason).
+    std::vector<StringHeader*> visited;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
         // String keys only: 14.7.5.6 EnumerateObjectProperties yields
         // property names, and a symbol key is not one. It is the same filter
         // `Object.keys` applies, asked in the same place, so the two cannot
         // disagree about what a `for-in` visits.
-        for (StringHeader* key : rtOwnStringKeysOrdered(holder)) {
+        for (StringHeader* key : rtOwnStringKeysOrdered(holder, /*enumerableOnly=*/false)) {
             // A key redefined further up the chain is visited once, at the
             // level nearest the receiver — the level whose value a read would
             // find (ECMA-262 14.7.5.6).
-            if (!alreadySeen(keys, key)) keys.push_back(key);
+            if (alreadySeen(visited, key)) continue;
+            visited.push_back(key);
+            PropertyInfo info;
+            if (holder->shape != nullptr &&
+                holder->shape->lookupProperty(PropertyKey::forString(key), info) && info.enumerable) {
+                keys.push_back(key);
+            }
         }
         if (depth == kMaxPrototypeDepth) fatal("prototype chain too deep (a cycle?)");
         holder = holder->protoAncestor(1);
@@ -372,21 +384,103 @@ uint64_t cacheArray(Shape* shape, uint64_t epoch, uint64_t array) {
     return array;
 }
 
+// The for-in ITERATION RECORD, reused. A for-in lowers to the key array this
+// file builds, then `iter.open` over it, steps, and exhausts — and the record
+// that walk needs is the only thing a for-in over a cached shape still
+// allocated (three.js: one per draw, `for (name in programAttributes)`).
+//
+// What makes reuse sound is when a for-in record is dead, which is a fact
+// about the lowering (lower_iter_loop.cpp): its record is read by the loop's
+// own `iter.step` / `iter.value` and by the `iter.close` of a break, a return
+// or a throw out of the BODY; the step that answers `done` branches to the
+// loop's exit, where nothing names the record again. So the step that
+// exhausts it is its last use, and that is where it comes back here. A record
+// a break abandoned is never done and is simply garbage, as before.
+//
+// Only a record opened over the array `bronze_for_in_keys` JUST returned is
+// one of these: `t_forInFresh` holds that array (the open is the very next
+// instruction the lowering emits), the open takes it, and the record carries
+// kForInMark in `nextFn`, a word the Array kind never reads. No other
+// iteration — a for-of or a destructuring, whose records can be stepped after
+// `done` — ever gets the mark, because none of them sees a for-in key array:
+// the array never reaches the program.
+//
+// The stash and the pool are roots (rtVisitForInArrayRoots), so both follow a
+// collection; a pool of four covers nesting, and a deeper one allocates.
+constexpr uint64_t kForInMark = BRONZE_ABI_TRUE_BITS;
+constexpr uint32_t kForInPoolSize = 4;
+thread_local Value t_forInFresh = Value::fromUndefined();
+thread_local Value t_forInPool[kForInPoolSize] = {Value::fromUndefined(), Value::fromUndefined(),
+                                                  Value::fromUndefined(), Value::fromUndefined()};
+thread_local uint32_t t_forInPoolCount = 0;
+
 }  // namespace
+
+Value rtOpenForInRecord(Value source) {
+    if (!source.isObject() || source.rawBits() != t_forInFresh.rawBits()) {
+        return Value::fromUndefined();
+    }
+    t_forInFresh = Value::fromUndefined();
+    IterRecordHeader* rec = nullptr;
+    if (t_forInPoolCount > 0) {
+        Value& pooled = t_forInPool[--t_forInPoolCount];
+        rec = pooled.asObject<IterRecordHeader>();
+        pooled = Value::fromUndefined();
+        rec->current = Value::fromUndefined();
+        rec->cursor = Value::fromDouble(0.0);
+        rec->done = Value::fromBool(false);
+    } else {
+        Rooted<Value> src{source};
+        rec = IterRecordHeader::create(rtHeap(), IterRecordHeader::Array);
+        source = src.get();
+    }
+    rec->nextFn = Value(kForInMark);
+    rec->target = source;
+    return Value::fromObject(rec);
+}
+
+void rtReleaseForInRecord(Value record) {
+    auto* rec = record.asObject<IterRecordHeader>();
+    if (rec->nextFn.rawBits() != kForInMark || t_forInPoolCount == kForInPoolSize) return;
+    rec->nextFn = Value::fromUndefined();
+    rec->target = Value::fromUndefined();
+    t_forInPool[t_forInPoolCount++] = record;
+}
 
 void rtVisitForInArrayRoots(const Heap::RootVisitor& visit) {
     for (auto& slot : t_arrayCache.slots) visit(slot.array);
+    visit(t_forInFresh);
+    for (uint32_t i = 0; i < t_forInPoolCount; ++i) visit(t_forInPool[i]);
 }
 
 void rtResetForInArrayCache() {
     for (auto& slot : t_arrayCache.slots) slot = ArrayCache::Slot{};
+    t_forInFresh = Value::fromUndefined();
+    for (Value& pooled : t_forInPool) pooled = Value::fromUndefined();
+    t_forInPoolCount = 0;
 }
 
-extern "C" {
+namespace {
 
-uint64_t bronze_for_in_keys(uint64_t objBits) {
-    recordHelperCall("bronze_for_in_keys");
+uint64_t forInKeys(uint64_t objBits) {
     Value v(objBits);
+    // The common receiver first: a BARE plain object (no internal slots, so
+    // not a Map, a Set or a String wrapper, and its own named-property
+    // holder) whose shape's array is cached at the current epoch. Every
+    // question the walk below asks before its own probe of this slot is one
+    // the fill already answered for this shape — no index keys, no proxy
+    // link, a cacheable chain — and nothing can change those answers without
+    // moving the shape or the epoch. three.js's `for (name in
+    // programAttributes)` runs once a draw.
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        const auto* obj = v.asObject<ObjectHeader>();
+        if (obj->isBarePlain()) {
+            const ArrayCache::Slot& cached = arrayCache().slots[ArrayCache::indexOf(obj->shape)];
+            if (cached.shape == obj->shape && cached.epoch == protoMutationEpoch()) {
+                return cached.array.rawBits();
+            }
+        }
+    }
     if (v.isNull() || v.isUndefined()) return emptyKeyArray();
 
     uint32_t indexCount = 0;
@@ -559,6 +653,17 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // ~5M such copies a run).
     const uint64_t array = keyListToArray(keys);
     return cacheShape ? cacheArray(cacheShape, epochNow, array) : array;
+}
+
+}  // namespace
+
+extern "C" {
+
+uint64_t bronze_for_in_keys(uint64_t objBits) {
+    recordHelperCall("bronze_for_in_keys");
+    const uint64_t array = forInKeys(objBits);
+    t_forInFresh = Value(array);
+    return array;
 }
 
 }  // extern "C"

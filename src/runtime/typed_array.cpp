@@ -32,6 +32,15 @@ constexpr ElementKindInfo kElementKinds[] = {
 static_assert(std::size(kElementKinds) == static_cast<size_t>(ElementKind::Count),
               "the element-kind table has drifted from the ElementKind enum");
 
+constexpr bool elementBytesAgree() {
+    if (std::size(kElementKindBytes) != std::size(kElementKinds)) return false;
+    for (size_t i = 0; i < std::size(kElementKinds); ++i) {
+        if (kElementKindBytes[i] != kElementKinds[i].bytesPerElement) return false;
+    }
+    return true;
+}
+static_assert(elementBytesAgree(), "kElementKindBytes has drifted from the element-kind table");
+
 // 7.1.6..7.1.10 ToInt8/ToUint8/ToInt16/ToUint16/ToInt32/ToUint32, which
 // differ from each other only in the width and the signedness — so they are
 // one function taking both, rather than six that could disagree about what

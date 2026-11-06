@@ -8,6 +8,7 @@
 #include "runtime/profile.h"
 #include "runtime/realm.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_prop_mega.h"
 #include "runtime/rt_property.h"
 #include "runtime/root_remset.h"
 #include "runtime/rt_state.h"
@@ -27,19 +28,25 @@ namespace {
 // DIRECT resident is copied into words 6-9, so the two shapes of a
 // polymorphic site — three.js's recursive `updateMatrixWorld` over a tree of
 // Object3D/Mesh/Scene — each keep an entry instead of relatching forever.
-// Only the direct form moves: a SLOT entry's code word is 0 and its word-2
-// high half is its slot machinery, and an EXOTIC entry's word 0 carries the
-// sentinel bit — both are refused, so way 1 can only ever hold what the
-// generated way-1 arm knows how to dispatch. The env copy in word 9 is a
-// registered value cell exactly as word 3 is (bronze_register_method_ic_cells
-// registers both), which is what keeps the copy current across a flip.
+// A shape-keyed SLOT entry moves too: two receiver shapes that each carry
+// the method as an OWN closure (three.js's `renderer.setMode(...)` over a
+// WebGLBufferRenderer and a WebGLIndexedBufferRenderer, both built with
+// `this.setMode = setMode`) otherwise relatched on every alternation, a
+// full by-name read per call. Generated code's way-1 arm tests the direct
+// bit and a zero high half, so a SLOT resident never hits there; what it does
+// is make the site FULL, so the stub probes the thread's (shape, key) table,
+// which the miss's read filled, and methodIcHit answers it below. An EXOTIC
+// entry's word 0 carries the sentinel bit and never moves. The env copy in
+// word 9 is a registered value cell exactly as word 3 is
+// (bronze_register_method_ic_cells registers both), which is what keeps the
+// copy current across a flip; a SLOT entry's is undefined.
 void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
     const uint64_t w0 = icEntry[0];
     if (w0 == 0 || w0 == newWord0) return;
     if (w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) return;
     const uint64_t arityWord = icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD];
-    if ((arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0) return;
-    if (icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] == 0) return;
+    const bool slotForm = (arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0;
+    if (!slotForm && icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] == 0) return;
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD] = icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD];
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD] = arityWord;
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD] = icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD];
@@ -243,10 +250,11 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
 // arms share a soundness argument as well as a predicate, and this adds no
 // exposure the committed read side did not already carry.
 //
-// Way 1 never sees one of these: `displaceMethodWay0` refuses to promote a
-// SLOT entry, so words 6-9 stay the plain-DIRECT residents the polymorphic arm
-// expects, and generated code's statics arm reads way 0 only — the same
-// way-0-only policy, for the same measured reason, as the read arm.
+// Generated code's statics arm reads way 0 only — the same way-0-only policy,
+// for the same measured reason, as the read arm. Displaced into way 1, one of
+// these is a SLOT entry keyed on a shape like any other: only a PLAIN receiver
+// of that shape is answered from it, and such a receiver holds the key at that
+// slot in itself, which is the whole of the SLOT form's argument.
 //
 // Loads, compares and stores only, like everything else here.
 bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value calleeVal,
@@ -421,8 +429,8 @@ void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
 // function object's own call adapts them. A SLOT hit re-derives the callee from
 // the live slot and hands it to `bronze_dynamic_call`, the universal dispatch
 // the contract names (Function test and TypeError included).
-bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint64_t* argv,
-                 uint64_t& result) {
+bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
+                 const uint64_t* argv, uint64_t& result) {
     if (!icEntry) return false;
     const uint64_t w0 = icEntry[0];
     if (w0 == 0) return false;
@@ -533,8 +541,17 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
             if (slotPlusOne != 0) return dispatchSlot(obj, slotPlusOne);
             return dispatchDirect(icEntry, BRONZE_ABI_METHOD_IC_EPOCH_WORD, /*native=*/false);
         }
-        // WAY 1 holds a plain-receiver DIRECT entry and nothing else.
+        // WAY 1 holds a plain-receiver DIRECT or SLOT entry.
         if (icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
+            const uint64_t slot1 =
+                icEntry[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD] >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
+            if (slot1 != 0) {
+                // The stub reaches the helper with a way-1 SLOT resident only
+                // when the (shape, key) table lost the pair; putting it back
+                // is what lets the next call of this shape stay in the stub.
+                rtMegaPropFillOwnSlot(obj->shape, keyIndex, static_cast<uint32_t>(slot1 - 1));
+                return dispatchSlot(obj, slot1);
+            }
             return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD,
                                   BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD, /*native=*/false);
         }
@@ -561,7 +578,7 @@ extern "C" {
 
 uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
                             const uint64_t* argvBits, uint64_t* icEntry) {
-    if (uint64_t hit; methodIcHit(icEntry, thisBits, argc, argvBits, hit)) {
+    if (uint64_t hit; methodIcHit(icEntry, thisBits, keyIndex, argc, argvBits, hit)) {
         return hit;
     }
     Rooted<Value> thisRoot{Value(thisBits)};

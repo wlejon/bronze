@@ -74,6 +74,17 @@ struct ElementKindInfo {
 const ElementKindInfo& elementKindInfo(ElementKind kind) noexcept;
 double toUint8Clamp(double number) noexcept;
 
+// Each kind's element size, inline: every view method asks it, the embed
+// readers twice per call, and the table above is out of line. Indexed by the
+// enum; typed_array.cpp asserts it row for row against kElementKinds, so the
+// two cannot drift. A kind outside it takes the table's fatal.
+inline constexpr uint8_t kElementKindBytes[] = {1, 1, 1, 2, 2, 4, 4, 4, 8, 2, 8, 8};
+inline uint32_t elementKindBytes(ElementKind kind) noexcept {
+    const auto index = static_cast<uint32_t>(kind);
+    if (index >= sizeof(kElementKindBytes)) [[unlikely]] return elementKindInfo(kind).bytesPerElement;
+    return kElementKindBytes[index];
+}
+
 // The largest byte length bronze will allocate for one buffer. The view
 // header's `{byteOffset, length}` pair and `{kind, constructedLength}` pair
 // each share one 8-byte word that the collector's payload trace reads as a
@@ -221,9 +232,7 @@ struct TypedArrayHeader {
     bool isTracking() const noexcept { return constructedLength == kAutoLength; }
 
     ElementKind elementKind() const noexcept { return static_cast<ElementKind>(kind); }
-    uint32_t bytesPerElement() const noexcept {
-        return elementKindInfo(elementKind()).bytesPerElement;
-    }
+    uint32_t bytesPerElement() const noexcept { return elementKindBytes(elementKind()); }
     uint32_t byteLength() const noexcept { return length * bytesPerElement(); }
     const char* kindName() const noexcept { return elementKindInfo(elementKind()).name; }
 
