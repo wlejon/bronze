@@ -521,9 +521,14 @@ void capture(Session& s, ThreadHandle threadTid, brass::FastFrame* const* topSlo
         return;
     }
 
-    const uint64_t deadlineNs = qpcNow() + 2000000ull;  // 2 ms max wait
-    while (g_linuxReq.state.load(std::memory_order_acquire) != 3) {
-        if (qpcNow() >= deadlineNs) {
+    const uint64_t startNs = qpcNow();
+    const uint64_t spinUntilNs = startNs + 50000ull;    // 50 us user-space spin before yielding CPU
+    const uint64_t deadlineNs = startNs + 2000000ull;   // 2 ms max wait
+    while (true) {
+        const int st = g_linuxReq.state.load(std::memory_order_acquire);
+        if (st == 3) break;
+        const uint64_t nowNs = qpcNow();
+        if (nowNs >= deadlineNs) {
             int exp = 1;
             if (g_linuxReq.state.compare_exchange_strong(exp, 0, std::memory_order_acq_rel)) {
                 g_linuxReq.targetTid.store(0, std::memory_order_release);
@@ -531,11 +536,15 @@ void capture(Session& s, ThreadHandle threadTid, brass::FastFrame* const* topSlo
             }
             // State is 2 (handler is running right now) — spin briefly until it stores 3.
             while (g_linuxReq.state.load(std::memory_order_acquire) != 3) {
-                std::this_thread::yield();
+                asm volatile("pause" ::: "memory");
             }
             break;
         }
-        std::this_thread::yield();
+        if (st == 2 || nowNs < spinUntilNs) {
+            asm volatile("pause" ::: "memory");
+        } else {
+            std::this_thread::yield();
+        }
     }
     g_linuxReq.targetTid.store(0, std::memory_order_release);
     g_linuxReq.state.store(0, std::memory_order_release);
