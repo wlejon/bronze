@@ -659,8 +659,28 @@ bool lower_call_instruction(
                 std::vector<Value*> args;
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
                 if (can_direct) {
-                    res_val = lower_direct_method_call(lowering, inst_ast, b, recv, args, site, callee, entry_name,
-                                                       direct_fn, this_param);
+                    const auto direct = [&](Builder& bb) {
+                        return lower_direct_method_call(lowering, inst_ast, bb, recv, args, site, callee, entry_name,
+                                                        direct_fn, this_param);
+                    };
+                    // A receiver may hold its callee in an own slot (three.js's
+                    // `_onChangeCallback`, a prototype no-op shadowed by a
+                    // closure on each instance): the method cache's SLOT form
+                    // never answers the direct guard, so the slot is tried
+                    // first and the guessed prototype method after it. An
+                    // Array receiver is never the plain object a SLOT entry
+                    // names, so its site keeps the direct form alone.
+                    const int64_t hints = inst_ast.imm_i64;
+                    if ((hints & bronze::il::Instruction::kMethodOwnCallee) != 0 &&
+                        (hints & bronze::il::Instruction::kMethodRecvArray) == 0 &&
+                        direct_method_ic_here(lowering) && !lowering->run_once()) {
+                        std::vector<Value*> boxed;
+                        boxed.reserve(argc);
+                        for (size_t a = 0; a < argc; ++a) boxed.push_back(box_value(lowering, b, args[a], arg_kinds[a]));
+                        res_val = lower_method_slot_inline(lowering, b, recv, boxed, site, direct);
+                        break;
+                    }
+                    res_val = direct(b);
                     break;
                 }
                 for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);
