@@ -184,6 +184,7 @@ bronze_add_module(runtime
         regex
     TEST_SOURCES
         ../../tests/runtime/abi_guard_test.cpp
+        ../../tests/runtime/tls_constants_test.cpp
         ../../tests/runtime/number_format_test.cpp
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp

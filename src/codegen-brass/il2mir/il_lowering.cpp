@@ -275,6 +275,14 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // interrupt (runtime/tls_block.h) stops a runaway loop as well as the
     // next call: a compartment's time slice and its termination.
     if (options_.pin_tls_register) mod->set_interrupt_poll(kBronzeTlsStackLimitOff, "bronze_interrupt_poll");
+    // The constants the runtime keeps below the block (bronze_abi_tls.h,
+    // BRONZE_TLS_CONSTANTS), read there instead of from each function's pool.
+    if (options_.pin_tls_register) {
+        int32_t i = 0;
+#define BRONZE_PIN_CONSTANT(v) mod->add_pinned_constant(static_cast<uint64_t>(v), BRONZE_TLS_CONSTANT_OFF(i++));
+        BRONZE_TLS_CONSTANTS(BRONZE_PIN_CONSTANT)
+#undef BRONZE_PIN_CONSTANT
+    }
     current_file_id_ = mod->debug_context().get_or_add_file(ast.name.empty() ? "<anonymous>" : ast.name);
     source_file_ids_.clear();
     source_file_ids_.reserve(ast.source_files.size());

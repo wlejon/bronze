@@ -20,6 +20,7 @@
 #include "il/il.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 #include "support/diagnostics.h"
 
@@ -121,6 +122,32 @@ void addBinaryDynamicFn(bronze::il::Module& m, const std::string& name, bronze::
     fn.blocks.push_back(std::move(b0));
     m.functions.push_back(std::move(fn));
 }
+
+namespace {
+// A raw-signature JIT function reads its NaN-box constants through the pinned
+// TLS register (r13, bronze_abi_tls.h BRONZE_TLS_CONSTANTS), which only
+// bronze_enter_js sets; call it the way a compiled caller would, with r13 set.
+__attribute__((noinline)) uint64_t callPinned(uint64_t (*fn)(double), double d) {
+    uint64_t bits;
+    std::memcpy(&bits, &d, sizeof bits);
+    void* tls = bronze::runtime::rtTls();
+    uint64_t r;
+    __asm__ volatile(
+        "mov %%rsp, %%rbx\n\t"
+        "sub $128, %%rsp\n\t"
+        "and $-16, %%rsp\n\t"
+        "mov %[tls], %%r13\n\t"
+        "movq %[bits], %%xmm0\n\t"
+        "call *%[fn]\n\t"
+        "mov %%rbx, %%rsp\n\t"
+        : "=a"(r)
+        : [fn] "r"(fn), [tls] "r"(tls), [bits] "r"(bits)
+        : "rbx", "r13", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2", "xmm3",
+          "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+          "memory", "cc");
+    return r;
+}
+}  // namespace
 
 void addUnaryDynamicFn(bronze::il::Module& m, const std::string& name, bronze::il::Op op,
                        bronze::il::Type paramType, bronze::il::Type opType) {
@@ -472,7 +499,7 @@ TEST_CASE("Fast-path MIR lowering matches slow-path C runtime helpers bit-for-bi
     };
     for (uint64_t rawNan : nanPatterns) {
         double d = bitsToF64(rawNan);
-        uint64_t boxed = jitBoxF64(d);
+        uint64_t boxed = callPinned(jitBoxF64, d);
         CHECK(boxed == BRONZE_ABI_CANONICAL_NAN_BITS);
         CHECK(boxed == bronze_box_f64(d));
     }
@@ -504,7 +531,7 @@ TEST_CASE("Fast-path MIR lowering matches slow-path C runtime helpers bit-for-bi
             double d = bitsToF64(a);
             bool expectedTruthy = (d != 0.0) && !std::isnan(d);
             CHECK(call1(wNumTruthy, vals[i]) == bronze_box_bool(expectedTruthy));
-            CHECK(jitBoxF64(d) == bronze_box_f64(d));
+            CHECK(callPinned(jitBoxF64, d) == bronze_box_f64(d));
         }
 
         for (size_t j = 0; j < vals.size(); ++j) {

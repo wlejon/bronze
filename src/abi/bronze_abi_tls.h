@@ -168,6 +168,48 @@ typedef struct bronze_tls_block {
     8 * BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS)
 
 /*
+ * ---- the constants below the block ---------------------------------------
+ *
+ * Sixteen 64-bit words just below the block, at [pinned register - 128] to
+ * [pinned register - 8], hold the constants guards compare with most: the
+ * NaN-box tags, the payload mask and limit, the number range's end. x64
+ * code reads one there (brass Module::add_pinned_constant) instead of from its
+ * function's constant pool, `[r13 - d8]` against `[rip + d32]`, three bytes
+ * shorter, and loads one into a register the same way instead of a 10-byte
+ * movabs: in three.js's per-draw path those were a sixth of the bytes the
+ * front end fetched. Never written; the block's thread_local holder
+ * (runtime/tls_block.cpp, bronze_tls_area) initializes them from this list,
+ * and the module registers the same list, so the two cannot disagree.
+ * Constant i is at BRONZE_TLS_CONSTANT_OFF(i).
+ */
+#define BRONZE_TLS_CONSTANT_COUNT 16
+#define BRONZE_TLS_CONSTANT_OFF(i) (-8 * (BRONZE_TLS_CONSTANT_COUNT - (i)))
+#define BRONZE_TLS_CONSTANTS(X)                                                 \
+    X(0xFFF1000000000000ull) /* an object's tag (BRONZE_ABI_TAG_OBJECT) */      \
+    X(0x0001000000000000ull) /* 2^48: an untagged payload is below it */        \
+    X(BRONZE_ABI_NUMBER_MAX_BITS)                                               \
+    X(BRONZE_ABI_VALUE_PAYLOAD_MASK)                                            \
+    X(0x0000000100000000ull) /* 2^32 */                                         \
+    X(BRONZE_ABI_UNDEFINED_BITS)                                                \
+    X(BRONZE_ABI_CANONICAL_NAN_BITS)                                            \
+    X(0xFFFF000000000000ull) /* the tag bits */                                 \
+    X(BRONZE_ABI_HOLE_BITS)                                                     \
+    X(0xFFF4000000000000ull) /* false (BRONZE_ABI_TAG_BOOL) */                  \
+    X(BRONZE_ABI_TRUE_BITS)                                                     \
+    X(0x4000000000000000ull)                                                    \
+    X(0xFFFFFF0000000090ull)                                                    \
+    X(0xFFFA000000000000ull)                                                    \
+    X(0x3FF0000000000000ull) /* 1.0 */                                          \
+    X(0xFFF5000000000000ull) /* null (BRONZE_ABI_TAG_NULL) */
+
+/* The block's holder: the constants, then the block, which the pinned
+ * register and bronze_tls_block_addr point at. */
+typedef struct bronze_tls_area {
+    uint64_t constants[BRONZE_TLS_CONSTANT_COUNT];
+    bronze_tls_block block;
+} bronze_tls_area;
+
+/*
  * ---- the pinned register -----------------------------------------------
  *
  * Compiled code keeps the address of this block in a callee-saved register

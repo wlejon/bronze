@@ -84,28 +84,38 @@ namespace bronze::runtime {
 // misses into the helper. Read-only; nothing writes through the pointer.
 static constexpr uint64_t kNoTypedArrayLengthTable[BRONZE_ABI_TA_LENGTH_TBL_WORDS] = {};
 
-thread_local bronze_tls_block g_tls_block = {
-    /*proto_epoch=*/BRONZE_ABI_PROTO_EPOCH_FIRST,
-    /*alloc_cursor=*/0,
-    /*alloc_limit=*/0,
-    /*plain_shape=*/0,
-    /*array_method_tbl=*/nullptr,
-    /*elem_cache_tbl=*/nullptr,
-    /*elem_set_cache_tbl=*/nullptr,
-    /*stack_limit=*/0,
-    /*module_deltas=*/nullptr,
-    /*gc_cell_header=*/0,
-    /*realm_slot=*/0,
-    /*ta_length_tbl=*/const_cast<uint64_t*>(kNoTypedArrayLengthTable),
-    /*array_hole_epoch=*/0,
-    /*key_header_tbl=*/nullptr,
-    /*key_header_count=*/0,
-    /*array_index_hazard=*/0,
-    /*array_elems_tag_mask=*/0xFFFF000000000000ULL,
-    /*young_base=*/0,
-    /*young_span=*/0,
-    /*mega_prop=*/{},
-    /*plain_shapes=*/{},
+// The constants sit right below the block, each at the offset compiled code
+// reads it at (BRONZE_TLS_CONSTANT_OFF), all within a one-byte displacement.
+static_assert(offsetof(bronze_tls_area, block) == 8 * BRONZE_TLS_CONSTANT_COUNT, "constants abut the block");
+static_assert(BRONZE_TLS_CONSTANT_OFF(0) >= -128, "constants within a one-byte displacement");
+
+thread_local bronze_tls_area g_tls_area = {
+#define BRONZE_TLS_CONSTANT_WORD(v) static_cast<uint64_t>(v),
+    /*constants=*/{BRONZE_TLS_CONSTANTS(BRONZE_TLS_CONSTANT_WORD)},
+#undef BRONZE_TLS_CONSTANT_WORD
+    /*block=*/{
+        /*proto_epoch=*/BRONZE_ABI_PROTO_EPOCH_FIRST,
+        /*alloc_cursor=*/0,
+        /*alloc_limit=*/0,
+        /*plain_shape=*/0,
+        /*array_method_tbl=*/nullptr,
+        /*elem_cache_tbl=*/nullptr,
+        /*elem_set_cache_tbl=*/nullptr,
+        /*stack_limit=*/0,
+        /*module_deltas=*/nullptr,
+        /*gc_cell_header=*/0,
+        /*realm_slot=*/0,
+        /*ta_length_tbl=*/const_cast<uint64_t*>(kNoTypedArrayLengthTable),
+        /*array_hole_epoch=*/0,
+        /*key_header_tbl=*/nullptr,
+        /*key_header_count=*/0,
+        /*array_index_hazard=*/0,
+        /*array_elems_tag_mask=*/0xFFFF000000000000ULL,
+        /*young_base=*/0,
+        /*young_span=*/0,
+        /*mega_prop=*/{},
+        /*plain_shapes=*/{},
+    },
 };
 
 namespace {
@@ -169,7 +179,7 @@ constexpr uintptr_t kStackReserveBytes = 128 * 1024;
 }  // namespace bronze::runtime
 
 extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
-    return &bronze::runtime::g_tls_block;
+    return &bronze::runtime::g_tls_area.block;
 }
 
 namespace bronze::runtime {
@@ -193,7 +203,7 @@ std::atomic_ref<uint64_t> blockLimit(bronze_tls_block* tls) noexcept {
     local.save = [](void** slot) { *slot = reinterpret_cast<void*>(g_stackLimit); };
     local.restore = [](void** slot, bool fresh) {
         g_stackLimit = fresh ? 0 : reinterpret_cast<uintptr_t>(*slot);
-        blockLimit(&g_tls_block).store(g_stackLimit, std::memory_order_relaxed);
+        blockLimit(&g_tls_area.block).store(g_stackLimit, std::memory_order_relaxed);
     };
     return brass::gc::register_stack_local(local);
 }();
@@ -204,7 +214,7 @@ uintptr_t rtStackLimit() noexcept { return g_stackLimit; }
 
 void rtSetStackLimit(uintptr_t limit) noexcept {
     g_stackLimit = limit;
-    blockLimit(&g_tls_block).store(limit, std::memory_order_relaxed);
+    blockLimit(&g_tls_area.block).store(limit, std::memory_order_relaxed);
 }
 
 uintptr_t rtStackLimitFor(uintptr_t low, uintptr_t high) noexcept {
@@ -219,13 +229,13 @@ void rtArmInterrupt(bronze_tls_block* tls) noexcept {
 }
 
 void rtDisarmInterrupt() noexcept {
-    blockLimit(&g_tls_block).store(g_stackLimit, std::memory_order_relaxed);
+    blockLimit(&g_tls_area.block).store(g_stackLimit, std::memory_order_relaxed);
 }
 
 }  // namespace bronze::runtime
 
 extern "C" void* bronze_tls_enter(void) {
-    bronze_tls_block* tls = &bronze::runtime::g_tls_block;
+    bronze_tls_block* tls = &bronze::runtime::g_tls_area.block;
     uintptr_t limit = bronze::runtime::rtStackLimit();
     if (BRONZE_UNLIKELY(limit == 0)) {
         // The thread's first entry into generated code. That code calls brass

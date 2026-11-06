@@ -24,10 +24,11 @@
 
 namespace bronze::runtime {
 
-extern thread_local bronze_tls_block g_tls_block;
+// The block with the constants below it (bronze_abi_tls.h, bronze_tls_area).
+extern thread_local bronze_tls_area g_tls_area;
 
 inline bronze_tls_block* rtTls() noexcept {
-    return &g_tls_block;
+    return &g_tls_area.block;
 }
 
 // ---- the stack limit and interrupts ------------------------------------------
