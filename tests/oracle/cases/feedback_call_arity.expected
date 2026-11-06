@@ -1,0 +1,13 @@
+warm 399|undefined|undefined:200,200,200,200
+warm2 399|undefined|undefined:200,200,200,200
+arguments 7|undefined|undefined:14,14,14,14
+rest 7|undefined|undefined:122,122,122,122
+declared 7|undefined|undefined:16,16,16,16
+own 7|undefined|undefined:4,4,12002,4
+override 7|undefined|undefined:4,102,4,4
+new shapes 11|undefined|undefined:4,4,4,4,4,4
+short undefined|undefined|undefined 1|undefined|undefined 1|2|undefined 1|2|3
+padded 7|undefined|undefined:8,8,8,8
+hook warm 0
+hook replaced 30
+hook arguments 3

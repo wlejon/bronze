@@ -39,6 +39,14 @@ std::vector<il::ValueId> guardedAt(const RegionPlan& plan, il::BlockId block, ui
 // redefined inside the stretch ends it there, since a claim in front of the
 // window could not name the value the later reads are off. It may reach back
 // past earlier guard points: their chains are tests, which are pure too.
+//
+// It may also hold a SHAPE-GUARDED STORE (`shapeGuarded`, guard_region.h
+// "SHAPE GUARDS"): in the fast copy that is a bare store of a Number box into
+// a named slot whose shape a point's test already checked: no user code, no
+// barrier, no collection, and a named slot is never an element, so no claimed
+// array's elements change under it. `v.applyMatrix4(m)` writes `this.x`
+// between the rows it reads off `m.elements`; without this each row was a
+// window of its own, too short to pay for a claim.
 struct Window {
     uint32_t start = 0;
     std::vector<RegionPlan::NumberClaim> claims;
@@ -46,7 +54,8 @@ struct Window {
 };
 
 Window findWindow(const il::Block& block, const std::vector<std::string>& keys, const std::vector<il::Type>& types,
-                  const std::vector<uint8_t>& isCandidate, uint32_t hi, const std::vector<il::ValueId>& guarded) {
+                  const std::vector<uint8_t>& isCandidate, const std::vector<uint8_t>& shapeGuarded, uint32_t hi,
+                  const std::vector<il::ValueId>& guarded) {
     Window window;
     window.start = hi;
     for (uint32_t i = hi; i > 0; --i) {
@@ -74,7 +83,8 @@ Window findWindow(const il::Block& block, const std::vector<std::string>& keys, 
             window.start = i - 1;
             continue;
         }
-        if (!pureInFastCopy(inst, types, isCandidate)) break;
+        const bool guardedStore = inst.op == il::Op::PropSet && i - 1 < shapeGuarded.size() && shapeGuarded[i - 1] != 0;
+        if (!guardedStore && !pureInFastCopy(inst, types, isCandidate)) break;
     }
     for (uint32_t i = window.start; i < hi; ++i) {
         const il::Instruction& inst = block.instructions[i];
@@ -129,7 +139,9 @@ void planNumberWindows(const il::Function& fn, const std::vector<std::string>& k
             // the end of its run (guard_region.h, READ RUNS).
             const uint32_t hi = run.isRun() ? run.guardIndex : points[j];
             if (hi == 0 || hi > block.instructions.size()) continue;
-            windows[j] = findWindow(block, keys, types, plan.isCandidate, hi, guardedAt(plan, b, points[j]));
+            const std::vector<uint8_t> none;
+            const std::vector<uint8_t>& guardedSites = b < plan.shapeGuardedOf.size() ? plan.shapeGuardedOf[b] : none;
+            windows[j] = findWindow(block, keys, types, plan.isCandidate, guardedSites, hi, guardedAt(plan, b, points[j]));
             const Window& w = windows[j];
             if (w.skippable.empty()) continue;
             if (!groups.empty() && w.start <= groups.back().claimAt) {

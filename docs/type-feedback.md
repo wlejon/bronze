@@ -195,7 +195,11 @@ the plan where each claim has to be made:
   (`poly-recv` in `bronze il`), so a way-0 miss tests the cache's way 1 at the
   site before the method stub. A predicted direct target at a site whose run
   called a native (a name with no `@hash`, such as `array.push`) is dropped:
-  its guard would miss every time.
+  its guard would miss every time. The callee may declare fewer parameters
+  than the call passes: when it reads neither `arguments` nor a rest
+  parameter, the direct edge drops the extra arguments (three.js's empty
+  `onBeforeRender(renderer, scene, camera, ...)`), and a short call pads
+  with `undefined`. A callee that never reads `this` is called without it.
 - **A, static-slot claims** (after `wpo::optimizeForBuild`, before the layout
   facts spend claims): a `prop.get`/`prop.set` the whole-program pass left
   unclaimed, whose receivers had one dominant shape, claims the key's slot in
@@ -226,8 +230,10 @@ the plan where each claim has to be made:
   the current prototype epoch (`undefined`), or with `+proto` (some receiver
   lacked the key and the read returned something else) a data slot one
   prototype link up at the current epoch. Everything else is the property
-  stub, laid out cold (`il_prop_get_chain.cpp`). A site of one shape that A
-  already claimed is left to its claim.
+  stub, laid out cold (`il_prop_get_chain.cpp`), through its move-to-front
+  entry: a mega-table answer at a full site goes into way 0, so a site whose
+  ways warm-up shapes filled comes to hold the shapes it meets now. A site
+  of one shape that A already claimed is left to its claim.
 - **D, profile-guided regions** (after inlining and the own-slot calls,
   before transition runs, define-add cells and the claims;
   `src/lower/guard_region.h`, "PROFILE-GUIDED REGIONS"): the guarded-region

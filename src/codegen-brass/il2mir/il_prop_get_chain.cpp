@@ -8,6 +8,12 @@
 // while the epoch holds (the holder's slot). Anything else, and every shape
 // no tested way names, is the stub, which reads the same words.
 //
+// The miss calls the MOVE-TO-FRONT stub (kPropGetFrontStub): when the
+// per-thread mega table answers a site whose ways are full, it installs the
+// answer in way 0 and moves the others down. The plain stub leaves the ways
+// alone on a mega hit, so a site whose four ways were filled by warm-up shapes
+// kept missing inline for every shape it meets afterwards.
+//
 // Out of line the stub answers these from a scan whose branches every site
 // shares, so their history predicts none of them; here each site has its own
 // branches, its answer kind is fixed by its receivers, and no call is made.
@@ -141,7 +147,11 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     }
 
     b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site_at);
+    // The stub that moves a table hit to way 0: the profile saw at most
+    // four shapes here, so a way still holding one that stopped arriving
+    // (a warm-up shape) is retaken rather than sending the shape that
+    // replaced it to the table on every read.
+    Value* slow_val = b.build_call(kPropGetFrontStub, Type::i64(), {obj, runtime_key(b, key_index), site_at});
     edges.emplace_back(b.current_block(), false);
     b.build_br(bb_merge, {slow_val});
 

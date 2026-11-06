@@ -1,0 +1,12 @@
+warm 110000001100000000000100
+materials 13
+materialized 110000001100000000000100 13
+patched obj no 64
+deleted TypeError
+restored 110000001100000000000100
+defined defined
+again 110000001100000000000100
+receivers true,false,fake:number
+class static static:true true
+revoked TypeError
+extras true false 3

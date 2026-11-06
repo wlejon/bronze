@@ -344,10 +344,12 @@ void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::
                 // planDirect): an entry a fixed operand list can fill. The
                 // guard is the site's method cache, whose direct entry names
                 // this code only for a receiver whose lookup finds it.
+                // Arguments past the parameters are dropped by the direct
+                // edge: with no `arguments` object and no rest parameter the
+                // callee cannot observe them, and they are evaluated already.
                 const il::Function& callee = mod.functions[target];
                 const size_t argc = inst.operands.size() - 1;
-                bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam &&
-                            !callee.isExternal && argc <= callee.callerParamCount();
+                bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam && !callee.isExternal;
                 const size_t base = callee.firstSourceParam();
                 for (size_t i = argc; fits && i < callee.callerParamCount(); ++i) {
                     if (callee.params[i + base].type != il::Type::Dynamic) fits = false;

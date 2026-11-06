@@ -5,6 +5,7 @@
 #include "il_lowering_ops.h"
 #include "il_accessor_direct.h"
 #include "il_array_method.h"
+#include "il_is_array.h"
 #include "il/il.h"
 #include <brass/mir/module.hpp>
 #include <algorithm>
@@ -324,7 +325,7 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, const std::st
 // takes the generic call, which dispatches on the receiver in hand.
 Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
                                 const std::vector<Value*>& args, Value* site, const std::string& callee,
-                                const std::string& entry_name, Function* direct_fn) {
+                                const std::string& entry_name, Function* direct_fn, bool this_param) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
 
     BasicBlock* cur = b.current_block();
@@ -347,8 +348,10 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     std::vector<Value*> boxed_args;
     boxed_args.reserve(args.size());
     const auto& params = direct_fn->param_types();
+    // A callee that never reads `this` takes no receiver parameter.
+    const size_t first = this_param ? 1 : 0;
     for (size_t a = 0; a < args.size(); ++a) {
-        boxed_args.push_back(box_value(lowering, b, args[a], a + 1 < params.size() ? params[a + 1] : Type::i64()));
+        boxed_args.push_back(box_value(lowering, b, args[a], a + first < params.size() ? params[a + first] : Type::i64()));
     }
     Value* argv = lowering->stage_argv(b, boxed_args);
     Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(args.size()));
@@ -360,10 +363,11 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     b.build_br(merge, {b.build_call(miss_call, Type::i64(), {recv, key_id, argc_val, argv, site})});
 
     b.position_at_end(fast);
-    std::vector<Value*> call_args = {lowering->ensure_type(recv, params[0], b)};
-    for (size_t p = 1; p < params.size(); ++p) {
+    std::vector<Value*> call_args;
+    if (this_param) call_args.push_back(lowering->ensure_type(recv, params[0], b));
+    for (size_t p = first; p < params.size(); ++p) {
         const Type pt = params[p];
-        Value* a = p - 1 < args.size() ? args[p - 1] : nullptr;
+        Value* a = p - first < args.size() ? args[p - first] : nullptr;
         // An omitted argument's parameter is tagged (the call site's fit test).
         call_args.push_back(lowering->ensure_type(
             a ? a : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), pt, b));
@@ -586,11 +590,14 @@ bool lower_call_instruction(
             }
             // The callee takes `argc` arguments, or more whose parameters are
             // tagged (`update = true`), which an omitted argument fills with
-            // undefined as an adapting call would.
+            // undefined as an adapting call would. Fewer is fine too: the
+            // fast path passes the first ones and drops the rest, which a
+            // callee with no `arguments` object and no rest parameter (the
+            // terms below) cannot observe.
+            bool this_param = true;
             auto params_fit = [&]() {
                 const auto& params = direct_fn->param_types();
-                if (params.size() < argc + 1) return false;
-                for (size_t p = argc + 1; p < params.size(); ++p) {
+                for (size_t p = argc + (this_param ? 1 : 0); p < params.size(); ++p) {
                     if (!params[p].is_tagged() && params[p] != Type::i64()) return false;
                 }
                 return true;
@@ -599,8 +606,11 @@ bool lower_call_instruction(
             if (direct_fn && lowering) {
                 auto it_m = lowering->options().function_meta.find(callee);
                 if (it_m != lowering->options().function_meta.end()) {
-                    can_direct = it_m->second.needs_this && !it_m->second.needs_arguments &&
-                                 !it_m->second.has_rest_param && !it_m->second.needs_env && params_fit();
+                    // A callee with no `this` parameter is entered without
+                    // the receiver, which it never reads.
+                    this_param = it_m->second.needs_this;
+                    can_direct = !it_m->second.needs_arguments && !it_m->second.has_rest_param &&
+                                 !it_m->second.needs_env && params_fit();
                 } else {
                     can_direct = (direct_fn->param_types().size() == argc + 1);
                 }
@@ -612,6 +622,10 @@ bool lower_call_instruction(
             // Code that runs once dispatches generically: the direct form's
             // guard is only size there.
             if (can_direct && lowering && lowering->run_once()) can_direct = false;
+            // A speculated builtin (a `Math` member) is a native, so a direct
+            // JS target there is a wrong guess; the builtin form stages no argv,
+            // which argv_block_words counts on.
+            if (can_direct && method_call_is_speculated_builtin(lowering, inst_ast)) can_direct = false;
             if (const ArrayInline arr = can_direct ? ArrayInline::None : array_method_inline(lowering, inst_ast);
                 arr != ArrayInline::None) {
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
@@ -633,12 +647,20 @@ bool lower_call_instruction(
                     if (res_val) break;
                 }
             }
+            if (!can_direct && argc >= 1 && lowering) {
+                if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
+                    std::vector<Value*> args;
+                    for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
+                    res_val = lower_is_array_call(lowering, inst_ast, b, recv, args, site, poly_recv);
+                    if (res_val) break;
+                }
+            }
             if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
                 std::vector<Value*> args;
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
                 if (can_direct) {
                     res_val = lower_direct_method_call(lowering, inst_ast, b, recv, args, site, callee, entry_name,
-                                                       direct_fn);
+                                                       direct_fn, this_param);
                     break;
                 }
                 for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);

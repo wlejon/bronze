@@ -171,10 +171,11 @@ TEST_CASE("a callee with a rest parameter is refused") {
     CHECK_FALSE(hasDirectEdge(il));
 }
 
-TEST_CASE("a call passing more arguments than the callee declares is refused") {
-    // The extra operands have nowhere to go in a fixed list, and dropping them
-    // would be a different program: the callee could still observe them if it
-    // ever grew an `arguments` read.
+TEST_CASE("a call passing more arguments than the callee declares drops the extras") {
+    // A callee with neither `arguments` nor a rest parameter cannot observe
+    // an argument past its declared list, so the direct edge evaluates the
+    // extras and drops them. A replacement method that reads them is another
+    // function, which the edge's guard (the callee's code) never matches.
     const auto il = lowerToText(
         "class Point {\n"
         "  constructor() { this.x = 1; }\n"
@@ -185,7 +186,7 @@ TEST_CASE("a call passing more arguments than the callee declares is refused") {
         "  return p.get(1, 2, 3);\n"
         "}\n"
         "console.log(run());\n");
-    CHECK_FALSE(hasDirectEdge(il));
+    CHECK(hasDirectEdge(il));
 }
 
 TEST_CASE("a method no class in the table declares names nothing") {

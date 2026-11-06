@@ -9,7 +9,9 @@
 
 namespace il2mir {
 
-// Builds the stub into `fn`, (obj i64, key i32, site ptr) -> i64.
-void build_prop_get_fast_stub(Function* fn);
+// Builds the stub into `fn`, (obj i64, key i32, site ptr) -> i64. With
+// `to_front`, a hit in the thread's megamorphic table is also installed at
+// the site's way 0, the other ways moving down one (kPropGetFrontStub).
+void build_prop_get_fast_stub(Function* fn, bool to_front = false);
 
 }  // namespace il2mir

@@ -780,6 +780,8 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
     build_prop_get_stub(lowering,
                         mod.create_function(kPropGetSlowStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
     build_prop_get_fast_stub(mod.create_function(kPropGetStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
+    build_prop_get_fast_stub(
+        mod.create_function(kPropGetFrontStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}), true);
     build_prop_set_stub(lowering, mod.create_function(kPropSetStub, Type::void_type(),
                                                       {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()}));
     build_sort_merge_stub(

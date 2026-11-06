@@ -168,10 +168,11 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
                 // `arguments` object and a rest array are both built from an
                 // argument count only the wrapper sees, and no f64 slot can
                 // hold the `undefined` a short call would pad with.
+                // Arguments past `fixed` are dropped by the direct edge,
+                // which neither of those could then observe.
                 if (callee.needsArguments || callee.hasRestParam) continue;
                 const size_t argc = inst.operands.size() - 1;
                 const size_t fixed = callee.callerParamCount();
-                if (argc > fixed) continue;
                 const size_t base = callee.firstSourceParam();
                 bool padsTyped = false;
                 for (size_t i = argc; i < fixed; ++i) {

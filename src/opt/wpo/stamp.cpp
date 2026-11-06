@@ -156,8 +156,9 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     }
     const il::Function& callee = mod.functions[target];
     const size_t argc = inst.operands.empty() ? 0 : inst.operands.size() - 1;
-    bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam && !callee.isExternal &&
-                argc <= callee.callerParamCount();
+    // Extra arguments are dropped by the direct edge, which only a callee
+    // with an `arguments` object or a rest parameter could observe.
+    bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam && !callee.isExternal;
     const size_t base = callee.firstSourceParam();
     for (size_t i = argc; fits && i < callee.callerParamCount(); ++i) {
         if (callee.params[i + base].type != il::Type::Dynamic) fits = false;

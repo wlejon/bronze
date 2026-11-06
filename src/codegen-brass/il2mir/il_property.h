@@ -40,6 +40,11 @@ inline constexpr const char* kPropSetStub = "__bronze_prop_set_ic";
 // receiver no way names, the helper) it hands to kPropGetSlowStub, which
 // answers the whole read with the site's operands.
 inline constexpr const char* kPropGetSlowStub = "__bronze_prop_get_slow";
+// kPropGetStub that also moves a megamorphic-table hit to the front of the
+// site's ways (il_prop_get_fast.cpp): the miss of an inline way chain, whose
+// profile saw at most four receiver shapes, so a way the site filled with a
+// shape that stopped arriving is retaken by one that did.
+inline constexpr const char* kPropGetFrontStub = "__bronze_prop_get_ic_front";
 
 // A site whose class layout proved its key's instance slot (il.h
 // `staticSlot`), with the guard that licenses the constant offset: the

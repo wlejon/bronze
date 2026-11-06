@@ -224,6 +224,11 @@ static_assert(offsetof(FunctionHeader, function_flags) == BRONZE_ABI_FN_FLAGS_WO
 static_assert(offsetof(FunctionHeader, realm_slot_bytes) ==
               BRONZE_ABI_FN_FLAGS_WORD_OFFSET + BRONZE_ABI_FN_REALM_SHIFT / 8);
 static_assert(sizeof(FunctionHeader::realm_slot_bytes) * 8 == 64 - BRONZE_ABI_FN_REALM_SHIFT);
+// The inline `Array.isArray` site reads this byte (codegen-brass
+// il2mir/il_is_array.cpp, kStaticsMaterializedOffset): a constructor-static
+// method-cache entry latched before the statics moved to the box carries no
+// epoch and answers only while it is still zero, as methodIcHit's does.
+static_assert(offsetof(FunctionHeader, statics_materialized) == 68);
 
 // Whether compiled code may call `fn`'s code without the runtime: the
 // predicate the method-call latch records in BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT.

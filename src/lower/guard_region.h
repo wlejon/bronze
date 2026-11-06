@@ -591,7 +591,8 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
 // needed and the slow copy is untouched.
 //
 // WHY A CLAIM MADE BEFORE THE READS STILL HOLDS AT THEM: the window holds only
-// those reads and instructions `pureInFastCopy` — nothing that can run user
+// those reads, instructions `pureInFastCopy`, and shape-guarded stores (a
+// Number box into a named slot, never an element) — nothing that can run user
 // code, store a non-Number into an element or allocate. With every claim
 // holding, every read in the window is of an Array that has no properties
 // object and is in bounds, which is a load of its own element and runs nothing

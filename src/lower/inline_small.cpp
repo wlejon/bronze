@@ -195,6 +195,7 @@ std::vector<uint8_t> computeDeadFunctions(const il::Module& module) {
 }
 
 bool tryInlineCall(const il::Instruction& callInst,
+                   uint32_t calleeIdx,
                    const il::Function& callee,
                    il::Function& caller,
                    const std::vector<DefSite>& callerDefs,
@@ -220,6 +221,23 @@ bool tryInlineCall(const il::Instruction& callInst,
     std::vector<il::ValueId> boxedF64(callee.valueCount, il::kNoValue);
     std::vector<KnownBool> knownBool(callee.valueCount, KnownBool::Unknown);
     std::vector<KnownTag> knownTag(callee.valueCount, KnownTag::Unknown);
+
+    // The frames the copied instructions name (il.h `inlineFrames`), so a
+    // stack trace taken in the copy still shows the callee's frame at the
+    // call's position: the callee's own frame first, then the frames of
+    // what was inlined into it, re-parented under it. They join the
+    // caller's table only when the copy is taken.
+    const uint32_t frameBase = static_cast<uint32_t>(caller.inlineFrames.size());
+    const uint32_t ownFrame = frameBase + 1;
+    std::vector<il::Function::InlineFrame> newFrames;
+    newFrames.reserve(1 + callee.inlineFrames.size());
+    newFrames.push_back(il::Function::InlineFrame{calleeIdx, callInst.span, callInst.inlineFrame});
+    for (const auto& f : callee.inlineFrames) {
+        newFrames.push_back(il::Function::InlineFrame{f.callee, f.callSpan, f.parent == 0 ? ownFrame : ownFrame + f.parent});
+    }
+    const auto frameOf = [&](uint32_t calleeFrame) {
+        return calleeFrame == 0 || calleeFrame > callee.inlineFrames.size() ? ownFrame : ownFrame + calleeFrame;
+    };
 
     il::ValueId nextVal = caller.valueCount;
     il::ValueId cachedUndef = il::kNoValue;
@@ -305,6 +323,7 @@ bool tryInlineCall(const il::Instruction& callInst,
                     }
                     outReturnVal = retVal;
                     caller.valueCount = nextVal;
+                    caller.inlineFrames.insert(caller.inlineFrames.end(), newFrames.begin(), newFrames.end());
                     return true;
                 }
                 auto advanceToTarget = [&](const il::BlockTarget& bt) -> bool {
@@ -420,6 +439,7 @@ bool tryInlineCall(const il::Instruction& callInst,
             }
 
             il::Instruction cloned = inst;
+            cloned.inlineFrame = frameOf(inst.inlineFrame);
             for (auto& op : cloned.operands) {
                 if (op >= valMap.size() || valMap[op] == il::kNoValue) return false;
                 op = valMap[op];
@@ -944,7 +964,7 @@ bool inlineSmallFunctions(il::Module& module, const DirectMethodTable* directMet
                         calleeIdx < module.functions.size() && inlinable[calleeIdx]) {
                         std::vector<il::Instruction> inlinedInsts;
                         il::ValueId retVal = il::kNoValue;
-                        if (tryInlineCall(inst, module.functions[calleeIdx], caller,
+                        if (tryInlineCall(inst, calleeIdx, module.functions[calleeIdx], caller,
                                           callerDefs, ctorCache, callerUnboxedF64,
                                           callerBoxedF64, callerKnownBool, callerKnownTag,
                                           module, inlinedInsts, retVal)) {

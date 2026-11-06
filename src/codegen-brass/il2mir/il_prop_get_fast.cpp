@@ -60,7 +60,7 @@ Value* load_slot(Builder& b, Value* ptr, Value* slot) {
 
 }  // namespace
 
-void build_prop_get_fast_stub(Function* fn) {
+void build_prop_get_fast_stub(Function* fn, bool to_front) {
     Builder b(*fn->parent());
     b.set_function(fn);
     BasicBlock* entry = b.append_block("entry");
@@ -128,10 +128,37 @@ void build_prop_get_fast_stub(Function* fn) {
         Value* at = b.build_add(tls, b.build_add(b.build_shl(index, imm(b, 5)), imm(b, BRONZE_TLS_MEGA_PROP_OFF)));
         Value* match = b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), shape),
                                    b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * 8), key));
-        b.build_br_if(match, hit,
-                      {b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET),
-                       b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET)},
-                      miss, {});
+        Value* mword = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* mepoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
+        if (!to_front) {
+            b.build_br_if(match, hit, {mword, mepoch}, miss, {});
+        } else {
+            // An entry is about its (shape, key) pair alone (rt_prop_mega.h),
+            // so the table's is this site's too: installed at way 0 as the
+            // runtime installs one (InlineCacheSite::install, move to front),
+            // and left out when way 0 holds an array-method sentinel, which
+            // stays there.
+            BasicBlock* front = b.append_block(p + "_front");
+            BasicBlock* shift = b.append_block(p + "_shift");
+            b.position_at_end(mega);
+            b.build_br_if(match, front, miss);
+            b.position_at_end(front);
+            Value* sentinel = b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET),
+                                         imm(b, static_cast<int64_t>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD)));
+            b.build_br_if(sentinel, hit, {mword, mepoch}, shift, {});
+            b.position_at_end(shift);
+            constexpr int32_t kEntry = static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+            static_assert(BRONZE_ABI_IC_ENTRY_SIZE == 24, "an entry is three words");
+            for (int w = BRONZE_ABI_IC_WAYS - 1; w > 0; --w) {
+                for (int32_t word = 0; word < kEntry; word += 8) {
+                    b.build_store(Type::i64(), site, w * kEntry + word, b.build_load(Type::i64(), site, (w - 1) * kEntry + word));
+                }
+            }
+            b.build_store(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET, shape);
+            b.build_store(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET, mword);
+            b.build_store(Type::i64(), site, BRONZE_ABI_IC_EPOCH_OFFSET, mepoch);
+            b.build_br(hit, {mword, mepoch});
+        }
     }
 
     // The slot word is (depth << 32) | slot, the flags in the depth half.
