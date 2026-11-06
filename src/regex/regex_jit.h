@@ -116,6 +116,11 @@ public:
     // blocks until they are in, for tests that measure the kernels themselves.
     static void waitForKernels();
 
+    // If a background kernel build has already been started in this process,
+    // waits for it to finish and joins its worker thread before static
+    // teardown begins; a no-op if no regex plan has started the build.
+    static void waitForPendingKernels();
+
 private:
     bool supported_ = false;
     bool requires_capture_extraction_ = false;

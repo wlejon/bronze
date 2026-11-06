@@ -17,6 +17,7 @@
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
 #include "runtime/sampler.h"
+#include "regex/regex_jit.h"
 
 extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
@@ -49,6 +50,7 @@ void runMain() {
     // program whose top level queued a job has not finished running until the
     // job has.
     runtime::rtDrainMicrotasks();
+    regex::RegexJitPlan::waitForPendingKernels();
 }
 
 void runProgram() {

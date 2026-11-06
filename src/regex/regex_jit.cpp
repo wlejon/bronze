@@ -14,6 +14,7 @@
 
 #include "regex/chars.h"
 #include "regex/unicode.h"
+#include <brass/runtime/compile_pool.hpp>
 
 namespace bronze::regex {
 
@@ -820,10 +821,13 @@ struct SharedRegexJitKernels {
 
 // Built once, on a thread of its own (RegexJitPlan::waitForKernels): the page
 // thread that compiles the first regex never waits on the kernel compile.
+// Leaked at exit so its destructor never runs inside DllMain(DLL_PROCESS_DETACH)
+// under the Windows loader lock; waitForPendingKernels() joins the worker before
+// static teardown begins.
 struct KernelBuild {
     std::atomic<const SharedRegexJitKernels*> ready{nullptr};
     std::unique_ptr<SharedRegexJitKernels> kernels;
-    std::mutex mu;
+    std::mutex mu, joinMu;
     std::condition_variable cv;
     std::thread worker;
 
@@ -836,27 +840,35 @@ struct KernelBuild {
             cv.notify_all();
         });
     }
-    // Joined at exit, before the statics the build uses go.
-    ~KernelBuild() {
+    void waitAndJoin() {
+        if (brass::runtime::process_exiting()) return;
+        {
+            std::unique_lock<std::mutex> lock(mu);
+            cv.wait(lock, [this] { return ready.load(std::memory_order_acquire) != nullptr; });
+        }
+        std::lock_guard<std::mutex> joinLock(joinMu);
         if (worker.joinable()) worker.join();
     }
 };
 
+static std::atomic<KernelBuild*> g_kernelBuild{nullptr};
+
 KernelBuild& kernelBuild() {
-    static KernelBuild build;
-    return build;
+    static KernelBuild* build = [] {
+        auto* b = new KernelBuild();
+        g_kernelBuild.store(b, std::memory_order_release);
+        std::atexit(&RegexJitPlan::waitForPendingKernels);
+        return b;
+    }();
+    return *build;
 }
 
 // The kernels, or null while they are still being built (started here).
-const SharedRegexJitKernels* readyKernels() {
-    return kernelBuild().ready.load(std::memory_order_acquire);
-}
+const SharedRegexJitKernels* readyKernels() { return kernelBuild().ready.load(std::memory_order_acquire); }
 
 }  // namespace
 
-std::unique_ptr<brass::Module> RegexJitPlan::buildMirModule(
-    const int32_t* transition_table,
-    int32_t num_states) {
+std::unique_ptr<brass::Module> RegexJitPlan::buildMirModule(const int32_t* transition_table, int32_t num_states) {
     auto mod = std::make_unique<brass::Module>("bronze_regex_dfa_jit");
     brass::codegen::GrammarBuilder gb(*mod);
 
@@ -883,15 +895,11 @@ std::unique_ptr<brass::Module> RegexJitPlan::buildMirModule(
 }
 
 std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
-    if (!pattern.root) {
-        return nullptr;
-    }
+    if (!pattern.root) return nullptr;
 
     NfaCompiler nfa_compiler(pattern.flags);
     bool anchors_at_start = false;
-    if (!nfa_compiler.compileRoot(*pattern.root, anchors_at_start)) {
-        return nullptr;
-    }
+    if (!nfa_compiler.compileRoot(*pattern.root, anchors_at_start)) return nullptr;
 
     auto plan = std::make_unique<RegexJitPlan>();
     plan->requires_capture_extraction_ = (pattern.groupCount > 0);
@@ -900,12 +908,8 @@ std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
 
     plan->transition_table_.assign(256, -1);
     DfaBuilder dfa_builder(nfa_compiler.insts());
-    if (!dfa_builder.build(
-            nfa_compiler.startState(),
-            plan->transition_table_,
-            plan->accept_table_,
-            plan->start_state_,
-            plan->num_dfa_states_)) {
+    if (!dfa_builder.build(nfa_compiler.startState(), plan->transition_table_, plan->accept_table_,
+                           plan->start_state_, plan->num_dfa_states_)) {
         return nullptr;
     }
 
@@ -916,10 +920,10 @@ std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
     return plan;
 }
 
-void RegexJitPlan::waitForKernels() {
-    KernelBuild& b = kernelBuild();
-    std::unique_lock<std::mutex> lock(b.mu);
-    b.cv.wait(lock, [&b] { return b.ready.load(std::memory_order_acquire) != nullptr; });
+void RegexJitPlan::waitForKernels() { kernelBuild().waitAndJoin(); }
+
+void RegexJitPlan::waitForPendingKernels() {
+    if (KernelBuild* b = g_kernelBuild.load(std::memory_order_acquire)) b->waitAndJoin();
 }
 
 RegexJitStats RegexJitPlan::stats() const noexcept { return stats_; }

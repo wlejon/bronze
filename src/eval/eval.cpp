@@ -30,6 +30,7 @@
 #include "lower/lower.h"
 #include "lower/native_manifest.h"
 #include "parse/parser.h"
+#include "regex/regex_jit.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
@@ -517,6 +518,7 @@ void stopBackgroundCompiles() {
         liveDynamicPrograms().clear();
     }
     for (auto& program : toStop) program->stopBackgroundCompilation();
+    regex::RegexJitPlan::waitForPendingKernels();
 }
 
 void clearRetainedPrograms() {

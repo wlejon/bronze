@@ -24,6 +24,7 @@
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/sampler.h"
+#include "regex/regex_jit.h"
 #include <brass/mir/module.hpp>
 
 namespace bronze {
@@ -90,7 +91,10 @@ void runEntry(ModuleEntry entry) {
     // job has — runMain's checkpoint, per module. Not from a lazy global's
     // init, which runs inside the program that read the name: the queue's jobs
     // are that program's, due at its own checkpoint.
-    if (!runtime::rtInLazyGlobalInit()) runtime::rtDrainMicrotasks();
+    if (!runtime::rtInLazyGlobalInit()) {
+        runtime::rtDrainMicrotasks();
+        regex::RegexJitPlan::waitForPendingKernels();
+    }
 }
 
 // The unload seam is one call each way because the mechanism lives with the
