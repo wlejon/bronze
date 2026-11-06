@@ -18,6 +18,7 @@ add_dependencies(bronze_oracle_tests bronze)
 
 if(MSVC)
     target_compile_options(bronze_oracle_tests PRIVATE /W4 /WX /permissive-)
+    target_compile_definitions(bronze_oracle_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_options(bronze_oracle_tests PRIVATE /FORCE:MULTIPLE)
 endif()
 
