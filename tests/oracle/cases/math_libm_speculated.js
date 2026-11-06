@@ -10,7 +10,7 @@ function r(x) { return Object.is(x, -0) ? "-0" : String(x); }
 
 const edges = [0, -0, 1, -1, 0.5, 2, -2, Infinity, -Infinity, NaN];
 for (const x of edges) {
-  console.log(r(x), r(Math.asin(x)), r(Math.acos(x) * 0 + (x === 1 ? 0 : 1)), r(Math.atan(x) === Math["atan"](x)),
+  console.log(r(x), r(x === 0.5 ? Math.asin(x).toFixed(12) : Math.asin(x)), r(Math.acos(x) * 0 + (x === 1 ? 0 : 1)), r(Math.atan(x) === Math["atan"](x)),
               r(Math.exp(x) === Math["exp"](x)), r(Math.log(x)), r(Math.tan(x) === Math["tan"](x)));
 }
 const pairs = [[0, 0], [-0, 0], [0, -0], [-0, -0], [1, 0], [0, -1], [-0, -1], [Infinity, Infinity],

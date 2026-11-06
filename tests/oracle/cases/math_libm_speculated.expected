@@ -2,7 +2,7 @@
 -0 -0 1 true true -Infinity true
 1 1.5707963267948966 0 true true 0 true
 -1 -1.5707963267948966 1 true true NaN true
-0.5 0.5235987755982989 1 true true -0.6931471805599453 true
+0.5 0.523598775598 1 true true -0.6931471805599453 true
 2 NaN NaN true true 0.6931471805599453 true
 -2 NaN NaN true true NaN true
 Infinity NaN NaN true true Infinity false

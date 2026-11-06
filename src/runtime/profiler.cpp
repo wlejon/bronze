@@ -693,8 +693,8 @@ void samplerBody(Session& s) {
             }
 #else
             const int64_t remUs = static_cast<int64_t>((nextDue - relMs) * 1000.0);
-            if (remUs > 100) {
-                std::this_thread::sleep_for(std::chrono::microseconds(remUs - 50));
+            if (remUs > 1000) {
+                std::this_thread::sleep_for(std::chrono::microseconds(remUs - 500));
             } else {
                 std::this_thread::yield();
             }
