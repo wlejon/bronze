@@ -55,6 +55,12 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod);
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site, bool way1 = false);
 
+// The method stub's way-1 hit (build_method_call_stub): the site's two
+// DIRECT entries trade places, so way 0, the one the site tests inline, comes
+// to hold the shape the site meets now (il_method_site.cpp says when it may),
+// then `enter` with way 1's code and env as they were read.
+void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, Value* env1, BasicBlock* enter);
+
 // `recv.key(...args)` at a site whose key a receiver may hold in an own slot
 // (il.h `kMethodOwnCallee`): the method cache's SLOT form dispatched here —
 // way 0 names the receiver's shape with a slot, and the function in that slot

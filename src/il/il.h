@@ -337,8 +337,14 @@ struct Instruction {
     // whichever names the receiver's shape, and with kChainProto also a data
     // property one prototype link up; the stub after. The ways are what the
     // runtime filled, so a wrong hint costs the tests and never an answer.
+    // kChainNotOwnFirst: most of the run's reads came through a shape whose
+    // key list lacks the key, so the answer past the receiver's own slots is
+    // laid out as the fall-through; kChainProtoFirst: of those, most read a
+    // value (the prototype arm), not `undefined`. Layout only.
     static constexpr uint8_t kChainWaysMask = 7;
     static constexpr uint8_t kChainProto = 8;
+    static constexpr uint8_t kChainNotOwnFirst = 16;
+    static constexpr uint8_t kChainProtoFirst = 32;
     uint8_t icChain = 0;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.

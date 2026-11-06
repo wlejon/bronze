@@ -245,6 +245,46 @@ void PropertyLoweringHelper::store_with_barrier(Builder& b, Value* base, int32_t
     b.position_at_end(bb_cont);
 }
 
+// An identity cell published by the first receiver that held the key at the
+// claimed slot, while that object was still being built: three.js's
+// `properties.get(material)` record is read in setProgram once before its
+// last key (`receiveShadow`) is added, and its binding states before
+// `attributesNum`, so the cell held a shape no later receiver has and every
+// read missed. A receiver whose shape grew from the cell's, one or two keys
+// on, clears the cell and publishes again; the runtime's checks are the same
+// as for a first fill (bronze_static_shape_publish), and the cell only ever
+// moves to a descendant, so a site that still meets the older shape does not
+// make it change back and forth.
+void PropertyLoweringHelper::emit_static_regrow(Builder& b, Value* obj, Value* cell, Value* cells, int32_t off,
+                                                BasicBlock* bb_publish, BasicBlock* bb_done, const std::string& prefix) {
+    // append_block moves the insertion point.
+    BasicBlock* bb_cur = b.current_block();
+    BasicBlock* bb_obj = b.append_block(prefix + "_grown_obj_cold");
+    BasicBlock* bb_plain = b.append_block(prefix + "_grown_plain_cold");
+    BasicBlock* bb_up = b.append_block(prefix + "_grown_up_cold");
+    BasicBlock* bb_up2 = b.append_block(prefix + "_grown_up2_cold");
+    BasicBlock* bb_reset = b.append_block(prefix + "_grown_reset_cold");
+    for (BasicBlock* bb : {bb_cur, bb_obj, bb_plain, bb_up, bb_up2, bb_reset}) bb->set_cold();
+    b.position_at_end(bb_cur);
+    b.build_br_if(b.build_eq(b.build_lshr(obj, iconst(b, 48)), iconst(b, BRONZE_ABI_TAG_OBJECT)), bb_obj, bb_done);
+    b.position_at_end(bb_obj);
+    Value* ptr = b.build_lshr(b.build_shl(obj, iconst(b, 16)), iconst(b, 16));
+    constexpr int32_t kPlainLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainLow)), bb_plain, bb_done);
+    b.position_at_end(bb_plain);
+    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    Value* parent = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_PARENT_OFFSET);
+    b.build_br_if(b.build_eq(parent, cell), bb_reset, bb_up);
+    b.position_at_end(bb_up);
+    b.build_br_if(b.build_eq(parent, iconst(b, 0)), bb_done, bb_up2);
+    b.position_at_end(bb_up2);
+    Value* grand = b.build_load(Type::i64(), parent, BRONZE_ABI_SHAPE_PARENT_OFFSET);
+    b.build_br_if(b.build_eq(grand, cell), bb_reset, bb_done);
+    b.position_at_end(bb_reset);
+    b.build_store(Type::i64(), cells, off, iconst(b, 0));
+    b.build_br(bb_publish);
+}
+
 void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t key_index, const StaticSlotSite& site,
                                               bool for_write) {
     BasicBlock* bb_cur = b.current_block();
@@ -279,7 +319,12 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
         // was wrong holds the refusal marker and stops too.
         Value* cells = data_addr(b, static_cells_sym_);
         const int32_t off = static_cast<int32_t>(site.cell * sizeof(uint64_t));
-        b.build_br_if(b.build_eq(b.build_load(Type::i64(), cells, off), iconst(b, 0)), bb_call, bb_cont);
+        Value* cell = b.build_load(Type::i64(), cells, off);
+        BasicBlock* bb_grown = b.append_block(prefix + "_grown_cold");
+        b.position_at_end(bb_cur);
+        b.build_br_if(b.build_eq(cell, iconst(b, 0)), bb_call, bb_grown);
+        b.position_at_end(bb_grown);
+        emit_static_regrow(b, obj, cell, cells, off, bb_call, bb_cont, prefix);
         b.position_at_end(bb_call);
         b.build_call("bronze_static_shape_publish", Type::void_type(),
                      {obj, runtime_key(b, key_index), b.build_add(cells, b.build_iconst_i64(off)),

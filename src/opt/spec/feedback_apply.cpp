@@ -161,6 +161,7 @@ public:
         // dictionary, holds no way and goes to the stub.
         uint32_t significant = 0, plain = 0;
         bool lacking = false;
+        uint64_t ownReads = 0, lackingReads = 0;
         std::vector<std::string_view> keys;
         for (const auto& [name, count] : names.counts) {
             const bool major = count * 100 >= names.total;
@@ -176,6 +177,7 @@ public:
             bool has = false;
             for (std::string_view k : keys) has = has || k == key;
             if (complete && !has) lacking = true;
+            (complete && !has ? lackingReads : ownReads) += count;
         }
         if (significant == 0 || (plain == 1 && inst.staticSlot != il::Instruction::kNoStaticSlot)) return;
         uint8_t chain = static_cast<uint8_t>(std::min<uint32_t>(plain, 4));
@@ -183,7 +185,11 @@ public:
         if (lacking && rt != plan_.readResultsByIc.end() && rt->second.undefineds < rt->second.total) {
             chain |= il::Instruction::kChainProto;
             ++stats_.chainProto;
+            if (rt->second.undefineds * 2 < rt->second.total) chain |= il::Instruction::kChainProtoFirst;
         }
+        // Where most reads lack the key, the answer past the own slots is the
+        // one laid out in line (a three.js `object.isInstancedMesh` test).
+        if (lackingReads > ownReads) chain |= il::Instruction::kChainNotOwnFirst;
         inst.icChain = chain;
         ++stats_.chainReads;
         if (chainedIcs_.insert(inst.icIndex).second) stats_.chainExecutions += names.total;

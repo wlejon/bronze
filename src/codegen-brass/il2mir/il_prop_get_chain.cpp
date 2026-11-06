@@ -52,6 +52,10 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     }
     const int ways = std::min<int>(chain & 7, kMaxChainWays);
     const bool proto = (chain & 8) != 0;
+    // Layout: the side a branch names first is laid out as its fall-through
+    // (brass's block layout), so the run's usual answer is named first.
+    const bool notown_first = (chain & 16) != 0;
+    const bool proto_first = proto && (chain & 32) != 0;
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_chain_" + std::to_string(fn->next_block_id());
@@ -94,7 +98,11 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
 
     // The way that named the shape: its slot word decides the answer.
     b.position_at_end(bb_tail);
-    b.build_br_if(b.build_ult(word, b.build_iconst_i64(kIcOwnDataLimit)), bb_own, bb_notown);
+    if (notown_first) {
+        b.build_br_if(b.build_uge(word, b.build_iconst_i64(kIcOwnDataLimit)), bb_notown, bb_own);
+    } else {
+        b.build_br_if(b.build_ult(word, b.build_iconst_i64(kIcOwnDataLimit)), bb_own, bb_notown);
+    }
 
     b.position_at_end(bb_own);
     edges.emplace_back(bb_own, true);
@@ -105,8 +113,19 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     b.position_at_end(bb_notown);
     Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
     Value* current = b.build_eq(entry_epoch, epoch);
-    Value* absent = b.build_and(current, b.build_eq(word, b.build_iconst_i64(kAbsentWord)));
-    b.build_br_if(absent, bb_undef, proto ? bb_proto : bb_slow);
+    Value* depth_one = nullptr;
+    if (proto_first) {
+        // The prototype arm first, the negative entry after it.
+        BasicBlock* bb_absent = b.append_block(prefix + "_absent");
+        b.position_at_end(bb_notown);
+        depth_one = b.build_eq(b.build_lshr(word, b.build_iconst_i64(32)), b.build_iconst_i64(1));
+        b.build_br_if(b.build_and(current, depth_one), bb_proto, bb_absent);
+        b.position_at_end(bb_absent);
+        b.build_br_if(b.build_and(current, b.build_eq(word, b.build_iconst_i64(kAbsentWord))), bb_undef, bb_slow);
+    } else {
+        Value* absent = b.build_and(current, b.build_eq(word, b.build_iconst_i64(kAbsentWord)));
+        b.build_br_if(absent, bb_undef, proto ? bb_proto : bb_slow);
+    }
 
     b.position_at_end(bb_undef);
     edges.emplace_back(bb_undef, true);
@@ -123,8 +142,13 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
         BasicBlock* bb_holder_dict = b.append_block(prefix + "_hshape");
         BasicBlock* bb_load = b.append_block(prefix + "_pload");
         b.position_at_end(bb_proto);
-        Value* depth_one = b.build_eq(b.build_lshr(word, b.build_iconst_i64(32)), b.build_iconst_i64(1));
-        b.build_br_if(b.build_and(current, depth_one), bb_root, bb_slow);
+        if (proto_first) {
+            // notown tested the arm's condition on the way here.
+            b.build_br(bb_root);
+        } else {
+            depth_one = b.build_eq(b.build_lshr(word, b.build_iconst_i64(32)), b.build_iconst_i64(1));
+            b.build_br_if(b.build_and(current, depth_one), bb_root, bb_slow);
+        }
         b.position_at_end(bb_root);
         Value* root = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
         b.build_br_if(b.build_ne(root, b.build_iconst_i64(0)), bb_holder, bb_slow);

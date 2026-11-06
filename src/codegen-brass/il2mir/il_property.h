@@ -197,6 +197,11 @@ public:
     // family stamp while that is zero. `obj` must be bits read after the
     // access, which may have collected. Leaves the builder after it.
     void emit_static_fill(Builder& b, Value* obj, uint32_t key_index, const StaticSlotSite& site, bool for_write);
+    // The fill's test for a published identity cell the receiver's shape
+    // grew from (il_static_slot.cpp): to `bb_publish` with the cell cleared,
+    // else to `bb_done`.
+    void emit_static_regrow(Builder& b, Value* obj, Value* cell, Value* cells, int32_t off, BasicBlock* bb_publish,
+                            BasicBlock* bb_done, const std::string& prefix);
     // One static read: the guard, a constant-offset load on a hit, and on a
     // miss the site's ordinary sequence and then the fill.
     Value* lower_prop_get_static(Builder& b, Value* obj, uint32_t key_index, const StaticSlotSite& site,

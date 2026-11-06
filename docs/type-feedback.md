@@ -207,7 +207,15 @@ the plan where each claim has to be made:
   that all have the key at that slot, else an identity claim with a static
   cell of its own. Both are guarded as wpo's are: the runtime publishes a cell
   only after checking an own data slot there, and refuses a store's cell on a
-  shape used as a prototype.
+  shape used as a prototype. An identity cell latches the first receiver's
+  shape, and that may be an object still being built (three.js's
+  `materialProperties`, whose `uniforms` site first meets the record before
+  its last keys). A miss on a published cell therefore tests, out of line,
+  whether the receiver's shape grew from the cell's shape one or two keys on
+  (its parent or grandparent is the cell); if so the site clears the cell and
+  publishes again for the receiver (`emit_static_regrow`,
+  `il_static_slot.cpp`). The runtime's publish checks are unchanged, and any
+  other miss keeps the cell.
 - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
   `bronze il`). The backend then lays the Number test first and moves the
@@ -229,7 +237,12 @@ the plan where each claim has to be made:
   answers from the way that matches, an own data slot, a negative entry at
   the current prototype epoch (`undefined`), or with `+proto` (some receiver
   lacked the key and the read returned something else) a data slot one
-  prototype link up at the current epoch. Everything else is the property
+  prototype link up at the current epoch. The ways are laid out by what the
+  profile saw answer: when more reads met a receiver lacking the key than one
+  holding it, the past-the-own-slots path is the fall-through (`notown-first`),
+  and when the prototype answered most of them, rather than `undefined`, the
+  one-link-up read comes before the negative entry (`proto-first`). Only the
+  order changes; every test still runs. Everything else is the property
   stub, laid out cold (`il_prop_get_chain.cpp`), through its move-to-front
   entry: a mega-table answer at a full site goes into way 0, so a site whose
   ways warm-up shapes filled comes to hold the shapes it meets now. A site

@@ -7,6 +7,8 @@
 #include "il_lowering_direct.h"
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace il2mir {
 
@@ -106,6 +108,59 @@ Value* lower_method_way0_direct(Builder& b, Value* recv, Value* key_id, uint32_t
 }
 
 }  // namespace
+
+// Move to front for method sites, as kPropGetFrontStub is for reads. Way 0
+// is the latest latch and way 1 the entry it displaced, so a site meeting
+// two shapes kept whichever latched last in way 0 however rarely it came:
+// three_skinned's `children[i].updateMatrixWorld(force)` held a mesh there in
+// some runs and sent every Bone to the stub (~7K calls a frame). A way-1 hit
+// swaps the two DIRECT entries, and the site's inline test then names the
+// shape that came last. Only a plain DIRECT resident moves into way 1
+// (displaceMethodWay0 asks the same of a latch): word 0 a shape, no SLOT
+// form, a code word. The env words are root cells the runtime remembers only
+// when it writes a young value into one (rtNoteMethodIcEnvWords), so the
+// swap is left out while either holds a young object, as moving it to the
+// other word would put it in a cell no remembered set names.
+void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, Value* env1, BasicBlock* enter) {
+    const std::string prefix = block_prefix(b, "mfront");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* swap = b.append_block(prefix + "_swap");
+    auto imm = [&](int64_t v) { return b.build_iconst_i64(v); };
+    auto word = [&](int32_t w) { return b.build_load(Type::i64(), site, w * kWord); };
+    b.position_at_end(cur);
+    Value* young_base = b.build_load(Type::i64(), tls, BRONZE_TLS_YOUNG_BASE_OFF);
+    Value* young_span = b.build_load(Type::i64(), tls, BRONZE_TLS_YOUNG_SPAN_OFF);
+    auto old_or_none = [&](Value* v) {
+        Value* address = b.build_lshr(b.build_shl(v, imm(16)), imm(16));
+        return b.build_uge(b.build_sub(address, young_base), young_span);
+    };
+    Value* w0 = word(0);
+    Value* env0 = word(BRONZE_ABI_METHOD_IC_ENV_WORD);
+    Value* direct0 = b.build_and(
+        b.build_and(b.build_ne(w0, imm(0)),
+                    b.build_eq(b.build_and(w0, imm(static_cast<int64_t>(BRONZE_ABI_METHOD_IC_EXOTIC_BIT))), imm(0))),
+        b.build_and(b.build_eq(b.build_lshr(word(BRONZE_ABI_METHOD_IC_ARITY_WORD), imm(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                               imm(0)),
+                    b.build_ne(word(BRONZE_ABI_METHOD_IC_CODE_WORD), imm(0))));
+    b.build_br_if(b.build_and(direct0, b.build_and(old_or_none(env0), old_or_none(env1))), swap, {}, enter, {code1, env1});
+
+    b.position_at_end(swap);
+    static_assert(BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD == 6 && BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD == 9 &&
+                      BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD == 10 && BRONZE_ABI_METHOD_IC_EPOCH_WORD == 5,
+                  "way 1 is way 0's words 0-3 at 6-9, its epoch word 5 at 10");
+    const int32_t pairs[][2] = {{0, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD},
+                                {BRONZE_ABI_METHOD_IC_CODE_WORD, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD},
+                                {BRONZE_ABI_METHOD_IC_ARITY_WORD, BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD},
+                                {BRONZE_ABI_METHOD_IC_ENV_WORD, BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD},
+                                {BRONZE_ABI_METHOD_IC_EPOCH_WORD, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD}};
+    std::vector<std::pair<Value*, Value*>> loaded;
+    for (const auto& p : pairs) loaded.emplace_back(word(p[0]), word(p[1]));
+    for (size_t i = 0; i < loaded.size(); ++i) {
+        b.build_store(Type::i64(), site, pairs[i][0] * kWord, loaded[i].second);
+        b.build_store(Type::i64(), site, pairs[i][1] * kWord, loaded[i].first);
+    }
+    b.build_br(enter, {code1, env1});
+}
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site, bool way1) {

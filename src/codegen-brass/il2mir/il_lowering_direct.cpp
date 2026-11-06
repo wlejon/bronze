@@ -422,9 +422,13 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
                 b.build_and(b.build_ne(b.build_and(arity1, direct_bit), zero),
                             b.build_ult(arity1, b.build_iconst_i64(kSlotFormLimit))),
                 b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch)));
+        BasicBlock* front = b.append_block(prefix + "_way1front");
+        b.position_at_end(not_way0);
+        b.build_br_if(hit, front, mega);
+        b.position_at_end(front);
         Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord);
         Value* env = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD * kWord);
-        b.build_br_if(hit, enter, {code, env}, mega, {});
+        build_method_way1_front(b, site, tls, code, env, enter);
     }
 
     // Both ways missed: the thread's (shape, key) read table, which the

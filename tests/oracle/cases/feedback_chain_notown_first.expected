@@ -1,0 +1,8 @@
+warm 400 meshundefined 4000 undefined undefined undefined
+proto-gains 33 meshundefined 30 1 undefined undefined
+proto-changes 33 meshundefined 30 1 undefined undefined
+proto-loses 3 meshundefined 30 undefined undefined undefined
+own-shadow 3 meshundefined 30 undefined undefined undefined
+getter 24 meshundefined 30 undefined undefined undefined
+deeper 54 NaN 30 undefined deep undefined
+new-shape 54 plainundefined 33 undefined deep undefined
