@@ -176,6 +176,8 @@ namespace {
 // depth half) and the epoch it was filled at, which a depth > 0 answer needs
 // to be the thread's.
 struct PropEntry {
+    // Null when `shape` is the receiver's keyed shape (keyed_shape), whose
+    // compare with any way or table entry already says "a plain object".
     Value* plain = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
@@ -200,13 +202,22 @@ void scan_ways(Builder& b, PropEntry& e, Value* site, int first, int ways) {
         epoch = epoch ? b.build_select(match, ep, epoch) : ep;
         any = any ? b.build_or(any, match) : match;
     }
-    e.hit = b.build_and(e.plain, any);
+    e.hit = e.plain ? b.build_and(e.plain, any) : any;
     e.epoch = epoch;
+}
+
+// The receiver as the stubs read it: its keyed shape, the object and header
+// tests as two predicted branches with no select in the address the header and
+// shape are read through, and its payload, read through only on a hit.
+void keyed_receiver(PropertyLoweringHelper& pl, Builder& b, Value* obj, PropEntry& e) {
+    e.shape = pl.keyed_shape(b, obj);
+    e.plain = nullptr;
+    e.ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
 }
 
 PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* site, int ways) {
     PropEntry e;
-    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
+    keyed_receiver(pl, b, obj, e);
     scan_ways(b, e, site, 0, ways);
     return e;
 }
@@ -231,7 +242,7 @@ void build_mega_probe_if(Builder& b, Value* tls, const PropEntry& e, Value* full
     Value* at = b.build_add(tls, b.build_add(b.build_shl(index, b.build_iconst_i64(5)),
                                              b.build_iconst_i64(BRONZE_TLS_MEGA_PROP_OFF)));
     Value* match = b.build_and(
-        b.build_and(e.plain, full), b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), e.shape),
+        e.plain ? b.build_and(e.plain, full) : full, b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), e.shape),
                              b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * kWord), key)));
     Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
     Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
@@ -275,7 +286,7 @@ Value* walkable_depth(Builder& b, Value* depth) {
 // spilled across it, and that was a third of a prototype read through the
 // stub. The stubs exist once per module, so the copies cost nothing at a
 // site.
-Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, BasicBlock* slow,
+Value* walk_to_prototype(Builder& b, Value* shape, Value* depth, BasicBlock* slow,
                          const std::string& prefix) {
     // append_block moves the insertion point.
     BasicBlock* entry = b.current_block();
@@ -287,6 +298,7 @@ Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, Bas
     for (int64_t link = 1; link <= kMaxStubDepth; ++link) {
         const std::string at = prefix + "_l" + std::to_string(link);
         BasicBlock* has_root = b.append_block(at + "_root");
+        BasicBlock* is_obj = b.append_block(at + "_obj");
         BasicBlock* is_plain = b.append_block(at + "_proto");
         BasicBlock* next = link < kMaxStubDepth ? b.append_block(at + "_next") : nullptr;
         b.position_at_end(entry);
@@ -296,9 +308,11 @@ Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, Bas
         b.position_at_end(has_root);
         Value* proto = b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET);
         Value* pptr = b.build_xor(proto, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        Value* is_obj = b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit));
-        Value* base = b.build_select(is_obj, pptr, tls);
-        Value* plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
+        // Two predicted branches: no select in the address the header is
+        // read through.
+        b.build_br_if(b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit)), is_obj, slow);
+        b.position_at_end(is_obj);
+        Value* plain = b.build_eq(b.build_load(Type::i32(), pptr, 0), b.build_iconst_i32(kPlainHeaderLow));
         b.build_br_if(plain, is_plain, slow);
 
         b.position_at_end(is_plain);
@@ -368,15 +382,15 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
 
     b.position_at_end(cur);
     Value* tls = tls_block(b);
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    pl.receiver_shape(b, recv, plain, ptr, shape);
+    PropEntry re;
+    keyed_receiver(pl, b, recv, re);
+    Value* ptr = re.ptr;
+    Value* shape = re.shape;
     Value* w0 = b.build_load(Type::i64(), site, 0);
     Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
     Value* direct_bit = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT));
     Value* zero = b.build_iconst_i64(0);
-    b.build_br_if(b.build_and(plain, b.build_eq(shape, w0)), way0, not_way0);
+    b.build_br_if(b.build_eq(shape, w0), way0, not_way0);
 
     // Way 0 names this receiver's shape: the SLOT form when the arity word's
     // high half carries a slot, else the DIRECT form.
@@ -403,7 +417,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     {
         Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
                                        b.build_iconst_i64(1));
-        Value* callee = pl.load_slot(b, ptr, slot_word);
+        Value* callee = pl.load_slot_br(b, ptr, slot_word);
         const EntryTest t = entry_test_br(b, tls, callee, kCallMask, kCallBits, slow);
         Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
         Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
@@ -417,7 +431,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         Value* arity1 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD * kWord);
         Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
         Value* hit = b.build_and(
-            b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site, w1 * kWord))),
+            b.build_eq(shape, b.build_load(Type::i64(), site, w1 * kWord)),
             b.build_and(
                 b.build_and(b.build_ne(b.build_and(arity1, direct_bit), zero),
                             b.build_ult(arity1, b.build_iconst_i64(kSlotFormLimit))),
@@ -443,10 +457,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     // test, since nothing about it was latched here.
     b.position_at_end(mega);
     {
-        PropEntry e;
-        e.plain = plain;
-        e.ptr = ptr;
-        e.shape = shape;
+        const PropEntry& e = re;
         Value* full = b.build_ne(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord), zero);
         build_mega_probe_if(b, tls, e, full, b.build_zext_i64(key_id), mega_hit, exotic);
     }
@@ -464,7 +475,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         b.position_at_end(mega_chain);
         b.build_br_if(b.build_and(current, b.build_and(data, walkable_depth(b, depth))), walk, slow);
         b.position_at_end(walk);
-        Value* holder = walk_to_prototype(b, tls, shape, depth, slow, prefix + "_mega");
+        Value* holder = walk_to_prototype(b, shape, depth, slow, prefix + "_mega");
         b.build_br(mega_callee, {pl.load_slot(b, holder, b.build_and(mega_word, b.build_iconst_i64(kSlotMask)))});
     }
     b.position_at_end(mega_callee);
@@ -484,7 +495,11 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         Value* form = b.build_and(w0, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_METHOD_IC_EXOTIC_BIT |
                                                                               BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT)));
         Value* box_form = b.build_eq(form, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_METHOD_IC_EXOTIC_BIT)));
-        Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
+        // The tag asked of the receiver's own bits, not of `ptr`: the same
+        // compare as the entry's object test would be one value, kept live
+        // from the entry as a flag (a setcc and a test on every call).
+        Value* is_obj = b.build_eq(b.build_lshr(recv, b.build_iconst_i64(48)),
+                                   b.build_iconst_i64(BRONZE_ABI_TAG_OBJECT));
         Value* base = b.build_select(is_obj, ptr, tls);
         Value* kind = b.build_lshr(b.build_and(w0, b.build_iconst_i64(0xFFFFFFFFLL)),
                                    b.build_iconst_i64(BRONZE_ABI_METHOD_IC_KIND_SHIFT));
@@ -598,10 +613,9 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     b.position_at_end(cur);
     Value* tls = tls_block(b);
     PropEntry e;
-    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
+    keyed_receiver(pl, b, obj, e);
     {
-        Value* match0 = b.build_and(
-            e.plain, b.build_eq(e.shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET)));
+        Value* match0 = b.build_eq(e.shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET));
         Value* word0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET);
         Value* epoch0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_EPOCH_OFFSET);
         b.build_br_if(match0, hit, {word0, epoch0}, rest, {});
@@ -620,7 +634,7 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     b.build_br_if(own_data, own, not_own);
 
     b.position_at_end(own);
-    b.build_ret(pl.load_slot(b, e.ptr, slot_word));
+    b.build_ret(pl.load_slot_br(b, e.ptr, slot_word));
 
     b.position_at_end(not_own);
     Value* depth = b.build_lshr(slot_word, b.build_iconst_i64(32));
@@ -638,7 +652,7 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     b.build_br_if(b.build_and(current, d1), depth1, not_depth1);
 
     b.position_at_end(depth1);
-    Value* pptr = walk_to_prototype(b, tls, e.shape, depth, slow, prefix);
+    Value* pptr = walk_to_prototype(b, e.shape, depth, slow, prefix);
     b.build_br_if(b.build_ne(b.build_and(depth, b.build_iconst_i64(kAccessorDepth)), b.build_iconst_i64(0)), getter,
                   {pptr}, proto_data, {});
 
@@ -745,7 +759,7 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
                   depth1, not_depth1);
 
     b.position_at_end(depth1);
-    Value* pptr = walk_to_prototype(b, tls, e.shape, depth, slow, prefix);
+    Value* pptr = walk_to_prototype(b, e.shape, depth, slow, prefix);
     b.build_br(setter, {pptr});
 
     b.position_at_end(not_depth1);
@@ -811,12 +825,11 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
     Value* result = b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    pl.receiver_shape(b, recv, plain, ptr, shape);
+    PropEntry re;
+    keyed_receiver(pl, b, recv, re);
+    Value* ptr = re.ptr;
     Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* way0 = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site, 0)));
+    Value* way0 = b.build_eq(re.shape, b.build_load(Type::i64(), site, 0));
     b.build_br_if(b.build_and(way0, b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))), slot, other);
 
     // Re-read and re-tested at every call: same-shape receivers may hold
@@ -872,12 +885,27 @@ Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value
 // The direct entry's own test (entry_test: a function object, of this realm,
 // callable directly) and the code word: a closure of `callee`. Everything a
 // direct entry of it would skip, the inlined body skips the same way.
+//
+// As branches (entry_test_br): a value that is no function object answers
+// no from a block of its own, so the function's header and words are read
+// through its payload with no select in the address. The IL branches on the
+// answer next (`closure.is` is always followed by its `br`), so the constant
+// no is threaded straight to the branch's other side.
 Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee) {
     (void)lowering;
-    Value* tls = tls_block(b);
-    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    const std::string prefix = block_prefix(b, "closis");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* no = b.append_block(prefix + "_no");
+    BasicBlock* join = b.append_block(prefix + "_join");
+    Value* result = b.add_block_param(join, Type::i32());
+    b.position_at_end(cur);
+    const EntryTest t = entry_test_br(b, tls_block(b), fn_val, kCallMask, kCallBits, no);
     Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
-    return b.build_and(t.ok, b.build_eq(code, b.build_func_addr("__wrapper_" + callee)));
+    b.build_br(join, {b.build_and(t.ok, b.build_eq(code, b.build_func_addr("__wrapper_" + callee)))});
+    b.position_at_end(no);
+    b.build_br(join, {b.build_iconst_i32(0)});
+    b.position_at_end(join);
+    return result;
 }
 
 Value* lower_closure_env(Builder& b, Value* fn_val) {

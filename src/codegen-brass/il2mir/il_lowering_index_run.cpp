@@ -89,6 +89,22 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         const size_t get_count = run_end - inst_idx;
         if (get_count >= 2) {
             apply_loc(first);
+            // The run's blocks first: each guard's object and header tests
+            // branch to the slow path.
+            BasicBlock* guard_entry = b.current_block();
+            const std::string prefix = "prop_idx_get_run_" + std::to_string(fn->next_block_id());
+            BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+            BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+            BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+            b.position_at_end(guard_entry);
+            // Every receiver's bits where the slow path is still entered
+            // from: the guards below branch to it.
+            std::unordered_map<uint32_t, Value*> recv_objs;
+            for (const RecvGroup& g : groups) {
+                if (!recv_objs.count(g.recv_id)) {
+                    recv_objs[g.recv_id] = ensure_type(get_val_by_id(g.recv_id, b, val_map), Type::i64(), b);
+                }
+            }
             Value* all_ok = nullptr;
             std::unordered_map<uint32_t, std::pair<Value*, Value*>> recv_cursors;
             for (RecvGroup& g : groups) {
@@ -97,22 +113,19 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                     g.head = it->second.second;
                     continue;
                 }
-                Value* obj = ensure_type(get_val_by_id(g.recv_id, b, val_map), Type::i64(), b);
+                Value* obj = recv_objs[g.recv_id];
                 uint32_t max_for_recv = g.max_idx;
                 for (const RecvGroup& o : groups) {
                     if (o.recv_id == g.recv_id) max_for_recv = std::max(max_for_recv, o.max_idx);
                 }
                 Value* ok = nullptr;
-                prop_lowering_.emit_dense_array_guard(b, obj, max_for_recv, /*writable=*/false, ok, g.block, g.head);
+                prop_lowering_.emit_dense_array_guard(b, obj, max_for_recv, /*writable=*/false, ok, g.block, g.head,
+                                                      bb_slow);
                 all_ok = all_ok ? b.build_and(all_ok, ok) : ok;
                 recv_cursors[g.recv_id] = {g.block, g.head};
             }
 
             BasicBlock* guard_bb = b.current_block();
-            const std::string prefix = "prop_idx_get_run_" + std::to_string(fn->next_block_id());
-            BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-            BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-            BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
             // A read il.h `numberBits` licenses merges as a double (number_bits_ids_).
             std::vector<Value*> merge_params;
@@ -329,13 +342,32 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     }
 
     // 2. Emit combined dense-array guard(s) for the run.
+    // The run's blocks first: each array guard's object and header tests
+    // branch to the slow path.
     apply_loc(blk_ast.instructions[inst_idx]);
+    BasicBlock* guard_entry = b.current_block();
+    const std::string prefix = "prop_idx_run_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    b.position_at_end(guard_entry);
+    // Every receiver's bits, and the static receiver's keyed shape, where
+    // the slow path is still entered from: the guards below branch to it.
     Value* set_obj = ensure_type(get_val_by_id(set_recv_id, b, val_map), Type::i64(), b);
+    Value* get_obj = committed_get_recv_id != UINT32_MAX && committed_get_recv_id != set_recv_id
+                         ? ensure_type(get_val_by_id(committed_get_recv_id, b, val_map), Type::i64(), b)
+                         : nullptr;
+    Value* sget_obj = nullptr;
+    Value* sget_keyed = nullptr;
+    if (committed_sget_recv_id != UINT32_MAX) {
+        sget_obj = ensure_type(get_val_by_id(committed_sget_recv_id, b, val_map), Type::i64(), b);
+        sget_keyed = memo_keyed(b, committed_sget_recv_id, sget_obj);
+    }
     Value* set_ok = nullptr;
     Value* set_block = nullptr;
     Value* set_head = nullptr;
     prop_lowering_.emit_dense_array_guard(b, set_obj, committed_set_max_idx, /*writable=*/true,
-                                          set_ok, set_block, set_head);
+                                          set_ok, set_block, set_head, bb_slow);
     Value* all_ok = set_ok;
     Value* get_block = nullptr;
     Value* get_head = nullptr;
@@ -344,13 +376,12 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             get_block = set_block;
             get_head = set_head;
         } else {
-            Value* get_obj = ensure_type(get_val_by_id(committed_get_recv_id, b, val_map), Type::i64(), b);
             if (is_proven_dense_array(committed_get_recv_id, committed_get_max_idx)) {
                 get_dense_array_cursor(committed_get_recv_id, get_obj, b, get_block, get_head);
             } else {
                 Value* get_ok = nullptr;
                 prop_lowering_.emit_dense_array_guard(b, get_obj, committed_get_max_idx, /*writable=*/false,
-                                                      get_ok, get_block, get_head);
+                                                      get_ok, get_block, get_head, bb_slow);
                 all_ok = b.build_and(all_ok, get_ok);
             }
         }
@@ -365,10 +396,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 terms.push_back(StaticGuardTerm{StaticSlotSite::of(inst)});
             }
         }
-        Value* sget_obj = ensure_type(get_val_by_id(committed_sget_recv_id, b, val_map), Type::i64(), b);
-        all_ok = b.build_and(all_ok, prop_lowering_.static_guard(b, sget_obj,
-                                                                 memo_keyed(b, committed_sget_recv_id, sget_obj),
-                                                                 terms, sget_ptr));
+        all_ok = b.build_and(all_ok, prop_lowering_.static_guard(b, sget_obj, sget_keyed, terms, sget_ptr));
     }
 
     // THE NUMBERS BIT IN A COPY (`te[0] = me[0]; ... te[15] = me[15]`,
@@ -417,11 +445,6 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     }
 
     BasicBlock* guard_bb = b.current_block();
-    const std::string prefix = "prop_idx_run_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-
     b.position_at_end(guard_bb);
     b.build_br_if(all_ok, bb_fast, bb_slow);
 

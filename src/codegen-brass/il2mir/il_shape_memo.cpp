@@ -237,7 +237,7 @@ std::vector<Value*> IlLowering::memo_recompute(Builder& b, const std::unordered_
         // The receiver is a tagged value the collector keeps current, so its
         // bits read here are the object's after whatever the miss ran.
         Value* obj = ensure_type(get_val_by_id(entry.first, b, val_map), Type::i64(), b);
-        out.push_back(prop_lowering_.keyed_shape(b, obj));
+        out.push_back(prop_lowering_.keyed_shape_flat(b, obj));
     }
     return out;
 }

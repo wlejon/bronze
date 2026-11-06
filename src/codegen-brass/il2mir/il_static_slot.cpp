@@ -100,21 +100,59 @@ Value* PropertyLoweringHelper::unshared_data_addr(Builder& b, const std::string&
     return module_delta_fn_ ? b.build_add(addr, module_delta_fn_(b)) : addr;
 }
 
-Value* PropertyLoweringHelper::mapped_block(Builder& b) {
-    // In this process, a zeroed block of ours big enough for the shape words
-    // a guard reads; compiled code, the TLS block in its pinned register,
-    // which receiver_shape reads a non-object through too.
-    alignas(16) static const uint64_t kMappedBlock[(kDoubleSlotsOffset + 8) / 8] = {};
-    return in_process_ ? iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kMappedBlock[0])))
-                       : b.build_pinned_tls_read();
+Value* PropertyLoweringHelper::not_plain_shape(Builder& b) {
+    // In this process, a zeroed block of ours.
+    alignas(16) static const uint64_t kZeroShape[(kDoubleSlotsOffset + 8) / 8] = {};
+    if (in_process_) return iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kZeroShape[0])));
+    // Compiled ahead, the module's family base seen as a shape (its two zero
+    // words after the base id), as an i64: MIR has no pointer-to-integer
+    // conversion but a pointer difference, taken here against the null
+    // pointer the base's last word holds, and built by hand since
+    // Builder::build_sub types its result as its first operand.
+    Value* family_base = data_addr(b, family_base_sym_);
+    Value* null = b.build_load(Type::ptr(), family_base, 16);
+    Instruction* diff = b.arena().make<Instruction>(Opcode::sub, Type::i64());
+    diff->add_operand(stand_in_shape(b, family_base));
+    diff->add_operand(null);
+    Value* addr = b.create_value(Type::i64());
+    addr->set_defining_instruction(diff);
+    diff->set_result(addr);
+    b.insert(diff);
+    return addr;
 }
 
 Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
+    // Two predicted branches, not selects: a plain object's path is the
+    // object test, the header test and the shape load, with no select in the
+    // address the header and shape are read through, and anything else takes
+    // a cold block that hands the join the stand-in.
+    BasicBlock* bb_cur = b.current_block();
+    const std::string prefix = "keyed_" + std::to_string(bb_cur->parent()->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_other = b.append_block(prefix + "_other_cold");
+    BasicBlock* bb_join = b.append_block(prefix + "_join");
+    Value* keyed = b.add_block_param(bb_join, Type::i64());
+    bb_other->set_cold();
+    b.position_at_end(bb_cur);
+    Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, bb_other);
+    b.position_at_end(bb_obj);
+    constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+    Value* plain = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader));
+    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    b.build_br_if(plain, bb_join, {shape}, bb_other, {});
+    b.position_at_end(bb_other);
+    b.build_br(bb_join, {not_plain_shape(b)});
+    b.position_at_end(bb_join);
+    return keyed;
+}
+
+Value* PropertyLoweringHelper::keyed_shape_flat(Builder& b, Value* obj) {
     Value* plain = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
     receiver_shape(b, obj, plain, ptr, shape);
-    return b.build_select(plain, shape, iconst(b, kNotPlainShape));
+    return b.build_select(plain, shape, not_plain_shape(b));
 }
 
 Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss) {
@@ -135,8 +173,7 @@ Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, Basic
 }
 
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
-                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr,
-                                            bool keyed_plain) {
+                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr) {
     // The payload, meaningful where the guard holds: an object's tag XORed
     // away. Every term below admits only a plain object (a cell or a family
     // stamp names a plain shape, and a non-plain receiver's keyed shape is
@@ -146,23 +183,12 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
     auto all = [&](Value* term) { ok = ok ? b.build_and(ok, term) : term; };
     Value* cells = nullptr;
     Value* family_base = nullptr;
-    Value* safe_shape = nullptr;
-    // A word read off the shape through `safe_shape`: the keyed shape itself
-    // when the receiver is plain, and otherwise a block that is always
-    // mapped — the one receiver_shape reads a non-object's header through —
-    // whose words mean nothing. So a term that reads a shape word is ANDed
-    // with plainness where nothing else implies it (a family range); a
-    // double-slot term needs nothing, since the site term beside it refuses
-    // a non-plain receiver already. Every term can then be one more `and`
-    // before the guard's single branch.
-    auto shape_word = [&](int32_t off) {
-        if (!safe_shape) {
-            safe_shape = keyed_plain ? keyed
-                                     : b.build_select(b.build_eq(keyed, iconst(b, kNotPlainShape)),
-                                                      mapped_block(b), keyed);
-        }
-        return b.build_load(Type::i64(), safe_shape, off);
-    };
+    // A word read off the keyed shape, which is always a readable shape: a
+    // plain receiver's own, or for anything else the stand-in
+    // (not_plain_shape), whose stamp no family range admits and whose every
+    // slot is boxed. So no term needs plainness ANDed in, and every term is
+    // one more `and` before the guard's single branch.
+    auto shape_word = [&](int32_t off) { return b.build_load(Type::i64(), keyed, off); };
     Value* stamp = nullptr;
     Value* first_id = nullptr;
     Value* doubles = nullptr;
@@ -180,7 +206,6 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
                     stamp = shape_word(kFamilyOffset);
                     family_base = data_addr(b, family_base_sym_);
                     first_id = b.build_load(Type::i64(), family_base, 0);
-                    if (!keyed_plain) all(b.build_ne(keyed, iconst(b, kNotPlainShape)));
                 }
                 Value* rel = b.build_sub(stamp, b.build_add(first_id, iconst(b, site.family_lo)));
                 all(b.build_ule(rel, iconst(b, site.family_span)));
@@ -350,7 +375,7 @@ Value* guard_or_miss(Builder& b, PropertyLoweringHelper& pl, Value* obj, const s
     if (miss.keyed) return pl.static_guard(b, obj, miss.keyed, terms, ptr);
     Value* shape = pl.plain_shape_or_miss(b, obj, bb_miss);
     if (miss.memo_fresh) miss.memo_fresh(shape);
-    return pl.static_guard(b, obj, shape, terms, ptr, /*keyed_plain=*/true);
+    return pl.static_guard(b, obj, shape, terms, ptr);
 }
 }  // namespace
 

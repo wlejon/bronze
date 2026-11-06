@@ -397,9 +397,12 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             }
         } else if (src_kind == ElemRunPeerKind::MonoObj) {
             Value* src_obj = ensure_type(get_val_by_id(src_obj_id, b, val_map), Type::i64(), b);
+            // The keyed shape (its tests branch, and the guard block is
+            // taken as the builder's block after it): no way holds it unless
+            // the receiver is a plain object of that shape.
             Value* src_plain = nullptr;
-            Value* src_shape = nullptr;
-            prop_lowering_.receiver_shape(b, src_obj, src_plain, src_ptr, src_shape);
+            Value* src_shape = prop_lowering_.keyed_shape(b, src_obj);
+            src_ptr = b.build_xor(src_obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
             for (size_t k = 0; k < N; ++k) {
                 const IcSite site = prop_lowering_.ic_site_ref(b, set_steps[k].src_ic_idx);
                 Value* hit = nullptr;
@@ -714,9 +717,12 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
                                                   dst_ok, dst_block, dst_head);
             guard_ok = b.build_and(guard_ok, dst_ok);
         } else {
+            // The keyed shape (its tests branch, and the guard block is
+            // taken as the builder's block after it): no way holds it unless
+            // the receiver is a plain object of that shape.
             Value* dst_plain = nullptr;
-            Value* dst_shape = nullptr;
-            prop_lowering_.receiver_shape(b, dst_obj, dst_plain, dst_ptr, dst_shape);
+            Value* dst_shape = prop_lowering_.keyed_shape(b, dst_obj);
+            dst_ptr = b.build_xor(dst_obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
             for (size_t k = 0; k < N; ++k) {
                 const IcSite site = prop_lowering_.ic_site_ref(b, get_steps[k].dst_ic_idx);
                 Value* hit = nullptr;

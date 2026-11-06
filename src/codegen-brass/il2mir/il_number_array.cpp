@@ -29,6 +29,22 @@ namespace {
 
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
+constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
+constexpr uint64_t kPayloadLimit = uint64_t{1} << 48;
+
+// A non-object's header and array words, for an in-process module: the zeroed
+// block's header is no Array's, so branchless header/length/elements loads
+// through it safely refuse non-objects.
+alignas(16) const uint64_t kNotAnArray[8] = {};
+
+Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
+
+// The payload pointer of `obj` and whether it is an object at all.
+void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
+    is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    ptr = b.build_and(obj, iconst(b, kPayloadMask));
+}
 
 }  // namespace
 
@@ -200,6 +216,100 @@ bool PropertyLoweringHelper::is_known_number(Value* val) const {
         return static_cast<uint64_t>(def->imm_i64()) <= kBronzeNumberMaxBits;
     }
     return false;
+}
+
+void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
+                                                    Value*& out_ok, Value*& out_block, Value*& out_head,
+                                                    BasicBlock* miss) {
+    const bool can_select = in_process_ || (b.current_module() && b.current_module()->pinned_tls_register());
+    // `header_known`: the header test was a branch already taken.
+    auto emit_header_checks = [&](Value* base, bool header_known, Value*& ok, Value*& block, Value*& head) {
+        Value* is_array = header_known
+            ? nullptr
+            : b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
+        auto with_array = [&](Value* v) { return is_array ? b.build_and(is_array, v) : v; };
+        Value* elems = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        // A run reads a hole as `undefined` and stores over one, so the hole
+        // rule's TLS tag mask (il_number_array.cpp) fails it once tripped.
+        Value* has_elems = b.build_eq(b.build_and(elems, index_hazard_tag_mask(b)), iconst(b, kObjectTagBits));
+        Value* raw_block = b.build_and(elems, iconst(b, kPayloadMask));
+        Value* raw_head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        block = b.build_add(raw_block, b.build_shl(raw_head, iconst(b, 3)));
+        head = nullptr;
+        if (!writable) {
+            Value* len = b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
+            // has_elems first: brass's register allocation loses the vreg of
+            // a `br_if` on `and(ult.i32 const, load.i32, ...)` (in_bounds
+            // first) once nothing else is ANDed in front of it.
+            ok = with_array(b.build_and(has_elems, in_bounds));
+        } else {
+            Value* len = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+            Value* cap = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+            Value* max_slot = max_index == 0 ? raw_head : b.build_add(raw_head, iconst(b, max_index));
+            Value* in_bounds = b.build_and(b.build_ult(iconst(b, max_index), len), b.build_ult(max_slot, cap));
+            Value* props = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+            Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+            ok = b.build_and(with_array(no_props), b.build_and(in_bounds, has_elems));
+        }
+    };
+
+    if (miss) {
+        // The object and header tests as predicted branches to the caller's
+        // miss: the array's words are read through its payload with no
+        // select in the address, and `out_ok` is what is left.
+        BasicBlock* cur = b.current_block();
+        const std::string prefix = "dense_guard_" + std::to_string(cur->parent()->next_block_id());
+        BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+        BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+        b.position_at_end(cur);
+        Value* ptr = b.build_xor(obj, iconst(b, kObjectTagBits));
+        b.build_br_if(b.build_ult(ptr, iconst(b, kPayloadLimit)), bb_obj, miss);
+        b.position_at_end(bb_obj);
+        b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_arr,
+                      miss);
+        b.position_at_end(bb_arr);
+        emit_header_checks(ptr, /*header_known=*/true, out_ok, out_block, out_head);
+        return;
+    }
+
+    if (can_select) {
+        Value* ptr = b.build_xor(obj, iconst(b, kObjectTagBits));
+        Value* is_obj = b.build_ult(ptr, iconst(b, kPayloadLimit));
+        Value* not_arr = in_process_
+            ? iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kNotAnArray[0])))
+            : b.build_pinned_tls_read();
+        Value* base = b.build_select(is_obj, ptr, not_arr);
+        // Either stand-in's first word is no header (the zeroed block, or the
+        // TLS block's even proto epoch: bronze_abi.h), so the header compare
+        // alone refuses a non-object.
+        emit_header_checks(base, /*header_known=*/false, out_ok, out_block, out_head);
+        return;
+    }
+
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "dense_guard_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    out_ok = b.add_block_param(bb_merge, Type::i32());
+    out_block = b.add_block_param(bb_merge, Type::i64());
+    out_head = nullptr;
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    b.build_br_if(is_obj, bb_arr, {}, bb_merge, {b.build_iconst_i32(0), iconst(b, 0)});
+
+    b.position_at_end(bb_arr);
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_header_checks(ptr, /*header_known=*/false, ok, block, head);
+    b.build_br(bb_merge, {ok, block});
+
+    b.position_at_end(bb_merge);
 }
 
 }  // namespace il2mir

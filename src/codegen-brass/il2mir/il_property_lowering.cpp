@@ -473,20 +473,19 @@ void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* bl
 Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index,
                                                     uint32_t elem_index, const IcSite& site,
                                                     bool check_hole) {
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head);
-    BasicBlock* guard_bb = b.current_block();
-
-    Function* fn = guard_bb->parent();
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
     const std::string prefix = "prop_idx_get_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i64());
 
-    b.position_at_end(guard_bb);
+    b.position_at_end(cur);
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head, bb_slow);
     b.build_br_if(ok, bb_fast, bb_slow);
 
     b.position_at_end(bb_fast);
@@ -587,21 +586,20 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
 void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
                                                   uint32_t elem_index, Value* val, uint32_t strict,
                                                   const IcSite& site, bool val_is_primitive) {
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head);
-    BasicBlock* guard_bb = b.current_block();
-
+    BasicBlock* cur = b.current_block();
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
-    Function* fn = guard_bb->parent();
+    Function* fn = cur->parent();
     const std::string prefix = "prop_idx_set_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
     BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
-    b.position_at_end(guard_bb);
+    b.position_at_end(cur);
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head, bb_slow);
     b.build_br_if(ok, bb_fast, bb_slow);
 
     b.position_at_end(bb_fast);

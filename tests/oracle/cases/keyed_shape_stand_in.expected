@@ -1,0 +1,95 @@
+warm 3939000
+array.read: 919
+array.sum: throws TypeError
+array.readC: 20
+function.read: 409
+function.sum: throws TypeError
+function.readC: 10
+map.read: 1225
+map.sum: throws TypeError
+map.readC: NaN
+nullProto.read: 1429
+nullProto.sum: throws TypeError
+nullProto.readC: 30
+proxy.read: 3470
+proxy.sum: throws TypeError
+proxy.readC: 72
+frozen.read: 103
+frozen.sum: 208
+frozen.readC: 4
+typedArray.read: 2041
+typedArray.sum: throws TypeError
+typedArray.readC: NaN
+number.read: NaN
+number.sum: throws TypeError
+number.readC: NaN
+string.read: NaN
+string.sum: throws TypeError
+string.readC: NaN
+boolean.read: NaN
+boolean.sum: throws TypeError
+boolean.readC: NaN
+boxedNumber.read: NaN
+boxedNumber.sum: throws TypeError
+boxedNumber.readC: NaN
+array.read: 919
+array.sum: throws TypeError
+array.readC: 20
+function.read: 409
+function.sum: throws TypeError
+function.readC: 10
+map.read: 1225
+map.sum: throws TypeError
+map.readC: NaN
+nullProto.read: 1429
+nullProto.sum: throws TypeError
+nullProto.readC: 30
+proxy.read: 3470
+proxy.sum: throws TypeError
+proxy.readC: 72
+frozen.read: 103
+frozen.sum: 208
+frozen.readC: 4
+typedArray.read: 2041
+typedArray.sum: throws TypeError
+typedArray.readC: NaN
+number.read: NaN
+number.sum: throws TypeError
+number.readC: NaN
+string.read: NaN
+string.sum: throws TypeError
+string.readC: NaN
+boolean.read: NaN
+boolean.sum: throws TypeError
+boolean.readC: NaN
+boxedNumber.read: NaN
+boxedNumber.sum: throws TypeError
+boxedNumber.readC: NaN
+array.write: "2:2.25:10"
+array.read after write: 212
+function.write: "2:2.25:5"
+function.read after write: 207
+map.write: "2:2.25:13"
+map.read after write: 215
+nullProto.write: "2:2.25:15"
+nullProto.read after write: 217
+proxy.write: "4:4.5:36"
+proxy.read after write: 440
+frozen.write: throws TypeError
+frozen.read after write: 103
+typedArray.write: "2:2.25:21"
+typedArray.read after write: 223
+number.write: throws TypeError
+number.read after write: NaN
+string.write: throws TypeError
+string.read after write: NaN
+boolean.write: throws TypeError
+boolean.read after write: NaN
+boxedNumber.write: "2:2.25:undefined"
+boxedNumber.read after write: NaN
+mixed 103,212,103,207,103,NaN,103,103,212,103,207,103,NaN,103,103,212,103,207,103,NaN,103
+deleted.read: NaN
+deleted.sum: NaN
+accessor.read: 101002
+accessor.readC: 1003
+accessor.write: throws TypeError

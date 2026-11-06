@@ -166,28 +166,35 @@ public:
     // receiver `obj`: whether `obj` is a plain object whose shape each
     // term's site admits — and, for a term that stores, whose slot takes
     // the value bare — as one i1 before one branch. `keyed` is `obj`'s keyed
-    // shape (keyed_shape). `ptr` is the receiver's payload, meaningful only
-    // where the i1 holds.
-    // `keyed_plain` says the caller reached here only for a plain receiver
-    // (plain_shape_or_miss), so `keyed` is its shape word itself.
+    // shape (keyed_shape), or the shape word itself where only a plain
+    // receiver reaches (plain_shape_or_miss). `ptr` is the receiver's
+    // payload, meaningful only where the i1 holds.
     Value* static_guard(Builder& b, Value* obj, Value* keyed, const std::vector<StaticGuardTerm>& terms,
-                        Value*& ptr, bool keyed_plain = false);
+                        Value*& ptr);
     // A receiver's shape word, reached only when it is a plain object: the
     // object test and the plain-header test as two branches to `miss`, the
     // builder left in the block where both held. What a guard with no keyed
-    // shape in hand (no memo entry) asks instead of keyed_shape's selects.
+    // shape in hand (no memo entry) asks instead of keyed_shape.
     Value* plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss);
     // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
-    // else kNotPlainShape. One i64 that answers "plain, and of shape S" with
-    // one compare against S, for every S a guard compares it with: a static
-    // cell holds 0, 1 (refused) or a Shape*, a method site's way word 0, a
-    // Shape* or an odd exotic encoding (bronze_abi_layout.h), and a Shape*
-    // is 8-aligned arena memory — none of them is 2.
-    static constexpr uint64_t kNotPlainShape = 2;
+    // else the stand-in shape (not_plain_shape). One i64 that answers
+    // "plain, and of shape S" with one compare against S, for every S a guard
+    // compares it with: a static cell holds 0, 1 (refused) or a Shape*, a
+    // method site's way word 0, a Shape* or an odd exotic encoding
+    // (bronze_abi_layout.h), and a Shape* is arena memory, never the module
+    // data or the block the stand-in is. And it is always a readable shape:
+    // a guard reads its family stamp and double-slot map with no plainness
+    // test, and the stand-in's are UNSTAMPED (which no family range admits)
+    // and empty (every slot boxed).
+    //
+    // keyed_shape branches (the object and header tests, to a cold block
+    // that passes the join the stand-in) and leaves the builder in the join;
+    // keyed_shape_flat is the same answer from selects, in the current block,
+    // for a point that cannot be split (a miss edge's recompute, before its
+    // terminator).
     Value* keyed_shape(Builder& b, Value* obj);
-    // An i64 address that is always readable for a shape's words, whose
-    // contents mean nothing (il_static_slot.cpp).
-    Value* mapped_block(Builder& b);
+    Value* keyed_shape_flat(Builder& b, Value* obj);
+    Value* not_plain_shape(Builder& b);
     // Where slot `slot` of the plain object at `ptr` is: a base and the
     // constant `off` from it, inline or overflow chosen here.
     Value* static_slot_base(Builder& b, Value* ptr, uint32_t slot, int32_t& off);
@@ -305,6 +312,9 @@ public:
     void expand_poly_scan(Builder& b, Instruction* call, Value*& hit, Value*& ptr, Value*& slot_word);
     // Slot `slot_word` of the plain object at `ptr` (inline or overflow).
     Value* load_slot(Builder& b, Value* ptr, Value* slot_word);
+    // load_slot as a branch on the slot word (inline or overflow), leaving
+    // the builder in the join: for a point that may be split.
+    Value* load_slot_br(Builder& b, Value* ptr, Value* slot_word);
 
     // The speculation sites' emitter (il_speculation.h); unset, plain branches.
     void set_spec(SpecSiteEmitter* spec) noexcept { spec_ = spec; }
@@ -450,8 +460,10 @@ public:
     // sets `out_ok`, `out_block` and `out_head`. It also requires the array
     // index hazard clear (through the TLS tag mask, at no cost), since what
     // it licenses reads a hole as `undefined` and stores over one unlooked.
+    // With `miss`, a value that is no object or no Array branches there and
+    // `out_ok` is the rest, the builder left where both tests held.
     void emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
-                                Value*& out_ok, Value*& out_block, Value*& out_head);
+                                Value*& out_ok, Value*& out_block, Value*& out_head, BasicBlock* miss = nullptr);
 
     // A constant-index property read or write (`o[0]`, `o[15] = v`): an inline
     // Array element access in front of `bronze_prop_get` / `bronze_prop_set`.
@@ -509,7 +521,8 @@ private:
     // and the site's slot word.
     void mono_hit(Builder& b, Value* obj, const IcSite& site, Value*& hit, Value*& ptr, Value*& slot_word);
     // The read's poly test: the receiver's shape against the site's ways
-    // 1..N-1, with the matching way's slot word.
+    // 1..N-1, with the matching way's slot word. `plain` is null when `shape`
+    // is the keyed shape, which says plainness itself.
     void other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,
                         Value*& slot_word);
     // The edges into a read's join and the call-free ones among them: the

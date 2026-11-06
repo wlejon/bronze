@@ -106,7 +106,9 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
 
     b.position_at_end(bb_own);
     edges.emplace_back(bb_own, true);
-    b.build_br(bb_merge, {load_slot(b, ptr, word)});
+    Value* own_val = load_slot_br(b, ptr, word);
+    edges.back().first = b.current_block();
+    b.build_br(bb_merge, {own_val});
 
     // Past the receiver's own slots an entry speaks only for the prototype
     // epoch it was filled at.

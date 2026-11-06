@@ -122,17 +122,14 @@ Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t
     Value* same_epoch = b.build_eq(at, epoch);
     if (keyed) {
         // The receiver's keyed shape (the shape memo's word): a plain
-        // object's shape, else kNotPlainShape (2). A cell's first word is 0,
-        // kRefused (1) or an 8-aligned shape (runtime/accessor_cell.cpp), so
+        // object's shape, else the stand-in (not_plain_shape). A cell's first
+        // word is 0, kRefused (1) or a shape (runtime/accessor_cell.cpp), so
         // `keyed == cell[0]` already says "plain and that shape".
         return b.build_and(b.build_eq(keyed, want), same_epoch);
     }
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    // A non-object reads a mapped block whose shape word no cell holds.
-    pl.receiver_shape(b, recv, plain, ptr, shape);
-    return b.build_and(plain, b.build_and(b.build_eq(shape, want), same_epoch));
+    // Without the memo's word, the keyed shape read here (its tests are
+    // branches, so the builder leaves in their join).
+    return b.build_and(b.build_eq(pl.keyed_shape(b, recv), want), same_epoch);
 }
 
 Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* obj,

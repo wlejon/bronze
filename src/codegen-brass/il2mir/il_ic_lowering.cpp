@@ -213,11 +213,11 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
             b.position_at_end(bb_scan);
             Value* poly_hit = nullptr;
             Value* poly_slot = nullptr;
-            Value* poly_plain = nullptr;
-            Value* poly_ptr = nullptr;
-            Value* poly_shape = nullptr;
-            receiver_shape(b, obj, poly_plain, poly_ptr, poly_shape);
-            other_ways_hit(b, poly_plain, poly_shape, site, poly_hit, poly_slot);
+            // The keyed shape: no way holds it unless the receiver is a plain
+            // object of that shape.
+            Value* poly_shape = keyed_shape(b, obj);
+            Value* poly_ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+            other_ways_hit(b, nullptr, poly_shape, site, poly_hit, poly_slot);
             if (spec_) {
                 spec_->emit_branch(b, poly_hit, bb_poly_hit, bb_slow, SpecKind::PolyProperty, key_tag(key_index));
             } else {
@@ -225,8 +225,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
                 b.position_at_end(bb_slow);
             }
             b.position_at_end(bb_poly_hit);
-            Value* poly_val = b.build_load_indexed(Type::i64(), slot_base(b, poly_ptr, poly_slot), poly_slot, 8,
-                                                   kBronzeObjSlotsOffset);
+            Value* poly_val = load_slot_br(b, poly_ptr, poly_slot);
             edges.emplace_back(b.current_block(), true);
             b.build_br(bb_merge, {poly_val});
             b.position_at_end(bb_slow);
@@ -237,8 +236,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     }
 
     b.position_at_end(bb_fast);
-    Value* fast_val = b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
-                                           kBronzeObjSlotsOffset);
+    Value* fast_val = load_slot_br(b, ptr, slot_word);
     edges.emplace_back(b.current_block(), true);
     b.build_br(bb_merge, {fast_val});
 
@@ -275,10 +273,9 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
         match = b.build_eq(keyed, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset));
     } else {
-        Value* plain = nullptr;
-        Value* shape = nullptr;
-        receiver_shape(b, obj, plain, ptr, shape);
-        match = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset)));
+        Value* keyed = keyed_shape(b, obj);
+        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        match = b.build_eq(keyed, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset));
     }
     Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
     b.build_br_if(b.build_and(match, b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit))), bb_own, bb_test);
@@ -302,8 +299,7 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
     b.build_br(bb_merge, {slow_val});
 
     b.position_at_end(bb_own);
-    Value* own_val = b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
-                                          kBronzeObjSlotsOffset);
+    Value* own_val = load_slot_br(b, ptr, slot_word);
     edges.emplace_back(b.current_block(), true);
     b.build_br(bb_merge, {own_val});
 
@@ -345,7 +341,8 @@ void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* sha
         slot_word = slot_word ? b.build_select(match, word, slot_word) : word;
         any = any ? b.build_or(any, match) : match;
     }
-    hit = b.build_and(b.build_and(plain, any), b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit)));
+    hit = b.build_and(plain ? b.build_and(plain, any) : any,
+                      b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit)));
 }
 
 void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape,
@@ -403,6 +400,31 @@ Value* PropertyLoweringHelper::slot_base(Builder& b, Value* ptr, Value* slot_wor
 
 Value* PropertyLoweringHelper::load_slot(Builder& b, Value* ptr, Value* slot_word) {
     return b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8, kBronzeObjSlotsOffset);
+}
+
+// The same read as a predicted branch on the slot word, which a site's cache
+// way keeps the same from one hit to the next: an inline slot is one load off
+// the object, and the overflow block is read only for a slot that is in it,
+// with no select in the address the value is loaded through. The builder
+// leaves in the join.
+Value* PropertyLoweringHelper::load_slot_br(Builder& b, Value* ptr, Value* slot_word) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "slot_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_in = b.append_block(prefix + "_inline");
+    BasicBlock* bb_out = b.append_block(prefix + "_overflow");
+    BasicBlock* bb_join = b.append_block(prefix + "_value");
+    Value* val = b.add_block_param(bb_join, Type::i64());
+    b.position_at_end(cur);
+    b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots)), bb_in, bb_out);
+    b.position_at_end(bb_in);
+    b.build_br(bb_join, {b.build_load_indexed(Type::i64(), ptr, slot_word, 8, kBronzeObjSlotsOffset)});
+    b.position_at_end(bb_out);
+    Value* overflow = b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
+                                  b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjInlineSlots * 8 - kBronzeHdrBytes;
+    b.build_br(bb_join, {b.build_load_indexed(Type::i64(), overflow, slot_word, 8, kBronzeObjSlotsOffset - kShift)});
+    b.position_at_end(bb_join);
+    return val;
 }
 
 void PropertyLoweringHelper::expand_poly_scan(Builder& b, Instruction* call, Value*& hit, Value*& ptr,
