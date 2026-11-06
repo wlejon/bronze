@@ -33,7 +33,7 @@ static_assert(std::size(kElementKinds) == static_cast<size_t>(ElementKind::Count
               "the element-kind table has drifted from the ElementKind enum");
 
 constexpr bool elementBytesAgree() {
-    if (std::size(kElementKindBytes) != std::size(kElementKinds)) return false;
+    if constexpr (std::size(kElementKindBytes) != std::size(kElementKinds)) return false;
     for (size_t i = 0; i < std::size(kElementKinds); ++i) {
         if (kElementKindBytes[i] != kElementKinds[i].bytesPerElement) return false;
     }

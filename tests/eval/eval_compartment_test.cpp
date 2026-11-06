@@ -145,8 +145,10 @@ TEST_CASE("compartment: a job's microtasks run in its own turn, on its own queue
     onThread([&] {
         embed::Realm* a = embed::createRealm();
         embed::Realm* b = embed::createRealm();
-        embed::Compartment* ca = embed::createCompartment(a);
-        embed::Compartment* cb = embed::createCompartment(b);
+        embed::CompartmentOptions opts;
+        opts.sliceMs = 1000;
+        embed::Compartment* ca = embed::createCompartment(a, opts);
+        embed::Compartment* cb = embed::createCompartment(b, opts);
         Eval ea{"globalThis.order = ''; Promise.resolve().then(() => { globalThis.order += ',a-job'; });"
                 "globalThis.order += 'a-sync';",
                 ExecutionTier::Auto, {}};
@@ -169,7 +171,9 @@ TEST_CASE("compartment: a job's microtasks run in its own turn, on its own queue
 TEST_CASE("compartment: an uncaught error is reported and the compartment lives on") {
     onThread([&] {
         embed::Realm* realm = embed::createRealm();
-        embed::Compartment* c = embed::createCompartment(realm);
+        embed::CompartmentOptions opts;
+        opts.sliceMs = 1000;
+        embed::Compartment* c = embed::createCompartment(realm, opts);
         Eval bad{"Promise.reject(new Error('later')); throw new Error('boom');", ExecutionTier::Auto, {}};
         embed::CompartmentStatus s = embed::runInCompartment(c, &evalJob, &bad);
         CHECK(s.state == embed::CompartmentState::Idle);

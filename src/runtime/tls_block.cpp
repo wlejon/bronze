@@ -173,6 +173,7 @@ void threadStackBounds(uintptr_t& low, uintptr_t& high) {
 // whatever the host does with it, all on the same stack. A quarter of a
 // small stack, so a 256 KB worker still gets three quarters of it.
 constexpr uintptr_t kStackReserveBytes = 128 * 1024;
+constexpr uintptr_t kMaxStackSpanBytes = 1024 * 1024;
 
 }  // namespace
 
@@ -219,6 +220,7 @@ void rtSetStackLimit(uintptr_t limit) noexcept {
 
 uintptr_t rtStackLimitFor(uintptr_t low, uintptr_t high) noexcept {
     if (high <= low) return 0;
+    if (high - low > kMaxStackSpanBytes) low = high - kMaxStackSpanBytes;
     const uintptr_t size = high - low;
     const uintptr_t reserve = size >= 4 * kStackReserveBytes ? kStackReserveBytes : size / 4;
     return low + reserve;
