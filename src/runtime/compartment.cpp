@@ -6,6 +6,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/host_interrupt.h"
 #include "runtime/microtask.h"
 #include "runtime/realm.h"
 #include "runtime/stack_trace.h"
@@ -250,6 +251,8 @@ CompartmentStatus statusOf(Compartment* c) {
 }  // namespace
 
 void rtServiceInterrupt() {
+    // A host's request first (host_interrupt.h): it never yields or throws.
+    rtServiceHostInterrupt();
     Compartment* c = t_running;
     // The host's own stack is never preempted, nor is a compartment's from
     // a stack that is not its fiber.

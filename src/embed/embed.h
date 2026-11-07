@@ -9,6 +9,7 @@
 
 #include "runtime/compartment.h"
 #include "runtime/host_globals.h"
+#include "runtime/host_interrupt.h"
 #include "runtime/interpreted_frames.h"
 #include "runtime/value.h"
 #include "embed/embed_handle.h"
@@ -785,6 +786,18 @@ BRONZE_EMBED_API Compartment* runningCompartment();
 BRONZE_EMBED_API uint32_t compartmentOverruns(const Compartment* c);
 BRONZE_EMBED_API double compartmentLongestOverrunMs(const Compartment* c);
 BRONZE_EMBED_API std::string compartmentLongestOverrunSite(const Compartment* c);
+
+// ---- host interrupts (embed_compartment.cpp; runtime/host_interrupt.h) -----
+//
+// A function the host has a thread run at its next interrupt poll (a loop
+// backedge or function entry of generated code), between two steps of the
+// script it is running: registered on that thread, requested from any. It
+// must not run script, allocate on the runtime's heap or throw; it is skipped
+// while the stack below the poll is short, and natives are not interrupted.
+using HostInterrupt = runtime::HostInterrupt;
+BRONZE_EMBED_API HostInterrupt* registerHostInterrupt(void (*fn)(void* arg), void* arg);
+BRONZE_EMBED_API void unregisterHostInterrupt();
+BRONZE_EMBED_API void requestHostInterrupt(HostInterrupt* h);
 
 // Host code that calls into an app and cannot be re-entered by another
 // app's turn before it returns holds one: a spent slice yields only after it.

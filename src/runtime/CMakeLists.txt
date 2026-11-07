@@ -64,6 +64,7 @@ bronze_add_module(runtime
         builtin_async_generator.cpp
         microtask.cpp
         compartment.cpp
+        host_interrupt.cpp
         promise.cpp
         builtin_promise.cpp
         builtin_async.cpp

@@ -3,6 +3,7 @@
 #include "embed/embed.h"
 
 #include "runtime/compartment.h"
+#include "runtime/host_interrupt.h"
 
 namespace bronze::embed {
 
@@ -30,6 +31,12 @@ double compartmentLongestOverrunMs(const Compartment* c) { return runtime::rtCom
 std::string compartmentLongestOverrunSite(const Compartment* c) {
     return runtime::rtCompartmentLongestOverrunSite(c);
 }
+
+HostInterrupt* registerHostInterrupt(void (*fn)(void* arg), void* arg) {
+    return runtime::rtRegisterHostInterrupt(fn, arg);
+}
+void unregisterHostInterrupt() { runtime::rtUnregisterHostInterrupt(); }
+void requestHostInterrupt(HostInterrupt* h) { runtime::rtRequestHostInterrupt(h); }
 
 void beginNoYield() { runtime::rtBeginNoYield(); }
 void endNoYield() { runtime::rtEndNoYield(); }
