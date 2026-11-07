@@ -542,7 +542,10 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     // callee, `Quaternion.slerpFlat(...)` on a class. Answered as methodIcHit
     // answers it, a plain box of that shape holds the key at that slot, and
     // the callee read there is entered as the SLOT arm enters one, where the
-    // runtime would have taken bronze_dynamic_call's C++ entry.
+    // runtime would have taken bronze_dynamic_call's C++ entry. A site whose
+    // receiver names a function binding makes these tests itself, first
+    // (lower_method_fn_recv); this arm serves the rest (a parameter holding a
+    // class, `this.constructor`).
     b.position_at_end(fn_recv);
     {
         BasicBlock* fobj = b.append_block(prefix + "_fnrecv_obj");
@@ -864,52 +867,25 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
         mod.create_function(kSortMergeStub, Type::i64(), {Type::i64(), Type::i64(), Type::i32(), Type::ptr()}));
 }
 
-// The stub's SLOT arm (build_method_call_stub) at the site, in front of the
-// stub itself: the same words read and the same tests made, so a receiver it
-// answers for is one the stub would have entered the same function for. What
-// it saves is the stub's call and its walk past way 0's DIRECT form, for the
-// receivers that carry their callee — three.js's Euler and Quaternion inside
-// an Object3D, whose `_onChangeCallback` is an own closure on every one.
-Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
-                                Value* site, const std::function<Value*(Builder&)>& rest) {
-    PropertyLoweringHelper& pl = lowering->prop_lowering();
-    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
-    const std::string prefix = block_prefix(b, "slotcall");
+// A SLOT hit's entry (build_method_call_stub's SLOT and function-receiver
+// arms, made at the site by il_method_site.cpp): `callee`, the value read out
+// of the slot, re-tested at every call as the stub tests it (a function
+// object of this realm that compiled code may enter) and entered with `recv`
+// as `this`; anything else branches to `miss`. The builder is left after the
+// call, in a block of its own.
+Value* enter_slot_callee(Builder& b, Value* callee, Value* recv, uint32_t argc,
+                         const std::function<Value*(Builder&)>& stage_argv, BasicBlock* miss) {
     BasicBlock* cur = b.current_block();
-    BasicBlock* slot = b.append_block(prefix + "_slot");
-    BasicBlock* enter = b.append_block(prefix + "_enter");
-    BasicBlock* other = b.append_block(prefix + "_rest");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-
+    BasicBlock* enter = b.append_block(block_prefix(b, "slotenter"));
     b.position_at_end(cur);
-    PropEntry re;
-    keyed_receiver(pl, b, recv, re);
-    Value* ptr = re.ptr;
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* way0 = b.build_eq(re.shape, b.build_load(Type::i64(), site, 0));
-    b.build_br_if(b.build_and(way0, b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))), slot, other);
-
-    // Re-read and re-tested at every call: same-shape receivers may hold
-    // different functions in the slot.
-    b.position_at_end(slot);
-    Value* tls = tls_block(b);
-    Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
-                                   b.build_iconst_i64(1));
-    const EntryTest t = entry_test_br(b, tls, pl.load_slot(b, ptr, slot_word), kCallMask, kCallBits, other);
-    b.build_br_if(t.ok, enter, other);
+    const EntryTest t = entry_test_br(b, tls_block(b), callee, kCallMask, kCallBits, miss);
+    b.build_br_if(t.ok, enter, miss);
 
     b.position_at_end(enter);
-    Value* argv = lowering->stage_argv(b, boxed_args);
+    Value* argv = stage_argv(b);
     Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
     Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
-    b.build_br(merge, {call_code(b, code, env, recv, argc, argv)});
-
-    b.position_at_end(other);
-    b.build_br(merge, {rest(b)});
-
-    b.position_at_end(merge);
-    return result;
+    return call_code(b, code, env, recv, argc, argv);
 }
 
 // The direct entry's own test (entry_test: a function object, of this realm,

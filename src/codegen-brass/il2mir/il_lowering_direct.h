@@ -69,6 +69,21 @@ void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, 
 Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
                                 Value* site, const std::function<Value*(Builder&)>& rest);
 
+// `Class.method(...)` at a site whose receiver names a function binding (il.h
+// `icFnRecv`): the method stub's FUNCTION-receiver arm, the SLOT form keyed on
+// the shape of the function's statics box (`Quaternion.slerpFlat`), made at
+// the site; every other receiver or form is `rest`, the site's ordinary
+// dispatch. `boxed_args` are staged as `rest` stages them.
+Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
+                            Value* site, const std::function<Value*(Builder&)>& rest);
+
+// A SLOT hit's entry, shared by the stub and the site forms above: `callee`
+// tested as a function compiled code may enter (else a branch to `miss`) and
+// entered with `recv` as `this` and the `argc` arguments `stage_argv` stages
+// there; the builder is left after the call.
+Value* enter_slot_callee(Builder& b, Value* callee, Value* recv, uint32_t argc,
+                         const std::function<Value*(Builder&)>& stage_argv, BasicBlock* miss);
+
 // The three tests of an inlined own-slot callback (il_op.h, MethodSlotFn /
 // ClosureIs / ClosureEnv; lower/inline_guarded.cpp builds them). `keyed` is
 // the receiver's keyed shape, often the shape memo's.

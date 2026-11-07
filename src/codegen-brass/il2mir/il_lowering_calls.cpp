@@ -689,6 +689,14 @@ bool lower_call_instruction(
                 for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);
                 Value* key_id = lowering->get_key_id(b, inst_ast.index);
                 if (direct_method_ic_here(lowering)) {
+                    // `Class.method(...)`: the statics box's SLOT form at the
+                    // site, as the stub would answer it after its other arms.
+                    if (inst_ast.is_fn_recv && direct_entry_here(lowering)) {
+                        res_val = lower_method_fn_recv(lowering, b, recv, args, site, [&](Builder& bb) {
+                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, poly_recv);
+                        });
+                        break;
+                    }
                     if ((inst_ast.imm_i64 & bronze::il::Instruction::kMethodOwnCallee) != 0 && !lowering->run_once()) {
                         res_val = lower_method_slot_inline(lowering, b, recv, args, site, [&](Builder& bb) {
                             return lower_method_call_ic(lowering, bb, recv, key_id, args, site, poly_recv);

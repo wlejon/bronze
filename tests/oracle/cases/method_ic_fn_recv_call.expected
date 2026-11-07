@@ -1,0 +1,17 @@
+warm.slerp=1796.000
+warm.this=Q
+arity=5720
+reassigned=50.500
+restored=896.000
+nonfn=true
+nonfn.restored=Q
+added=Q86.00
+deleted=Q
+deleted.add=true
+accessor=getter-Q
+inherited=2:R-own
+shared.shape=AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB B1:7:B1
+function.prop=1600
+function.prop2=780
+intrinsic=60
+gc=157950
