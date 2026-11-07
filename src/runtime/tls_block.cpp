@@ -215,6 +215,9 @@ uintptr_t rtStackLimit() noexcept { return g_stackLimit; }
 
 void rtSetStackLimit(uintptr_t limit) noexcept {
     g_stackLimit = limit;
+    if (limit != 0 && blockLimit(&g_tls_area.block).load(std::memory_order_relaxed) == kInterruptArmed) {
+        return;
+    }
     blockLimit(&g_tls_area.block).store(limit, std::memory_order_relaxed);
 }
 

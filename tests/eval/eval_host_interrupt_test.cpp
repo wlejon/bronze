@@ -11,7 +11,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -32,12 +34,17 @@ struct Hits {
     std::atomic<int> count{0};
     std::thread::id thread;
     bool otherThread = false;
+    std::mutex mu;
+    std::condition_variable cv;
 };
 
 void onInterrupt(void* arg) {
     auto* h = static_cast<Hits*>(arg);
     if (std::this_thread::get_id() != h->thread) h->otherThread = true;
-    h->count.fetch_add(1, std::memory_order_relaxed);
+    if (h->count.fetch_add(1, std::memory_order_relaxed) < 10) {
+        std::lock_guard<std::mutex> lock(h->mu);
+        h->cv.notify_one();
+    }
 }
 
 const ExecutionTier kTiers[] = {ExecutionTier::Tier0_Interpreter, ExecutionTier::Tier1_Baseline,
@@ -55,12 +62,19 @@ TEST_CASE("host interrupt: a busy script runs the host's function on its own thr
             REQUIRE(h != nullptr);
             std::atomic<bool> done{false};
             std::thread requester([&] {
-                while (!done.load()) {
+                std::unique_lock<std::mutex> lock(hits.mu);
+                while (!done.load(std::memory_order_relaxed)) {
+                    const int seen = hits.count.load(std::memory_order_relaxed);
                     embed::requestHostInterrupt(h);
-                    if (hits.count.load(std::memory_order_relaxed) < 5) {
-                        std::this_thread::yield();
+                    if (seen < 10) {
+                        hits.cv.wait_for(lock, std::chrono::milliseconds(5), [&] {
+                            return done.load(std::memory_order_relaxed) ||
+                                   hits.count.load(std::memory_order_relaxed) > seen;
+                        });
                     } else {
+                        lock.unlock();
                         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        lock.lock();
                     }
                 }
             });
@@ -68,9 +82,13 @@ TEST_CASE("host interrupt: a busy script runs the host's function on its own thr
             opts.filename = "<host-interrupt>";
             opts.tier = tier;
             embed::CallResult r = evalScript(
-                "const end = Date.now() + 200; let n = 0; while (Date.now() < end) { n++; } globalThis.n = n;",
+                "const end = Date.now() + 200; let n = 0; while (n < 2000 || Date.now() < end) { n++; } globalThis.n = n;",
                 opts);
-            done.store(true);
+            {
+                std::lock_guard<std::mutex> lock(hits.mu);
+                done.store(true, std::memory_order_relaxed);
+                hits.cv.notify_all();
+            }
             requester.join();
             CHECK_FALSE(r.thrown);
             MESSAGE("tier ", static_cast<int>(tier), ": ", hits.count.load(), " host interrupts in 200 ms");
