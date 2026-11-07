@@ -134,3 +134,46 @@ TEST_CASE("the runtime's own property path keeps a registered row current") {
     CHECK(t.rowIsWay0(1));
     runtime::rtIcHotClearThread();
 }
+
+// The method rows (bronze_abi_layout.h, "the METHOD ROWS"): a write to a
+// registered method site's way 0 lands in the row of the site's rank in the
+// method-site list, copying words 0, 1, 2 and 5; anything else is left alone.
+TEST_CASE("a latch's write to a method site lands in that site's method row") {
+    constexpr size_t kWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
+    std::vector<uint64_t> table(6 * kWords, 0);
+    std::vector<uint64_t> rows(3 * 4, 0);
+    // Out of order on purpose: a row's index is its site's rank once sorted.
+    const uint64_t sites[] = {4, 1, 3};
+    for (size_t k = 0; k < 6 * kWords; ++k) table[k] = 0;
+    table[3 * kWords + 0] = 0x7000;  // already latched before registration
+    table[3 * kWords + BRONZE_ABI_METHOD_IC_EPOCH_WORD] = 42;
+    bronze_register_method_ic_rows(table.data(), rows.data(), sites, 3);
+    CHECK(runtime::rtMethodRowRangeCount() == 1);
+    // Site 3 is rank 1: its row was filled at registration.
+    CHECK(rows[4] == 0x7000);
+    CHECK(rows[7] == 42);
+    uint64_t* s4 = table.data() + 4 * kWords;
+    s4[0] = 0x9000;
+    s4[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0x1234;
+    s4[BRONZE_ABI_METHOD_IC_ARITY_WORD] = BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT | 2;
+    s4[BRONZE_ABI_METHOD_IC_ENV_WORD] = 0xdead;
+    s4[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = 7;
+    runtime::rtMethodRowNoteWrite(s4);
+    CHECK(rows[8] == 0x9000);
+    CHECK(rows[9] == 0x1234);
+    CHECK(rows[10] == (BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT | 2));
+    CHECK(rows[11] == 7);
+    // A site that is no method site, and a word inside a site, change nothing.
+    table[2 * kWords] = 0x5555;
+    runtime::rtMethodRowNoteWrite(table.data() + 2 * kWords);
+    runtime::rtMethodRowNoteWrite(s4 + 1);
+    CHECK(rows[0] == 0);
+    CHECK(rows[8] == 0x9000);
+    // A dropped instance's range is forgotten.
+    runtime::rtIcHotDropWithin(table.data(), table.size() * sizeof(uint64_t));
+    CHECK(runtime::rtMethodRowRangeCount() == 0);
+    s4[0] = 0xa000;
+    runtime::rtMethodRowNoteWrite(s4);
+    CHECK(rows[8] == 0x9000);
+    runtime::rtIcHotClearThread();
+}

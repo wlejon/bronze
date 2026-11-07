@@ -164,7 +164,8 @@ Value* lower_is_array_call(IlLowering* lowering, const BronzeInstruction& inst, 
 
     b.position_at_end(slow);
     Value* key_id = lowering->get_key_id(b, inst.index);
-    b.build_br(merge, {lower_method_call_ic(lowering, b, recv, key_id, boxed_args, site, poly_recv)});
+    Value* row = lowering->prop_lowering().method_row(b, inst.ic_index);
+    b.build_br(merge, {lower_method_call_ic(lowering, b, recv, key_id, boxed_args, site, row, poly_recv)});
 
     b.position_at_end(merge);
     return result;

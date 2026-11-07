@@ -73,6 +73,13 @@ constexpr int64_t ic_hot_table_offset(uint64_t site_count) {
     const uint64_t n = site_count != 0 ? site_count : 1;
     return static_cast<int64_t>((n * BRONZE_ABI_IC_SITE_SIZE + 63) & ~uint64_t{63});
 }
+// Where the method rows (bronze_abi_layout.h, "the METHOD ROWS") start,
+// relative to the IC table: after the hot array, at the next line.
+constexpr int64_t ic_method_rows_offset(uint64_t site_count) {
+    const uint64_t n = site_count != 0 ? site_count : 1;
+    const uint64_t end = static_cast<uint64_t>(ic_hot_table_offset(n)) + n * BRONZE_ABI_IC_HOT_ENTRY_SIZE;
+    return static_cast<int64_t>((end + 63) & ~uint64_t{63});
+}
 // The plain object's slots (ObjectHeader) and a heap block's header, which the
 // inline property paths address an overflow slot through.
 constexpr int32_t kBronzeObjOverflowOffset = BRONZE_ABI_OBJ_OVERFLOW_OFFSET;

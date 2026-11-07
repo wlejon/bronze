@@ -46,7 +46,7 @@ Value* call_code(Builder& b, Value* code, Value* env, Value* this_val, uint32_t 
 // hint marks). Everything else calls the stub, which tests way 0 again and
 // goes on.
 Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t argc,
-                                Value* argv, Value* site, bool way1) {
+                                Value* argv, Value* site, Value* row, bool way1) {
     const std::string prefix = block_prefix(b, "mway0");
     BasicBlock* cur = b.current_block();
     BasicBlock* object = b.append_block(prefix + "_object");
@@ -74,22 +74,22 @@ Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, V
 
     // A plain object of way 0's shape; the arity word's bit 31 (the direct
     // bit) its highest set bit (no SLOT form above it); the latch's epoch.
+    // Way 0's words from the site's method row, the env from the site.
     b.position_at_end(object);
+    const MethodWay0 w = method_way0(site, row);
     Value* ptr = b.build_lshr(b.build_shl(recv, imm(16)), imm(16));
     static_assert(BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT == (uint64_t{1} << 31) &&
                       BRONZE_ABI_METHOD_IC_SLOT_SHIFT == 32,
                   "the DIRECT form's test is one shift");
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    Value* arity0 = b.build_load(Type::i64(), w.base, w.arity);
     Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
     Value* same = b.build_and(
         b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
-        b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), site, 0)));
+        b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), w.base, w.shape)));
     Value* ok = b.build_and(same, b.build_and(b.build_eq(b.build_lshr(arity0, imm(31)), imm(1)),
-                                              b.build_eq(b.build_load(Type::i64(), site,
-                                                                      BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord),
-                                                         epoch)));
+                                              b.build_eq(b.build_load(Type::i64(), w.base, w.epoch), epoch)));
     b.build_br_if(ok, enter,
-                  {b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord),
+                  {b.build_load(Type::ptr(), w.base, w.code),
                    b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ENV_WORD * kWord)},
                   slot_test, {});
 
@@ -133,13 +133,26 @@ Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, V
 
     b.position_at_end(stub);
     b.build_br(merge, {b.build_call(kMethodCallStub, Type::i64(),
-                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site})});
+                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site,
+                                     row ? row : b.build_iconst_i64(0)})});
 
     b.position_at_end(merge);
     return result;
 }
 
 }  // namespace
+
+MethodWay0 method_way0(Value* site, Value* row) {
+    static_assert(BRONZE_ABI_METHOD_ROW_CODE_OFFSET == BRONZE_ABI_METHOD_IC_CODE_WORD * kWord &&
+                      BRONZE_ABI_METHOD_ROW_ARITY_OFFSET == BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord,
+                  "a row's first three words are way 0's");
+    if (row) {
+        return {row, BRONZE_ABI_METHOD_ROW_SHAPE_OFFSET, BRONZE_ABI_METHOD_ROW_CODE_OFFSET,
+                BRONZE_ABI_METHOD_ROW_ARITY_OFFSET, BRONZE_ABI_METHOD_ROW_EPOCH_OFFSET};
+    }
+    return {site, 0, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord,
+            BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord};
+}
 
 // Move to front for method sites, as kPropGetFrontStub is for reads. Way 0
 // is the latest latch and way 1 the entry it displaced, so a site meeting
@@ -153,7 +166,8 @@ Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, V
 // when it writes a young value into one (rtNoteMethodIcEnvWords), so the
 // swap is left out while either holds a young object, as moving it to the
 // other word would put it in a cell no remembered set names.
-void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, Value* env1, BasicBlock* enter) {
+void build_method_way1_front(Builder& b, Value* site, Value* row, Value* tls, Value* code1, Value* env1,
+                             BasicBlock* enter) {
     const std::string prefix = block_prefix(b, "mfront");
     BasicBlock* cur = b.current_block();
     BasicBlock* swap = b.append_block(prefix + "_swap");
@@ -191,6 +205,16 @@ void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, 
         b.build_store(Type::i64(), site, pairs[i][0] * kWord, loaded[i].second);
         b.build_store(Type::i64(), site, pairs[i][1] * kWord, loaded[i].first);
     }
+    // The method row (bronze_abi_layout.h, "the METHOD ROWS") takes way 0's
+    // new guard words with it; a site without one passes a null row.
+    BasicBlock* row_bb = b.append_block(prefix + "_row");
+    b.position_at_end(swap);
+    b.build_br_if(b.build_ne(row, imm(0)), row_bb, {}, enter, {code1, env1});
+    b.position_at_end(row_bb);
+    b.build_store(Type::i64(), row, BRONZE_ABI_METHOD_ROW_SHAPE_OFFSET, loaded[0].second);
+    b.build_store(Type::i64(), row, BRONZE_ABI_METHOD_ROW_CODE_OFFSET, loaded[1].second);
+    b.build_store(Type::i64(), row, BRONZE_ABI_METHOD_ROW_ARITY_OFFSET, loaded[2].second);
+    b.build_store(Type::i64(), row, BRONZE_ABI_METHOD_ROW_EPOCH_OFFSET, loaded[4].second);
     b.build_br(enter, {code1, env1});
 }
 
@@ -198,7 +222,7 @@ void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, 
 // call: way 0 a SLOT entry for this receiver's shape, else `undefined`. The
 // shape compare comes first because only a receiver of the entry's shape is
 // known to be a plain object with that slot.
-Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site) {
+Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site, Value* row) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     const std::string prefix = block_prefix(b, "slotfn");
     BasicBlock* cur = b.current_block();
@@ -207,8 +231,9 @@ Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value
     Value* result = b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* way0 = b.build_and(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)),
+    const MethodWay0 w = method_way0(site, row);
+    Value* arity0 = b.build_load(Type::i64(), w.base, w.arity);
+    Value* way0 = b.build_and(b.build_eq(keyed, b.build_load(Type::i64(), w.base, w.shape)),
                               b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit)));
     b.build_br_if(way0, slot, {}, merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
 
@@ -229,7 +254,7 @@ Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value
 // receivers that carry their callee — three.js's Euler and Quaternion inside
 // an Object3D, whose `_onChangeCallback` is an own closure on every one.
 Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
-                                Value* site, const std::function<Value*(Builder&)>& rest) {
+                                Value* site, Value* row, const std::function<Value*(Builder&)>& rest) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     const std::string prefix = block_prefix(b, "slotcall");
     BasicBlock* cur = b.current_block();
@@ -240,8 +265,9 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
 
     b.position_at_end(cur);
     Value* ptr = b.build_xor(recv, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* way0 = b.build_eq(pl.keyed_shape(b, recv), b.build_load(Type::i64(), site, 0));
+    const MethodWay0 w = method_way0(site, row);
+    Value* arity0 = b.build_load(Type::i64(), w.base, w.arity);
+    Value* way0 = b.build_eq(pl.keyed_shape(b, recv), b.build_load(Type::i64(), w.base, w.shape));
     b.build_br_if(b.build_and(way0, b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))), slot, other);
 
     // Re-read and re-tested at every call: same-shape receivers may hold
@@ -271,7 +297,7 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
 // three_skinned. A function's keyed shape names no way, so no arm the stub
 // tests first could have answered such a receiver differently.
 Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
-                            Value* site, const std::function<Value*(Builder&)>& rest) {
+                            Value* site, Value* row, const std::function<Value*(Builder&)>& rest) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     const std::string prefix = block_prefix(b, "fnrecvcall");
     BasicBlock* cur = b.current_block();
@@ -289,7 +315,8 @@ Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const
     Value* ptr = b.build_xor(recv, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     b.build_br_if(b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit)), fobj, other);
     b.position_at_end(fobj);
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    const MethodWay0 w = method_way0(site, row);
+    Value* arity0 = b.build_load(Type::i64(), w.base, w.arity);
     b.build_br_if(b.build_and(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kFunctionHeaderLow)),
                               b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))),
                   fbox, other);
@@ -300,7 +327,7 @@ Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const
     b.position_at_end(fshape);
     Value* box_ok = b.build_and(
         b.build_eq(b.build_load(Type::i32(), box_ptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
-        b.build_eq(b.build_load(Type::i64(), box_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), site, 0)));
+        b.build_eq(b.build_load(Type::i64(), box_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), w.base, w.shape)));
     b.build_br_if(box_ok, fslot, other);
 
     b.position_at_end(fslot);
@@ -319,14 +346,17 @@ Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const
 }
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
-                            const std::vector<Value*>& boxed_args, Value* site, bool way1) {
+                            const std::vector<Value*>& boxed_args, Value* site, Value* row, bool way1) {
     Value* argv = lowering->stage_argv(b, boxed_args);
     const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
     // The inline arm calls through a register, which a block with a handler
     // cannot invoke, and is only size in code that runs once.
-    if (direct_entry_here(lowering)) return lower_method_way0_direct(lowering, b, recv, key_id, argc, argv, site, way1);
+    if (direct_entry_here(lowering)) {
+        return lower_method_way0_direct(lowering, b, recv, key_id, argc, argv, site, row, way1);
+    }
     return b.build_call(kMethodCallStub, Type::i64(),
-                        {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site});
+                        {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site,
+                         row ? row : b.build_iconst_i64(0)});
 }
 
 }  // namespace il2mir

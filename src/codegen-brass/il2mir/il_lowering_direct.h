@@ -43,6 +43,18 @@ Value* enter_closure_directly(Builder& b, Value* callee, Value* this_val, uint32
 // Builds the module's stubs that the forms below call (once, before any body).
 void emit_direct_stubs(IlLowering* lowering, Module& mod);
 
+// Where a method site's way-0 guard words are read: its METHOD ROW
+// (bronze_abi_layout.h, "the METHOD ROWS") when it has one, else the site.
+// The row holds words 0, 1, 2 and 5 of way 0 and nothing else.
+struct MethodWay0 {
+    Value* base;
+    int32_t shape;
+    int32_t code;
+    int32_t arity;
+    int32_t epoch;
+};
+MethodWay0 method_way0(Value* site, Value* row);
+
 // `recv.key(...args)` through the site's method IC (bronze_abi.h, the
 // METHOD-CALL site contract): a DIRECT entry of either way, a SLOT entry whose
 // slot holds an enterable function, and an Array's EXOTIC entry, each when
@@ -53,13 +65,15 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod);
 // `kMethodPolyShapes`), so a way-0 miss tests way 1's DIRECT entry at the
 // site, out of line, before the stub.
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
-                            const std::vector<Value*>& boxed_args, Value* site, bool way1 = false);
+                            const std::vector<Value*>& boxed_args, Value* site, Value* row, bool way1 = false);
 
 // The method stub's way-1 hit (build_method_call_stub): the site's two
 // DIRECT entries trade places, so way 0, the one the site tests inline, comes
 // to hold the shape the site meets now (il_method_site.cpp says when it may),
 // then `enter` with way 1's code and env as they were read.
-void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, Value* env1, BasicBlock* enter);
+// `row` is the site's method row (null when it has none), written with it.
+void build_method_way1_front(Builder& b, Value* site, Value* row, Value* tls, Value* code1, Value* env1,
+                             BasicBlock* enter);
 
 // `recv.key(...args)` at a site whose key a receiver may hold in an own slot
 // (il.h `kMethodOwnCallee`): the method cache's SLOT form dispatched here —
@@ -67,7 +81,7 @@ void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, 
 // may be entered directly — and everything else `rest`, the site's ordinary
 // dispatch. `boxed_args` are staged for the slot call as `rest` stages them.
 Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
-                                Value* site, const std::function<Value*(Builder&)>& rest);
+                                Value* site, Value* row, const std::function<Value*(Builder&)>& rest);
 
 // `Class.method(...)` at a site whose receiver names a function binding (il.h
 // `icFnRecv`): the method stub's FUNCTION-receiver arm, the SLOT form keyed on
@@ -75,7 +89,7 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
 // the site; every other receiver or form is `rest`, the site's ordinary
 // dispatch. `boxed_args` are staged as `rest` stages them.
 Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
-                            Value* site, const std::function<Value*(Builder&)>& rest);
+                            Value* site, Value* row, const std::function<Value*(Builder&)>& rest);
 
 // A SLOT hit's entry, shared by the stub and the site forms above: `callee`
 // tested as a function compiled code may enter (else a branch to `miss`) and
@@ -87,7 +101,7 @@ Value* enter_slot_callee(Builder& b, Value* callee, Value* recv, uint32_t argc,
 // The three tests of an inlined own-slot callback (il_op.h, MethodSlotFn /
 // ClosureIs / ClosureEnv; lower/inline_guarded.cpp builds them). `keyed` is
 // the receiver's keyed shape, often the shape memo's.
-Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site);
+Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site, Value* row);
 Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee);
 Value* lower_closure_env(Builder& b, Value* fn_val);
 

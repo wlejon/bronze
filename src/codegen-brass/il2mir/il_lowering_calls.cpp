@@ -260,7 +260,7 @@ Value* box_value(IlLowering* lowering, Builder& b, Value* v, Type as) {
 // `keyed` is the receiver's keyed shape (PropertyLoweringHelper::keyed_shape),
 // often the shape memo's (il_shape_memo.cpp): equal to a way's shape word
 // exactly when the receiver is plain and of that shape.
-Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, const std::string& callee) {
+Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, Value* row, const std::string& callee) {
     constexpr int32_t kWord = 8;
     constexpr int64_t kDirectFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
     Value* target = b.build_func_addr("__wrapper_" + callee);
@@ -279,16 +279,17 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, const std::st
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* hit = b.add_block_param(merge, Type::i32());
 
+    // Way 0's words from the site's method row (bronze_abi_layout.h, "the
+    // METHOD ROWS"), a line shared with the sites around it.
+    const MethodWay0 w = method_way0(site, row);
     b.position_at_end(cur);
-    b.build_br_if(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)), way0_entry, way1_bb);
+    b.build_br_if(b.build_eq(keyed, b.build_load(Type::i64(), w.base, w.shape)), way0_entry, way1_bb);
 
     b.position_at_end(way0_entry);
     Value* way0 = b.build_and(
-        b.build_ult(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord),
-                    b.build_iconst_i64(kDirectFormLimit)),
-        b.build_and(
-            b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord), target),
-            b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord), epoch)));
+        b.build_ult(b.build_load(Type::i64(), w.base, w.arity), b.build_iconst_i64(kDirectFormLimit)),
+        b.build_and(b.build_eq(b.build_load(Type::ptr(), w.base, w.code), target),
+                    b.build_eq(b.build_load(Type::i64(), w.base, w.epoch), epoch)));
     b.build_br_if(way0, merge, {b.build_iconst_i32(1)}, way1_bb, {});
 
     // Way 0 did not answer, so way 1 is the whole answer; at most one way
@@ -328,12 +329,15 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     Value* result = b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
+    // The site's method row, which the miss's stub call takes too: computed
+    // here, ahead of the receiver test that may branch to it.
+    Value* row = pl.method_row(b, inst.ic_index);
     // A receiver the memo does not hold is tested on a path only a plain
     // receiver reaches, the rest going to the generic call; the call ends
     // the memo, so its shape word is not remembered.
     Value* keyed = lowering->memo_lookup(inst.operands[0]);
     if (!keyed) keyed = pl.plain_shape_or_miss(b, recv, slow);
-    Value* hit = direct_method_ic_hit(b, keyed, site, callee);
+    Value* hit = direct_method_ic_hit(b, keyed, site, row, callee);
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
     // The generic dispatch takes every argument boxed. A typed edge's
     // unboxed operands are boxed here, on the path that needs them.
@@ -351,8 +355,12 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     // The guard's miss is the method stub where the module has one: the
     // receivers a polymorphic site's two DIRECT ways do not hold are still
     // answered from the thread's table or a SLOT entry without the runtime.
-    const char* miss_call = direct_method_ic_here(lowering) ? "__bronze_method_call_ic" : "bronze_call_method";
-    b.build_br(merge, {b.build_call(miss_call, Type::i64(), {recv, key_id, argc_val, argv, site})});
+    if (direct_method_ic_here(lowering)) {
+        b.build_br(merge, {b.build_call("__bronze_method_call_ic", Type::i64(),
+                                        {recv, key_id, argc_val, argv, site, row ? row : b.build_iconst_i64(0)})});
+    } else {
+        b.build_br(merge, {b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site})});
+    }
 
     b.position_at_end(fast);
     std::vector<Value*> call_args;
@@ -487,6 +495,7 @@ bool lower_call_instruction(
             // A guard reads and decides; it moves no shape, so the memo
             // stays (il_shape_memo.cpp).
             res_val = site ? direct_method_ic_hit(b, lowering->memo_keyed(b, inst_ast.operands[0], recv), site,
+                                                  lowering->prop_lowering().method_row(b, inst_ast.ic_index),
                                                   inst_ast.callee_name)
                            : b.build_iconst_i32(0);
             if (lowering) lowering->memo_keep();
@@ -503,7 +512,8 @@ bool lower_call_instruction(
                               ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index)
                               : nullptr;
             res_val = site ? lower_method_slot_fn(lowering, b, recv,
-                                                  lowering->memo_keyed(b, inst_ast.operands[0], recv), site)
+                                                  lowering->memo_keyed(b, inst_ast.operands[0], recv), site,
+                                                  lowering->prop_lowering().method_row(b, inst_ast.ic_index))
                            : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
             if (lowering) lowering->memo_keep();
             break;
@@ -638,10 +648,11 @@ bool lower_call_instruction(
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
                     std::vector<Value*> args;
                     for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
+                    Value* row = lowering->prop_lowering().method_row(b, inst_ast.ic_index);
                     res_val = lower_array_method_inline(
                         lowering, b, arr, recv, args.empty() ? nullptr : args[0], [&](Builder& bb) {
                             return lower_method_call_ic(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
-                                                        args, site, poly_recv);
+                                                        args, site, row, poly_recv);
                         });
                     break;
                 }
@@ -663,6 +674,7 @@ bool lower_call_instruction(
                 }
             }
             if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
+                Value* row = lowering->prop_lowering().method_row(b, inst_ast.ic_index);
                 std::vector<Value*> args;
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
                 if (can_direct) {
@@ -684,7 +696,7 @@ bool lower_call_instruction(
                         std::vector<Value*> boxed;
                         boxed.reserve(argc);
                         for (size_t a = 0; a < argc; ++a) boxed.push_back(box_value(lowering, b, args[a], arg_kinds[a]));
-                        res_val = lower_method_slot_inline(lowering, b, recv, boxed, site, direct);
+                        res_val = lower_method_slot_inline(lowering, b, recv, boxed, site, row, direct);
                         break;
                     }
                     res_val = direct(b);
@@ -696,18 +708,18 @@ bool lower_call_instruction(
                     // `Class.method(...)`: the statics box's SLOT form at the
                     // site, as the stub would answer it after its other arms.
                     if (inst_ast.is_fn_recv && direct_entry_here(lowering)) {
-                        res_val = lower_method_fn_recv(lowering, b, recv, args, site, [&](Builder& bb) {
-                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, poly_recv);
+                        res_val = lower_method_fn_recv(lowering, b, recv, args, site, row, [&](Builder& bb) {
+                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, row, poly_recv);
                         });
                         break;
                     }
                     if ((inst_ast.imm_i64 & bronze::il::Instruction::kMethodOwnCallee) != 0 && !lowering->run_once()) {
-                        res_val = lower_method_slot_inline(lowering, b, recv, args, site, [&](Builder& bb) {
-                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, poly_recv);
+                        res_val = lower_method_slot_inline(lowering, b, recv, args, site, row, [&](Builder& bb) {
+                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site, row, poly_recv);
                         });
                         break;
                     }
-                    res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site, poly_recv);
+                    res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site, row, poly_recv);
                     break;
                 }
                 Value* argv = lowering->stage_argv(b, args);

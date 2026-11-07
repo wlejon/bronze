@@ -20,7 +20,9 @@
 // (module_instance.cpp): registered by each instance's init, forgotten with
 // the instance's cells (rtDropModuleCellsWithin) or the thread.
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -40,6 +42,37 @@ struct HotRange {
 thread_local std::vector<HotRange> t_ranges;
 // The range the last write found: a frame's fills come from one module.
 thread_local size_t t_last = 0;
+
+// A module instance's METHOD ROWS (bronze_abi_layout.h): its table's range,
+// the rows, and the method sites in the sorted order the rows follow.
+struct MethodRange {
+    uintptr_t lo;
+    uintptr_t hi;
+    uint64_t* rows;
+    std::vector<uint64_t> sites;
+};
+
+thread_local std::vector<MethodRange> t_methodRanges;
+thread_local size_t t_methodLast = 0;
+
+static_assert(BRONZE_ABI_METHOD_ROW_SIZE == 4 * sizeof(uint64_t) && BRONZE_ABI_METHOD_ROW_SHAPE_OFFSET == 0 &&
+                  BRONZE_ABI_METHOD_ROW_CODE_OFFSET == 8 && BRONZE_ABI_METHOD_ROW_ARITY_OFFSET == 16 &&
+                  BRONZE_ABI_METHOD_ROW_EPOCH_OFFSET == 24,
+              "a method row is way 0's shape, code, arity and epoch words, in that order");
+
+void copyMethodRow(const MethodRange& r, uintptr_t at) noexcept {
+    const uintptr_t off = at - r.lo;
+    if (off % BRONZE_ABI_IC_SITE_SIZE != 0) return;
+    const uint64_t site = off / BRONZE_ABI_IC_SITE_SIZE;
+    const auto it = std::lower_bound(r.sites.begin(), r.sites.end(), site);
+    if (it == r.sites.end() || *it != site) return;  // not a method site
+    const auto* words = reinterpret_cast<const uint64_t*>(at);
+    uint64_t* row = r.rows + static_cast<size_t>(it - r.sites.begin()) * 4;
+    row[0] = words[0];
+    row[1] = words[BRONZE_ABI_METHOD_IC_CODE_WORD];
+    row[2] = words[BRONZE_ABI_METHOD_IC_ARITY_WORD];
+    row[3] = words[BRONZE_ABI_METHOD_IC_EPOCH_WORD];
+}
 
 static_assert(BRONZE_ABI_IC_HOT_ENTRY_SIZE == 2 * sizeof(uint64_t), "a row is the shape and slot words");
 static_assert(BRONZE_ABI_IC_HOT_SHAPE_OFFSET == 0 && BRONZE_ABI_IC_HOT_SLOT_OFFSET == 8, "in that order");
@@ -80,18 +113,46 @@ void rtIcHotNoteWrite(const InlineCache* entry) noexcept {
 
 namespace runtime {
 
+void rtMethodRowNoteWrite(const uint64_t* icEntry) noexcept {
+    const auto at = reinterpret_cast<uintptr_t>(icEntry);
+    const size_t n = t_methodRanges.size();
+    if (n == 0 || !icEntry) return;
+    if (t_methodLast < n) {
+        const MethodRange& r = t_methodRanges[t_methodLast];
+        if (at >= r.lo && at < r.hi) {
+            copyMethodRow(r, at);
+            return;
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const MethodRange& r = t_methodRanges[i];
+        if (at >= r.lo && at < r.hi) {
+            t_methodLast = i;
+            copyMethodRow(r, at);
+            return;
+        }
+    }
+}
+
 void rtIcHotDropWithin(const void* begin, size_t size) noexcept {
     const auto lo = reinterpret_cast<uintptr_t>(begin);
     const uintptr_t hi = lo + size;
     std::erase_if(t_ranges, [lo, hi](const HotRange& r) { return r.lo < hi && r.hi > lo; });
+    std::erase_if(t_methodRanges, [lo, hi](const MethodRange& r) { return r.lo < hi && r.hi > lo; });
     t_last = 0;
+    t_methodLast = 0;
 }
 
 void rtIcHotClearThread() noexcept {
     t_ranges.clear();
     t_ranges.shrink_to_fit();
     t_last = 0;
+    t_methodRanges.clear();
+    t_methodRanges.shrink_to_fit();
+    t_methodLast = 0;
 }
+
+size_t rtMethodRowRangeCount() noexcept { return t_methodRanges.size(); }
 
 size_t rtIcHotRangeCount() noexcept { return t_ranges.size(); }
 
@@ -111,4 +172,22 @@ extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_
     // The rows start as copies of what the sites hold now: zero for a fresh
     // instance, and whatever a realm copy's pristine snapshot carried.
     for (uintptr_t at = lo; at < hi; at += BRONZE_ABI_IC_SITE_SIZE) copyRow(t_ranges.back(), at);
+}
+
+extern "C" void bronze_register_method_ic_rows(uint64_t* icTable, uint64_t* rows, const uint64_t* siteIndexes,
+                                               uint64_t count) {
+    using namespace bronze;
+    if (!icTable || !rows || !siteIndexes || count == 0) return;
+    MethodRange r{reinterpret_cast<uintptr_t>(icTable), 0, rows,
+                  std::vector<uint64_t>(siteIndexes, siteIndexes + count)};
+    // The list is the lowering's sorted one (il.h methodIcSites); sorted here
+    // all the same, since a row's index is its site's rank.
+    std::sort(r.sites.begin(), r.sites.end());
+    r.hi = r.lo + (r.sites.back() + 1) * BRONZE_ABI_IC_SITE_SIZE;
+    std::erase_if(t_methodRanges, [&r](const MethodRange& m) { return m.lo < r.hi && m.hi > r.lo; });
+    t_methodLast = 0;
+    t_methodRanges.push_back(std::move(r));
+    // The rows start as copies of what the sites hold now.
+    const MethodRange& added = t_methodRanges.back();
+    for (uint64_t site : added.sites) copyMethodRow(added, added.lo + site * BRONZE_ABI_IC_SITE_SIZE);
 }

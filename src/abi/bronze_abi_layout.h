@@ -33,7 +33,13 @@
  *
  * READ sites use every way; a WRITE site uses way 0 only (a write's bill is
  * transitions, not shape variety — measured on the pure-compute fixtures).
- * The unused ways of a write site cost BSS and nothing else.
+ * The unused ways of a write site cost BSS and nothing else, but for word
+ * BRONZE_ABI_IC_SET_MEGA_COUNT_WORD: the write stub's count of the answers
+ * the thread's megamorphic table gave the site after a way-0 miss, every
+ * BRONZE_ABI_IC_SET_MEGA_RELATCH-th of which goes to the helper, which
+ * zeroes it and stores past the table, so way 0 refills with the receiver's
+ * shape (a table answer latches nothing, so a way 0 holding a shape that
+ * stopped coming was otherwise missed for good). An integer.
  *
  * Generated code compares the receiver's shape against way 0, then — only on
  * a way-0 miss — against ways 1..N-1, and
@@ -94,6 +100,8 @@
  * after its null check.
  */
 #define BRONZE_ABI_IC_ENTRY_SIZE     24 /* sizeof(InlineCache) */
+#define BRONZE_ABI_IC_SET_MEGA_COUNT_WORD 11
+#define BRONZE_ABI_IC_SET_MEGA_RELATCH    64
 #define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
 #define BRONZE_ABI_IC_SLOT_OFFSET     8 /* InlineCache::cached_slot  (uint32) */
 #define BRONZE_ABI_IC_DEPTH_OFFSET   12 /* InlineCache::cached_depth (uint32) */
@@ -136,6 +144,31 @@
 #define BRONZE_ABI_IC_HOT_ENTRY_SIZE   16
 #define BRONZE_ABI_IC_HOT_SHAPE_OFFSET  0
 #define BRONZE_ABI_IC_HOT_SLOT_OFFSET   8
+
+/* ---- the METHOD ROWS: every method-call site's way 0, packed -------------
+ *
+ * After the hot array, at the next line, each module carries one
+ * BRONZE_ABI_METHOD_ROW_SIZE row per METHOD-CALL site (the sites
+ * `__bronze_method_ic_sites` names, in that sorted order, so a site's row is
+ * its rank in that list): a copy of way 0's words 0, 1, 2 and 5 ("the
+ * METHOD-CALL site" below) — word 0, the code word, the arity word and the
+ * epoch word — and nothing else. Those are the words every
+ * inline method guard reads (the DIRECT guard of a guessed callee, the way-0
+ * arm, the SLOT and statics arms), so the sites a function calls through in
+ * order share a line two to a line instead of taking one or two lines of
+ * their own. The env word stays in the site: only a way-0 hit that enters the
+ * latched code reads it, and it is a collector-forwarded cell.
+ *
+ * No word of a row is a Value, so the collector never sees one. The table
+ * stays the truth: the runtime copies the four words after every latch it
+ * makes (rt_method_call.cpp, through the ranges bronze_register_method_ic_rows
+ * hands over at module init), and the method stub's way-1 swap writes the
+ * row with the site. A row of zeros reads as an unlatched way 0. */
+#define BRONZE_ABI_METHOD_ROW_SIZE          32
+#define BRONZE_ABI_METHOD_ROW_SHAPE_OFFSET   0
+#define BRONZE_ABI_METHOD_ROW_CODE_OFFSET    8
+#define BRONZE_ABI_METHOD_ROW_ARITY_OFFSET  16
+#define BRONZE_ABI_METHOD_ROW_EPOCH_OFFSET  24
 
 /* ---- the METHOD-CALL site, as generated code reads it ---------------------
  *

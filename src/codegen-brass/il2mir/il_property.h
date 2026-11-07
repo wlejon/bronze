@@ -5,6 +5,7 @@
 #include <functional>
 #include <string_view>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <cstdint>
 #include "il_ast.h"
@@ -144,6 +145,13 @@ public:
         ic_site_count_ = site_count;
     }
     [[nodiscard]] uint32_t ic_site_count() const noexcept { return ic_site_count_; }
+    // The module's METHOD-CALL sites, sorted (TranslatorOptions::
+    // method_ic_sites): a site's rank in it is its method row's
+    // (bronze_abi_layout.h, "the METHOD ROWS").
+    void set_method_sites(const std::vector<uint32_t>& sorted_sites) {
+        method_rank_.clear();
+        for (uint32_t i = 0; i < sorted_sites.size(); ++i) method_rank_.emplace(sorted_sites[i], i);
+    }
 
     // The static-slot guards' tables (TranslatorOptions::static_site_count):
     // `cell_count` i64 cells at `cells_sym`, and the family base word (then a
@@ -269,6 +277,9 @@ public:
     Value* site_ptr(Builder& b, const IcSite& site);
     // ic_site_ref's address, or null.
     Value* ic_site(Builder& b, uint32_t ic_index);
+    // The method row of METHOD-CALL site `ic_index` (bronze_abi_layout.h,
+    // "the METHOD ROWS"), or null for an index that names no method site.
+    Value* method_row(Builder& b, uint32_t ic_index);
 
     // The runtime's id for key constant `key_index` (read through the
     // module's key map), or kNoKey as itself.
@@ -564,6 +575,7 @@ private:
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
+    std::unordered_map<uint32_t, uint32_t> method_rank_;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
     std::string family_base_sym_;

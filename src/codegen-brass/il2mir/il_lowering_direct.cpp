@@ -357,6 +357,9 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     Value* argc = b.add_block_param(cur, Type::i32());
     Value* argv = b.add_block_param(cur, Type::ptr());
     Value* site = b.add_block_param(cur, Type::ptr());
+    // The site's method row (bronze_abi_layout.h, "the METHOD ROWS"), or
+    // zero: the way-1 swap writes way 0's new guard words there too.
+    Value* row = b.add_block_param(cur, Type::i64());
     const std::string prefix = "mcall";
     BasicBlock* way0 = b.append_block(prefix + "_way0");
     BasicBlock* direct0 = b.append_block(prefix + "_direct0");
@@ -443,7 +446,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         b.position_at_end(front);
         Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord);
         Value* env = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD * kWord);
-        build_method_way1_front(b, site, tls, code, env, enter);
+        build_method_way1_front(b, site, row, tls, code, env, enter);
     }
 
     // Both ways missed: the thread's (shape, key) read table, which the
@@ -783,12 +786,33 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     const PropEntry e = prop_entry(pl, b, obj, site, 1);
     b.build_br_if(e.hit, hit, {e.slot_word, e.epoch}, mega, {});
 
-    // Way 0 missed: the thread's table, in its write key space.
+    // Way 0 missed: the thread's table, in its write key space. A table
+    // answer latches nothing, so a site whose way 0 holds a shape that stopped
+    // coming kept missing it for good (three_skinned: ~2-5K table answers a
+    // frame at sites whose way 0 named a shape no frame wrote); every
+    // BRONZE_ABI_IC_SET_MEGA_RELATCH-th answer goes to the helper instead,
+    // which skips the table for it and so stores through way 0, whose fill puts
+    // the receiver's shape there (and in its row).
     b.position_at_end(mega);
-    build_mega_probe(b, tls, e, site, 1,
-                     b.build_or(b.build_zext_i64(key_id),
-                                b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_SET_KEY_BIT))),
-                     hit, slow);
+    {
+        static_assert(BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord >= BRONZE_ABI_IC_ENTRY_SIZE &&
+                          BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord < BRONZE_ABI_IC_SITE_SIZE,
+                      "the count is a word of the site past the way a write site uses");
+        BasicBlock* probe = b.append_block(prefix + "_megaprobe");
+        b.position_at_end(mega);
+        Value* n = b.build_add(b.build_load(Type::i64(), site, BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord),
+                               b.build_iconst_i64(1));
+        Value* relatch = b.build_uge(n, b.build_iconst_i64(BRONZE_ABI_IC_SET_MEGA_RELATCH));
+        // The helper sees the count at the threshold, takes the store past
+        // the table and back to zero.
+        b.build_store(Type::i64(), site, BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord, n);
+        b.build_br_if(relatch, slow, probe);
+        b.position_at_end(probe);
+        build_mega_probe(b, tls, e, site, 1,
+                         b.build_or(b.build_zext_i64(key_id),
+                                    b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_SET_KEY_BIT))),
+                         hit, slow);
+    }
 
     b.position_at_end(hit);
     Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit));
@@ -854,7 +878,7 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
     // Built before any body: a function built while another is being built
     // shares the module's builder state with it.
     Function* stub = mod.create_function(kMethodCallStub, Type::i64(),
-                                         {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()});
+                                         {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr(), Type::i64()});
     build_method_call_stub(lowering, stub);
     build_prop_get_stub(lowering,
                         mod.create_function(kPropGetSlowStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));

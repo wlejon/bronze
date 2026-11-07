@@ -295,6 +295,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
     prop_lowering_.set_key_map_sym(module_sym("__bronze_key_map"));
     prop_lowering_.set_ic_table(module_sym("__bronze_ic_table"), options_.ic_site_count);
+    prop_lowering_.set_method_sites(options_.method_ic_sites);
     prop_lowering_.set_static_tables(module_sym("__bronze_static_cells"), options_.static_site_count,
                                      module_sym("__bronze_family_base"), options_.class_family_count);
     if (options_.per_thread_module_data) {
@@ -789,6 +790,17 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* hot_addr = b.build_add(table_addr, b.build_iconst_i64(ic_hot_table_offset(options_.ic_site_count)));
                 Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.ic_site_count));
                 b.build_call("bronze_register_ic_hot", Type::void_type(), {table_addr, hot_addr, site_count});
+            }
+            // The method-call sites' rows (bronze_abi_layout.h, "the METHOD
+            // ROWS"), kept by the runtime's latches the same way.
+            if (options_.ic_site_count > 0 && !options_.method_ic_sites.empty()) {
+                Value* table_addr = module_data_addr(b, "__bronze_ic_table");
+                Value* rows_addr =
+                    b.build_add(table_addr, b.build_iconst_i64(ic_method_rows_offset(options_.ic_site_count)));
+                Value* sites_addr = b.build_func_addr(module_sym("__bronze_method_ic_sites"));
+                Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.method_ic_sites.size()));
+                b.build_call("bronze_register_method_ic_rows", Type::void_type(),
+                             {table_addr, rows_addr, sites_addr, site_count});
             }
             if (options_.enable_census && options_.census_site_count > 0) {
                 Value* out_path = b.build_func_addr(module_sym("__bronze_census_out_path"));

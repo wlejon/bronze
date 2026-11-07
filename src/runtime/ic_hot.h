@@ -6,6 +6,7 @@
 // call it.
 
 #include <cstddef>
+#include <cstdint>
 
 namespace bronze::runtime {
 
@@ -16,5 +17,12 @@ void rtIcHotDropWithin(const void* begin, size_t size) noexcept;
 void rtIcHotClearThread() noexcept;
 // How many ranges this thread has (tests).
 size_t rtIcHotRangeCount() noexcept;
+
+// After a write to a METHOD-CALL site's way 0 (rt_method_call.cpp's latches):
+// copy its guard words to the site's method row (bronze_abi_layout.h, "the
+// METHOD ROWS"), when a registered range names it.
+void rtMethodRowNoteWrite(const uint64_t* icEntry) noexcept;
+// How many method-row ranges this thread has (tests).
+size_t rtMethodRowRangeCount() noexcept;
 
 }  // namespace bronze::runtime

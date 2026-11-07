@@ -152,25 +152,25 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
 
     // IC-hit fast path: a shape match writes the slot with no key and no
-    // rooting (nothing below can allocate). Writes are NOT inlined into
-    // generated code: a write can transition the shape and grow the overflow
-    // block, so the interesting half of the work is the miss, and the miss is
-    // a call either way (inlines the read).
+    // rooting (nothing below can allocate).
     //
     // A typed array is the one shape-carrying kind kept OUT of this path: its
     // numeric keys are elements (10.4.5.5), never slots, and an entry filled by
     // a plain object sharing the view's root shape could otherwise answer a
     // `v[0]` store with a slot write. Its arm below sorts the key first.
-    // Past the site's one way, the thread's (shape, key) table
-    // (rt_prop_mega.h), for a site storing to more shapes than it can hold.
-    // An empty way installs instead, so the site warms to its own entry.
+    // Past the site's one way, the thread's (shape, key) table (rt_prop_mega.h);
+    // an empty way installs instead. The RELATCH-th table answer the set stub
+    // counts comes here and skips the table, so way 0 refills (bronze_abi_layout.h).
     const Shape* missShape = nullptr;
     if (ic && HeapKind::carriesShape(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
         const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
         if (ic->isRealShape() && ic->cached_shape != shape) {
-            if (InlineCache* mega = rtMegaPropSetProbe(shape, keyIndex)) {
+            uint64_t& tableAnswers = icEntry[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD];
+            InlineCache* mega = tableAnswers < BRONZE_ABI_IC_SET_MEGA_RELATCH ? rtMegaPropSetProbe(shape, keyIndex) : nullptr;
+            if (mega) {
                 ic = mega;
             } else {
+                tableAnswers = 0;
                 missShape = shape;
             }
         }

@@ -543,6 +543,15 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_hot"), dataIdx, icHotOffset, icHotBytes,
                  SymbolBinding::Local);
 
+    // The method-call sites' way-0 guard words, one row per site of the
+    // sorted method-site list (bronze_abi_layout.h, "the METHOD ROWS"), a
+    // fixed distance after the table: zero, an unlatched way 0.
+    const size_t methodRowsOffset = icTableOffset + static_cast<size_t>(il2mir::ic_method_rows_offset(icSites));
+    const size_t methodRowsBytes = std::max<size_t>(module.methodIcSites().size(), 1) * BRONZE_ABI_METHOD_ROW_SIZE;
+    dataSec.data.resize(methodRowsOffset + methodRowsBytes, 0);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_method_rows"), dataIdx, methodRowsOffset,
+                 methodRowsBytes, SymbolBinding::Local);
+
     // The static-slot guards' cells (il.h `staticSiteCount`): zero is "never
     // tried", which no live shape equals, so an unpublished cell is a miss
     // (runtime/static_shape.cpp has the three states). Then the family base

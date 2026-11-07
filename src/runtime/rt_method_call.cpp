@@ -3,6 +3,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/ic_hot.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -435,6 +436,9 @@ void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
                           const InlineCache& probe, uint32_t keyIndex) {
     latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
     rtNoteMethodIcEnvWords(icEntry);
+    // The site's method row (bronze_abi_layout.h, "the METHOD ROWS"), which
+    // generated code's way-0 guards read: way 0's guard words as they now are.
+    rtMethodRowNoteWrite(icEntry);
 }
 
 // The site's latched entry, read exactly as the METHOD-CALL site contract

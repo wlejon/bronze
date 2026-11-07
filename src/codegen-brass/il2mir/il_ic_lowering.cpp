@@ -83,6 +83,16 @@ Value* PropertyLoweringHelper::ic_site(Builder& b, uint32_t ic_index) {
     return site ? site_ptr(b, site) : nullptr;
 }
 
+Value* PropertyLoweringHelper::method_row(Builder& b, uint32_t ic_index) {
+    const auto it = method_rank_.find(ic_index);
+    if (it == method_rank_.end()) return nullptr;
+    const IcSite site = ic_site_ref(b, ic_index);
+    if (!site) return nullptr;
+    const int64_t off = ic_method_rows_offset(ic_site_count_) +
+                        static_cast<int64_t>(it->second) * BRONZE_ABI_METHOD_ROW_SIZE;
+    return b.build_add(site.base, b.build_iconst_i64(off));
+}
+
 // The runtime's id for the module's key constant `key_index`, read through
 // the module's key map; kNoKey passes through as itself.
 Value* PropertyLoweringHelper::runtime_key(Builder& b, uint32_t key_index) {
