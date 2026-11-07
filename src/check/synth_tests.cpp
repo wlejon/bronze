@@ -484,6 +484,16 @@ private:
                         tryEmitHazardReproducer(pathCond, ctx_.make_binary(BVOp::Slt, a, zero64_),
                                                 blockId, pathTrace, "Math.sqrt domain error (arg < 0 -> NaN)");
                         state.values[inst.result] = a;
+                    } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                        BVNodeId acc = a;
+                        for (size_t k = 1; k < inst.operands.size(); ++k) {
+                            BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
+                            BVNodeId pick = kind == il::MathUnaryFn::Min
+                                                ? ctx_.make_binary(BVOp::Slt, rhs, acc)
+                                                : ctx_.make_binary(BVOp::Slt, acc, rhs);
+                            acc = ctx_.make_ite(pick, rhs, acc);
+                        }
+                        state.values[inst.result] = acc;
                     } else {
                         state.values[inst.result] = a;
                     }

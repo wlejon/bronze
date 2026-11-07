@@ -432,6 +432,18 @@ private:
                                kind == il::MathUnaryFn::Ceil ||
                                kind == il::MathUnaryFn::Trunc) {
                         state.values[inst.result] = a;
+                    } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                        // Folded left to right, as the Math.min / Math.max
+                        // method-call model below does.
+                        BVNodeId acc = a;
+                        for (size_t k = 1; k < inst.operands.size(); ++k) {
+                            BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
+                            BVNodeId pick = kind == il::MathUnaryFn::Min
+                                                ? ctx_.make_binary(BVOp::Slt, rhs, acc)
+                                                : ctx_.make_binary(BVOp::Slt, acc, rhs);
+                            acc = ctx_.make_ite(pick, rhs, acc);
+                        }
+                        state.values[inst.result] = acc;
                     } else {
                         return {false, "unsupported transcendental MathUnary", false, zero64_};
                     }
