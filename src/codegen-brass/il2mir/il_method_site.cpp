@@ -1,7 +1,8 @@
 // A method call's site (il_lowering_direct.h, lower_method_call_ic): way 0's
 // DIRECT entry tested and entered inline, way 1's out of line where the site
 // met more than one receiver shape, and the module's method stub
-// (build_method_call_stub, il_lowering_direct.cpp) for everything else.
+// (build_method_call_stub, il_lowering_direct.cpp) for everything else; and the
+// SLOT callee read without the call (lower_method_slot_fn).
 #include "il_abi.h"
 #include "il_lowering.h"
 #include "il_lowering_direct.h"
@@ -16,6 +17,8 @@ namespace {
 
 constexpr int32_t kWord = 8;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
+constexpr int64_t kSlotFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
 constexpr const char* kMethodCallStub = "__bronze_method_call_ic";
 
 std::string block_prefix(Builder& b, const char* what) {
@@ -160,6 +163,34 @@ void build_method_way1_front(Builder& b, Value* site, Value* tls, Value* code1, 
         b.build_store(Type::i64(), site, pairs[i][1] * kWord, loaded[i].first);
     }
     b.build_br(enter, {code1, env1});
+}
+
+// The slot lower_method_slot_inline would call through, read without the
+// call: way 0 a SLOT entry for this receiver's shape, else `undefined`. The
+// shape compare comes first because only a receiver of the entry's shape is
+// known to be a plain object with that slot.
+Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    const std::string prefix = block_prefix(b, "slotfn");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* slot = b.append_block(prefix + "_slot");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    Value* way0 = b.build_and(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)),
+                              b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit)));
+    b.build_br_if(way0, slot, {}, merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
+
+    b.position_at_end(slot);
+    Value* ptr = b.build_xor(recv, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                                   b.build_iconst_i64(1));
+    b.build_br(merge, {pl.load_slot(b, ptr, slot_word)});
+
+    b.position_at_end(merge);
+    return result;
 }
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,

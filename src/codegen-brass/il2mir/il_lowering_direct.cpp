@@ -456,10 +456,29 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     // read stub reads one: an own data slot, or a data slot up the chain
     // while its epoch is current; the callee then takes the SLOT form's
     // test, since nothing about it was latched here.
+    //
+    // A table answer latches nothing, so every
+    // BRONZE_ABI_METHOD_IC_MEGA_RELATCH-th one at a full site goes to the
+    // helper instead, whose latch moves the receiver into way 0
+    // (BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD says why).
     b.position_at_end(mega);
     {
         const PropEntry& e = re;
+        static_assert(BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord < BRONZE_ABI_IC_SITE_SIZE,
+                      "the table-answer count is a word of the site");
         Value* full = b.build_ne(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord), zero);
+        BasicBlock* count = b.append_block(prefix + "_megacount");
+        BasicBlock* probe = b.append_block(prefix + "_megaprobe");
+        b.position_at_end(mega);
+        b.build_br_if(e.plain ? b.build_and(e.plain, full) : full, count, exotic);
+        b.position_at_end(count);
+        Value* n = b.build_add(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord),
+                               b.build_iconst_i64(1));
+        Value* relatch = b.build_uge(n, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_MEGA_RELATCH));
+        b.build_store(Type::i64(), site, BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord,
+                      b.build_select(relatch, zero, n));
+        b.build_br_if(relatch, slow, {}, probe, {});
+        b.position_at_end(probe);
         build_mega_probe_if(b, tls, e, full, b.build_zext_i64(key_id), mega_hit, exotic);
     }
     b.position_at_end(mega_hit);
@@ -888,34 +907,6 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
 
     b.position_at_end(other);
     b.build_br(merge, {rest(b)});
-
-    b.position_at_end(merge);
-    return result;
-}
-
-// The slot lower_method_slot_inline would call through, read without the
-// call: way 0 a SLOT entry for this receiver's shape, else `undefined`. The
-// shape compare comes first because only a receiver of the entry's shape is
-// known to be a plain object with that slot.
-Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site) {
-    PropertyLoweringHelper& pl = lowering->prop_lowering();
-    const std::string prefix = block_prefix(b, "slotfn");
-    BasicBlock* cur = b.current_block();
-    BasicBlock* slot = b.append_block(prefix + "_slot");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-
-    b.position_at_end(cur);
-    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
-    Value* way0 = b.build_and(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)),
-                              b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit)));
-    b.build_br_if(way0, slot, {}, merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
-
-    b.position_at_end(slot);
-    Value* ptr = b.build_xor(recv, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
-                                   b.build_iconst_i64(1));
-    b.build_br(merge, {pl.load_slot(b, ptr, slot_word)});
 
     b.position_at_end(merge);
     return result;

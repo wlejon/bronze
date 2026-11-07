@@ -328,6 +328,18 @@
  * depth >= 1 case under a different guard. Plain integers, never Values. */
 #define BRONZE_ABI_METHOD_IC_EPOCH_WORD      5
 #define BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD 10
+/* A full site's (shape, key) table answers, counted by the module's method
+ * stub alone (generated code reads and writes it; the runtime never does).
+ * A table hit latches nothing, so without it a full site kept whichever two
+ * shapes filled it first for good: which ones depended on the order shapes
+ * first missed the table, and so on its address-hashed collisions: in some
+ * runs of one three_skinned binary every Bone's `this.updateMatrix()` took the
+ * stub, in others none did. Every BRONZE_ABI_METHOD_IC_MEGA_RELATCH-th answer
+ * goes to the helper instead, whose latch puts the receiver in way 0 and the
+ * resident in way 1, so a site's ways follow its frequent shapes whatever
+ * filled them first. An integer, never a Value. */
+#define BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD 11
+#define BRONZE_ABI_METHOD_IC_MEGA_RELATCH    64
 /* Bit 31 of a DIRECT entry's arity word (either way): the latched callee may
  * be entered from compiled code without the runtime. Set by the latch exactly
  * when rtEntersWithoutScope says so of the function object — a compiled
