@@ -31,7 +31,9 @@ bool isSealedDirectMethodCall(const il::Instruction& inst, const il::Module& mod
                               const std::vector<uint8_t>& isMutatedMethodKey);
 
 // Inlines small non-capturing helper functions (`Op::Call` and sealed
-// `Op::MethodCall`) into functions containing loops.
+// `Op::MethodCall`) into functions containing loops (and the functions their
+// loops call), and tiny leaves (MathUtils.clamp) into every other function.
+// The module facts it reads are inline_small_module.cpp's.
 bool inlineSmallFunctions(il::Module& module, const DirectMethodTable* directMethods = nullptr);
 
 }  // namespace bronze::lower
