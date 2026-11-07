@@ -192,6 +192,18 @@ std::vector<ReadRun> findReadRuns(const il::Block& block, const std::vector<std:
     return runs;
 }
 
+// Is `value` the result of a read in `block` — the producers whose raw unbox
+// the verifier accepts ahead of its `is.number`? A value defined elsewhere is
+// not a UseGuard candidate of this block and answers false.
+bool definedByRead(const il::Block& block, il::ValueId value) {
+    for (const il::Instruction& inst : block.instructions) {
+        if (inst.result != value) continue;
+        return inst.op == il::Op::PropGet || inst.op == il::Op::ElemGet || inst.op == il::Op::EnvGet ||
+               inst.op == il::Op::EnvGetTdz || inst.op == il::Op::GlobalGet;
+    }
+    return false;
+}
+
 }  // namespace
 
 uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::string>& keys,
@@ -231,9 +243,28 @@ uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::strin
         const size_t firstInRun = p;
         while (p < points.size() && points[p] <= guardIndex) ++p;
         const size_t count = p - firstInRun;
+        // A merged point's values are unboxed where they are defined, ahead of
+        // their test (guard_region_build.cpp). That is a certificate only for a
+        // READ, whose bits the verifier accepts as tested later
+        // (verifier_proofs.cpp, "inherently certifiable"); any other producer —
+        // a dynamic `xor`, which a BigInt pair makes a BigInt — must be tested
+        // before its raw unbox, so a run holding one keeps its points.
+        bool readsOnly = true;
+        for (size_t k = firstInRun; k < p && readsOnly; ++k) {
+            for (const Candidate& cand : candidates) {
+                if (cand.kind != CandidateKind::UseGuard || cand.guardBlock != block ||
+                    cand.guardIndex != points[k]) {
+                    continue;
+                }
+                if (!definedByRead(src, cand.value)) {
+                    readsOnly = false;
+                    break;
+                }
+            }
+        }
         // One point inside a run is one point either way, and merging it would
         // pay an `is.dense_array` for nothing.
-        if (count < 2) {
+        if (count < 2 || !readsOnly) {
             for (size_t k = firstInRun; k < p; ++k) {
                 kept.push_back(points[k]);
                 keptGuards.push_back(RegionPlan::RunGuard{});

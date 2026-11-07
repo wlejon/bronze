@@ -784,6 +784,31 @@ Value rtFunctionSingletonAt(uint32_t index, bronze_fn_code expect) {
     return entry.value;
 }
 
+// The thread's default realm is made lazily (realm.cpp), sometimes in the
+// middle of a program: an unresolved name's ReferenceError asks for the
+// global object. The compiled singletons made before it were keyed with
+// realm 0, and a later lookup asks with the new realm's slot, so without
+// this a declared function would be made a second time and `L === L` fail
+// across the throw. They become the default realm's: they ran in it.
+// Their objects keep realm slot 0 ("every realm's", fn.h), as any function
+// made before the realm does.
+void rtAdoptPreRealmFunctionSingletons(uint32_t slot) {
+    if (!g_threadModules || slot == 0) return;
+    ThreadModuleState& s = *g_threadModules;
+    for (size_t i = 0; i < s.functionSingletons.size(); ++i) {
+        SingletonEntry& entry = s.functionSingletons[i];
+        if (entry.realm != 0 || !entry.value.isObject()) continue;
+        auto* fn = entry.value.asObject<FunctionHeader>();
+        if (fn->isNativeCode()) continue;
+        const SingletonKey oldKey{reinterpret_cast<const void*>(entry.code), 0};
+        auto it = s.functionSingletonIndex.find(oldKey);
+        if (it == s.functionSingletonIndex.end() || it->second != i) continue;
+        s.functionSingletonIndex.erase(it);
+        s.functionSingletonIndex.emplace(SingletonKey{oldKey.code, slot}, i);
+        entry.realm = slot;
+    }
+}
+
 extern "C" {
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,

@@ -92,6 +92,9 @@ void rtTeardownThreadState();
 // Hand the host globals registered before the thread had a realm to the
 // default realm as it is made (realm.cpp; Realm::hostGlobals).
 void rtAdoptPreRealmHostGlobals(::bronze::Realm& realm);
+// Re-key the compiled function singletons made before the default realm to
+// its slot (rt_state.cpp).
+void rtAdoptPreRealmFunctionSingletons(uint32_t slot);
 // The values of those registrations, for rt_state.cpp's root source.
 void rtVisitPreRealmHostGlobals(const Heap::RootVisitor& visit);
 

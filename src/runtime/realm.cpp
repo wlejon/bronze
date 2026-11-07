@@ -280,6 +280,7 @@ Realm* rtDefaultRealm() {
         assignSlot(r);
         syncTlsRealmSlot();
         runtime::rtAdoptPreRealmHostGlobals(*r);
+        runtime::rtAdoptPreRealmFunctionSingletons(r->slot());
         r->initGlobalObject(Value::fromUndefined());
     }
     return g_defaultRealm;
