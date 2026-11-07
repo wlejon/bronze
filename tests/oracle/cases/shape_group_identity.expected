@@ -1,0 +1,20 @@
+warm 4558500
+order 30
+order 30
+alt 8024000
+missing NaN
+extra 30
+proto 174
+getter 111 1
+readd 66
+deleted NaN
+again 8163250
+store {"a":2999,"b":3000,"c":3001,"d":3002}
+readonly {"a":1,"b":2,"c":7,"d":4}
+frozen {"a":0,"b":0,"c":0,"d":0}
+setter {"a":5,"b":-1,"c":7,"d":8} 6
+after {"a":9,"b":8,"c":7,"d":6}
+two 17980000
+mixed 10
+mixget -198
+class 60000

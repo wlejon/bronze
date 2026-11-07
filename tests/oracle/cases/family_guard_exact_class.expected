@@ -1,0 +1,19 @@
+warm 2.5,4.375,2.75,2.625
+add 37
+add-after 1,2,30,4 _x|_y|_z|_w|extra
+delete NaN
+delete-after 1,2,,4 _x|_y|_w
+accessor 106
+accessor-hits 1
+frozen-field true
+frozen-field-after 10,11,3,4 _x|_y|_z|_w
+freeze true
+freeze-after 20,21,3,4 _x|_y|_z|_w
+proto set 32 -1 30,31,-1,33
+getter-mutates 1,2,3,4 _x|_y|_z|extra2|_w
+alias 0.5,0.5,0.5,-0.5 _x|_y|_z|_w
+other-order 1,2,3,4 _x|_y|_z|_w
+plain 5 6 7 8
+gc 10
+gc-after 40,41,42,43 _x|_y|_z|_w
+late-fields 9,8,7,6 _x|_y|_z|_w|late0|late1|late2|late3|late4|late5|late6|late7|late8|late9|late10|late11|late12|late13|late14|late15|late16|late17|late18|late19

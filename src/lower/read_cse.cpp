@@ -243,7 +243,9 @@ std::optional<std::vector<uint8_t>> getterKeys(const il::Module& module) {
     for (const il::Function& fn : module.functions) {
         const std::vector<DefSite> defs = computeDefSites(fn);
         auto defOf = [&](il::ValueId v) -> const il::Instruction* {
-            if (v >= defs.size() || defs[v].block == il::kNoBlock) return nullptr;
+            // A function parameter has no block, a block parameter no index:
+            // neither is an instruction.
+            if (v >= defs.size() || defs[v].block == il::kNoBlock || defs[v].index == UINT32_MAX) return nullptr;
             return &fn.blocks[defs[v].block].instructions[defs[v].index];
         };
         auto isOp = [&](il::ValueId v, il::Op op) {
