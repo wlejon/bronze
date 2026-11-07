@@ -537,6 +537,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
 
 void IlLowering::begin_block_proofs(uint32_t block_id) {
     active_dense_arrays_.clear();
+    number_array_claims_.clear();
     dense_array_cursors_.clear();
     const auto it = block_dense_proofs_.find(block_id);
     if (it == block_dense_proofs_.end()) return;
@@ -564,13 +565,23 @@ void IlLowering::get_dense_array_cursor(uint32_t arr_id, Value* obj_val, Builder
     dense_array_cursors_[arr_id] = DenseArrayCursor{cur_bb, out_block, out_head};
 }
 
+Value* IlLowering::number_array_claim(uint32_t arr_id, uint32_t index) const {
+    const auto it = number_array_claims_.find(arr_id);
+    return it != number_array_claims_.end() && index <= it->second.first ? it->second.second : nullptr;
+}
+
+void IlLowering::note_number_array_claim(uint32_t arr_id, uint32_t max_index, Value* claim) {
+    number_array_claims_[arr_id] = {max_index, claim};
+}
+
 void IlLowering::invalidate_dense_array_proofs() {
     active_dense_arrays_.clear();
+    number_array_claims_.clear();
     dense_array_cursors_.clear();
 }
 
 void IlLowering::after_instruction_proofs(const BronzeInstruction& inst_ast) {
-    if (active_dense_arrays_.empty() && dense_array_cursors_.empty()) return;
+    if (active_dense_arrays_.empty() && dense_array_cursors_.empty() && number_array_claims_.empty()) return;
     if (is_pure_or_proven_read(inst_ast, active_dense_arrays_, prop_lowering_)) return;
     invalidate_dense_array_proofs();
 }

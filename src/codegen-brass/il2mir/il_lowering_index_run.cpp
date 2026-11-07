@@ -107,6 +107,12 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             }
             Value* all_ok = nullptr;
             std::unordered_map<uint32_t, std::pair<Value*, Value*>> recv_cursors;
+            // A receiver an `is.number_array` claim covers (the guard region's
+            // claim in front of a kernel's reads) is an Array with every
+            // element read in bounds and a Number, no hole among them: the
+            // claim is its guard, and its elements block is found on the
+            // fast path.
+            std::vector<uint32_t> claimed_recvs;
             for (RecvGroup& g : groups) {
                 if (auto it = recv_cursors.find(g.recv_id); it != recv_cursors.end()) {
                     g.block = it->second.first;
@@ -117,6 +123,12 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 uint32_t max_for_recv = g.max_idx;
                 for (const RecvGroup& o : groups) {
                     if (o.recv_id == g.recv_id) max_for_recv = std::max(max_for_recv, o.max_idx);
+                }
+                if (Value* claim = number_array_claim(g.recv_id, max_for_recv)) {
+                    all_ok = all_ok ? b.build_and(all_ok, claim) : claim;
+                    recv_cursors[g.recv_id] = {nullptr, nullptr};
+                    claimed_recvs.push_back(g.recv_id);
+                    continue;
                 }
                 Value* ok = nullptr;
                 prop_lowering_.emit_dense_array_guard(b, obj, max_for_recv, /*writable=*/false, ok, g.block, g.head,
@@ -142,6 +154,12 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             b.build_br_if(all_ok, bb_fast, bb_slow);
 
             b.position_at_end(bb_fast);
+            for (uint32_t rid : claimed_recvs) {
+                Value* block = nullptr;
+                Value* head = nullptr;
+                prop_lowering_.load_dense_array_cursor(b, recv_objs[rid], block, head);
+                recv_cursors[rid] = {block, head};
+            }
             std::vector<Value*> fast_args;
             fast_args.reserve(get_count);
             for (size_t j = inst_idx; j < run_end; ++j) {
@@ -150,7 +168,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 parse_prop_index(inst, elem_idx);
                 apply_loc(inst);
                 const auto [block, head] = recv_cursors[inst.operands[0]];
-                const bool check_hole = !is_hole_insensitive(inst.result_id);
+                const bool claimed = std::find(claimed_recvs.begin(), claimed_recvs.end(), inst.operands[0]) !=
+                                     claimed_recvs.end();
+                const bool check_hole = !claimed && !is_hole_insensitive(inst.result_id);
                 Value* v = prop_lowering_.load_proven_dense_array_elem(b, block, head, elem_idx, check_hole,
                                                                        inst.number_bits ? Type::f64() : Type::i64());
                 fast_args.push_back(inst.number_bits ? v : ensure_type(v, merge_params[j - inst_idx]->type(), b));

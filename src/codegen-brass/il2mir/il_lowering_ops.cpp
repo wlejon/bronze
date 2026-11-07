@@ -630,6 +630,7 @@ bool lower_ops_instruction(
             // receiver test), the receiver is already an Array in bounds.
             const bool proven = lowering->is_proven_dense_array(inst_ast.operands[0], max_index);
             res_val = lowering->prop_lowering().lower_is_number_array(b, src, max_index, proven);
+            lowering->note_number_array_claim(inst_ast.operands[0], max_index, res_val);
             return true;
         }
 

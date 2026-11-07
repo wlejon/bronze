@@ -152,6 +152,12 @@ public:
     bool is_proven_dense_array(uint32_t arr_id, uint32_t index) const;
     void get_dense_array_cursor(uint32_t arr_id, Value* obj_val, Builder& b, Value*& out_block, Value*& out_head);
     void invalidate_dense_array_proofs();
+    // An `is.number_array` answer lowered earlier in this block, standing
+    // while the proofs do (nothing since could have written an element): the
+    // i32 claim, when it covers `index`, or null. A read run behind it
+    // tests the claim instead of a dense guard (il_lowering_index_run.cpp).
+    Value* number_array_claim(uint32_t arr_id, uint32_t index) const;
+    void note_number_array_claim(uint32_t arr_id, uint32_t max_index, Value* claim);
     // Environment record access, inline (il_env_lowering.cpp): `depth`
     // parent hops from `env`, then slot `index`. The TDZ read calls
     // bronze_env_get_tdz only for the uninitialized marker, which throws.
@@ -278,6 +284,7 @@ private:
     std::unordered_set<uint32_t> string_literal_ids_;
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
+    std::unordered_map<uint32_t, std::pair<uint32_t, Value*>> number_array_claims_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;
     std::unordered_map<uint32_t, TaCursor> ta_cursors_;
     std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;

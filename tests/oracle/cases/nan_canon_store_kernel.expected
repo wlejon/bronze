@@ -1,0 +1,97 @@
+m0 NaN NaN NaN NaN NaN NaN NaN NaN
+m1 NaN NaN NaN NaN NaN NaN NaN NaN
+m2 10 15 -1 6 10 15 -3 1.5
+m3 0 25 -5 -0 0 25 -5 -Infinity
+m4 0 0 0 -0 0 0 0 NaN
+m5 NaN NaN Infinity NaN NaN NaN -0 0
+m6 NaN NaN Infinity -Infinity NaN NaN Infinity NaN
+m7 Infinity Infinity NaN Infinity Infinity Infinity Infinity NaN
+m8 Infinity Infinity 1e+308 Infinity Infinity Infinity -10 1e-307
+m9 NaN NaN NaN NaN NaN NaN -2 NaN
+m10 NaN NaN NaN NaN NaN NaN -2 NaN
+m11 NaN NaN NaN NaN NaN NaN -2 NaN
+m12 NaN NaN NaN NaN NaN NaN -2 NaN
+m13 NaN NaN NaN NaN NaN NaN -2 NaN
+m14 NaN NaN NaN NaN NaN NaN -2 NaN
+m15 NaN NaN NaN NaN NaN NaN NaN NaN
+m16 NaN NaN NaN NaN NaN NaN NaN NaN
+m17 NaN NaN NaN NaN NaN NaN NaN NaN
+m18 NaN NaN NaN NaN NaN NaN NaN NaN
+p 6 5 -1
+p -0 5 -5
+p -0 0 0
+p NaN Infinity Infinity
+p -Infinity NaN Infinity
+p Infinity -Infinity NaN
+p Infinity 1e+308 1e+308
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+p NaN NaN NaN
+f 6 5 1 0.6666666666666666
+g 6 5 1 0.6666666865348816
+a 6 5 1 0.6666666666666666
+f -0 5 5 -0
+g -0 5 5 -0
+a -0 5 5 -0
+f -0 0 -0 NaN
+g -0 0 -0 NaN
+a -0 0 -0 NaN
+f NaN Infinity -Infinity Infinity
+g NaN Infinity -Infinity Infinity
+a NaN Infinity -Infinity Infinity
+f -Infinity NaN -Infinity NaN
+g -Infinity NaN -Infinity NaN
+a -Infinity NaN -Infinity NaN
+f Infinity -Infinity NaN NaN
+g Infinity -Infinity NaN NaN
+a Infinity -Infinity NaN NaN
+f Infinity 1e+308 -1e+308 1e+307
+g Infinity Infinity -Infinity Infinity
+a Infinity 1e+308 -1e+308 1e+307
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+f NaN NaN NaN NaN
+g NaN NaN NaN NaN
+a NaN NaN NaN NaN
+nans 8 NaN,NaN ["NaN","NaN","NaN","NaN"]
+set 1 true true -1
