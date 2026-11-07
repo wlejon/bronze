@@ -45,7 +45,11 @@ function sumLoop(vs) {
     return s;
 }
 
-function show(v) { return Object.is(v, -0) ? '-0' : String(v); }
+function show(v) {
+    if (Object.is(v, -0)) return '-0';
+    if (typeof v === 'number' && Number.isFinite(v) && !Number.isInteger(v * 16)) return v.toFixed(12);
+    return String(v);
+}
 const out = [];
 for (const o of ['A', 'B', 'C', 'D']) {
     out.push(o + ' ' + pick(o, 0.25, 0.5, 2).map(show).join(','));
