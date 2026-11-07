@@ -372,7 +372,7 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
         return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
                                                  inst_ast.is_family || poly);
     }
-    return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
+    return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
 }
 
 // A write's ordinary sequence: the way-0 inline store (with a constructor's
@@ -493,7 +493,7 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     b.build_br(bb_merge, {fast_val});
 
     b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr);
+    Value* slow_val = lower_prop_get(b, obj, key_index, site);
     b.build_br(bb_merge, {slow_val});
 
     b.position_at_end(bb_merge);
@@ -577,7 +577,7 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     }
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr)});
+    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
 
     b.position_at_end(bb_merge);
     return result;
@@ -754,8 +754,7 @@ bool lower_property_instruction(
                             return true;
                         }
                     }
-                    res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index,
-                                                           site ? prop_lowering.site_ptr(b, site) : nullptr);
+                    res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
                     lowering->invalidate_dense_array_proofs();
                     return true;
                 }

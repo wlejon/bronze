@@ -68,6 +68,14 @@ inline void noteKeyAddedToPrototype(bool usedAsPrototype, PropertyKey key) noexc
     if (usedAsPrototype && keyCouldBeArrayIndex(key)) tripArrayIndexHazard("index key added to a prototype");
 }
 
+struct InlineCache;
+// Every write to an entry that is a site's way 0 tells that module's packed
+// copy (bronze_abi_layout.h, "the HOT array", ic_hot.cpp): the entry's shape
+// and slot words, which is what generated code's way-0 guards read. Any other
+// entry (a later way, an element cache's, one in a table no module
+// registered) is left alone after one range lookup.
+void rtIcHotNoteWrite(const InlineCache* entry) noexcept;
+
 // A monomorphic property cache: four plain words, none of which the collector
 // has to touch. `cached_depth` is how many prototype links to follow from the
 // receiver before reading `cached_slot` — 0 for an own property, so this one
@@ -168,6 +176,7 @@ struct InlineCache {
         cached_slot = slot;
         cached_depth = depth;
         cached_epoch = protoMutationEpoch();
+        rtIcHotNoteWrite(this);
     }
 
     // The same fill for a SET site, which additionally has to say whether the
@@ -179,6 +188,7 @@ struct InlineCache {
         cached_slot = slot;
         cached_depth = doubleSlot ? BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG : 0u;
         cached_epoch = protoMutationEpoch();
+        rtIcHotNoteWrite(this);
     }
 
     void fillAccessor(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
@@ -186,6 +196,7 @@ struct InlineCache {
         cached_slot = slot;
         cached_depth = depth | BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
         cached_epoch = protoMutationEpoch();
+        rtIcHotNoteWrite(this);
     }
 
     void fillAbsent(Shape* receiverShape) noexcept {
@@ -193,6 +204,7 @@ struct InlineCache {
         cached_slot = 0;
         cached_depth = BRONZE_ABI_IC_DEPTH_ABSENT_FLAG;
         cached_epoch = protoMutationEpoch();
+        rtIcHotNoteWrite(this);
     }
 
     void fillArrayMethod(uint32_t methodId) noexcept {
@@ -200,6 +212,7 @@ struct InlineCache {
         cached_slot = methodId;
         cached_depth = 0;
         cached_epoch = 0;
+        rtIcHotNoteWrite(this);
     }
 };
 

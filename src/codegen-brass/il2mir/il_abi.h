@@ -65,6 +65,14 @@ constexpr int32_t kBronzeTlsModuleDeltasOff = BRONZE_TLS_MODULE_DELTAS_OFF;
 // One inline-cache SITE in the module's `__bronze_ic_table`. The table is
 // indexed by site, and a helper takes the address of a site's way 0.
 constexpr uint32_t kBronzeIcSiteSize = BRONZE_ABI_IC_SITE_SIZE;
+// Where the module's packed way-0 rows (bronze_abi_layout.h, "the HOT
+// array") start, relative to its IC table: right after it, at the next line.
+// The backend lays the two out so (brass_backend_sections.cpp, both 64-byte
+// aligned), so a row is addressed off the same base as its site.
+constexpr int64_t ic_hot_table_offset(uint64_t site_count) {
+    const uint64_t n = site_count != 0 ? site_count : 1;
+    return static_cast<int64_t>((n * BRONZE_ABI_IC_SITE_SIZE + 63) & ~uint64_t{63});
+}
 // The plain object's slots (ObjectHeader) and a heap block's header, which the
 // inline property paths address an overflow slot through.
 constexpr int32_t kBronzeObjOverflowOffset = BRONZE_ABI_OBJ_OVERFLOW_OFFSET;

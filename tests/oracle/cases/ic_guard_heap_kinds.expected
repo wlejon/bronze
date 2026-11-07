@@ -1,0 +1,23 @@
+string: undefined 3 undefined undefined undefined undefined | truetrue
+empty-array: undefined 0 undefined undefined undefined 41 | truetrue
+array: undefined 2 undefined undefined undefined 41 | truetrue
+array-named: nx 3 undefined undefined undefined 41 | truetrue
+function: fx 0 undefined undefined undefined 41 | truetrue
+class: kx 0 undefined undefined undefined 41 | truetrue
+bound: undefined 0 undefined undefined undefined 41 | truetrue
+typed-array: tx 4 undefined undefined undefined 41 | truetrue
+arraybuffer: undefined undefined undefined undefined undefined 41 | truetrue
+dataview: undefined undefined undefined undefined undefined 41 | truetrue
+regexp: undefined undefined 3 undefined undefined 41 | truetrue
+bigint: undefined undefined undefined undefined undefined undefined | truetrue
+symbol: undefined undefined undefined undefined undefined undefined | truetrue
+proxy: px plen undefined undefined undefined 41 | truetrue
+map: undefined undefined undefined 1 undefined 41 | truetrue
+set: undefined undefined undefined 3 undefined 41 | truetrue
+date: undefined undefined undefined undefined undefined 41 | truetrue
+arguments: undefined 2 undefined undefined undefined 41 | truetrue
+boolean: undefined undefined undefined undefined undefined undefined | truetrue
+number: undefined undefined undefined undefined undefined undefined | truetrue
+plain: 1 2 3 4 undefined 41 | truetrue
+loop: undefined,3;undefined,0;undefined,1;41,0;41,4;41,undefined;41,undefined;41,undefined;undefined,undefined;41,plen;41,undefined;41,undefined;1,99;undefined,3;undefined,0;undefined,1;41,0;41,4;41,undefined;41,undefined;41,undefined;undefined,undefined;41,plen;41,undefined;41,undefined;1,99;undefined,3;undefined,0;undefined,1;41,0;41,4;41,undefined;41,undefined;41,undefined;undefined,undefined;41,plen;41,undefined;41,undefined;1,99;
+shared-proto: undefinedplain-extraundefined|undefined,plain-extra,undefined|5,re-extra,undefined|undefined,ta-extra,undefined|undefined,ab-extra,undefined|undefined,plain-extra,undefined|5,re-extra,undefined|undefined,ta-extra,undefined|undefined,ab-extra,undefined|undefined,plain-extra,undefined|5,re-extra,undefined|undefined,ta-extra,undefined|undefined,ab-extra,undefined|undefined,plain-extra,undefined|5,re-extra,undefined|undefined,ta-extra,undefined|undefined,ab-extra,undefined

@@ -220,7 +220,10 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
                                  const std::vector<Value*>& args, Value* site) {
     const BuiltinTarget target = builtin_target(lowering, inst);
     if (target.op == BuiltinOp::None || !site) return nullptr;
-    Value* method = lowering->prop_lowering().lower_prop_get_mono(b, recv, inst.index, IcSite{site, 0});
+    // A method site read as a property keeps no packed row (IcSite::packed).
+    IcSite method_site = lowering->prop_lowering().ic_site_ref(b, inst.ic_index);
+    method_site.packed = false;
+    Value* method = lowering->prop_lowering().lower_prop_get_mono(b, recv, inst.index, method_site);
     return lower_builtin_call(lowering, target, inst.index, b, method, recv, args);
 }
 

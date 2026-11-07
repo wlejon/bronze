@@ -1,0 +1,15 @@
+warm0: A.m,A.m,A.k,undefined,undefined
+warm1: A.m,A.m,A.k,undefined,undefined
+warm2: A.m,A.m,A.k,undefined,undefined
+warm3: A.m,A.m,A.k,undefined,undefined
+warm4: A.m,A.m,A.k,undefined,undefined
+shadow: B.m,B.m,A.k,undefined,undefined
+replace-base: B.m,B.m,A.k,undefined,undefined
+unshadow: A.m2,A.m2,A.k,undefined,undefined
+absent-appears: A.m2,A.m2,A.k,zA,zA
+absent-shadow: A.m2,A.m2,A.k,zB,zB
+setproto-recv: D.m,A.m2,D.k,undefined,zB
+setproto-mid: D.m,D.m,D.k,undefined,zB
+deleted: D.m,D.m,D.k,undefined,undefined
+null-proto: D.m/D.k/undefined;own/nk/undefined;D.m/D.k/undefined;own/nk/undefined;D.m/D.k/undefined;own/nk/undefined;
+epoch: 1650

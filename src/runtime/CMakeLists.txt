@@ -115,6 +115,7 @@ bronze_add_module(runtime
         rt_numeric.cpp
         rt_key.cpp
         elem_ic.cpp
+        ic_hot.cpp
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp
@@ -199,6 +200,7 @@ bronze_add_module(runtime
         ../../tests/runtime/dictionary_test.cpp
         ../../tests/runtime/slot_repr_test.cpp
         ../../tests/runtime/object_test.cpp
+        ../../tests/runtime/ic_hot_test.cpp
         ../../tests/runtime/object_proto_chain_test.cpp
         ../../tests/runtime/primitive_prototype_test.cpp
         ../../tests/runtime/to_primitive_test.cpp

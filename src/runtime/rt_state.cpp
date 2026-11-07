@@ -40,6 +40,7 @@
 #include "runtime/native_registry.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/ic_hot.h"
 #include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
@@ -360,6 +361,7 @@ void rtInvalidateGlobalCaches() {
 }
 
 void rtDropModuleCellsWithin(const void* begin, size_t size) {
+    if (begin && size != 0) rtIcHotDropWithin(begin, size);
     if (!g_threadModules || !begin || size == 0) return;
     ThreadModuleState& s = *g_threadModules;
     const auto lo = reinterpret_cast<uintptr_t>(begin);

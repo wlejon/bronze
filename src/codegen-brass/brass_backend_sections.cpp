@@ -1,6 +1,7 @@
 #include "codegen-brass/brass_backend_sections.h"
 
 #include "abi/bronze_abi.h"
+#include "codegen-brass/il2mir/il_abi.h"
 #include "support/source.h"
 
 #include <brass/gc/stack_map.hpp>
@@ -522,13 +523,25 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_global_cache"), dataIdx, cacheOffset,
                  cacheBytes, SymbolBinding::Local);
 
-    dataSec.align_to(8);
+    // Line-aligned, and the packed rows a fixed distance after it
+    // (il2mir::ic_hot_table_offset): generated code reads a row off the
+    // table's base.
+    dataSec.align_to(64);
     const size_t icTableOffset = dataSec.data.size();
     const size_t icSites = std::max<size_t>(module.icSiteCount, 1);
     const size_t icTableBytes = icSites * BRONZE_ABI_IC_SITE_SIZE;
     dataSec.data.resize(icTableOffset + icTableBytes, 0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_table"), dataIdx, icTableOffset,
                  icTableBytes, SymbolBinding::Local);
+
+    // Every site's way-0 shape and slot words, packed in site order
+    // (bronze_abi_layout.h, "the HOT array"): what the way-0 guards read.
+    // Zero, like the table: an empty row matches no receiver.
+    const size_t icHotOffset = icTableOffset + static_cast<size_t>(il2mir::ic_hot_table_offset(icSites));
+    const size_t icHotBytes = icSites * BRONZE_ABI_IC_HOT_ENTRY_SIZE;
+    dataSec.data.resize(icHotOffset + icHotBytes, 0);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_hot"), dataIdx, icHotOffset, icHotBytes,
+                 SymbolBinding::Local);
 
     // The static-slot guards' cells (il.h `staticSiteCount`): zero is "never
     // tried", which no live shape equals, so an unpublished cell is a miss

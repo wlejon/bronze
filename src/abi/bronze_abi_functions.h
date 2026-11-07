@@ -517,6 +517,12 @@
      * whose module did not make this call (fingerprint pairing guarantees it
      * did). Registration-only, like the value-cell spans it rides on. */ \
     X(bronze_register_method_ic_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_PU64, BRONZE_ABI_U64)) \
+    /* The module's packed way-0 copies (bronze_abi_layout.h, "the HOT
+     * array"), handed over at module init: `siteCount` sites at `icTable`
+     * and their rows at `hot`, both this instance's. Registration-only: the
+     * runtime keeps the rows current on every way-0 write it makes into those
+     * sites, and forgets the range when the instance goes. */ \
+    X(bronze_register_ic_hot, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     /* The module's proven class LAYOUTS, handed over at module init so that
      * `bronze_family_stamp` can recognise a shape as an instance of one.
      *

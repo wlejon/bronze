@@ -66,13 +66,21 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
     BasicBlock* entry = b.append_block("entry");
     Value* obj = b.add_block_param(entry, Type::i64());
     Value* key_id = b.add_block_param(entry, Type::i32());
-    Value* site = b.add_block_param(entry, Type::ptr());
+    // Both addresses come as integers: an answer from the thread's table is
+    // an address formed from the TLS base, and the hit block takes either.
+    Value* site = b.add_block_param(entry, Type::i64());
+    // The site's packed way-0 row (bronze_abi_layout.h, "the HOT array"):
+    // way 0 is compared and read there, and an install at way 0 writes both.
+    Value* row = b.add_block_param(entry, Type::i64());
     const std::string p = "pfast";
     BasicBlock* miss = b.append_block(p + "_miss");
     BasicBlock* object = b.append_block(p + "_object");
     BasicBlock* hit = b.append_block(p + "_hit");
     Value* word = b.add_block_param(hit, Type::i64());
-    Value* word_epoch = b.add_block_param(hit, Type::i64());
+    // The answering entry (a way of the site, or the table's), whose epoch
+    // only an answer past the receiver's own slots reads: an own hit at way 0
+    // touches the packed row's line and not the site's.
+    Value* entry_at = b.add_block_param(hit, Type::i64());
     BasicBlock* own = b.append_block(p + "_own");
     BasicBlock* not_own = b.append_block(p + "_notown");
     BasicBlock* chain = b.append_block(p + "_chain");
@@ -97,7 +105,8 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
         const int32_t at = w * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
         BasicBlock* found = b.append_block(p + "_found" + std::to_string(w));
         b.position_at_end(ways[w]);
-        Value* way_shape = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SHAPE_OFFSET);
+        Value* way_shape = w == 0 ? b.build_load(Type::i64(), row, BRONZE_ABI_IC_HOT_SHAPE_OFFSET)
+                                  : b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SHAPE_OFFSET);
         BasicBlock* next = ways[w];
         if (w + 1 < BRONZE_ABI_IC_WAYS) {
             next = ways[w + 1];
@@ -112,8 +121,9 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
             b.build_br_if(b.build_eq(way_shape, imm(b, 0)), miss, mega);
         }
         b.position_at_end(found);
-        b.build_br(hit, {b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SLOT_OFFSET),
-                         b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_EPOCH_OFFSET)});
+        Value* way_word = w == 0 ? b.build_load(Type::i64(), row, BRONZE_ABI_IC_HOT_SLOT_OFFSET)
+                                 : b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SLOT_OFFSET);
+        b.build_br(hit, {way_word, at == 0 ? site : b.build_add(site, imm(b, at))});
     }
 
     // The thread's (shape, key) table, indexed as rt_prop_mega.cpp indexes it.
@@ -129,9 +139,8 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
         Value* match = b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), shape),
                                    b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * 8), key));
         Value* mword = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
-        Value* mepoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
         if (!to_front) {
-            b.build_br_if(match, hit, {mword, mepoch}, miss, {});
+            b.build_br_if(match, hit, {mword, at}, miss, {});
         } else {
             // An entry is about its (shape, key) pair alone (rt_prop_mega.h),
             // so the table's is this site's too: installed at way 0 as the
@@ -145,8 +154,9 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
             b.position_at_end(front);
             Value* sentinel = b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET),
                                          imm(b, static_cast<int64_t>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD)));
-            b.build_br_if(sentinel, hit, {mword, mepoch}, shift, {});
+            b.build_br_if(sentinel, hit, {mword, at}, shift, {});
             b.position_at_end(shift);
+            Value* mepoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
             constexpr int32_t kEntry = static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
             static_assert(BRONZE_ABI_IC_ENTRY_SIZE == 24, "an entry is three words");
             for (int w = BRONZE_ABI_IC_WAYS - 1; w > 0; --w) {
@@ -157,7 +167,9 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
             b.build_store(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET, shape);
             b.build_store(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET, mword);
             b.build_store(Type::i64(), site, BRONZE_ABI_IC_EPOCH_OFFSET, mepoch);
-            b.build_br(hit, {mword, mepoch});
+            b.build_store(Type::i64(), row, BRONZE_ABI_IC_HOT_SHAPE_OFFSET, shape);
+            b.build_store(Type::i64(), row, BRONZE_ABI_IC_HOT_SLOT_OFFSET, mword);
+            b.build_br(hit, {mword, site});
         }
     }
 
@@ -172,6 +184,7 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
     // Every other answer holds while the entry's epoch is the thread's.
     b.position_at_end(not_own);
     Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
+    Value* word_epoch = b.build_load(Type::i64(), entry_at, BRONZE_ABI_IC_EPOCH_OFFSET);
     b.build_br_if(b.build_eq(word_epoch, epoch), chain, miss);
 
     b.position_at_end(chain);

@@ -40,7 +40,37 @@ IcSite PropertyLoweringHelper::ic_site_ref(Builder& b, uint32_t ic_index) {
         table = b.build_func_addr(ic_table_sym_);
         if (module_delta_fn_) table = b.build_add(table, module_delta_fn_(b));
     }
-    return {table, static_cast<int32_t>(static_cast<uint64_t>(ic_index) * kBronzeIcSiteSize)};
+    return {table, static_cast<int32_t>(static_cast<uint64_t>(ic_index) * kBronzeIcSiteSize), ic_index};
+}
+
+// The site's packed way-0 row (bronze_abi_layout.h, "the HOT array"): the
+// runtime copies way 0's shape and slot words there on every fill, so the
+// guard's two loads come from a line holding four sites' rows rather than
+// one site's four ways.
+int32_t PropertyLoweringHelper::hot_row_off(const IcSite& site) const {
+    return static_cast<int32_t>(ic_hot_table_offset(ic_site_count_) +
+                                static_cast<int64_t>(site.index) * BRONZE_ABI_IC_HOT_ENTRY_SIZE);
+}
+
+// A row has way 0's layout (bronze_abi_layout.h): a site that keeps none is
+// its own row.
+static_assert(BRONZE_ABI_IC_HOT_SHAPE_OFFSET == BRONZE_ABI_IC_SHAPE_OFFSET &&
+                  BRONZE_ABI_IC_HOT_SLOT_OFFSET == BRONZE_ABI_IC_SLOTWORD_OFFSET,
+              "a row reads as the first two words of way 0");
+
+Value* PropertyLoweringHelper::hot_row_ptr(Builder& b, const IcSite& site) {
+    if (!site.packed) return site_ptr(b, site);
+    return b.build_add(site.base, b.build_iconst_i64(hot_row_off(site)));
+}
+
+Value* PropertyLoweringHelper::way0_shape(Builder& b, const IcSite& site) {
+    const int32_t row = site.packed ? hot_row_off(site) : site.off;
+    return b.build_load(Type::i64(), site.base, row + BRONZE_ABI_IC_HOT_SHAPE_OFFSET);
+}
+
+Value* PropertyLoweringHelper::way0_slot_word(Builder& b, const IcSite& site) {
+    const int32_t row = site.packed ? hot_row_off(site) : site.off;
+    return b.build_load(Type::i64(), site.base, row + BRONZE_ABI_IC_HOT_SLOT_OFFSET);
 }
 
 Value* PropertyLoweringHelper::site_ptr(Builder& b, const IcSite& site) {
@@ -61,9 +91,12 @@ Value* PropertyLoweringHelper::runtime_key(Builder& b, uint32_t key_index) {
     return b.build_load(Type::i32(), map_addr, static_cast<int32_t>(key_index * sizeof(uint32_t)));
 }
 
-Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t key_index, Value* ic_entry) {
-    if (ic_entry && ic_stubs_) return b.build_call(kPropGetStub, Type::i64(), {obj, runtime_key(b, key_index), ic_entry});
-    Value* entry = ic_entry ? ic_entry : b.build_iconst_i64(0);
+Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
+    if (site && ic_stubs_) {
+        return b.build_call(kPropGetStub, Type::i64(),
+                            {obj, runtime_key(b, key_index), site_ptr(b, site), hot_row_ptr(b, site)});
+    }
+    Value* entry = site ? site_ptr(b, site) : b.build_iconst_i64(0);
     return b.build_call("bronze_prop_get", Type::i64(), {obj, runtime_key(b, key_index), entry});
 }
 
@@ -226,7 +259,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
             b.build_br(bb_merge, {poly_val});
             b.position_at_end(bb_slow);
         }
-        Value* slow_val = lower_prop_get(b, obj, key_index, site_ptr(b, site));
+        Value* slow_val = lower_prop_get(b, obj, key_index, site);
         edges.emplace_back(b.current_block(), false);
         b.build_br(bb_merge, {slow_val});
     }
@@ -267,13 +300,13 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
         // the plain test and the shape's together.
         Value* keyed = carry->keyed(b);
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        match = b.build_eq(keyed, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset));
+        match = b.build_eq(keyed, way0_shape(b, site));
     } else {
         Value* keyed = keyed_shape(b, obj);
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        match = b.build_eq(keyed, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset));
+        match = b.build_eq(keyed, way0_shape(b, site));
     }
-    Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
+    Value* slot_word = way0_slot_word(b, site);
     b.build_br_if(b.build_and(match, b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit))), bb_own, bb_test);
 
     // The negative entry's word is the flag alone (InlineCache::fillAbsent),
@@ -290,7 +323,7 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
     b.build_br(bb_merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
 
     b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site_ptr(b, site));
+    Value* slow_val = lower_prop_get(b, obj, key_index, site);
     edges.emplace_back(b.current_block(), false);
     b.build_br(bb_merge, {slow_val});
 
@@ -366,9 +399,9 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
 
 void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
                                                   Value*& hit, Value*& slot_word) {
-    Value* cached_shape = b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset);
+    Value* cached_shape = way0_shape(b, site);
     Value* shape_match = b.build_eq(shape, cached_shape);
-    slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
+    slot_word = way0_slot_word(b, site);
     Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
     hit = plain ? b.build_and(plain, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
 }
@@ -478,8 +511,9 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     BasicBlock* bb_helper = b.append_block(prefix + "_tr_miss");
 
     b.position_at_end(bb_miss);
-    Value* cached = b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset);
-    Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
+    // Way 0's words from the packed row the guard just read.
+    Value* cached = way0_shape(b, site);
+    Value* slot_word = way0_slot_word(b, site);
     // Zero is an unfilled entry and 1 the array-method sentinel (only a read
     // site holds it, but a pointer is above both either way).
     Value* real = b.build_ugt(cached, b.build_iconst_i64(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD));

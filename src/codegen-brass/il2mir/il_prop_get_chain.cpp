@@ -68,7 +68,9 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     }
     BasicBlock* bb_tail = b.append_block(prefix + "_hit");
     Value* word = b.add_block_param(bb_tail, Type::i64());
-    Value* entry_epoch = b.add_block_param(bb_tail, Type::i64());
+    // The answering way's offset in the site, whose epoch only a not-own
+    // answer reads.
+    Value* entry_off = b.add_block_param(bb_tail, Type::i64());
     BasicBlock* bb_own = b.append_block(prefix + "_own");
     BasicBlock* bb_notown = b.append_block(prefix + "_notown");
     BasicBlock* bb_undef = b.append_block(prefix + "_undef");
@@ -87,12 +89,15 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     Value* ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* shape = carry ? carry->keyed(b) : plain_shape_or_miss(b, obj, bb_slow);
     for (int w = 0; w < ways; ++w) {
+        // Way 0's shape and slot words from its packed row (bronze_abi_layout.h,
+        // "the HOT array"); its epoch, and every later way, from the site.
         const int32_t at = w * kIcEntrySize;
-        Value* match = b.build_eq(shape, b.build_load(Type::i64(), site_at, at + kIcShapeOffset));
+        Value* way_shape = w == 0 ? way0_shape(b, site) : b.build_load(Type::i64(), site_at, at + kIcShapeOffset);
+        Value* match = b.build_eq(shape, way_shape);
         b.build_br_if(match, found[w], w + 1 < ways ? next[w] : bb_slow);
         b.position_at_end(found[w]);
-        b.build_br(bb_tail, {b.build_load(Type::i64(), site_at, at + kIcSlotWordOffset),
-                             b.build_load(Type::i64(), site_at, at + kIcEpochOffset)});
+        Value* way_word = w == 0 ? way0_slot_word(b, site) : b.build_load(Type::i64(), site_at, at + kIcSlotWordOffset);
+        b.build_br(bb_tail, {way_word, b.build_iconst_i64(at)});
         if (w + 1 < ways) b.position_at_end(next[w]);
     }
 
@@ -114,7 +119,7 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     // epoch it was filled at.
     b.position_at_end(bb_notown);
     Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* current = b.build_eq(entry_epoch, epoch);
+    Value* current = b.build_eq(b.build_load(Type::i64(), b.build_add(site_at, entry_off), kIcEpochOffset), epoch);
     Value* depth_one = nullptr;
     if (proto_first) {
         // The prototype arm first, the negative entry after it.
@@ -177,7 +182,8 @@ Value* PropertyLoweringHelper::lower_prop_get_chain(Builder& b, Value* obj, cons
     // four shapes here, so a way still holding one that stopped arriving
     // (a warm-up shape) is retaken rather than sending the shape that
     // replaced it to the table on every read.
-    Value* slow_val = b.build_call(kPropGetFrontStub, Type::i64(), {obj, runtime_key(b, key_index), site_at});
+    Value* slow_val =
+        b.build_call(kPropGetFrontStub, Type::i64(), {obj, runtime_key(b, key_index), site_at, hot_row_ptr(b, site)});
     edges.emplace_back(b.current_block(), false);
     b.build_br(bb_merge, {slow_val});
 

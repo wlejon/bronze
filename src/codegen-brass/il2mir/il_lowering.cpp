@@ -781,6 +781,15 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.method_ic_sites.size()));
                 b.build_call("bronze_register_method_ic_cells", Type::void_type(), {table_addr, sites_addr, site_count});
             }
+            // The sites' packed way-0 rows (bronze_abi_layout.h, "the HOT
+            // array"), which the way-0 guards read and only the runtime's
+            // fills keep current: registered before any site can fill.
+            if (options_.ic_site_count > 0) {
+                Value* table_addr = module_data_addr(b, "__bronze_ic_table");
+                Value* hot_addr = b.build_add(table_addr, b.build_iconst_i64(ic_hot_table_offset(options_.ic_site_count)));
+                Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.ic_site_count));
+                b.build_call("bronze_register_ic_hot", Type::void_type(), {table_addr, hot_addr, site_count});
+            }
             if (options_.enable_census && options_.census_site_count > 0) {
                 Value* out_path = b.build_func_addr(module_sym("__bronze_census_out_path"));
                 Value* sites_addr = b.build_func_addr(module_sym("__bronze_census_sites"));

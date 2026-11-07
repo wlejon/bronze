@@ -81,8 +81,8 @@ Value* PropertyLoweringHelper::lower_prop_get_fn_recv(Builder& b, Value* obj, ui
         b.position_at_end(bb_box);
         Value* plain = b.build_eq(b.build_load(Type::i32(), box_ptr, 0), b.build_iconst_i32(kPlainHeaderLow));
         Value* shape = b.build_load(Type::i64(), box_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-        Value* cached = b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_SHAPE_OFFSET);
-        Value* slot_word = b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* cached = way0_shape(b, site);
+        Value* slot_word = way0_slot_word(b, site);
         Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
         b.build_br_if(b.build_and(plain, b.build_and(b.build_eq(shape, cached), own_data)), bb_load, bb_helper);
         b.position_at_end(bb_load);
@@ -94,7 +94,7 @@ Value* PropertyLoweringHelper::lower_prop_get_fn_recv(Builder& b, Value* obj, ui
     b.build_br(bb_done, {answer});
 
     b.position_at_end(bb_helper);
-    Value* slow = lower_prop_get(b, obj, key_index, site_ptr(b, site));
+    Value* slow = lower_prop_get(b, obj, key_index, site);
     b.build_br(bb_done, {slow});
 
     b.position_at_end(bb_other);

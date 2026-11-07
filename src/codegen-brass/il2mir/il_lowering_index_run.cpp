@@ -185,8 +185,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 apply_loc(inst);
                 Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, val_map), Type::i64(), b);
                 const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
-                Value* v = prop_lowering_.lower_prop_get(b, recv, inst.index,
-                                                         site ? prop_lowering_.site_ptr(b, site) : nullptr);
+                Value* v = prop_lowering_.lower_prop_get(b, recv, inst.index, site);
                 slow_args.push_back(ensure_type(v, inst.number_bits ? Type::tagged() : merge_params[j - inst_idx]->type(), b));
             }
             // The helper reads are GC points, so a double-held read's bits
@@ -605,8 +604,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             apply_loc(inst);
             Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, slow_val_map), Type::i64(), b);
             const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
-            Value* slow_val = prop_lowering_.lower_prop_get(b, recv, inst.index,
-                                                            site ? prop_lowering_.site_ptr(b, site) : nullptr);
+            Value* slow_val = prop_lowering_.lower_prop_get(b, recv, inst.index, site);
             slow_get_vals[inst.result_id] = ensure_type(slow_val, Type::tagged(), b);
         } else if (inst.op == BronzeOp::PropSet) {
             apply_loc(inst);

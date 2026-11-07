@@ -19,6 +19,15 @@ class SpecSiteEmitter;
 struct IcSite {
     Value* base = nullptr;
     int32_t off = 0;
+    // The site's number: its packed way-0 row (bronze_abi_layout.h, "the HOT
+    // array") is at index * BRONZE_ABI_IC_HOT_ENTRY_SIZE in the hot table.
+    uint32_t index = 0;
+    // Whether way-0 guards read that row. A METHOD-call site read as a
+    // property (a speculated builtin's method read) is not: its way 0 is
+    // rewritten in method form by the call's latches, which keep no row, so
+    // its guards read the site's own first two words, which have a row's
+    // layout (and a read stub is handed the site as its row).
+    bool packed = true;
     explicit operator bool() const noexcept { return base != nullptr; }
 };
 
@@ -236,6 +245,14 @@ public:
     // The function being lowered hands in its table address, computed once
     // at its entry; unset, every site computes its own.
     void set_table_base_fn(std::function<Value*(Builder&)> fn) { table_base_fn_ = std::move(fn); }
+    // A site's way-0 shape and slot words, from its packed row
+    // (bronze_abi_layout.h, "the HOT array"), addressed off the site's own
+    // base: what every way-0 guard compares and loads. hot_row_ptr is the
+    // row's address, which the read stubs take beside the site's.
+    int32_t hot_row_off(const IcSite& site) const;
+    Value* hot_row_ptr(Builder& b, const IcSite& site);
+    Value* way0_shape(Builder& b, const IcSite& site);
+    Value* way0_slot_word(Builder& b, const IcSite& site);
     // Likewise the static-slot guards' two tables (the cells, and the family
     // base word): `family` names which. Unset, every guard computes its own.
     void set_static_base_fn(std::function<Value*(Builder&, bool family)> fn) { static_base_fn_ = std::move(fn); }
@@ -259,7 +276,7 @@ public:
 
     // `bronze_prop_get` on key constant `key_index`, through the site
     // `ic_entry` (null: no site).
-    Value* lower_prop_get(Builder& b, Value* obj, uint32_t key_index, Value* ic_entry);
+    Value* lower_prop_get(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
 
     // A bronze property read with the monomorphic inline hit in front of the
     // helper: the receiver's shape word against the site's way 0 and its

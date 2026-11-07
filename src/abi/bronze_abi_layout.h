@@ -118,6 +118,25 @@
  * which is the bug the cached depth exists to prevent. */
 #define BRONZE_ABI_IC_SLOTWORD_OFFSET BRONZE_ABI_IC_SLOT_OFFSET
 
+/* ---- the HOT array: every site's way 0, packed --------------------------
+ *
+ * Beside the table each module carries `__bronze_ic_hot`: BRONZE_ABI_IC_HOT_
+ * ENTRY_SIZE bytes per site, indexed by the same site number, holding a copy
+ * of way 0's shape word and slot word (nothing else). Generated code's way-0
+ * guards read the copy, so the sites a function touches in order sit four to
+ * a cache line instead of one 96-byte site per line; the ways behind it, the
+ * epoch, and every runtime reader still use the table, which stays the one
+ * the runtime keeps true. The copy is kept by the runtime's every write to a
+ * way-0 entry (InlineCache::fill* through rtIcHotNoteWrite, located by the
+ * ranges `bronze_register_ic_hot` hands over at module init) and by the read
+ * stub's own install at way 0. A method-call site's row is never written or
+ * read: zero, which matches no receiver. An all-zero row is "empty": its
+ * slot word is an own slot 0 but its shape word 0 matches no plain object.
+ */
+#define BRONZE_ABI_IC_HOT_ENTRY_SIZE   16
+#define BRONZE_ABI_IC_HOT_SHAPE_OFFSET  0
+#define BRONZE_ABI_IC_HOT_SLOT_OFFSET   8
+
 /* ---- the METHOD-CALL site, as generated code reads it ---------------------
  *
  * A method-call site owns the same BRONZE_ABI_IC_SITE_SIZE bytes a property

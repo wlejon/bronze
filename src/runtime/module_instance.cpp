@@ -52,6 +52,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/ic_hot.h"
 #include "runtime/module_instance.h"
 #include "runtime/atomic_ref.h"
 #include "runtime/fatal.h"
@@ -188,6 +189,7 @@ void rtTeardownThreadModuleInstances() {
     t_active = nullptr;
     t_realmInst.clear();
     t_inst.clear();
+    rtIcHotClearThread();
 }
 
 }  // namespace bronze::runtime
