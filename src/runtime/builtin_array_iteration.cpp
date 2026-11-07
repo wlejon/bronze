@@ -1,4 +1,5 @@
 #include "runtime/builtin_array_internal.h"
+#include "runtime/call_out.h"
 #include "runtime/rt_roots.h"
 #include "runtime/tls_block.h"
 #include "abi/bronze_abi.h"
@@ -13,10 +14,20 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
+    DirectCallee direct;
+    direct.bind(fn.get(), 3);
+    NewTargetScope callTargetScope(Value::fromUndefined());
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        callBack(fn, thisArg, elem, i, self);
+        if (direct.bound()) {
+            const uint64_t block[3] = {elem.get().rawBits(),
+                                       Value::fromDouble(static_cast<double>(i)).rawBits(),
+                                       self.get().rawBits()};
+            direct.call(fn, thisArg.get().rawBits(), 3, block);
+        } else {
+            callBack(fn, thisArg, elem, i, self);
+        }
     }
     return Value::fromUndefined().rawBits();
 }

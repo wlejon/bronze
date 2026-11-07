@@ -144,12 +144,27 @@ private:
         if (auto* blk = dynamic_cast<ast::BlockStmt*>(&s)) {
             blockList(blk->stmts);
         } else if (auto* vd = dynamic_cast<ast::VarDecl*>(&s)) {
+            const std::string oldName = vd->name;
             if (vd->pattern) {
                 pattern(*vd->pattern);
             } else {
                 rewrite(vd->name);
             }
-            if (vd->init) slot(vd->init);
+            if (vd->init) {
+                if (!vd->pattern && vd->name != oldName) {
+                    if (auto* ce = dynamic_cast<ast::ClassExpr*>(vd->init.get());
+                        ce && ce->name == oldName) {
+                        ce->name = vd->name;
+                        const std::string oldPrefix = oldName + ".";
+                        for (auto& m : ce->methods) {
+                            if (m.fn && m.fn->name.rfind(oldPrefix, 0) == 0) {
+                                m.fn->name = vd->name + "." + m.fn->name.substr(oldPrefix.size());
+                            }
+                        }
+                    }
+                }
+                slot(vd->init);
+            }
         } else if (auto* ret = dynamic_cast<ast::ReturnStmt*>(&s)) {
             if (ret->value) slot(ret->value);
         } else if (auto* es = dynamic_cast<ast::ExprStmt*>(&s)) {

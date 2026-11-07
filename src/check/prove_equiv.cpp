@@ -17,13 +17,52 @@
 namespace bronze::check {
 namespace {
 
+const std::string& effectiveFnName(const il::Function& fn) {
+    return !fn.displayName.empty() ? fn.displayName : fn.name;
+}
+
 bool functionMatchesName(const il::Function& fn, std::string_view query) {
-    if (fn.name == query) return true;
+    if (fn.name == query || fn.displayName == query) return true;
     auto pos = fn.name.rfind("::");
     if (pos != std::string::npos && std::string_view(fn.name).substr(pos + 2) == query) {
         return true;
     }
+    if (!fn.displayName.empty()) {
+        auto dot = fn.displayName.rfind('.');
+        if (dot != std::string::npos && std::string_view(fn.displayName).substr(dot + 1) == query) {
+            return true;
+        }
+    }
     return false;
+}
+
+bool ilFunctionsIdentical(const il::Module& modA, const il::Function& a,
+                          const il::Module& modB, const il::Function& b) {
+    if (a.blocks.size() != b.blocks.size() || a.params.size() != b.params.size()) return false;
+    for (size_t bi = 0; bi < a.blocks.size(); ++bi) {
+        const auto& ba = a.blocks[bi];
+        const auto& bb = b.blocks[bi];
+        if (ba.instructions.size() != bb.instructions.size()) return false;
+        for (size_t ii = 0; ii < ba.instructions.size(); ++ii) {
+            const auto& ia = ba.instructions[ii];
+            const auto& ib = bb.instructions[ii];
+            if (ia.op != ib.op || ia.result != ib.result || ia.operands != ib.operands ||
+                ia.immI32 != ib.immI32 || ia.immF64 != ib.immF64 ||
+                ia.target.block != ib.target.block || ia.elseTarget.block != ib.elseTarget.block) {
+                return false;
+            }
+            if (ia.keyIndex != ib.keyIndex) {
+                std::string_view ka = (ia.keyIndex < modA.keyConstants.size())
+                                          ? std::string_view(modA.keyConstants[ia.keyIndex])
+                                          : std::string_view{};
+                std::string_view kb = (ib.keyIndex < modB.keyConstants.size())
+                                          ? std::string_view(modB.keyConstants[ib.keyIndex])
+                                          : std::string_view{};
+                if (ka != kb) return false;
+            }
+        }
+    }
+    return true;
 }
 
 std::string jsonEscape(std::string_view s) {
@@ -204,10 +243,13 @@ ProveEquivReport proveModuleEquiv(const il::Module& oldMod,
 
     for (const auto& oldFn : oldMod.functions) {
         if (oldFn.isExternal || oldFn.isEntryPoint || oldFn.name == "main") continue;
+        const std::string& oldKey = effectiveFnName(oldFn);
         const il::Function* matchedNew = nullptr;
         for (const auto& newFn : newMod.functions) {
             if (newFn.isExternal || newFn.isEntryPoint || newFn.name == "main") continue;
-            if (functionMatchesName(newFn, oldFn.name) || functionMatchesName(oldFn, newFn.name)) {
+            if (effectiveFnName(newFn) == oldKey ||
+                functionMatchesName(newFn, oldKey) ||
+                functionMatchesName(oldFn, effectiveFnName(newFn))) {
                 matchedNew = &newFn;
                 break;
             }
@@ -262,38 +304,111 @@ EquivReport proveSourceEquivalent(std::string_view oldSrc, std::string_view newS
         rep.detail = errorOut ? *errorOut : "failed to lower source";
         return rep;
     }
-    const il::Function* oldFn = nullptr;
-    const il::Function* newFn = nullptr;
-    for (const auto& f : oldMod.functions) {
-        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
-            (fnFilter.empty() || functionMatchesName(f, fnFilter))) {
-            oldFn = &f;
-            break;
+
+    auto populateReportFromFnResult = [&](FunctionEquivResult fnRes) {
+        rep.status = fnRes.status;
+        rep.fnName = fnRes.name;
+        rep.detail = fnRes.detail;
+        if (!fnRes.counterexampleArgs.empty()) {
+            rep.counterexampleInput = fnRes.counterexampleArgs[0];
+            rep.counterexampleArgs = fnRes.counterexampleArgs;
         }
-    }
-    for (const auto& f : newMod.functions) {
-        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
-            (fnFilter.empty() || functionMatchesName(f, fnFilter))) {
-            newFn = &f;
-            break;
+        rep.expectedOutput = fnRes.oldReturnValue;
+        rep.actualOutput = fnRes.newReturnValue;
+        rep.functions.push_back(std::move(fnRes));
+    };
+
+    if (!fnFilter.empty()) {
+        const il::Function* oldFn = nullptr;
+        const il::Function* newFn = nullptr;
+        for (const auto& f : oldMod.functions) {
+            if (!f.isExternal && !f.isEntryPoint && f.name != "main" && functionMatchesName(f, fnFilter)) {
+                oldFn = &f;
+                break;
+            }
         }
-    }
-    if (!oldFn || !newFn) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = "target function not found";
+        for (const auto& f : newMod.functions) {
+            if (!f.isExternal && !f.isEntryPoint && f.name != "main" && functionMatchesName(f, fnFilter)) {
+                newFn = &f;
+                break;
+            }
+        }
+        if (!oldFn || !newFn) {
+            rep.status = EquivStatus::Unknown;
+            rep.detail = "target function not found";
+            return rep;
+        }
+        populateReportFromFnResult(
+            compareIlFunctionPair(oldMod, *oldFn, newMod, *newFn, true, domainMin, domainMax));
         return rep;
     }
-    FunctionEquivResult fnRes = compareIlFunctionPair(oldMod, *oldFn, newMod, *newFn, true, domainMin, domainMax);
-    rep.status = fnRes.status;
-    rep.fnName = fnRes.name;
-    rep.detail = fnRes.detail;
-    if (!fnRes.counterexampleArgs.empty()) {
-        rep.counterexampleInput = fnRes.counterexampleArgs[0];
-        rep.counterexampleArgs = fnRes.counterexampleArgs;
+
+    // Collect all matched non-entry functions/methods.
+    struct FnPair {
+        const il::Function* oldFn = nullptr;
+        const il::Function* newFn = nullptr;
+        bool modified = false;
+    };
+    std::vector<FnPair> allPairs;
+    for (const auto& oldFn : oldMod.functions) {
+        if (oldFn.isExternal || oldFn.isEntryPoint || oldFn.name == "main") continue;
+        const std::string& oldKey = effectiveFnName(oldFn);
+        for (const auto& newFn : newMod.functions) {
+            if (newFn.isExternal || newFn.isEntryPoint || newFn.name == "main") continue;
+            if (effectiveFnName(newFn) == oldKey ||
+                functionMatchesName(newFn, oldKey) ||
+                functionMatchesName(oldFn, effectiveFnName(newFn))) {
+                bool same = ilFunctionsIdentical(oldMod, oldFn, newMod, newFn);
+                allPairs.push_back({&oldFn, &newFn, !same});
+                break;
+            }
+        }
     }
-    rep.expectedOutput = fnRes.oldReturnValue;
-    rep.actualOutput = fnRes.newReturnValue;
-    rep.functions.push_back(std::move(fnRes));
+    if (allPairs.empty()) {
+        const il::Function* oldFn = nullptr;
+        const il::Function* newFn = nullptr;
+        for (const auto& f : oldMod.functions) {
+            if (!f.isExternal && !f.isEntryPoint && f.name != "main") { oldFn = &f; break; }
+        }
+        for (const auto& f : newMod.functions) {
+            if (!f.isExternal && !f.isEntryPoint && f.name != "main") { newFn = &f; break; }
+        }
+        if (!oldFn || !newFn) {
+            rep.status = EquivStatus::Unknown;
+            rep.detail = "target function not found";
+            return rep;
+        }
+        allPairs.push_back({oldFn, newFn, true});
+    }
+
+    std::vector<FnPair> targetPairs;
+    for (const auto& p : allPairs) {
+        if (p.modified) targetPairs.push_back(p);
+    }
+    if (targetPairs.empty()) {
+        // No function changed at IL level: prefer methods (containing `.`) over synthetic constructors
+        for (const auto& p : allPairs) {
+            if (effectiveFnName(*p.oldFn).find('.') != std::string::npos) {
+                targetPairs.push_back(p);
+            }
+        }
+        if (targetPairs.empty()) targetPairs = allPairs;
+    }
+
+    for (const auto& p : targetPairs) {
+        FunctionEquivResult fnRes = compareIlFunctionPair(
+            oldMod, *p.oldFn, newMod, *p.newFn, true, domainMin, domainMax);
+        if (fnRes.status != EquivStatus::Equivalent) {
+            populateReportFromFnResult(std::move(fnRes));
+            return rep;
+        }
+        if (rep.functions.empty()) {
+            rep.status = fnRes.status;
+            rep.fnName = fnRes.name;
+            rep.detail = fnRes.detail;
+        }
+        rep.functions.push_back(std::move(fnRes));
+    }
     return rep;
 }
 

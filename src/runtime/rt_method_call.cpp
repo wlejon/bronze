@@ -190,19 +190,41 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         // the one identity a moving collector never rewrites.
         const auto* recvFn = reinterpret_cast<const FunctionHeader*>(objHdr);
         if (!recvFn->code) return false;
-        if (!rtGlobalConstructorStaticMatches(recvFn->code, rtKeyString(keyIndex), fn->code)) {
+        const std::string& keyStr = rtKeyString(keyIndex);
+        if (rtGlobalConstructorStaticMatches(recvFn->code, keyStr, fn->code)) {
+            icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(recvFn->code);
+            auxOffset = offsetof(FunctionHeader, code);
+            guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
+            // Once the program has written to this constructor's statics they
+            // live in its box, where an assignment or a delete can replace the
+            // one just read — so the entry is good only until the next such write,
+            // and every one of them bumps the prototype-mutation epoch
+            // (rtPrepareFunctionOwnWrite). The witness above still holds: the
+            // read found the table's own function in the box.
+            if (recvFn->statics_materialized) epochWord = protoMutationEpoch();
+        } else if (!recvFn->properties.isObject() && fn->isNativeCode() &&
+                   rtIntrinsicConstructorName(
+                       Value::fromObject(const_cast<FunctionHeader*>(recvFn))) == nullptr &&
+                   (keyStr == "call" || keyStr == "apply" || keyStr == "bind" ||
+                    keyStr == "toString")) {
+            const Value fpVal = rtFunctionPrototypeObject();
+            if (!fpVal.isObject()) return false;
+            const Value fpBoxVal = fpVal.asObject<FunctionHeader>()->properties;
+            if (!fpBoxVal.isObject()) return false;
+            auto* fpBox = fpBoxVal.asObject<ObjectHeader>();
+            PropertyInfo info;
+            if (!fpBox->shape ||
+                !fpBox->shape->lookupProperty(PropertyKey::forString(rtKeyHeader(keyIndex)),
+                                              info) ||
+                info.accessor || fpBox->getSlot(info.slot).rawBits() != fnVal.rawBits()) {
+                return false;
+            }
+            auxOffset = offsetof(FunctionHeader, properties);
+            guardBits = 0;
+            epochWord = protoMutationEpoch();
+        } else {
             return false;
         }
-        icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(recvFn->code);
-        auxOffset = offsetof(FunctionHeader, code);
-        guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
-        // Once the program has written to this constructor's statics they
-        // live in its box, where an assignment or a delete can replace the
-        // one just read — so the entry is good only until the next such write,
-        // and every one of them bumps the prototype-mutation epoch
-        // (rtPrepareFunctionOwnWrite). The witness above still holds: the
-        // read found the table's own function in the box.
-        if (recvFn->statics_materialized) epochWord = protoMutationEpoch();
     } else {
         return false;
     }
@@ -529,7 +551,8 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
         const bool epochGuarded =
             kind == TypedArrayHeader::kFlags ||
             (kind == HeapKind::Function &&
-             reinterpret_cast<const FunctionHeader*>(hdr)->statics_materialized);
+             ((w0 & BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT) == 0 ||
+              reinterpret_cast<const FunctionHeader*>(hdr)->statics_materialized));
         return dispatchDirect(icEntry, epochGuarded ? BRONZE_ABI_METHOD_IC_EPOCH_WORD : -1,
                               /*native=*/true);
     }

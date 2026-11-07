@@ -481,8 +481,24 @@ bool IlLowering::lower_instruction(
         case BronzeOp::PatternCheck: {
             Value* src = ensure_type(get_opd(0), Type::i64(), b);
             uint32_t key_idx = inst_ast.string_literal.empty() ? inst_ast.index : find_key_constant(inst_ast.string_literal);
+            BasicBlock* cur_bb = b.current_block();
+            uint32_t cid = cont_counter ? ++(*cont_counter) : 1;
+            BasicBlock* bad_bb = b.append_block("b" + std::to_string(block_id) + "_pat_bad" + std::to_string(cid));
+            BasicBlock* ok_bb = b.append_block("b" + std::to_string(block_id) + "_pat_ok" + std::to_string(cid));
+
+            b.position_at_end(cur_bb);
+            Value* is_null = b.build_eq(src, b.build_iconst_i64(static_cast<int64_t>(kNullTag)));
+            Value* is_undef = b.build_eq(src, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+            Value* is_nullish = b.build_or(is_null, is_undef);
+            b.build_br_if(is_nullish, bad_bb, ok_bb);
+
+            b.position_at_end(bad_bb);
             Value* kidx = get_key_id(b, key_idx);
-            res_val = b.build_call("bronze_pattern_check", Type::i64(), {src, kidx});
+            b.build_call("bronze_pattern_check", Type::i64(), {src, kidx});
+            b.build_unreachable();
+
+            b.position_at_end(ok_bb);
+            res_val = src;
             break;
         }
 
@@ -569,6 +585,10 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::Box: {
             if (inst_ast.box_type == BronzeType::Str && inst_ast.operands.empty()) {
+                if (is_elided_typeof_lit(inst_ast.result_id)) {
+                    res_val = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
+                    break;
+                }
                 Value* key_idx = get_key_id(b, inst_ast.index);
                 res_val = lower_box_str_key(b, key_idx);
                 break;

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lex/lexer.h"
 #include "modules/graph.h"
@@ -311,7 +312,141 @@ ast::ExprPtr Linker::rewriteDynamicImport(uint16_t id, ast::DynamicImportExpr& d
     return nullptr;
 }
 
+// esbuild / Rollup emit a class with static field initializers as
+// `const _Foo = class _Foo { ... }; _Foo.bar = ...; let Foo = _Foo;`.
+// When neither `_Foo` nor `Foo` is rebound anywhere in the module and `Foo` is
+// not referenced before `_Foo`, folding the pair into `class Foo { ... };
+// Foo.bar = ...;` lets constructor identity, class layout, and direct method
+// dispatch see `Foo` as a first-class ClassDecl.
+bool canonicalizeBundledClassAliases(ModuleFile& file, DiagnosticSink& diags) {
+    auto& body = file.ast->body;
+    if (body.size() < 2) return true;
+
+    std::unordered_map<std::string, size_t> topDeclCount;
+    for (const auto& s : body) {
+        if (const auto* vd = dynamic_cast<const ast::VarDecl*>(s.get())) {
+            if (!vd->pattern) ++topDeclCount[vd->name];
+        } else if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(s.get())) {
+            ++topDeclCount[cd->name];
+        } else if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(s.get())) {
+            ++topDeclCount[fd->name];
+        }
+    }
+
+    const std::unordered_set<std::string> rebound = ast::getDeeplyReboundNames(body);
+    std::map<std::string, std::string> aliasRenames;
+    std::unordered_set<std::string> priorRefs;
+
+    for (size_t i = 0; i < body.size(); ++i) {
+        auto* vd1 = dynamic_cast<ast::VarDecl*>(body[i].get());
+        if (vd1 && !vd1->pattern && vd1->init &&
+            (vd1->name.rfind("__defNormalProp", 0) == 0 ||
+             vd1->name.rfind("__spreadValues", 0) == 0 ||
+             vd1->name.rfind("__spreadProps", 0) == 0) &&
+            topDeclCount[vd1->name] == 1 && !rebound.contains(vd1->name) &&
+            !priorRefs.contains(vd1->name)) {
+            if (auto* fe = dynamic_cast<ast::FunctionExpr*>(vd1->init.get());
+                fe && !fe->isGenerator && !fe->isAsync) {
+                auto fd = std::make_unique<ast::FunctionDecl>();
+                fd->span = vd1->span;
+                fd->name = vd1->name;
+                fd->params = std::move(fe->params);
+                fd->returnType = std::move(fe->returnType);
+                fd->body = std::move(fe->body);
+                fd->strict = fe->strict;
+                std::vector<ast::StmtPtr> single;
+                single.push_back(std::move(fd));
+                for (const auto& r : ast::getReferencedNames(single)) priorRefs.insert(r);
+                body[i] = std::move(single[0]);
+                continue;
+            }
+        }
+        if (i + 1 >= body.size()) break;
+        if (!vd1 || !vd1->isConst || vd1->pattern ||
+            vd1->name.size() <= 1 || vd1->name[0] != '_') {
+            std::vector<ast::StmtPtr> single;
+            single.push_back(std::move(body[i]));
+            for (const auto& r : ast::getReferencedNames(single)) priorRefs.insert(r);
+            body[i] = std::move(single[0]);
+            continue;
+        }
+        auto* ce = dynamic_cast<ast::ClassExpr*>(vd1->init.get());
+        if (!ce || (!ce->name.empty() && ce->name != vd1->name)) {
+            std::vector<ast::StmtPtr> single;
+            single.push_back(std::move(body[i]));
+            for (const auto& r : ast::getReferencedNames(single)) priorRefs.insert(r);
+            body[i] = std::move(single[0]);
+            continue;
+        }
+        const std::string innerName = vd1->name;
+        const std::string publicName = innerName.substr(1);
+        if (topDeclCount[innerName] != 1 || topDeclCount[publicName] != 1 ||
+            rebound.contains(innerName) || rebound.contains(publicName) ||
+            priorRefs.contains(publicName)) {
+            std::vector<ast::StmtPtr> single;
+            single.push_back(std::move(body[i]));
+            for (const auto& r : ast::getReferencedNames(single)) priorRefs.insert(r);
+            body[i] = std::move(single[0]);
+            continue;
+        }
+
+        size_t j = i + 1;
+        while (j < body.size()) {
+            const auto* es = dynamic_cast<const ast::ExprStmt*>(body[j].get());
+            if (!es) break;
+            const auto* bin = dynamic_cast<const ast::Binary*>(es->expr.get());
+            if (!bin || bin->op != ast::BinaryOp::Assign) break;
+            const auto* mem = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get());
+            if (!mem || mem->isPrivate) break;
+            const auto* objId = dynamic_cast<const ast::Ident*>(mem->object.get());
+            if (!objId || objId->name != innerName) break;
+            ++j;
+        }
+        if (j >= body.size()) continue;
+
+        auto* vd2 = dynamic_cast<ast::VarDecl*>(body[j].get());
+        if (!vd2 || vd2->pattern || vd2->name != publicName || !vd2->init) continue;
+        const auto* initId = dynamic_cast<const ast::Ident*>(vd2->init.get());
+        if (!initId || initId->name != innerName) continue;
+
+        // Check that `publicName` is not referenced inside the class body or static assignments.
+        bool mentionsPublic = false;
+        for (size_t k = i; k < j && !mentionsPublic; ++k) {
+            std::vector<ast::StmtPtr> single;
+            single.push_back(std::move(body[k]));
+            if (ast::getReferencedNames(single).contains(publicName)) mentionsPublic = true;
+            body[k] = std::move(single[0]);
+        }
+        if (mentionsPublic) continue;
+
+        auto cd = std::make_unique<ast::ClassDecl>();
+        cd->span = vd1->span;
+        cd->name = innerName;
+        cd->superName = ce->superName;
+        cd->superClass = std::move(ce->superClass);
+        cd->methods = std::move(ce->methods);
+        if (ce->name.empty()) {
+            for (auto& m : cd->methods) {
+                if (m.fn && m.fn->name.rfind(".", 0) == 0) {
+                    m.fn->name = innerName + m.fn->name;
+                }
+            }
+        }
+        body[i] = std::move(cd);
+        body.erase(body.begin() + static_cast<std::ptrdiff_t>(j));
+        aliasRenames[innerName] = publicName;
+    }
+
+    if (!aliasRenames.empty()) {
+        if (!renameModuleScope(body, aliasRenames, file.id, {}, diags)) return false;
+    }
+    return true;
+}
+
 bool Linker::run(ast::Module& out) {
+    for (const uint16_t id : graph_.evaluationOrder) {
+        if (!canonicalizeBundledClassAliases(*graph_.modules[id], diags_)) return false;
+    }
     // Tables first, in evaluation order, so that a module's dependencies are
     // linked before it and `resolveExport` never has to look at a half-built
     // table. Star expansion is a second pass over the same order for the same

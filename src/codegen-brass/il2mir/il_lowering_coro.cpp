@@ -123,8 +123,7 @@ bool lower_coro_instruction(
 
         case BronzeOp::IterClose: {
             Value* iter = get_opd(0);
-            Value* suppress = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
-            b.build_call("bronze_iter_close", Type::void_type(), {iter, suppress});
+            lower_iter_close_inline(b, iter, inst_ast.imm_i64);
             return true;
         }
 

@@ -64,6 +64,9 @@ struct SubexprAnalysis {
     uint32_t opCount = 0;
     std::vector<std::string> varOrder;
     std::unordered_map<std::string, std::vector<const Ident*>> varOccurrences;
+    std::unordered_map<std::string, std::string> synthToSource;
+    std::unordered_map<std::string, std::string> sourceToSynth;
+    std::vector<std::pair<Extent, std::string>> memberSpanRewrites;
     std::unordered_set<std::string> uncoercedVars;
 };
 
@@ -84,12 +87,43 @@ bool analyzeSubexprNode(const ParsedJs& p,
 
     if (auto* id = exactAs<const Ident*>(e)) {
         if (isForbiddenIdentName(id->name) || rebound.count(id->name) > 0) return false;
-        if (info.varOccurrences.find(id->name) == info.varOccurrences.end()) {
+        if (info.varOccurrences.find(id->name) == info.varOccurrences.end() &&
+            info.synthToSource.find(id->name) == info.synthToSource.end()) {
             info.varOrder.push_back(id->name);
         }
         info.varOccurrences[id->name].push_back(id);
         if (!parentCoercesToInt32) {
             info.uncoercedVars.insert(id->name);
+        }
+        info.astCost += 1;
+        return true;
+    }
+
+    if (auto* mem = exactAs<const MemberAccess*>(e)) {
+        if (mem->optional || mem->isPrivate || mem->property.empty()) return false;
+        std::string baseName;
+        if (exactAs<const ThisExpr*>(mem->object.get())) {
+            baseName = "this";
+        } else if (auto* baseId = exactAs<const Ident*>(mem->object.get())) {
+            if (isForbiddenIdentName(baseId->name) || rebound.count(baseId->name) > 0) return false;
+            baseName = baseId->name;
+        } else {
+            return false;
+        }
+        std::string srcExpr = baseName + "." + mem->property;
+        std::string synthName;
+        auto it = info.sourceToSynth.find(srcExpr);
+        if (it == info.sourceToSynth.end()) {
+            synthName = "__f" + std::to_string(info.sourceToSynth.size());
+            info.sourceToSynth[srcExpr] = synthName;
+            info.synthToSource[synthName] = srcExpr;
+            info.varOrder.push_back(synthName);
+        } else {
+            synthName = it->second;
+        }
+        info.memberSpanRewrites.push_back({p.inner(*mem), synthName});
+        if (!parentCoercesToInt32) {
+            info.uncoercedVars.insert(synthName);
         }
         info.astCost += 1;
         return true;
@@ -297,17 +331,22 @@ private:
         int32_t tightMax = -2147483647 - 1;
 
         for (const std::string& v : info.varOrder) {
-            bool knownInt32 = true;
-            for (const Ident* id : info.varOccurrences[v]) {
-                auto r = p_.rangeOf(*id);
-                if (!r || !r->isInt32()) {
-                    knownInt32 = false;
-                    allVarsHaveRange = false;
-                } else {
-                    int32_t rLo = static_cast<int32_t>(std::max(-2147483648.0, std::floor(r->lo)));
-                    int32_t rHi = static_cast<int32_t>(std::min(2147483647.0, std::ceil(r->hi)));
-                    tightMin = std::min(tightMin, rLo);
-                    tightMax = std::max(tightMax, rHi);
+            auto occIt = info.varOccurrences.find(v);
+            bool knownInt32 = (occIt != info.varOccurrences.end() && !occIt->second.empty());
+            if (!knownInt32) {
+                allVarsHaveRange = false;
+            } else {
+                for (const Ident* id : occIt->second) {
+                    auto r = p_.rangeOf(*id);
+                    if (!r || !r->isInt32()) {
+                        knownInt32 = false;
+                        allVarsHaveRange = false;
+                    } else {
+                        int32_t rLo = static_cast<int32_t>(std::max(-2147483648.0, std::floor(r->lo)));
+                        int32_t rHi = static_cast<int32_t>(std::min(2147483647.0, std::ceil(r->hi)));
+                        tightMin = std::min(tightMin, rLo);
+                        tightMax = std::max(tightMax, rHi);
+                    }
                 }
             }
             varKnownInt32[v] = knownInt32;
@@ -318,14 +357,26 @@ private:
             }
         }
 
-        const std::string origText = p_.exprText(e);
+        const Extent rootExt = p_.inner(e);
+        const std::string origText = p_.slice(rootExt);
+        std::string synthInputText = origText;
+        if (!info.memberSpanRewrites.empty()) {
+            auto spans = info.memberSpanRewrites;
+            std::sort(spans.begin(), spans.end(),
+                      [](const auto& a, const auto& b) { return a.first.begin > b.first.begin; });
+            for (const auto& [ext, sname] : spans) {
+                if (ext.begin >= rootExt.begin && ext.end <= rootExt.end && ext.end >= ext.begin) {
+                    synthInputText.replace(ext.begin - rootExt.begin, ext.end - ext.begin, sname);
+                }
+            }
+        }
         std::ostringstream fnOss;
         fnOss << "function __sub(";
         for (size_t i = 0; i < info.varOrder.size(); ++i) {
             if (i > 0) fnOss << ", ";
             fnOss << info.varOrder[i];
         }
-        fnOss << ") { return (" << origText << "); }";
+        fnOss << ") { return (" << synthInputText << "); }";
 
         CegisSuperoptOptions sopts;
         sopts.domainMin = domainMin_;
@@ -375,6 +426,14 @@ private:
 
         if (costAfter >= sres.stats.costBefore || costAfter >= info.astCost) {
             return false;
+        }
+
+        for (const auto& [sname, srcExpr] : info.synthToSource) {
+            size_t pos = 0;
+            while ((pos = synth.find(sname, pos)) != std::string::npos) {
+                synth.replace(pos, sname.size(), srcExpr);
+                pos += srcExpr.size();
+            }
         }
 
         uint32_t synthOps = countSynthOps(synth);

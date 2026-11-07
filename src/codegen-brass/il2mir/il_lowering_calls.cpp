@@ -109,6 +109,7 @@ BuiltinTarget builtin_target_for_key(const IlLowering* lowering, uint32_t key_in
     else if (key == "cos") t = {BuiltinOp::Cos, &bronze_math_cos, "bronze_math_cos"};
     else if (key == "max") t = {BuiltinOp::Max, &bronze_math_max, "bronze_math_max"};
     else if (key == "min") t = {BuiltinOp::Min, &bronze_math_min, "bronze_math_min"};
+    else if (key == "round") t = {BuiltinOp::Kernel1, &bronze_math_round, "bronze_math_round", "bronze_math_round_f64"};
     else if (key == "exp") t = {BuiltinOp::Kernel1, &bronze_math_exp, "bronze_math_exp", "bronze_math_exp_f64"};
     else if (key == "log") t = {BuiltinOp::Kernel1, &bronze_math_log, "bronze_math_log", "bronze_math_log_f64"};
     else if (key == "tan") t = {BuiltinOp::Kernel1, &bronze_math_tan, "bronze_math_tan", "bronze_math_tan_f64"};

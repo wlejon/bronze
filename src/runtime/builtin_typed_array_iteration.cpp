@@ -2,6 +2,7 @@
 
 #include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
+#include "runtime/call_out.h"
 #include "runtime/iterator.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -251,6 +252,19 @@ uint64_t taForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> thisArg{args[1]};
 
     const uint32_t len = lengthOf(self.get());
+    DirectCallee direct;
+    direct.bind(fn.get(), 3);
+    NewTargetScope callTargetScope(Value::fromUndefined());
+    if (!isBigIntView(self.get()) && direct.bound()) {
+        for (uint32_t i = 0; i < len; ++i) {
+            const Value elem = rtTypedArrayElement(self.get(), i);
+            const uint64_t block[3] = {elem.rawBits(),
+                                       Value::fromDouble(static_cast<double>(i)).rawBits(),
+                                       self.get().rawBits()};
+            direct.call(fn, thisArg.get().rawBits(), 3, block);
+        }
+        return Value::fromUndefined().rawBits();
+    }
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         callBack(fn, thisArg, elem, i, self);

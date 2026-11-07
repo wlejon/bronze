@@ -80,8 +80,9 @@ Value typeofString(TypeOfKind kind) {
         static const char* const kNames[kTypeOfCount] = {
             "undefined", "object", "boolean", "number", "string", "function", "symbol", "bigint"};
         for (int i = 0; i < kTypeOfCount; ++i) {
-            g_typeofStrings[i] = rtMakeString(kNames[i]);
-            rtHeap().add_permanent_root(&g_typeofStrings[i]);
+            const uint32_t keyIdx =
+                bronze_register_key_string_len(kNames[i], std::strlen(kNames[i]));
+            g_typeofStrings[i] = Value::fromString(rtKeyHeader(keyIdx));
         }
         g_typeofReady = true;
     }
@@ -769,10 +770,39 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         return false;
     }
 
+    // Fast path for ordinary Function constructors whose chain has no custom
+    // `[Symbol.hasInstance]` property and ends at `%Function.prototype%`
+    // (whose `[Symbol.hasInstance]` is non-writable and non-configurable).
+    if (ctorRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        const FunctionHeader* cur = ctorRoot.get().asObject<FunctionHeader>();
+        PropertyKey hasInstProp = PropertyKey::forSymbol(rtSymbolHasInstance());
+        for (uint32_t depth = 0; cur != nullptr && depth < 16; ++depth) {
+            if (cur->properties.isObject()) {
+                PropertyInfo info;
+                Shape* sh = cur->properties.asObject<ObjectHeader>()->shape;
+                if (sh && sh->lookupProperty(hasInstProp, info)) break;
+            }
+            if (cur->parent.isUndefined()) {
+                return rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
+            }
+            if (cur->parent.isObject() &&
+                cur->parent.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                cur = cur->parent.asObject<FunctionHeader>();
+            } else {
+                break;
+            }
+        }
+    }
+
     Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
     Value handler(bronze_elem_get(ctorRoot.get().rawBits(), hasInstKey.get().rawBits()));
 
     if (!handler.isNull() && !handler.isUndefined()) {
+        if (handler.isObject() &&
+            handler.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+            handler.asObject<FunctionHeader>()->code == rtFunctionHasInstanceBuiltin) {
+            return rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
+        }
         if (!isCallable(handler)) {
             rtThrowTypeError("Symbol.hasInstance is not a function");
             return false;

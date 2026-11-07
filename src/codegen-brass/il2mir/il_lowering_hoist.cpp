@@ -155,6 +155,7 @@ bool is_primitive_result(const BronzeInstruction& inst, const std::unordered_set
         case BronzeOp::StrictEq:
         case BronzeOp::LooseEq:
         case BronzeOp::UShr:
+        case BronzeOp::TypeOf:
             return true;
         // Over operands that may be BigInts these give a BigInt (6.1.6.2), a
         // heap cell: a store of one needs the barrier and a hold of one the
@@ -228,6 +229,10 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     primitive_value_ids_.clear();
     number_value_ids_.clear();
     string_literal_ids_.clear();
+    typeof_value_ids_.clear();
+    elided_typeof_ids_.clear();
+    elided_typeof_lit_ids_.clear();
+    string_literal_texts_.clear();
     current_fn_dynamic_ids_.clear();
     number_bits_ids_.clear();
     block_dense_proofs_.clear();
@@ -283,6 +288,12 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                 }
                 if (inst.op == BronzeOp::Box && inst.box_type == BronzeType::Str && inst.operands.empty()) {
                     string_literal_ids_.insert(inst.result_id);
+                    if (inst.index < options_.key_constants.size()) {
+                        string_literal_texts_.emplace(inst.result_id, options_.key_constants[inst.index]);
+                    }
+                }
+                if (inst.op == BronzeOp::TypeOf) {
+                    typeof_value_ids_.insert(inst.result_id);
                 }
                 if (inst.op == BronzeOp::PropGet && inst.index != PropertyLoweringHelper::kNoKey) {
                     prop_get_keys_.emplace(inst.result_id, inst.index);
@@ -296,6 +307,54 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                 if (inst.op == BronzeOp::IsDenseArray && !inst.operands.empty() && inst.imm_i64 >= 0) {
                     dense_defs[inst.result_id] = DenseArrayProof{
                         inst.operands[0], static_cast<uint32_t>(inst.imm_i64)};
+                }
+            }
+        }
+    }
+
+    if (!typeof_value_ids_.empty()) {
+        auto is_prim_typeof_name = [](std::string_view s) {
+            return s == "undefined" || s == "boolean" || s == "number" ||
+                   s == "string" || s == "symbol" || s == "bigint";
+        };
+        std::unordered_map<uint32_t, std::pair<uint32_t, bool>> typeof_uses;
+        std::unordered_map<uint32_t, std::vector<uint32_t>> typeof_lits;
+        for (uint32_t tid : typeof_value_ids_) {
+            typeof_uses[tid] = {0, true};
+        }
+        for (const auto& blk : fn_ast.blocks) {
+            for (const auto& inst : blk.instructions) {
+                for (uint32_t arg_id : inst.target.args) {
+                    if (auto it = typeof_uses.find(arg_id); it != typeof_uses.end()) {
+                        it->second.second = false;
+                    }
+                }
+                for (uint32_t arg_id : inst.else_target.args) {
+                    if (auto it = typeof_uses.find(arg_id); it != typeof_uses.end()) {
+                        it->second.second = false;
+                    }
+                }
+                for (size_t i = 0; i < inst.operands.size(); ++i) {
+                    auto it = typeof_uses.find(inst.operands[i]);
+                    if (it == typeof_uses.end()) continue;
+                    ++it->second.first;
+                    if (inst.op == BronzeOp::StrictEq && inst.operands.size() == 2) {
+                        uint32_t other = inst.operands[1 - i];
+                        std::string_view text = string_literal_text(other);
+                        if (is_prim_typeof_name(text) && value_use_counts_[other] == 1) {
+                            typeof_lits[inst.operands[i]].push_back(other);
+                            continue;
+                        }
+                    }
+                    it->second.second = false;
+                }
+            }
+        }
+        for (const auto& [tid, state] : typeof_uses) {
+            if (state.first > 0 && state.second) {
+                elided_typeof_ids_.insert(tid);
+                for (uint32_t lid : typeof_lits[tid]) {
+                    elided_typeof_lit_ids_.insert(lid);
                 }
             }
         }

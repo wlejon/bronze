@@ -23,7 +23,9 @@ struct ParsedJs::Facts {
         Path path;
     };
     std::unordered_map<std::string, size_t> declCount;
-    std::unordered_map<std::string, VarDeclAt> varDecls;  // the first declaration of a name
+    std::unordered_map<const std::string*, std::unordered_map<std::string, size_t>> fnDeclCount;
+    std::unordered_map<const std::string*, std::unordered_set<std::string>> fnRebound;
+    std::unordered_map<std::string, std::vector<VarDeclAt>> varDecls;
     std::unordered_set<std::string> rebound;
     std::unordered_set<std::string> mentioned;
     std::unordered_set<std::string> propertyWritten;  // `n.p = v`, `delete n.p`, `n[k]++` ...
@@ -65,17 +67,24 @@ public:
     }
     void visit(const Binary& b) override {
         binaries_.push_back(&b);
+        f_.paths[&b] = path_;
         if (isAssignOp(b.op)) notePropertyWrite(b.lhs.get());
         IdentVisitor::visit(b);
     }
     void visit(const Unary& u) override {
+        f_.paths[&u] = path_;
         if (u.op == UnaryOp::Delete || u.op == UnaryOp::PreInc || u.op == UnaryOp::PreDec ||
             u.op == UnaryOp::PostInc || u.op == UnaryOp::PostDec) {
             notePropertyWrite(u.operand.get());
         }
         IdentVisitor::visit(u);
     }
+    void visit(const Ternary& t) override {
+        f_.paths[&t] = path_;
+        IdentVisitor::visit(t);
+    }
     void visit(const DestructuringAssign& d) override {
+        notePropertyWrite(nullptr);
         notePatternTargets(d.pattern.get());
         IdentVisitor::visit(d);
     }
@@ -108,7 +117,7 @@ public:
             for (const auto& n : patternBoundNames(*v.pattern)) declare(n);
         } else {
             declare(v.name);
-            f_.varDecls.try_emplace(v.name, ParsedJs::Facts::VarDeclAt{&v, path_});
+            f_.varDecls[v.name].push_back(ParsedJs::Facts::VarDeclAt{&v, path_});
         }
         IdentVisitor::visit(v);
     }
@@ -202,9 +211,14 @@ private:
     std::vector<const std::vector<StmtPtr>*>& lists_;
     std::vector<const Ident*>& idents_;
     Path path_;
+    std::vector<const std::string*> fnScopes_;
 
     void declare(const std::string& name) {
-        if (!name.empty()) ++f_.declCount[name];
+        if (name.empty()) return;
+        ++f_.declCount[name];
+        for (const std::string* fnScope : fnScopes_) {
+            ++f_.fnDeclCount[fnScope][name];
+        }
     }
     void declareLoopHead(const std::string& name, const BindingPattern* pattern, bool declares) {
         if (!declares) return;  // an assignment head: getDeeplyReboundNames has it
@@ -238,6 +252,9 @@ private:
     void enterFunction(const std::string* name,
                        const std::vector<Param>& params,
                        const std::vector<StmtPtr>& body) {
+        f_.fnRebound[name] = getDeeplyReboundNames(body);
+        fnScopes_.push_back(name);
+        if (name && !name->empty()) ++f_.fnDeclCount[name][*name];
         path_.push_back({nullptr, 0, FrameKind::Function, name});
         for (const auto& p : params) {
             declare(p.name);
@@ -248,6 +265,7 @@ private:
         detail::visitParamExprs(params, *this);
         walkList(body, FrameKind::List);
         path_.pop_back();
+        fnScopes_.pop_back();
     }
 };
 
@@ -541,28 +559,60 @@ const Path* ParsedJs::pathOf(const Node& n) const {
 }
 
 const Expr* ParsedJs::constInit(const Ident& use) const {
-    if (facts_->hasEval || declarationCount(use.name) != 1 || facts_->rebound.count(use.name)) {
-        return nullptr;
-    }
-    auto d = facts_->varDecls.find(use.name);
-    if (d == facts_->varDecls.end()) return nullptr;
-    const VarDecl& v = *d->second.decl;
-    if (v.isVar || v.pattern || !v.init) return nullptr;
+    if (facts_->hasEval) return nullptr;
     const Path* up = pathOf(use);
-    const Path& dp = d->second.path;
-    if (!up || dp.empty() || dp.back().kind != FrameKind::List) return nullptr;
-    const size_t k = dp.size() - 1;
-    if (up->size() <= k) return nullptr;
-    for (size_t i = 0; i < k; ++i) {
-        if (dp[i].list != (*up)[i].list || dp[i].index != (*up)[i].index || dp[i].kind != (*up)[i].kind) {
-            return nullptr;
+    if (!up) return nullptr;
+
+    const std::string* fnScope = nullptr;
+    for (auto it = up->rbegin(); it != up->rend(); ++it) {
+        if (it->kind == FrameKind::Function && facts_->fnRebound.count(it->functionName)) {
+            fnScope = it->functionName;
+            break;
         }
     }
-    if ((*up)[k].list != dp[k].list || (*up)[k].index <= dp[k].index) return nullptr;
-    for (size_t i = k + 1; i < up->size(); ++i) {
-        if ((*up)[i].kind == FrameKind::Function) return nullptr;
+    if (fnScope == nullptr) {
+        if (declarationCount(use.name) != 1 || facts_->rebound.count(use.name)) {
+            return nullptr;
+        }
+    } else {
+        auto dcIt = facts_->fnDeclCount.find(fnScope);
+        if (dcIt == facts_->fnDeclCount.end()) return nullptr;
+        auto nIt = dcIt->second.find(use.name);
+        if (nIt == dcIt->second.end() || nIt->second != 1) return nullptr;
+        auto rbIt = facts_->fnRebound.find(fnScope);
+        if (rbIt != facts_->fnRebound.end() && rbIt->second.count(use.name)) return nullptr;
     }
-    return v.init.get();
+
+    auto d = facts_->varDecls.find(use.name);
+    if (d == facts_->varDecls.end()) return nullptr;
+    for (const auto& cand : d->second) {
+        const VarDecl& v = *cand.decl;
+        if (v.isVar || v.pattern || !v.init) continue;
+        const Path& dp = cand.path;
+        if (dp.empty() || dp.back().kind != FrameKind::List) continue;
+        const size_t k = dp.size() - 1;
+        if (up->size() <= k) continue;
+        bool prefixMatch = true;
+        for (size_t i = 0; i < k; ++i) {
+            if (dp[i].list != (*up)[i].list || dp[i].index != (*up)[i].index ||
+                dp[i].kind != (*up)[i].kind) {
+                prefixMatch = false;
+                break;
+            }
+        }
+        if (!prefixMatch) continue;
+        if ((*up)[k].list != dp[k].list || (*up)[k].index <= dp[k].index) continue;
+        bool crossedFunction = false;
+        for (size_t i = k + 1; i < up->size(); ++i) {
+            if ((*up)[i].kind == FrameKind::Function) {
+                crossedFunction = true;
+                break;
+            }
+        }
+        if (crossedFunction) continue;
+        return v.init.get();
+    }
+    return nullptr;
 }
 
 std::optional<IntRange> ParsedJs::rangeOf(const Expr& e) const { return rangeOf(e, 0); }

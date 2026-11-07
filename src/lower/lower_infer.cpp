@@ -180,6 +180,7 @@ std::optional<il::MathUnaryFn> Lowerer::mathUnaryCallFn(const ast::Call& call) c
     else if (*member == "atan2") fn = il::MathUnaryFn::Atan2;
     else if (*member == "max") fn = il::MathUnaryFn::Max;
     else if (*member == "min") fn = il::MathUnaryFn::Min;
+    else if (*member == "round") fn = il::MathUnaryFn::Round;
     // Any argument: each of these methods begins with ToNumber(x) (21.3.2),
     // and the checked unbox the call lowers its argument through is ToNumber
     // for any value, a user valueOf and a BigInt's TypeError included. An

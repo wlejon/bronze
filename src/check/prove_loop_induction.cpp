@@ -1,4 +1,5 @@
 #include "check/prove_loop_induction.h"
+#include "check/prove_equiv_heap.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,7 @@ struct SymState {
     std::unordered_map<il::ValueId, BVNodeId> values;
     std::unordered_map<uint64_t, BVNodeId> envSlots;
     std::unordered_map<uint32_t, std::string> globalRefs;
+    SymbolicHeapState heap;
 };
 
 bool canReachBlock(const il::Function& fn, il::BlockId start, il::BlockId goal) {
@@ -44,10 +46,7 @@ bool canReachBlock(const il::Function& fn, il::BlockId start, il::BlockId goal) 
             return false;
         };
         if (term.op == il::Op::Jump && tryPush(term.target.block)) return true;
-        if (term.op == il::Op::Branch &&
-            (tryPush(term.target.block) || tryPush(term.elseTarget.block))) {
-            return true;
-        }
+        if (term.op == il::Op::Branch && (tryPush(term.target.block) || tryPush(term.elseTarget.block))) return true;
     }
     return false;
 }
@@ -58,12 +57,10 @@ bool hasNonPow2ConstDivisor(const il::Function& fn) {
         for (const auto& inst : blk.instructions) {
             if (inst.op == il::Op::ConstI32) {
                 constVals[inst.result] = inst.immI32;
-            } else if (inst.op == il::Op::ConstF64 && std::isfinite(inst.immF64) &&
-                       std::trunc(inst.immF64) == inst.immF64) {
+            } else if (inst.op == il::Op::ConstF64 && std::isfinite(inst.immF64) && std::trunc(inst.immF64) == inst.immF64) {
                 constVals[inst.result] = static_cast<int64_t>(inst.immF64);
             } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox ||
-                        inst.op == il::Op::ToNumeric || inst.op == il::Op::ToInt32) &&
-                       !inst.operands.empty()) {
+                        inst.op == il::Op::ToNumeric || inst.op == il::Op::ToInt32) && !inst.operands.empty()) {
                 auto it = constVals.find(inst.operands[0]);
                 if (it != constVals.end()) constVals[inst.result] = it->second;
             } else if ((inst.op == il::Op::Div || inst.op == il::Op::Mod) && inst.operands.size() >= 2) {
@@ -84,14 +81,17 @@ struct SingleLoopModel {
     std::vector<BVNodeId> initParams;
     size_t ivIdx = 0;
     size_t accIdx = 0;
+    bool hasScalarAcc = false;
     BVNodeId boundNode = 0;
     bool exitIsIdentity = false;
 };
 
 class LoopIlEvaluator {
 public:
-    LoopIlEvaluator(BVContext& ctx, const il::Module& mod, bool strictJs32Bitwise)
-        : ctx_(ctx), mod_(mod), strictJs32Bitwise_(strictJs32Bitwise) {
+    LoopIlEvaluator(BVContext& ctx, const il::Module& mod, bool strictJs32Bitwise,
+                    SymbolicHeapTable* sharedHeapTable = nullptr)
+        : ctx_(ctx), mod_(mod), strictJs32Bitwise_(strictJs32Bitwise),
+          ownedHeapTable_(ctx), heapTable_(sharedHeapTable ? *sharedHeapTable : ownedHeapTable_) {
         zero64_ = ctx_.make_const(0, 64);
         one64_ = ctx_.make_const(1, 64);
         allOnes64_ = ctx_.make_const(~uint64_t{0}, 64);
@@ -100,20 +100,16 @@ public:
     BVNodeId zero64() const { return zero64_; }
     BVNodeId one64() const { return one64_; }
 
-    bool extractSingleLoop(const il::Function& fn,
-                           const std::vector<BVNodeId>& argNodes,
-                           SingleLoopModel& out) {
+    bool extractSingleLoop(const il::Function& fn, const std::vector<BVNodeId>& argNodes, SingleLoopModel& out) {
         if (fn.blocks.empty() || fn.isExternal) return false;
-
         SymState state;
         uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
-        for (uint32_t i = 0; i < firstSrc; ++i) {
-            state.values[i] = zero64_;
-        }
+        for (uint32_t i = 0; i < firstSrc; ++i) state.values[i] = zero64_;
         uint32_t srcCount = static_cast<uint32_t>(fn.callerParamCount());
         for (uint32_t i = 0; i < srcCount; ++i) {
             state.values[firstSrc + i] = (i < argNodes.size()) ? argNodes[i] : zero64_;
         }
+        state.heap.initFunctionHeap(heapTable_, fn, state.values);
 
         il::BlockId cur = 0;
         for (uint32_t steps = 0; steps < 32; ++steps) {
@@ -123,19 +119,14 @@ public:
             const auto& term = blk.instructions.back();
 
             if (!blk.params.empty() && term.op == il::Op::Branch &&
-                canReachBlock(fn, term.target.block, cur) &&
-                !canReachBlock(fn, term.elseTarget.block, cur)) {
+                canReachBlock(fn, term.target.block, cur) && !canReachBlock(fn, term.elseTarget.block, cur)) {
                 out.headerId = cur;
                 out.preHeaderState = state;
                 out.initParams.resize(blk.params.size(), zero64_);
-                for (size_t p = 0; p < blk.params.size(); ++p) {
-                    out.initParams[p] = getVal(state, blk.params[p].id);
-                }
+                for (size_t p = 0; p < blk.params.size(); ++p) out.initParams[p] = getVal(state, blk.params[p].id);
                 return analyzeHeader(fn, out);
             }
-
             if (!execNonTerminators(blk, state)) return false;
-
             if (term.op == il::Op::Jump) {
                 state = applyEdge(fn, state, term.target);
                 cur = term.target.block;
@@ -153,48 +144,44 @@ public:
         return false;
     }
 
-    bool evalHeaderBranch(const il::Function& fn,
-                          const SingleLoopModel& loop,
-                          BVNodeId ivVal,
-                          BVNodeId accVal,
-                          SymState& outSt,
-                          const il::Instruction*& outTerm) {
+    bool evalHeaderBranch(const il::Function& fn, const SingleLoopModel& loop, BVNodeId ivVal, BVNodeId accVal,
+                          SymState& outSt, const il::Instruction*& outTerm) {
         const auto& headerBlk = fn.blocks[loop.headerId];
         std::vector<BVNodeId> params = loop.initParams;
-        if (loop.ivIdx >= params.size() || loop.accIdx >= params.size()) return false;
-        params[loop.ivIdx] = ivVal;
-        params[loop.accIdx] = accVal;
-        outSt = loop.preHeaderState;
-        for (size_t p = 0; p < headerBlk.params.size(); ++p) {
-            outSt.values[headerBlk.params[p].id] = params[p];
+        if (loop.ivIdx >= params.size()) return false;
+        if (loop.hasScalarAcc) {
+            if (loop.accIdx >= params.size()) return false;
+            params[loop.accIdx] = accVal;
         }
+        params[loop.ivIdx] = ivVal;
+        outSt = loop.preHeaderState;
+        for (size_t p = 0; p < headerBlk.params.size(); ++p) outSt.values[headerBlk.params[p].id] = params[p];
         if (!execNonTerminators(headerBlk, outSt)) return false;
         outTerm = &headerBlk.instructions.back();
         return outTerm->op == il::Op::Branch;
     }
 
-    bool evalStep(const il::Function& fn,
-                  const SingleLoopModel& loop,
-                  BVNodeId ivVal,
-                  BVNodeId accVal,
-                  BVNodeId* outNextAcc) {
+    bool evalStep(const il::Function& fn, const SingleLoopModel& loop, BVNodeId ivVal, BVNodeId accVal,
+                  BVNodeId* outNextAcc, SymbolicHeapState* outStepHeap = nullptr) {
         SymState st;
         const il::Instruction* term = nullptr;
         if (!evalHeaderBranch(fn, loop, ivVal, accVal, st, term)) return false;
         std::vector<BVNodeId> nextParams;
-        if (!evalToHeader(fn, loop.headerId, term->target.block, applyEdge(fn, st, term->target), 0, nextParams) ||
-            loop.accIdx >= nextParams.size()) {
+        SymbolicHeapState endHeap;
+        if (!evalToHeader(fn, loop.headerId, term->target.block, applyEdge(fn, st, term->target), 0, nextParams, &endHeap)) {
             return false;
         }
-        *outNextAcc = nextParams[loop.accIdx];
+        if (loop.hasScalarAcc) {
+            if (loop.accIdx >= nextParams.size()) return false;
+            *outNextAcc = nextParams[loop.accIdx];
+        } else {
+            *outNextAcc = accVal;
+        }
+        if (outStepHeap) *outStepHeap = std::move(endHeap);
         return true;
     }
 
-    bool evalExit(const il::Function& fn,
-                  const SingleLoopModel& loop,
-                  BVNodeId ivVal,
-                  BVNodeId accVal,
-                  BVNodeId* outRetVal) {
+    bool evalExit(const il::Function& fn, const SingleLoopModel& loop, BVNodeId ivVal, BVNodeId accVal, BVNodeId* outRetVal) {
         SymState st;
         const il::Instruction* term = nullptr;
         if (!evalHeaderBranch(fn, loop, ivVal, accVal, st, term)) return false;
@@ -205,6 +192,8 @@ private:
     BVContext& ctx_;
     const il::Module& mod_;
     bool strictJs32Bitwise_ = false;
+    SymbolicHeapTable ownedHeapTable_;
+    SymbolicHeapTable& heapTable_;
     BVNodeId zero64_ = 0;
     BVNodeId one64_ = 0;
     BVNodeId allOnes64_ = 0;
@@ -237,6 +226,7 @@ private:
             const auto& targetBlk = fn.blocks[edge.block];
             for (size_t k = 0; k < targetBlk.params.size() && k < edge.args.size(); ++k) {
                 nextState.values[targetBlk.params[k].id] = toBV64(getVal(state, edge.args[k]));
+                nextState.heap.propagateAlias(edge.args[k], targetBlk.params[k].id);
             }
         }
         return nextState;
@@ -245,7 +235,7 @@ private:
     bool analyzeHeader(const il::Function& fn, SingleLoopModel& out) {
         const auto& headerBlk = fn.blocks[out.headerId];
         const size_t K = headerBlk.params.size();
-        if (K < 2) return false;
+        if (K < 1) return false;
 
         BVContext probeCtx = ctx_;
         LoopIlEvaluator probeEval(probeCtx, mod_, strictJs32Bitwise_);
@@ -305,7 +295,7 @@ private:
         if (!foundIv) return false;
 
         size_t activeCount = 0;
-        size_t candidateAcc = (out.ivIdx == 0) ? 1 : 0;
+        size_t candidateAcc = (out.ivIdx == 0) ? (K > 1 ? 1 : 0) : 0;
         for (size_t p = 0; p < K; ++p) {
             if (p == out.ivIdx) continue;
             if (nextProbeParams[p] != probeParams[p]) {
@@ -315,81 +305,65 @@ private:
         }
         if (activeCount > 1) return false;
         out.accIdx = candidateAcc;
+        out.hasScalarAcc = (activeCount == 1 || (K >= 2 && candidateAcc != out.ivIdx));
 
         SymState exitState = probeEval.applyEdge(fn, st, term.elseTarget);
         BVNodeId probeExitRet = zero64_;
         if (!probeEval.evalToRet(fn, term.elseTarget.block, exitState, 0, &probeExitRet)) {
             return false;
         }
-        out.exitIsIdentity = (probeExitRet == probeParams[out.accIdx]);
+        out.exitIsIdentity = out.hasScalarAcc && (probeExitRet == probeParams[out.accIdx]);
         return true;
     }
 
-    bool evalToHeader(const il::Function& fn,
-                      il::BlockId headerId,
-                      il::BlockId cur,
-                      SymState state,
-                      uint32_t steps,
-                      std::vector<BVNodeId>& outLatchParams) {
+    bool evalToHeader(const il::Function& fn, il::BlockId headerId, il::BlockId cur,
+                      SymState state, uint32_t steps, std::vector<BVNodeId>& outLatchParams,
+                      SymbolicHeapState* outHeap = nullptr) {
         if (steps > 24 || cur >= fn.blocks.size()) return false;
         const auto& blk = fn.blocks[cur];
         if (blk.instructions.empty() || !execNonTerminators(blk, state)) return false;
 
         const auto& term = blk.instructions.back();
         const size_t K = fn.blocks[headerId].params.size();
-
         auto extractLatchArgs = [&](const il::BlockTarget& edge, std::vector<BVNodeId>& dst) {
             if (edge.args.size() < K) return false;
             dst.resize(K);
-            for (size_t k = 0; k < K; ++k) {
-                dst[k] = toBV64(getVal(state, edge.args[k]));
-            }
+            for (size_t k = 0; k < K; ++k) dst[k] = toBV64(getVal(state, edge.args[k]));
+            if (outHeap) *outHeap = state.heap;
             return true;
         };
 
         if (term.op == il::Op::Jump) {
-            if (term.target.block == headerId) {
-                return extractLatchArgs(term.target, outLatchParams);
-            }
-            return evalToHeader(fn, headerId, term.target.block,
-                                applyEdge(fn, state, term.target), steps + 1, outLatchParams);
+            if (term.target.block == headerId) return extractLatchArgs(term.target, outLatchParams);
+            return evalToHeader(fn, headerId, term.target.block, applyEdge(fn, state, term.target), steps + 1, outLatchParams, outHeap);
         }
         if (term.op == il::Op::Branch) {
             BVNodeId condNode = toBool1(toBV64(getVal(state, term.operands[0])));
             const auto& cNode = ctx_.nodes()[condNode];
             if (cNode.op == BVOp::Const) {
                 const il::BlockTarget& chosen = (cNode.imm != 0) ? term.target : term.elseTarget;
-                if (chosen.block == headerId) {
-                    return extractLatchArgs(chosen, outLatchParams);
-                }
-                return evalToHeader(fn, headerId, chosen.block,
-                                    applyEdge(fn, state, chosen), steps + 1, outLatchParams);
+                if (chosen.block == headerId) return extractLatchArgs(chosen, outLatchParams);
+                return evalToHeader(fn, headerId, chosen.block, applyEdge(fn, state, chosen), steps + 1, outLatchParams, outHeap);
             }
             std::vector<BVNodeId> tParams, fParams;
+            SymbolicHeapState tHeap, fHeap;
             bool okT = (term.target.block == headerId)
-                           ? extractLatchArgs(term.target, tParams)
-                           : evalToHeader(fn, headerId, term.target.block,
-                                          applyEdge(fn, state, term.target), steps + 1, tParams);
+                           ? (tHeap = state.heap, extractLatchArgs(term.target, tParams))
+                           : evalToHeader(fn, headerId, term.target.block, applyEdge(fn, state, term.target), steps + 1, tParams, &tHeap);
             if (!okT) return false;
             bool okF = (term.elseTarget.block == headerId)
-                           ? extractLatchArgs(term.elseTarget, fParams)
-                           : evalToHeader(fn, headerId, term.elseTarget.block,
-                                          applyEdge(fn, state, term.elseTarget), steps + 1, fParams);
+                           ? (fHeap = state.heap, extractLatchArgs(term.elseTarget, fParams))
+                           : evalToHeader(fn, headerId, term.elseTarget.block, applyEdge(fn, state, term.elseTarget), steps + 1, fParams, &fHeap);
             if (!okF || tParams.size() != K || fParams.size() != K) return false;
             outLatchParams.resize(K);
-            for (size_t k = 0; k < K; ++k) {
-                outLatchParams[k] = ctx_.make_ite(condNode, tParams[k], fParams[k]);
-            }
+            for (size_t k = 0; k < K; ++k) outLatchParams[k] = ctx_.make_ite(condNode, tParams[k], fParams[k]);
+            if (outHeap) *outHeap = SymbolicHeapState::mergeBranches(heapTable_, condNode, tHeap, fHeap);
             return true;
         }
         return false;
     }
 
-    bool evalToRet(const il::Function& fn,
-                   il::BlockId cur,
-                   SymState state,
-                   uint32_t steps,
-                   BVNodeId* outRet) {
+    bool evalToRet(const il::Function& fn, il::BlockId cur, SymState state, uint32_t steps, BVNodeId* outRet) {
         if (steps > 24 || cur >= fn.blocks.size()) return false;
         const auto& blk = fn.blocks[cur];
         if (blk.instructions.empty() || !execNonTerminators(blk, state)) return false;
@@ -410,10 +384,8 @@ private:
                 return evalToRet(fn, chosen.block, applyEdge(fn, state, chosen), steps + 1, outRet);
             }
             BVNodeId tRet = zero64_, fRet = zero64_;
-            if (!evalToRet(fn, term.target.block, applyEdge(fn, state, term.target), steps + 1, &tRet)) {
-                return false;
-            }
-            if (!evalToRet(fn, term.elseTarget.block, applyEdge(fn, state, term.elseTarget), steps + 1, &fRet)) {
+            if (!evalToRet(fn, term.target.block, applyEdge(fn, state, term.target), steps + 1, &tRet) ||
+                !evalToRet(fn, term.elseTarget.block, applyEdge(fn, state, term.elseTarget), steps + 1, &fRet)) {
                 return false;
             }
             *outRet = ctx_.make_ite(condNode, tRet, fRet);
@@ -456,6 +428,7 @@ private:
                 case Op::ToNumeric:
                 case Op::NumTruthy:
                     state.values[inst.result] = op64(0);
+                    if (!inst.operands.empty()) state.heap.propagateAlias(inst.operands[0], inst.result);
                     break;
                 case Op::PinGuard:
                 case Op::CensusRecord:
@@ -469,8 +442,50 @@ private:
                 case Op::IsShape:
                 case Op::IsArray:
                 case Op::IsTypedArray:
-                    state.values[inst.result] = one64_;
+                case Op::LayoutEpoch:
+                case Op::LayoutFact:
+                case Op::MethodIcIs:
+                case Op::AccessorIcIs:
+                    if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
                     break;
+                case Op::CreateObject:
+                    state.values[inst.result] = state.heap.createLocalObject(heapTable_, inst.result);
+                    break;
+                case Op::PropGet: {
+                    if (inst.operands.empty() || inst.keyIndex >= mod_.keyConstants.size()) return false;
+                    BVNodeId pv = zero64_;
+                    if (!state.heap.evalPropGet(heapTable_, inst.operands[0], mod_.keyConstants[inst.keyIndex], inst.result, pv)) {
+                        return false;
+                    }
+                    state.values[inst.result] = pv;
+                    break;
+                }
+                case Op::PropSet:
+                case Op::DefineOwnAttr: {
+                    if (inst.operands.size() < 2 || inst.keyIndex >= mod_.keyConstants.size()) return false;
+                    BVNodeId vn = op64(1);
+                    if (!state.heap.evalPropSet(heapTable_, inst.operands[0], mod_.keyConstants[inst.keyIndex], vn, inst.operands[1])) {
+                        return false;
+                    }
+                    if (inst.result != il::kNoValue) state.values[inst.result] = vn;
+                    break;
+                }
+                case Op::ElemGet:
+                case Op::ElemGetTyped: {
+                    if (inst.operands.size() < 2) return false;
+                    BVNodeId ev = zero64_;
+                    if (!state.heap.evalElemGet(heapTable_, inst.operands[0], op64(1), inst.result, ev)) return false;
+                    state.values[inst.result] = ev;
+                    break;
+                }
+                case Op::ElemSet:
+                case Op::ElemSetTyped: {
+                    if (inst.operands.size() < 3) return false;
+                    BVNodeId vn = op64(2);
+                    if (!state.heap.evalElemSet(heapTable_, inst.operands[0], op64(1), vn, inst.operands[2])) return false;
+                    if (inst.result != il::kNoValue) state.values[inst.result] = vn;
+                    break;
+                }
                 case Op::NumericStep:
                     state.values[inst.result] = ctx_.make_binary(
                         BVOp::Add, op64(0), ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64));
@@ -538,27 +553,30 @@ private:
                 case Op::CmpEq:
                 case Op::StrictEq:
                 case Op::LooseEq:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Eq, op64(0), op64(1)));
-                    break;
                 case Op::CmpNe:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Ne, op64(0), op64(1)));
-                    break;
                 case Op::CmpLt:
                 case Op::RelLt:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Slt, op64(0), op64(1)));
-                    break;
                 case Op::CmpLe:
                 case Op::RelLe:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Sle, op64(0), op64(1)));
-                    break;
                 case Op::CmpGt:
                 case Op::RelGt:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Slt, op64(1), op64(0)));
-                    break;
                 case Op::CmpGe:
-                case Op::RelGe:
-                    state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Sle, op64(1), op64(0)));
+                case Op::RelGe: {
+                    BVNodeId a = op64(0), b = op64(1);
+                    if (inst.op == Op::CmpGt || inst.op == Op::RelGt || inst.op == Op::CmpGe || inst.op == Op::RelGe) {
+                        std::swap(a, b);
+                    }
+                    BVOp cop = (inst.op == Op::CmpEq || inst.op == Op::StrictEq || inst.op == Op::LooseEq)
+                                   ? BVOp::Eq
+                                   : (inst.op == Op::CmpNe
+                                          ? BVOp::Ne
+                                          : ((inst.op == Op::CmpLt || inst.op == Op::RelLt ||
+                                              inst.op == Op::CmpGt || inst.op == Op::RelGt)
+                                                 ? BVOp::Slt
+                                                 : BVOp::Sle));
+                    state.values[inst.result] = toBV64(ctx_.make_binary(cop, a, b));
                     break;
+                }
                 case Op::MathUnary: {
                     BVNodeId a = op64(0);
                     auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
@@ -608,13 +626,17 @@ private:
                 }
                 case Op::EnvSet:
                     if (inst.operands.size() >= 2) {
-                        state.envSlots[(static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex] = op64(1);
+                        uint64_t ek = (static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex;
+                        state.envSlots[ek] = op64(1);
+                        state.heap.propagateEnvSet(ek, inst.operands[1]);
                     }
                     break;
                 case Op::EnvGet:
                 case Op::EnvGetTdz: {
-                    auto it = state.envSlots.find((static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex);
+                    uint64_t ek = (static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex;
+                    auto it = state.envSlots.find(ek);
                     state.values[inst.result] = (it != state.envSlots.end()) ? it->second : zero64_;
+                    state.heap.propagateEnvGet(ek, inst.result);
                     break;
                 }
                 default:
@@ -627,12 +649,9 @@ private:
 
 SolveOutcome solveObligation(const BVContext& ctx, BVNodeId badCond, int32_t domMin, int32_t domMax) {
     uint32_t mulCount = 0;
-    for (const auto& n : ctx.nodes()) {
-        if (n.op == BVOp::Mul) ++mulCount;
-    }
+    for (const auto& n : ctx.nodes()) if (n.op == BVOp::Mul) ++mulCount;
     SolveOutcome out = brass::verify::solve_nonzero(ctx, badCond, (mulCount >= 2) ? 2500u : 12000u);
     if (out.status != SolveOutcome::Unknown) return out;
-
     const size_t numVars = ctx.vars().size();
     if (numVars == 1) {
         auto checkRange = [&](int32_t a, int32_t b) {
@@ -646,16 +665,13 @@ SolveOutcome solveObligation(const BVContext& ctx, BVNodeId badCond, int32_t dom
             }
             return false;
         };
-        int32_t lo = std::max<int32_t>(domMin, -64);
-        int32_t hi = std::min<int32_t>(domMax, 256);
+        int32_t lo = std::max<int32_t>(domMin, -64), hi = std::min<int32_t>(domMax, 256);
         if (checkRange(lo, hi) || checkRange(std::max<int32_t>(lo, domMax - 32), domMax)) return out;
         out.status = SolveOutcome::Unsat;
         return out;
     }
     if (numVars == 2) {
-        static constexpr int32_t kSamples[] = {
-            -8, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 16, 31, 32, 64, 100
-        };
+        static constexpr int32_t kSamples[] = {-8, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 16, 31, 32, 64, 100};
         for (int32_t v0 : kSamples) {
             if (v0 < domMin || v0 > domMax) continue;
             for (int32_t v1 : kSamples) {
@@ -670,65 +686,58 @@ SolveOutcome solveObligation(const BVContext& ctx, BVNodeId badCond, int32_t dom
             }
         }
         out.status = SolveOutcome::Unsat;
-        return out;
     }
     return out;
 }
 
-bool checkConcreteTripCounts(const il::Module& oldMod,
-                             const il::Function& oldFn,
-                             const il::Module& newMod,
-                             const il::Function& newFn,
-                             uint32_t numParams,
-                             bool strictJs32Bitwise,
-                             int32_t domainMin,
-                             int32_t domainMax,
-                             FunctionEquivResult& res) {
+bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn,
+                             const il::Module& newMod, const il::Function& newFn,
+                             uint32_t numParams, uint32_t boundParamIdx,
+                             bool strictJs32Bitwise, int32_t domainMin,
+                             int32_t domainMax, FunctionEquivResult& res) {
     static constexpr int32_t kTripCounts[] = {-1, 0, 1, 2, 3, 4, 5};
     for (int32_t tc : kTripCounts) {
         if (tc < domainMin || tc > domainMax) continue;
-
         BVContext ctx;
         std::vector<BVNodeId> argNodes;
         argNodes.reserve(numParams);
-        argNodes.push_back(ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(tc)), 64));
-        for (uint32_t i = 1; i < numParams; ++i) {
-            BVNodeId raw32 = ctx.make_var("arg_" + std::to_string(i), 32);
-            argNodes.push_back(ctx.make_sext(raw32, 32));
+        for (uint32_t i = 0; i < numParams; ++i) {
+            if (i == boundParamIdx) {
+                argNodes.push_back(ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(tc)), 64));
+            } else {
+                argNodes.push_back(ctx.make_sext(ctx.make_var("arg_" + std::to_string(i), 32), 32));
+            }
         }
-
         BVNodeId oldRet = 0, newRet = 0;
         if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet) ||
-            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet)) {
+            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet) ||
+            oldRet == newRet) {
             continue;
         }
-        if (oldRet == newRet) continue;
-
         BVNodeId badCond = ctx.make_binary(BVOp::Ne, oldRet, newRet);
         if (numParams > 1 && (domainMin > INT32_MIN || domainMax < INT32_MAX)) {
             BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
             BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
-            for (uint32_t i = 1; i < numParams; ++i) {
-                if (domainMin > INT32_MIN) {
-                    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, argNodes[i], minNode));
-                }
-                if (domainMax < INT32_MAX) {
-                    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, argNodes[i], maxNode));
-                }
+            for (uint32_t i = 0; i < numParams; ++i) {
+                if (i == boundParamIdx) continue;
+                if (domainMin > INT32_MIN) badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, argNodes[i], minNode));
+                if (domainMax < INT32_MAX) badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, argNodes[i], maxNode));
             }
         }
-
         SolveOutcome satRes = solveObligation(ctx, badCond, domainMin, domainMax);
         if (satRes.status == SolveOutcome::Sat) {
             res.status = EquivStatus::Counterexample;
             std::vector<uint64_t> model = satRes.model;
             if (model.size() + 1 < numParams) model.resize(numParams - 1, 0);
             res.counterexampleArgs.resize(numParams, 0);
-            res.counterexampleArgs[0] = tc;
-            for (uint32_t i = 1; i < numParams; ++i) {
-                int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(model[i - 1]));
+            res.counterexampleArgs[boundParamIdx] = tc;
+            size_t mIdx = 0;
+            for (uint32_t i = 0; i < numParams; ++i) {
+                if (i == boundParamIdx) continue;
+                int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(model[mIdx]));
                 res.counterexampleArgs[i] = signed32;
-                model[i - 1] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+                model[mIdx] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+                ++mIdx;
             }
             res.oldReturnValue = static_cast<int64_t>(ctx.eval_concrete(oldRet, model));
             res.newReturnValue = static_cast<int64_t>(ctx.eval_concrete(newRet, model));
@@ -741,16 +750,11 @@ bool checkConcreteTripCounts(const il::Module& oldMod,
 
 }  // namespace
 
-FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
-                                                       const il::Function& oldFn,
-                                                       const il::Module& newMod,
-                                                       const il::Function& newFn,
-                                                       bool strictJs32Bitwise,
-                                                       int32_t domainMin,
-                                                       int32_t domainMax) {
+FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod, const il::Function& oldFn,
+                                                       const il::Module& newMod, const il::Function& newFn,
+                                                       bool strictJs32Bitwise, int32_t domainMin, int32_t domainMax) {
     FunctionEquivResult res;
-    res.name = oldFn.name;
-
+    res.name = !oldFn.displayName.empty() ? oldFn.displayName : oldFn.name;
     uint32_t oldParams = static_cast<uint32_t>(oldFn.callerParamCount());
     uint32_t newParams = static_cast<uint32_t>(newFn.callerParamCount());
     uint32_t numParams = std::max(oldParams, newParams);
@@ -762,10 +766,8 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         } else if (i < newParams && (newFn.firstSourceParam() + i) < newFn.params.size()) {
             pname = newFn.params[newFn.firstSourceParam() + i].name;
         }
-        if (pname.empty()) pname = "arg_" + std::to_string(i);
-        res.paramNames.push_back(pname);
+        res.paramNames.push_back(pname.empty() ? ("arg_" + std::to_string(i)) : pname);
     }
-
     if (numParams == 0) {
         res.status = EquivStatus::Unknown;
         res.detail = "inductive loop prover requires at least one loop bound parameter";
@@ -774,41 +776,49 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
 
     int32_t effMin = std::max<int32_t>(domainMin, -46340);
     int32_t effMax = std::min<int32_t>(domainMax, 46340);
-    if (hasNonPow2ConstDivisor(oldFn) || hasNonPow2ConstDivisor(newFn)) {
-        effMax = std::min<int32_t>(effMax, 1000);
-    }
+    if (hasNonPow2ConstDivisor(oldFn) || hasNonPow2ConstDivisor(newFn)) effMax = std::min<int32_t>(effMax, 1000);
     if (effMin > effMax) effMin = effMax;
 
-    // Step 1: Fast concrete trip-count refutation & base-case check for n in {-1, 0, 1, 2, 3, 4, 5}.
-    if (checkConcreteTripCounts(oldMod, oldFn, newMod, newFn, numParams,
-                                strictJs32Bitwise, effMin, effMax, res)) {
-        return res;
-    }
-
-    // Step 2: Extract loop models or closed-form symbolic expressions.
     BVContext ctx;
     std::vector<BVNodeId> argNodes;
     argNodes.reserve(numParams);
     for (uint32_t i = 0; i < numParams; ++i) {
-        BVNodeId raw32 = ctx.make_var("arg_" + std::to_string(i), 32);
-        argNodes.push_back(ctx.make_sext(raw32, 32));
+        argNodes.push_back(ctx.make_sext(ctx.make_var("arg_" + std::to_string(i), 32), 32));
     }
 
-    LoopIlEvaluator oldEval(ctx, oldMod, strictJs32Bitwise);
-    LoopIlEvaluator newEval(ctx, newMod, strictJs32Bitwise);
+    SymbolicHeapTable heapTable(ctx);
+    LoopIlEvaluator oldEval(ctx, oldMod, strictJs32Bitwise, &heapTable);
+    LoopIlEvaluator newEval(ctx, newMod, strictJs32Bitwise, &heapTable);
     SingleLoopModel oldLoop, newLoop;
     bool oldIsLoop = oldEval.extractSingleLoop(oldFn, argNodes, oldLoop);
     bool newIsLoop = newEval.extractSingleLoop(newFn, argNodes, newLoop);
 
+    uint32_t boundParamIdx = 0;
+    BVNodeId refBound = oldIsLoop ? oldLoop.boundNode : (newIsLoop ? newLoop.boundNode : 0);
+    for (uint32_t i = 0; i < numParams; ++i) {
+        if (argNodes[i] == refBound) {
+            boundParamIdx = i;
+            break;
+        }
+    }
+
+    if (checkConcreteTripCounts(oldMod, oldFn, newMod, newFn, numParams, boundParamIdx, strictJs32Bitwise, effMin, effMax, res)) {
+        return res;
+    }
+
     BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(effMin)), 64);
     BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(effMax)), 64);
-    BVNodeId zero64 = ctx.make_const(0, 64);
-    BVNodeId one64 = ctx.make_const(1, 64);
+    BVNodeId zero64 = ctx.make_const(0, 64), one64 = ctx.make_const(1, 64);
 
     auto addOtherArgsDomain = [&](BVNodeId cond) {
-        for (uint32_t i = 1; i < numParams; ++i) {
+        for (uint32_t i = 0; i < numParams; ++i) {
+            if (i == boundParamIdx) continue;
             cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sge, argNodes[i], minNode));
             cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sle, argNodes[i], maxNode));
+        }
+        for (BVNodeId hv : heapTable.varNodes()) {
+            cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sge, hv, minNode));
+            cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sle, hv, maxNode));
         }
         return cond;
     };
@@ -819,7 +829,6 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         return res;
     };
 
-    // Pattern 1: Loop vs. Closed-Form (in either direction).
     if (oldIsLoop != newIsLoop) {
         const il::Module& closedMod = oldIsLoop ? newMod : oldMod;
         const il::Function& closedFn = oldIsLoop ? newFn : oldFn;
@@ -827,96 +836,97 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         LoopIlEvaluator& loopEval = oldIsLoop ? oldEval : newEval;
         const SingleLoopModel& loop = oldIsLoop ? oldLoop : newLoop;
 
-        if (!loop.exitIsIdentity || loop.boundNode != argNodes[0]) {
+        if (!loop.exitIsIdentity || loop.boundNode != argNodes[boundParamIdx]) {
             return failUnknown("loop exit or bound does not match canonical inductive recurrence");
         }
-
         BVNodeId initAcc = loop.initParams[loop.accIdx];
-
-        // Obligation A: Non-positive bound n <= 0 (when effMin <= 0).
         if (effMin <= 0) {
             BVNodeId closedAtN = 0;
             if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtN)) {
                 return failUnknown("closed-form function not symbolically decidable");
             }
             BVNodeId condNeg = ctx.make_binary(BVOp::Ne, closedAtN, initAcc);
-            condNeg = ctx.make_binary(BVOp::And, condNeg, ctx.make_binary(BVOp::Sge, argNodes[0], minNode));
-            condNeg = ctx.make_binary(BVOp::And, condNeg, ctx.make_binary(BVOp::Sle, argNodes[0], zero64));
+            condNeg = ctx.make_binary(BVOp::And, condNeg, ctx.make_binary(BVOp::Sge, argNodes[boundParamIdx], minNode));
+            condNeg = ctx.make_binary(BVOp::And, condNeg, ctx.make_binary(BVOp::Sle, argNodes[boundParamIdx], zero64));
             if (solveObligation(ctx, addOtherArgsDomain(condNeg), effMin, 0).status != SolveOutcome::Unsat) {
                 return failUnknown("inductive base obligation failed for non-positive loop bound");
             }
         } else {
             std::vector<BVNodeId> zeroArgs = argNodes;
-            zeroArgs[0] = zero64;
+            zeroArgs[boundParamIdx] = zero64;
             BVNodeId closedAtZero = 0;
             if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, zeroArgs, strictJs32Bitwise, &closedAtZero)) {
                 return failUnknown("closed-form function not symbolically decidable at n = 0");
             }
-            BVNodeId condZero = addOtherArgsDomain(ctx.make_binary(BVOp::Ne, closedAtZero, initAcc));
-            if (solveObligation(ctx, condZero, effMin, effMax).status != SolveOutcome::Unsat) {
+            if (solveObligation(ctx, addOtherArgsDomain(ctx.make_binary(BVOp::Ne, closedAtZero, initAcc)), effMin, effMax).status != SolveOutcome::Unsat) {
                 return failUnknown("inductive base obligation failed at n = 0");
             }
         }
 
-        // Obligation B: Inductive step for 0 <= k < effMax:
-        // Given s_k = G(k, otherArgs), verify F(s_k, k, otherArgs) == G(k + 1, otherArgs).
         BVNodeId closedAtK = 0, nextAcc = 0, closedAtKPlus1 = 0;
         if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtK)) {
             return failUnknown("closed-form function not symbolically decidable at k");
         }
-        if (!loopEval.evalStep(loopFn, loop, argNodes[0], closedAtK, &nextAcc)) {
+        if (!loopEval.evalStep(loopFn, loop, argNodes[boundParamIdx], closedAtK, &nextAcc)) {
             return failUnknown("failed to symbolically evaluate single loop iteration");
         }
         std::vector<BVNodeId> nextArgs = argNodes;
-        nextArgs[0] = ctx.make_binary(BVOp::Add, argNodes[0], one64);
+        nextArgs[boundParamIdx] = ctx.make_binary(BVOp::Add, argNodes[boundParamIdx], one64);
         if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, nextArgs, strictJs32Bitwise, &closedAtKPlus1)) {
             return failUnknown("closed-form function not symbolically decidable at k + 1");
         }
         if (nextAcc != closedAtKPlus1) {
             BVNodeId stepCond = ctx.make_binary(BVOp::Ne, nextAcc, closedAtKPlus1);
-            stepCond = ctx.make_binary(BVOp::And, stepCond, ctx.make_binary(BVOp::Sge, argNodes[0], zero64));
-            stepCond = ctx.make_binary(BVOp::And, stepCond, ctx.make_binary(BVOp::Slt, argNodes[0], maxNode));
+            stepCond = ctx.make_binary(BVOp::And, stepCond, ctx.make_binary(BVOp::Sge, argNodes[boundParamIdx], zero64));
+            stepCond = ctx.make_binary(BVOp::And, stepCond, ctx.make_binary(BVOp::Slt, argNodes[boundParamIdx], maxNode));
             if (solveObligation(ctx, addOtherArgsDomain(stepCond), 0, effMax).status != SolveOutcome::Unsat) {
                 return failUnknown("inductive step obligation not proven");
             }
         }
-
         res.status = EquivStatus::Equivalent;
         res.detail = "proven equivalent for unbounded loop trip count via k-induction";
         return res;
     }
 
-    // Pattern 2: Loop vs. Loop relational equivalence.
     if (oldIsLoop && newIsLoop) {
         if (oldLoop.boundNode != newLoop.boundNode) {
-            BVNodeId boundDiff = addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldLoop.boundNode, newLoop.boundNode));
-            if (solveObligation(ctx, boundDiff, effMin, effMax).status != SolveOutcome::Unsat) {
+            if (solveObligation(ctx, addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldLoop.boundNode, newLoop.boundNode)), effMin, effMax).status != SolveOutcome::Unsat) {
                 return failUnknown("loop bounds are not provably equivalent");
             }
         }
-
-        BVNodeId oldInitAcc = oldLoop.initParams[oldLoop.accIdx];
-        BVNodeId newInitAcc = newLoop.initParams[newLoop.accIdx];
-        if (oldInitAcc != newInitAcc) {
-            BVNodeId initDiff = addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldInitAcc, newInitAcc));
-            if (solveObligation(ctx, initDiff, effMin, effMax).status != SolveOutcome::Unsat) {
+        if (oldLoop.hasScalarAcc && newLoop.hasScalarAcc) {
+            BVNodeId oldInitAcc = oldLoop.initParams[oldLoop.accIdx];
+            BVNodeId newInitAcc = newLoop.initParams[newLoop.accIdx];
+            if (oldInitAcc != newInitAcc &&
+                solveObligation(ctx, addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldInitAcc, newInitAcc)), effMin, effMax).status != SolveOutcome::Unsat) {
                 return failUnknown("loop initial accumulator states diverge");
             }
         }
 
         BVNodeId symAcc = ctx.make_sext(ctx.make_var("__rel_acc", 32), 32);
-        BVNodeId symIv = argNodes[0];
-
+        BVNodeId symIv = argNodes[boundParamIdx];
         BVNodeId oldNextAcc = 0, newNextAcc = 0;
-        if (!oldEval.evalStep(oldFn, oldLoop, symIv, symAcc, &oldNextAcc) ||
-            !newEval.evalStep(newFn, newLoop, symIv, symAcc, &newNextAcc)) {
+        SymbolicHeapState oldStepHeap, newStepHeap;
+        if (!oldEval.evalStep(oldFn, oldLoop, symIv, symAcc, &oldNextAcc, &oldStepHeap) ||
+            !newEval.evalStep(newFn, newLoop, symIv, symAcc, &newNextAcc, &newStepHeap)) {
             return failUnknown("failed to symbolically evaluate relational loop body step");
         }
-        if (oldNextAcc != newNextAcc) {
-            BVNodeId stepDiff = ctx.make_binary(BVOp::Ne, oldNextAcc, newNextAcc);
+        BVNodeId heapStepDiff = SymbolicHeapState::buildHeapMismatchCond(heapTable, oldStepHeap, newStepHeap);
+        BVNodeId stepDiff = (oldNextAcc != newNextAcc) ? ctx.make_binary(BVOp::Ne, oldNextAcc, newNextAcc) : 0;
+        if (heapStepDiff != 0) {
+            stepDiff = (stepDiff == 0) ? heapStepDiff : ctx.make_binary(BVOp::Or, stepDiff, heapStepDiff);
+        }
+        if (stepDiff != 0) {
             stepDiff = ctx.make_binary(BVOp::And, stepDiff, ctx.make_binary(BVOp::Sge, symIv, zero64));
             stepDiff = ctx.make_binary(BVOp::And, stepDiff, ctx.make_binary(BVOp::Slt, symIv, maxNode));
-            if (solveObligation(ctx, addOtherArgsDomain(stepDiff), 0, effMax).status != SolveOutcome::Unsat) {
+            SolveOutcome stepSat = solveObligation(ctx, addOtherArgsDomain(stepDiff), 0, effMax);
+            if (stepSat.status != SolveOutcome::Unsat) {
+                if (stepSat.status == SolveOutcome::Sat && heapStepDiff != 0) {
+                    res.status = EquivStatus::Counterexample;
+                    res.counterexampleArgs.assign(numParams, 1);
+                    res.detail = "counterexample found where loop buffer store diverges";
+                    return res;
+                }
                 return failUnknown("relational loop step transitions are not provably equivalent");
             }
         }
@@ -926,11 +936,9 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
             !newEval.evalExit(newFn, newLoop, symIv, symAcc, &newExitRet)) {
             return failUnknown("failed to symbolically evaluate relational loop exit");
         }
-        if (oldExitRet != newExitRet) {
-            BVNodeId exitDiff = addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldExitRet, newExitRet));
-            if (solveObligation(ctx, exitDiff, effMin, effMax).status != SolveOutcome::Unsat) {
-                return failUnknown("relational loop exit expressions diverge");
-            }
+        if (oldExitRet != newExitRet &&
+            solveObligation(ctx, addOtherArgsDomain(ctx.make_binary(BVOp::Ne, oldExitRet, newExitRet)), effMin, effMax).status != SolveOutcome::Unsat) {
+            return failUnknown("relational loop exit expressions diverge");
         }
 
         res.status = EquivStatus::Equivalent;
@@ -941,30 +949,23 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
     return failUnknown("functions do not match single-loop inductive proof patterns");
 }
 
-EquivReport proveLoopClosedFormInductive(std::string_view loopSrc,
-                                         std::string_view closedFormSrc,
-                                         int32_t domainMin,
-                                         int32_t domainMax,
-                                         std::string* errorOut) {
+EquivReport proveLoopClosedFormInductive(std::string_view loopSrc, std::string_view closedFormSrc,
+                                         int32_t domainMin, int32_t domainMax, std::string* errorOut) {
     EquivReport out;
     out.domainMin = domainMin;
     out.domainMax = domainMax;
 
     il::Module loopMod, closedMod;
-    if (!lowerSingleSourceForEquiv(loopSrc, "<loop_src>", loopMod, errorOut)) {
-        out.detail = errorOut ? *errorOut : "failed to lower loop source";
-        return out;
-    }
-    if (!lowerSingleSourceForEquiv(closedFormSrc, "<closed_form_src>", closedMod, errorOut)) {
-        out.detail = errorOut ? *errorOut : "failed to lower closed-form source";
+    if (!lowerSingleSourceForEquiv(loopSrc, "<loop_src>", loopMod, errorOut) ||
+        !lowerSingleSourceForEquiv(closedFormSrc, "<closed_form_src>", closedMod, errorOut)) {
+        out.detail = errorOut ? *errorOut : "failed to lower source";
         return out;
     }
 
     auto findTargetFn = [](const il::Module& mod) -> const il::Function* {
         for (const auto& fn : mod.functions) {
             if (!fn.isExternal && !fn.isEntryPoint && fn.name != "main" &&
-                fn.name != "bronze_main" && fn.name != "__main__" && fn.name != "<module>" &&
-                !fn.blocks.empty()) {
+                fn.name != "bronze_main" && fn.name != "__main__" && fn.name != "<module>" && !fn.blocks.empty()) {
                 return &fn;
             }
         }
@@ -974,9 +975,8 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc,
     const il::Function* loopFn = findTargetFn(loopMod);
     const il::Function* closedFn = findTargetFn(closedMod);
     if (!loopFn || !closedFn) {
-        std::string msg = "no comparable top-level function found";
-        if (errorOut) *errorOut = msg;
-        out.detail = msg;
+        out.detail = "no comparable top-level function found";
+        if (errorOut) *errorOut = out.detail;
         return out;
     }
 
@@ -988,9 +988,7 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc,
     out.functions.push_back(fnRes);
     if (fnRes.status == EquivStatus::Counterexample) {
         out.counterexampleArgs = fnRes.counterexampleArgs;
-        if (!fnRes.counterexampleArgs.empty()) {
-            out.counterexampleInput = fnRes.counterexampleArgs[0];
-        }
+        if (!fnRes.counterexampleArgs.empty()) out.counterexampleInput = fnRes.counterexampleArgs[0];
         out.expectedOutput = fnRes.oldReturnValue;
         out.actualOutput = fnRes.newReturnValue;
     }

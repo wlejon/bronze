@@ -165,16 +165,26 @@ bool requireFunctionReceiver(Value self, const char* method) {
 // callee that allocates before it reads it — so the values are re-rooted here
 // rather than assumed to still be where the caller left them.
 uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    const Value selfVal(thisBits);
+    if (selfVal.isObject() && selfVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        const auto* fnHdr = selfVal.asObject<FunctionHeader>();
+        const uint32_t forwarded = argc > 1 ? argc - 1 : 0;
+        if (fnHdr->isNativeCode() && fnHdr->realmSlot() == 0 && rtEntersWithoutScope(fnHdr) &&
+            (fnHdr->arity == 0 || forwarded >= fnHdr->arity)) {
+            const uint64_t thisArgBits = argc > 0 ? argv[0] : Value::fromUndefined().rawBits();
+            const uint64_t* fwdArgv = forwarded > 0 ? (argv + 1) : nullptr;
+            return fnHdr->code(fnHdr->env_record.rawBits(), thisArgBits, forwarded, fwdArgv);
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> fn{Value(thisBits)};
     if (!requireFunctionReceiver(fn.get(), "call")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[0]};
 
     const uint32_t forwarded = args.count() > 1 ? args.count() - 1 : 0;
-    RootedBlock block(forwarded);
-    for (uint32_t i = 0; i < forwarded; ++i) block.set(i, args[i + 1]);
-    return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), forwarded,
-                               block.data());
+    const uint64_t* fwdArgv =
+        forwarded > 0 ? reinterpret_cast<const uint64_t*>(args.data() + 1) : nullptr;
+    return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), forwarded, fwdArgv);
 }
 
 // 20.2.3.1 Function.prototype.apply(thisArg, argArray).

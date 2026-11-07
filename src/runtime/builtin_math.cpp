@@ -519,6 +519,10 @@ extern "C" uint64_t bronze_math_round(uint64_t, uint64_t, uint32_t argc, const u
     return Value::fromDouble(jsRound(argAt(argc, argv, 0))).rawBits();
 }
 
+extern "C" double bronze_math_round_f64(double x) {
+    return jsRound(x);
+}
+
 Value rtMathObject() {
     if (g_mathObject.isObject()) return g_mathObject;
 

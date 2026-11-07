@@ -211,15 +211,28 @@ void collectStrengthEdits(const ParsedJs& p, const std::string& fallbackFn, std:
         // either way. Math.pow(x, 3) -> (x * x * x) only where x is an integer
         // whose cube is exact, since x * x * x rounds twice.
         if (p.isMathCall(*c, "pow") && c->args.size() == 2) {
-            const Ident* x = asIdent(c->args[0].get());
             auto e = literalNumber(c->args[1].get());
-            if (!x || !e || (*e != 2 && *e != 3)) continue;
-            if (*e == 3) {
-                auto r = p.rangeOf(*x);
-                double m = r ? std::max(std::fabs(r->lo), std::fabs(r->hi)) : INFINITY;
-                if (!(m * m * m <= 9007199254740992.0)) continue;
+            if (!e || (*e != 2 && *e != 3)) continue;
+            const Ident* x = asIdent(c->args[0].get());
+            std::string v;
+            if (x) {
+                v = x->name;
+                if (*e == 3) {
+                    auto r = p.rangeOf(*x);
+                    double m = r ? std::max(std::fabs(r->lo), std::fabs(r->hi)) : INFINITY;
+                    if (!(m * m * m <= 9007199254740992.0)) continue;
+                }
+            } else if (*e == 2) {
+                if (auto* ma = exactAs<const MemberAccess*>(c->args[0].get());
+                    ma && !ma->optional && !ma->isPrivate) {
+                    if (exactAs<const ThisExpr*>(ma->object.get())) {
+                        v = "this." + ma->property;
+                    } else if (const Ident* base = asIdent(ma->object.get())) {
+                        v = base->name + "." + ma->property;
+                    }
+                }
             }
-            const std::string& v = x->name;
+            if (v.empty()) continue;
             std::string after = (*e == 2) ? "(" + v + " * " + v + ")" : "(" + v + " * " + v + " * " + v + ")";
             out.push_back(makeEdit(p, p.inner(*c), after, *c, fallbackFn, "strength-reduction-pow",
                                    "Strength-reduced Math.pow(" + v + ", " + fmtNumber(*e) +

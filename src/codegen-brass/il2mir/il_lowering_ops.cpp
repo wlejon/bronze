@@ -221,6 +221,7 @@ bool lower_ops_instruction(
                 case 10: fn = "bronze_math_asin_f64"; break;
                 case 11: fn = "bronze_math_acos_f64"; break;
                 case 12: fn = "bronze_math_atan_f64"; break;
+                case 16: fn = "bronze_math_round_f64"; break;
                 case 13: {
                     Value* op1 = get_opd(1);
                     if (!op1) return false;
@@ -519,11 +520,29 @@ bool lower_ops_instruction(
                 // operands with different bits is a correct path, so the bits
                 // decide; one compare in place of the String arm's loads.
                 constexpr int64_t kIdentityDispatch = 1;
-                // A string literal on either side (il_box_str_key.cpp); the
-                // helper-only form of a run-once block keeps its one call.
-                const bool lit0 = lowering->is_string_literal(inst_ast.operands[0]);
-                const bool lit1 = lowering->is_string_literal(inst_ast.operands[1]);
-                if (inst_ast.imm_i64 == kIdentityDispatch) {
+                const uint32_t id0 = inst_ast.operands[0];
+                const uint32_t id1 = inst_ast.operands[1];
+                const bool lit0 = lowering->is_string_literal(id0);
+                const bool lit1 = lowering->is_string_literal(id1);
+                if (lowering->is_elided_typeof(id0) || lowering->is_elided_typeof(id1)) {
+                    const bool elided0 = lowering->is_elided_typeof(id0);
+                    Value* tag_val = elided0 ? op0 : op1;
+                    std::string_view lit_str = lowering->string_literal_text(elided0 ? id1 : id0);
+                    if (lit_str == "undefined") {
+                        Value* masked = b.build_and(tag_val, b.build_iconst_i64(~1LL));
+                        res_val = b.build_eq(masked, b.build_iconst_i64(BRONZE_ABI_TAG_UNDEFINED));
+                    } else {
+                        int64_t expected_tag =
+                            (lit_str == "number")  ? BRONZE_ABI_TAG_INT32 :
+                            (lit_str == "string")  ? BRONZE_ABI_TAG_STRING :
+                            (lit_str == "boolean") ? BRONZE_ABI_TAG_BOOL :
+                            (lit_str == "symbol")  ? BRONZE_ABI_TAG_SYMBOL :
+                                                     BRONZE_ABI_TAG_BIGINT;
+                        res_val = b.build_eq(tag_val, b.build_iconst_i64(expected_tag));
+                    }
+                } else if (inst_ast.imm_i64 == kIdentityDispatch ||
+                           (lowering->is_typeof_value(id0) && lit1) ||
+                           (lowering->is_typeof_value(id1) && lit0)) {
                     res_val = b.build_eq(op0, op1);
                 } else if (!lowering->run_once() && (lit0 || lit1) &&
                            !is_bits_identity_constant(op0) && !is_bits_identity_constant(op1)) {
@@ -658,8 +677,11 @@ bool lower_ops_instruction(
 
         case BronzeOp::IsNullish: {
             Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_is_nullish", Type::i32(), {op0});
-            res_val = b.build_and(res_val, b.build_iconst_i32(1));
+            Value* is_null = b.build_eq(op0, b.build_iconst_i64(static_cast<int64_t>(kNullTag)));
+            Value* masked = b.build_and(op0, b.build_iconst_i64(~(1LL << BRONZE_ABI_VALUE_TAG_SHIFT)));
+            Value* is_undef_or_hole = b.build_eq(masked, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+            res_val = b.build_or(is_null, is_undef_or_hole);
+            if (lowering) lowering->note_boolean(res_val);
             return true;
         }
 
@@ -667,6 +689,12 @@ bool lower_ops_instruction(
             Value* op0 = get_opd(0);
             if (!op0) return false;
             Value* src = lowering->ensure_type(op0, Type::i64(), b);
+            if (lowering && lowering->is_elided_typeof(inst_ast.result_id)) {
+                Value* is_num = b.build_ule(src, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+                Value* raw_tag = b.build_lshr(src, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT));
+                res_val = b.build_select(is_num, b.build_iconst_i64(BRONZE_ABI_TAG_INT32), raw_tag);
+                return true;
+            }
             res_val = b.build_call("bronze_typeof", Type::i64(), {src});
             return true;
         }

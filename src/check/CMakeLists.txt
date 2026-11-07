@@ -4,6 +4,7 @@ bronze_add_module(check
         static_checker_math.cpp
         static_checker_domain.cpp
         prove_equiv.cpp
+        prove_equiv_heap.cpp
         prove_equiv_bitwise.cpp
         prove_loop_induction.cpp
         loop_recurrence_synth.cpp
@@ -27,6 +28,7 @@ bronze_add_module(check
         ../../tests/check/symbolic_runtime_test.cpp
         ../../tests/check/verified_rewriter_test.cpp
         ../../tests/check/loop_fp_prover_test.cpp
+        ../../tests/check/threejs_math_prover_test.cpp
     TEST_DEPS lex parse
 )
 

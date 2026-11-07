@@ -624,6 +624,7 @@
     X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_sincos_f64,     BRONZE_ABI_VOID, (BRONZE_ABI_F64, BRONZE_ABI_VPTR)) \
+    X(bronze_math_round_f64,      BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_exp_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_log_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_tan_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \

@@ -144,6 +144,14 @@ public:
     // Whether `id` is a string literal, `box.str k` with no operand: a String
     // whatever path reaches it, so `===` against it needs no Number test.
     bool is_string_literal(uint32_t id) const { return string_literal_ids_.count(id) != 0; }
+    bool is_typeof_value(uint32_t id) const { return typeof_value_ids_.count(id) != 0; }
+    bool is_elided_typeof(uint32_t id) const { return elided_typeof_ids_.count(id) != 0; }
+    bool is_elided_typeof_lit(uint32_t id) const { return elided_typeof_lit_ids_.count(id) != 0; }
+    const std::string& string_literal_text(uint32_t id) const {
+        static const std::string kEmpty;
+        auto it = string_literal_texts_.find(id);
+        return it != string_literal_texts_.end() ? it->second : kEmpty;
+    }
     // The module's class layouts handed to the runtime at init
     // (il_static_slot.cpp); `map_addr` is the filled key map.
     void register_class_families(Builder& b, Value* map_addr);
@@ -282,6 +290,10 @@ private:
     std::unordered_set<uint32_t> primitive_value_ids_;
     std::unordered_set<uint32_t> number_value_ids_;
     std::unordered_set<uint32_t> string_literal_ids_;
+    std::unordered_set<uint32_t> typeof_value_ids_;
+    std::unordered_set<uint32_t> elided_typeof_ids_;
+    std::unordered_set<uint32_t> elided_typeof_lit_ids_;
+    std::unordered_map<uint32_t, std::string> string_literal_texts_;
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, std::pair<uint32_t, Value*>> number_array_claims_;

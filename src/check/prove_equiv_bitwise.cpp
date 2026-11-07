@@ -1,4 +1,5 @@
 #include "check/prove_equiv.h"
+#include "check/prove_equiv_heap.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,8 +8,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <brass/mir/builder.hpp>
-#include <brass/verify/smt_equiv.hpp>
 #include <verify/bv_solver.hpp>
 
 namespace bronze::check {
@@ -19,7 +18,7 @@ using brass::verify::BVNodeId;
 using brass::verify::BVOp;
 using brass::verify::SolveOutcome;
 
-constexpr uint32_t kMaxBlockSteps = 220;
+constexpr uint32_t kMaxBlockSteps = 110;
 constexpr uint32_t kMaxTotalBlockVisits = 1024;
 constexpr uint32_t kMaxInlineDepth = 6;
 
@@ -29,6 +28,7 @@ struct SymState {
     std::unordered_map<uint32_t, std::string> globalRefs;
     std::unordered_map<il::ValueId, std::vector<BVNodeId>> arrayValues;
     std::unordered_map<uint64_t, std::vector<BVNodeId>> envArrays;
+    SymbolicHeapState heap;
 };
 
 struct SymEvalOutcome {
@@ -36,12 +36,21 @@ struct SymEvalOutcome {
     std::string unsupportedReason;
     bool hasReturn = false;
     BVNodeId returnVal = 0;
+    SymbolicHeapState finalHeap;
+    std::string returnObjPath;
 };
 
 class SymbolicIlBuilder {
 public:
-    SymbolicIlBuilder(BVContext& ctx, const il::Module& mod, bool strictJs32Bitwise = false)
-        : ctx_(ctx), mod_(mod), strictJs32Bitwise_(strictJs32Bitwise) {
+    SymbolicIlBuilder(BVContext& ctx,
+                      const il::Module& mod,
+                      bool strictJs32Bitwise = false,
+                      SymbolicHeapTable* sharedHeapTable = nullptr)
+        : ctx_(ctx),
+          mod_(mod),
+          strictJs32Bitwise_(strictJs32Bitwise),
+          ownedHeapTable_(ctx),
+          heapTable_(sharedHeapTable ? *sharedHeapTable : ownedHeapTable_) {
         zero64_ = ctx_.make_const(0, 64);
         one64_ = ctx_.make_const(1, 64);
         allOnes64_ = ctx_.make_const(~uint64_t{0}, 64);
@@ -49,15 +58,22 @@ public:
 
     SymEvalOutcome evalFunction(const il::Function& fn,
                                 const std::vector<BVNodeId>& argNodes,
-                                uint32_t inlineDepth = 0) {
+                                uint32_t inlineDepth = 0,
+                                const SymbolicHeapState* callerHeap = nullptr,
+                                const std::string& thisPath = "this",
+                                const std::vector<std::string>* callerArgPaths = nullptr) {
         if (fn.blocks.empty() || fn.isExternal) {
-            return {false, "external or empty function", false, zero64_};
+            return {false, "external or empty function", false, zero64_, {}, {}};
         }
         if (inlineDepth > kMaxInlineDepth) {
-            return {false, "call recursion depth exceeded", false, zero64_};
+            return {false, "call recursion depth exceeded", false, zero64_, {}, {}};
         }
 
         SymState initState;
+        if (callerHeap) {
+            initState.heap.writes = callerHeap->writes;
+            initState.heap.localObjCounter = callerHeap->localObjCounter;
+        }
         uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
         for (uint32_t i = 0; i < firstSrc; ++i) {
             initState.values[i] = zero64_;
@@ -67,6 +83,7 @@ public:
             BVNodeId arg = (i < argNodes.size()) ? argNodes[i] : zero64_;
             initState.values[firstSrc + i] = arg;
         }
+        initState.heap.initFunctionHeap(heapTable_, fn, initState.values, thisPath, callerArgPaths);
 
         return evalBlockPath(fn, 0, initState, 0, inlineDepth);
     }
@@ -75,6 +92,8 @@ private:
     BVContext& ctx_;
     const il::Module& mod_;
     bool strictJs32Bitwise_ = false;
+    SymbolicHeapTable ownedHeapTable_;
+    SymbolicHeapTable& heapTable_;
     BVNodeId zero64_ = 0;
     BVNodeId one64_ = 0;
     BVNodeId allOnes64_ = 0;
@@ -142,59 +161,67 @@ private:
         return zero64_;
     }
 
+    void applyEdgeArgsInPlace(const il::Function& fn, const il::BlockTarget& edge, SymState& state) {
+        if (edge.block < fn.blocks.size()) {
+            const auto& targetBlk = fn.blocks[edge.block];
+            std::vector<std::pair<il::ValueId, BVNodeId>> updates;
+            updates.reserve(targetBlk.params.size());
+            for (size_t k = 0; k < targetBlk.params.size() && k < edge.args.size(); ++k) {
+                updates.emplace_back(targetBlk.params[k].id, toBV64(getVal(state, edge.args[k])));
+                state.heap.propagateAlias(edge.args[k], targetBlk.params[k].id);
+            }
+            for (const auto& [dst, val] : updates) {
+                state.values[dst] = val;
+            }
+        }
+    }
+
     SymEvalOutcome evalBlockPath(const il::Function& fn,
                                  il::BlockId blockId,
                                  SymState state,
                                  uint32_t steps,
                                  uint32_t inlineDepth) {
-        if (++totalVisits_ > kMaxTotalBlockVisits) {
-            return {false, "symbolic path limit exceeded", false, zero64_};
-        }
-        if (steps > kMaxBlockSteps) {
-            hitLoopUnrollBound_ = true;
-            return {true, "loop unroll bound reached", false, zero64_};
-        }
-        if (blockId >= fn.blocks.size()) {
-            return {false, "invalid block target", false, zero64_};
-        }
+        while (true) {
+            if (++totalVisits_ > kMaxTotalBlockVisits) {
+                return {false, "symbolic path limit exceeded", false, zero64_};
+            }
+            if (steps > kMaxBlockSteps) {
+                hitLoopUnrollBound_ = true;
+                return {true, "loop unroll bound reached", false, zero64_};
+            }
+            if (blockId >= fn.blocks.size()) {
+                return {false, "invalid block target", false, zero64_};
+            }
 
-        const il::Block& blk = fn.blocks[blockId];
-        for (const auto& inst : blk.instructions) {
+            bool jumpedInPlace = false;
+            const il::Block& blk = fn.blocks[blockId];
+            for (const auto& inst : blk.instructions) {
             using Op = il::Op;
             switch (inst.op) {
-                case Op::ConstI32: {
-                    uint64_t sext = static_cast<uint64_t>(static_cast<int64_t>(inst.immI32));
-                    state.values[inst.result] = ctx_.make_const(sext, 64);
+                case Op::ConstI32:
+                    state.values[inst.result] = ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64);
                     break;
-                }
                 case Op::ConstF64: {
                     if (std::isnan(inst.immF64) || std::isinf(inst.immF64)) {
                         return {false, "non-finite floating-point constant", false, zero64_};
                     }
-                    double intPart = std::trunc(inst.immF64);
-                    if (intPart != inst.immF64) {
+                    if (std::trunc(inst.immF64) != inst.immF64) {
                         return {false, "fractional floating-point constant", false, zero64_};
                     }
-                    int64_t iv = static_cast<int64_t>(inst.immF64);
-                    state.values[inst.result] = ctx_.make_const(static_cast<uint64_t>(iv), 64);
+                    state.values[inst.result] = ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immF64)), 64);
                     break;
                 }
-                case Op::ConstBool: {
+                case Op::ConstBool:
                     state.values[inst.result] = (inst.immI32 != 0) ? one64_ : zero64_;
                     break;
-                }
                 case Op::ConstNull:
-                case Op::ConstUndefined: {
+                case Op::ConstUndefined:
+                case Op::IsNullish:
                     state.values[inst.result] = zero64_;
                     break;
-                }
                 case Op::ToInt32: {
-                    if (!inst.operands.empty()) {
-                        BVNodeId v = getVal(state, inst.operands[0]);
-                        state.values[inst.result] = strictJs32Bitwise_ ? toSInt32In64(v) : toBV64(v);
-                    } else {
-                        state.values[inst.result] = zero64_;
-                    }
+                    BVNodeId v = inst.operands.empty() ? zero64_ : getVal(state, inst.operands[0]);
+                    state.values[inst.result] = strictJs32Bitwise_ ? toSInt32In64(v) : toBV64(v);
                     break;
                 }
                 case Op::Box:
@@ -203,10 +230,9 @@ private:
                 case Op::NumTruthy: {
                     if (!inst.operands.empty()) {
                         state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
+                        state.heap.propagateAlias(inst.operands[0], inst.result);
                         auto arrIt = state.arrayValues.find(inst.operands[0]);
-                        if (arrIt != state.arrayValues.end()) {
-                            state.arrayValues[inst.result] = arrIt->second;
-                        }
+                        if (arrIt != state.arrayValues.end()) state.arrayValues[inst.result] = arrIt->second;
                     } else {
                         state.values[inst.result] = zero64_;
                     }
@@ -222,43 +248,63 @@ private:
                 case Op::IsNumberArray:
                 case Op::IsShape:
                 case Op::IsArray:
-                case Op::IsTypedArray: {
-                    state.values[inst.result] = one64_;
+                case Op::IsTypedArray:
+                case Op::LayoutEpoch:
+                case Op::LayoutFact:
+                case Op::MethodIcIs:
+                case Op::AccessorIcIs:
+                    if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
+                    break;
+                case Op::CreateObject:
+                    state.values[inst.result] = state.heap.createLocalObject(heapTable_, inst.result);
+                    break;
+                case Op::PropGet: {
+                    if (inst.operands.empty() || inst.keyIndex >= mod_.keyConstants.size()) {
+                        return {false, "malformed PropGet", false, zero64_, {}, {}};
+                    }
+                    const std::string& key = mod_.keyConstants[inst.keyIndex];
+                    auto arrIt = state.arrayValues.find(inst.operands[0]);
+                    if (arrIt != state.arrayValues.end() && key == "length") {
+                        state.values[inst.result] = ctx_.make_const(arrIt->second.size(), 64);
+                        break;
+                    }
+                    BVNodeId propVal = zero64_;
+                    if (!state.heap.evalPropGet(heapTable_, inst.operands[0], key, inst.result, propVal)) {
+                        return {false, "unsupported PropGet on non-tracked receiver", false, zero64_, {}, {}};
+                    }
+                    state.values[inst.result] = propVal;
                     break;
                 }
-                case Op::IsNullish: {
-                    state.values[inst.result] = zero64_;
+                case Op::PropSet:
+                case Op::DefineOwnAttr: {
+                    if (inst.operands.size() < 2 || inst.keyIndex >= mod_.keyConstants.size()) {
+                        return {false, "malformed PropSet", false, zero64_, {}, {}};
+                    }
+                    const std::string& key = mod_.keyConstants[inst.keyIndex];
+                    BVNodeId valNode = toBV64(getVal(state, inst.operands[1]));
+                    if (!state.heap.evalPropSet(heapTable_, inst.operands[0], key, valNode, inst.operands[1])) {
+                        return {false, "unsupported PropSet on non-tracked receiver", false, zero64_, {}, {}};
+                    }
+                    if (inst.result != il::kNoValue) state.values[inst.result] = valNode;
                     break;
                 }
-                case Op::NumericStep: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId step = ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64);
-                    state.values[inst.result] = ctx_.make_binary(BVOp::Add, a, step);
+                case Op::NumericStep:
+                    state.values[inst.result] = ctx_.make_binary(
+                        BVOp::Add, toBV64(getVal(state, inst.operands[0])),
+                        ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64));
                     break;
-                }
                 case Op::MathImul: {
                     BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
                     BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
-                    BVNodeId prod32 = ctx_.make_binary(BVOp::Mul, a32, b32);
-                    state.values[inst.result] = ctx_.make_sext(prod32, 32);
+                    state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Mul, a32, b32), 32);
                     break;
                 }
-                case Op::Add: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    state.values[inst.result] = ctx_.make_binary(BVOp::Add, a, b);
-                    break;
-                }
-                case Op::Sub: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    state.values[inst.result] = ctx_.make_binary(BVOp::Sub, a, b);
-                    break;
-                }
+                case Op::Add:
+                case Op::Sub:
                 case Op::Mul: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    state.values[inst.result] = ctx_.make_binary(BVOp::Mul, a, b);
+                    BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
+                    state.values[inst.result] = ctx_.make_binary(
+                        bvOp, toBV64(getVal(state, inst.operands[0])), toBV64(getVal(state, inst.operands[1])));
                     break;
                 }
                 case Op::Pow: {
@@ -415,22 +461,44 @@ private:
                     }
                     break;
                 }
-                case Op::ElemGet: {
+                case Op::ElemGet:
+                case Op::ElemGetTyped: {
                     if (inst.operands.size() < 2) {
-                        return {false, "malformed ElemGet", false, zero64_};
+                        return {false, "malformed ElemGet", false, zero64_, {}, {}};
                     }
                     auto arrIt = state.arrayValues.find(inst.operands[0]);
-                    if (arrIt == state.arrayValues.end() || arrIt->second.empty()) {
-                        return {false, "unsupported dynamic array ElemGet", false, zero64_};
+                    if (arrIt != state.arrayValues.end() && !arrIt->second.empty()) {
+                        const auto& elems = arrIt->second;
+                        BVNodeId idx = toBV64(getVal(state, inst.operands[1]));
+                        BVNodeId res = zero64_;
+                        for (size_t i = 0; i < elems.size(); ++i) {
+                            BVNodeId eq = ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64));
+                            res = ctx_.make_ite(eq, elems[i], res);
+                        }
+                        state.values[inst.result] = res;
+                        break;
                     }
-                    const auto& elems = arrIt->second;
-                    BVNodeId idx = toBV64(getVal(state, inst.operands[1]));
-                    BVNodeId res = zero64_;
-                    for (size_t i = 0; i < elems.size(); ++i) {
-                        BVNodeId eq = ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64));
-                        res = ctx_.make_ite(eq, elems[i], res);
+                    BVNodeId elemVal = zero64_;
+                    BVNodeId idxNode = toBV64(getVal(state, inst.operands[1]));
+                    if (!state.heap.evalElemGet(heapTable_, inst.operands[0], idxNode, inst.result, elemVal)) {
+                        return {false, "unsupported dynamic array ElemGet", false, zero64_, {}, {}};
                     }
-                    state.values[inst.result] = res;
+                    state.values[inst.result] = elemVal;
+                    break;
+                }
+                case Op::ElemSet:
+                case Op::ElemSetTyped: {
+                    if (inst.operands.size() < 3) {
+                        return {false, "malformed ElemSet", false, zero64_, {}, {}};
+                    }
+                    BVNodeId idxNode = toBV64(getVal(state, inst.operands[1]));
+                    BVNodeId valNode = toBV64(getVal(state, inst.operands[2]));
+                    if (!state.heap.evalElemSet(heapTable_, inst.operands[0], idxNode, valNode, inst.operands[2])) {
+                        return {false, "unsupported ElemSet on non-tracked receiver", false, zero64_, {}, {}};
+                    }
+                    if (inst.result != il::kNoValue) {
+                        state.values[inst.result] = valNode;
+                    }
                     break;
                 }
                 case Op::MathUnary: {
@@ -445,8 +513,6 @@ private:
                                kind == il::MathUnaryFn::Trunc) {
                         state.values[inst.result] = a;
                     } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                        // Folded left to right, as the Math.min / Math.max
-                        // method-call model below does.
                         BVNodeId acc = a;
                         for (size_t k = 1; k < inst.operands.size(); ++k) {
                             BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
@@ -457,7 +523,7 @@ private:
                         }
                         state.values[inst.result] = acc;
                     } else {
-                        return {false, "unsupported transcendental MathUnary", false, zero64_};
+                        return {false, "unsupported transcendental MathUnary", false, zero64_, {}, {}};
                     }
                     break;
                 }
@@ -470,7 +536,7 @@ private:
                 }
                 case Op::MethodCall: {
                     if (inst.operands.empty() || inst.keyIndex >= mod_.keyConstants.size()) {
-                        return {false, "unsupported dynamic method call", false, zero64_};
+                        return {false, "unsupported dynamic method call", false, zero64_, {}, {}};
                     }
                     auto recvIt = state.globalRefs.find(inst.operands[0]);
                     const std::string& method = mod_.keyConstants[inst.keyIndex];
@@ -533,7 +599,7 @@ private:
                             BVNodeId b = toBV64(getVal(state, inst.operands[2]));
                             bool ok = false;
                             BVNodeId r = evalPow(a, b, ok);
-                            if (!ok) return {false, "unsupported symbolic Math.pow", false, zero64_};
+                            if (!ok) return {false, "unsupported symbolic Math.pow", false, zero64_, {}, {}};
                             state.values[inst.result] = r;
                             break;
                         }
@@ -556,21 +622,68 @@ private:
                             break;
                         }
                     }
-                    return {false, "unsupported method call: " + method, false, zero64_};
+                    // Direct or class method call on a tracked object receiver (`this.set(...)`, `v.dot(...)`)
+                    std::string recvPath = state.heap.lookupObjPath(inst.operands[0]);
+                    if (!recvPath.empty()) {
+                        const il::Function* callee = nullptr;
+                        if (inst.directTarget != il::Instruction::kNoDirectTarget &&
+                            inst.directTarget < mod_.functions.size()) {
+                            callee = &mod_.functions[inst.directTarget];
+                        } else {
+                            std::string dotSuffix = "." + method;
+                            for (const auto& cand : mod_.functions) {
+                                if (cand.isExternal || cand.isEntryPoint) continue;
+                                if (cand.name == method || cand.displayName == method ||
+                                    (cand.displayName.size() > dotSuffix.size() &&
+                                     cand.displayName.compare(cand.displayName.size() - dotSuffix.size(),
+                                                              dotSuffix.size(), dotSuffix) == 0)) {
+                                    callee = &cand;
+                                    break;
+                                }
+                            }
+                        }
+                        if (callee && !callee->isExternal) {
+                            std::vector<BVNodeId> callArgs;
+                            std::vector<std::string> callPaths;
+                            for (size_t k = 1; k < inst.operands.size(); ++k) {
+                                callArgs.push_back(toBV64(getVal(state, inst.operands[k])));
+                                callPaths.push_back(state.heap.lookupObjPath(inst.operands[k]));
+                            }
+                            auto sub = evalFunction(*callee, callArgs, inlineDepth + 1,
+                                                    &state.heap, recvPath, &callPaths);
+                            if (!sub.supported) return sub;
+                            state.heap.writes = std::move(sub.finalHeap.writes);
+                            state.heap.localObjCounter = sub.finalHeap.localObjCounter;
+                            state.values[inst.result] = sub.returnVal;
+                            if (!sub.returnObjPath.empty() && inst.result != il::kNoValue) {
+                                state.heap.objPaths[inst.result] = sub.returnObjPath;
+                            }
+                            break;
+                        }
+                    }
+                    return {false, "unsupported method call: " + method, false, zero64_, {}, {}};
                 }
                 case Op::Call: {
                     if (inst.calleeIndex >= mod_.functions.size()) {
-                        return {false, "invalid callee index", false, zero64_};
+                        return {false, "invalid callee index", false, zero64_, {}, {}};
                     }
                     const il::Function& callee = mod_.functions[inst.calleeIndex];
                     std::vector<BVNodeId> callArgs;
+                    std::vector<std::string> callPaths;
                     size_t startOp = (inst.callEnvHops != il::Instruction::kNoEnvHops && !inst.operands.empty()) ? 1 : 0;
                     for (size_t k = startOp; k < inst.operands.size(); ++k) {
                         callArgs.push_back(toBV64(getVal(state, inst.operands[k])));
+                        callPaths.push_back(state.heap.lookupObjPath(inst.operands[k]));
                     }
-                    auto sub = evalFunction(callee, callArgs, inlineDepth + 1);
+                    auto sub = evalFunction(callee, callArgs, inlineDepth + 1,
+                                            &state.heap, "this", &callPaths);
                     if (!sub.supported) return sub;
+                    state.heap.writes = std::move(sub.finalHeap.writes);
+                    state.heap.localObjCounter = sub.finalHeap.localObjCounter;
                     state.values[inst.result] = sub.returnVal;
+                    if (!sub.returnObjPath.empty() && inst.result != il::kNoValue) {
+                        state.heap.objPaths[inst.result] = sub.returnObjPath;
+                    }
                     break;
                 }
                 case Op::EnvCreate: {
@@ -581,6 +694,7 @@ private:
                     if (inst.operands.size() >= 2) {
                         uint64_t key = (static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex;
                         state.envSlots[key] = toBV64(getVal(state, inst.operands[1]));
+                        state.heap.propagateEnvSet(key, inst.operands[1]);
                         auto arrIt = state.arrayValues.find(inst.operands[1]);
                         if (arrIt != state.arrayValues.end()) {
                             state.envArrays[key] = arrIt->second;
@@ -593,6 +707,7 @@ private:
                     uint64_t key = (static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex;
                     auto it = state.envSlots.find(key);
                     state.values[inst.result] = (it != state.envSlots.end()) ? it->second : zero64_;
+                    state.heap.propagateEnvGet(key, inst.result);
                     auto arrIt = state.envArrays.find(key);
                     if (arrIt != state.envArrays.end()) {
                         state.arrayValues[inst.result] = arrIt->second;
@@ -602,146 +717,65 @@ private:
                 case Op::EnvInitTdz:
                     break;
                 case Op::Jump: {
-                    SymState nextState = state;
-                    if (inst.target.block < fn.blocks.size()) {
-                        const auto& targetBlk = fn.blocks[inst.target.block];
-                        for (size_t k = 0; k < targetBlk.params.size() && k < inst.target.args.size(); ++k) {
-                            nextState.values[targetBlk.params[k].id] = toBV64(getVal(state, inst.target.args[k]));
-                        }
-                    }
-                    return evalBlockPath(fn, inst.target.block, std::move(nextState), steps + 1, inlineDepth);
+                    applyEdgeArgsInPlace(fn, inst.target, state);
+                    blockId = inst.target.block;
+                    ++steps;
+                    jumpedInPlace = true;
+                    break;
                 }
                 case Op::Branch: {
                     BVNodeId condNode = toBool1(toBV64(getVal(state, inst.operands[0])));
                     const auto& cNode = ctx_.nodes()[condNode];
 
-                    auto makeEdgeState = [&](const il::BlockTarget& edge) {
-                        SymState edgeState = state;
-                        if (edge.block < fn.blocks.size()) {
-                            const auto& targetBlk = fn.blocks[edge.block];
-                            for (size_t k = 0; k < targetBlk.params.size() && k < edge.args.size(); ++k) {
-                                edgeState.values[targetBlk.params[k].id] = toBV64(getVal(state, edge.args[k]));
-                            }
-                        }
-                        return edgeState;
-                    };
-
                     if (cNode.op == BVOp::Const) {
-                        if (cNode.imm != 0) {
-                            return evalBlockPath(fn, inst.target.block, makeEdgeState(inst.target), steps + 1, inlineDepth);
-                        } else {
-                            return evalBlockPath(fn, inst.elseTarget.block, makeEdgeState(inst.elseTarget), steps + 1, inlineDepth);
-                        }
+                        const il::BlockTarget& edge = (cNode.imm != 0) ? inst.target : inst.elseTarget;
+                        applyEdgeArgsInPlace(fn, edge, state);
+                        blockId = edge.block;
+                        ++steps;
+                        jumpedInPlace = true;
+                        break;
                     }
 
-                    auto trueOut = evalBlockPath(fn, inst.target.block, makeEdgeState(inst.target), steps + 1, inlineDepth);
+                    SymState trueState = state;
+                    applyEdgeArgsInPlace(fn, inst.target, trueState);
+                    auto trueOut = evalBlockPath(fn, inst.target.block, std::move(trueState), steps + 1, inlineDepth);
                     if (!trueOut.supported) return trueOut;
-                    auto falseOut = evalBlockPath(fn, inst.elseTarget.block, makeEdgeState(inst.elseTarget), steps + 1, inlineDepth);
+
+                    applyEdgeArgsInPlace(fn, inst.elseTarget, state);
+                    auto falseOut = evalBlockPath(fn, inst.elseTarget.block, std::move(state), steps + 1, inlineDepth);
                     if (!falseOut.supported) return falseOut;
 
                     if (trueOut.hasReturn && falseOut.hasReturn) {
                         BVNodeId merged = ctx_.make_ite(condNode, trueOut.returnVal, falseOut.returnVal);
-                        return {true, {}, true, merged};
+                        SymbolicHeapState mergedHeap = SymbolicHeapState::mergeBranches(
+                            heapTable_, condNode, trueOut.finalHeap, falseOut.finalHeap);
+                        std::string retObj = (trueOut.returnObjPath == falseOut.returnObjPath)
+                                                 ? trueOut.returnObjPath
+                                                 : std::string{};
+                        return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj)};
                     }
                     if (trueOut.hasReturn) return trueOut;
                     if (falseOut.hasReturn) return falseOut;
-                    return {true, "loop unroll bound reached", false, zero64_};
+                    return {true, "loop unroll bound reached", false, zero64_, {}, {}};
                 }
                 case Op::Ret: {
                     BVNodeId ret = inst.operands.empty() ? zero64_ : toBV64(getVal(state, inst.operands[0]));
-                    return {true, {}, true, ret};
+                    std::string retPath = inst.operands.empty()
+                                              ? std::string{}
+                                              : state.heap.lookupObjPath(inst.operands[0]);
+                    return {true, {}, true, ret, std::move(state.heap), std::move(retPath)};
                 }
                 default:
-                    return {false, std::string("unsupported IL operation: ") + il::opName(inst.op), false, zero64_};
+                    return {false, std::string("unsupported IL operation: ") + il::opName(inst.op), false, zero64_, {}, {}};
             }
+            if (jumpedInPlace) break;
         }
-        return {false, "block terminated without Ret/Jump/Branch", false, zero64_};
+        if (!jumpedInPlace) {
+            return {false, "block terminated without Ret/Jump/Branch", false, zero64_, {}, {}};
+        }
+        }
     }
 };
-
-bool tryBuildStraightLineMir(const il::Function& fn,
-                             uint32_t numParams,
-                             brass::Module& mod,
-                             brass::Function*& outFn) {
-    if (fn.blocks.size() != 1) return false;
-    outFn = mod.create_function(fn.name, brass::Type::i64());
-    brass::Builder mb(*outFn);
-    uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
-    std::unordered_map<il::ValueId, brass::Value*> vmap;
-    for (uint32_t i = 0; i < numParams; ++i) {
-        brass::Value* p = mb.add_param(brass::Type::i64());
-        vmap[firstSrc + i] = p;
-    }
-    brass::BasicBlock* entry = mb.append_block("entry");
-    mb.position_at_end(entry);
-
-    for (const auto& inst : fn.blocks[0].instructions) {
-        using Op = il::Op;
-        switch (inst.op) {
-            case Op::ConstI32:
-                vmap[inst.result] = mb.build_iconst_i64(static_cast<int64_t>(inst.immI32));
-                break;
-            case Op::ConstF64: {
-                if (std::isnan(inst.immF64) || std::isinf(inst.immF64) ||
-                    std::trunc(inst.immF64) != inst.immF64) {
-                    return false;
-                }
-                vmap[inst.result] = mb.build_iconst_i64(static_cast<int64_t>(inst.immF64));
-                break;
-            }
-            case Op::Box:
-            case Op::Unbox:
-            case Op::ToInt32:
-            case Op::ToNumeric:
-                if (inst.operands.empty() || !vmap.count(inst.operands[0])) return false;
-                vmap[inst.result] = vmap[inst.operands[0]];
-                break;
-            case Op::Add:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_add(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::Sub:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_sub(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::Mul:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_mul(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::BitAnd:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_and(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::BitOr:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_or(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::BitXor:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_xor(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::BitNot:
-                if (!vmap.count(inst.operands[0])) return false;
-                vmap[inst.result] = mb.build_not(vmap[inst.operands[0]]);
-                break;
-            case Op::Shl:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_shl(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::Shr:
-                if (!vmap.count(inst.operands[0]) || !vmap.count(inst.operands[1])) return false;
-                vmap[inst.result] = mb.build_ashr(vmap[inst.operands[0]], vmap[inst.operands[1]]);
-                break;
-            case Op::Ret:
-                if (inst.operands.empty() || !vmap.count(inst.operands[0])) return false;
-                mb.build_ret(vmap[inst.operands[0]]);
-                return true;
-            default:
-                return false;
-        }
-    }
-    return false;
-}
 
 }  // namespace
 
@@ -770,7 +804,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                                           int32_t domainMin,
                                           int32_t domainMax) {
     FunctionEquivResult res;
-    res.name = oldFn.name;
+    res.name = !oldFn.displayName.empty() ? oldFn.displayName : oldFn.name;
 
     uint32_t oldParams = static_cast<uint32_t>(oldFn.callerParamCount());
     uint32_t newParams = static_cast<uint32_t>(newFn.callerParamCount());
@@ -795,9 +829,10 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         argNodes.push_back(ctx.make_sext(raw32, 32));
     }
 
-    SymbolicIlBuilder oldSym(ctx, oldMod, strictJs32Bitwise);
+    SymbolicHeapTable heapTable(ctx);
+    SymbolicIlBuilder oldSym(ctx, oldMod, strictJs32Bitwise, &heapTable);
     auto oldOut = oldSym.evalFunction(oldFn, argNodes);
-    SymbolicIlBuilder newSym(ctx, newMod, strictJs32Bitwise);
+    SymbolicIlBuilder newSym(ctx, newMod, strictJs32Bitwise, &heapTable);
     auto newOut = newSym.evalFunction(newFn, argNodes);
 
     if (!oldOut.supported || !newOut.supported ||
@@ -823,51 +858,57 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         }
     }
 
-    if (oldOut.returnVal == newOut.returnVal) {
+    std::vector<std::string> checkedHeapPaths;
+    BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(
+        heapTable, oldOut.finalHeap, newOut.finalHeap, &checkedHeapPaths);
+
+    if (oldOut.returnVal == newOut.returnVal && heapMismatch == 0) {
         res.status = EquivStatus::Equivalent;
         res.detail = "proven equivalent by structural BV hash-consing";
         return res;
     }
 
-    BVNodeId badCond = ctx.make_binary(BVOp::Ne, oldOut.returnVal, newOut.returnVal);
+    BVNodeId badCond = 0;
+    if (oldOut.returnVal != newOut.returnVal) {
+        badCond = ctx.make_binary(BVOp::Ne, oldOut.returnVal, newOut.returnVal);
+    }
+    if (heapMismatch != 0) {
+        badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
+    }
+
     if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
         BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
         BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
-        for (BVNodeId arg : argNodes) {
+        auto constrainNode = [&](BVNodeId n) {
             if (domainMin > INT32_MIN) {
-                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, arg, minNode));
+                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, n, minNode));
             }
             if (domainMax < INT32_MAX) {
-                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, arg, maxNode));
+                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, n, maxNode));
             }
-        }
+        };
+        for (BVNodeId arg : argNodes) constrainNode(arg);
+        for (BVNodeId hv : heapTable.varNodes()) constrainNode(hv);
     }
 
     SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
 
     if (satRes.status == SolveOutcome::Unsat) {
-        brass::Module mirModOld("old_mir");
-        brass::Module mirModNew("new_mir");
-        brass::Function* mirOld = nullptr;
-        brass::Function* mirNew = nullptr;
-        if (tryBuildStraightLineMir(oldFn, numParams, mirModOld, mirOld) &&
-            tryBuildStraightLineMir(newFn, numParams, mirModNew, mirNew)) {
-            (void)brass::verify::verify_mir_equivalence(*mirOld, *mirNew);
-        }
         res.status = EquivStatus::Equivalent;
-        res.detail = "proven equivalent across all symbolic inputs via CDCL bit-blasting";
+        res.detail = "proven equivalent across all symbolic inputs and post-states via CDCL bit-blasting";
         return res;
     }
 
     if (satRes.status == SolveOutcome::Sat) {
         res.status = EquivStatus::Counterexample;
+        const size_t totalVars = numParams + heapTable.varNodes().size();
         std::vector<uint64_t> bestModel = satRes.model;
-        if (bestModel.size() < numParams) bestModel.resize(numParams, 0);
+        if (bestModel.size() < totalVars) bestModel.resize(totalVars, 0);
 
         static constexpr int32_t kSmallCandidates[] = {
             0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 7, 8, -8, 10, 16, 31, 32, -32, 64, 100, -128, 127
         };
-        if (numParams == 1) {
+        if (totalVars == 1) {
             for (int32_t c0 : kSmallCandidates) {
                 if (c0 < domainMin || c0 > domainMax) continue;
                 std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0))};
@@ -876,7 +917,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                     break;
                 }
             }
-        } else if (numParams == 2) {
+        } else if (totalVars == 2) {
             bool foundSmall = false;
             for (int32_t c0 : kSmallCandidates) {
                 if (c0 < domainMin || c0 > domainMax || foundSmall) continue;
@@ -893,15 +934,42 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
             }
         }
 
-        res.counterexampleArgs.resize(numParams, 0);
-        for (uint32_t i = 0; i < numParams; ++i) {
+        for (size_t i = 0; i < totalVars; ++i) {
             int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[i]));
-            res.counterexampleArgs[i] = static_cast<int64_t>(signed32);
             bestModel[i] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
         }
-        res.oldReturnValue = static_cast<int64_t>(ctx.eval_concrete(oldOut.returnVal, bestModel));
-        res.newReturnValue = static_cast<int64_t>(ctx.eval_concrete(newOut.returnVal, bestModel));
-        res.detail = "counterexample found where old and new return values diverge";
+        res.counterexampleArgs.resize(numParams, 0);
+        for (uint32_t i = 0; i < numParams; ++i) {
+            res.counterexampleArgs[i] = static_cast<int64_t>(static_cast<int32_t>(bestModel[i]));
+        }
+        if (res.counterexampleArgs.empty() && !heapTable.varNodes().empty()) {
+            for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
+                res.paramNames.push_back(heapTable.varPaths()[i]);
+                res.counterexampleArgs.push_back(
+                    static_cast<int64_t>(static_cast<int32_t>(bestModel[numParams + i])));
+            }
+        }
+        int64_t oldRet = static_cast<int64_t>(ctx.eval_concrete(oldOut.returnVal, bestModel));
+        int64_t newRet = static_cast<int64_t>(ctx.eval_concrete(newOut.returnVal, bestModel));
+        if (oldRet == newRet && !checkedHeapPaths.empty()) {
+            for (const std::string& p : checkedHeapPaths) {
+                int64_t ov = static_cast<int64_t>(
+                    ctx.eval_concrete(oldOut.finalHeap.getFinalValue(heapTable, p), bestModel));
+                int64_t nv = static_cast<int64_t>(
+                    ctx.eval_concrete(newOut.finalHeap.getFinalValue(heapTable, p), bestModel));
+                if (ov != nv) {
+                    oldRet = ov;
+                    newRet = nv;
+                    res.detail = "counterexample found where post-state property `" + p + "` diverges";
+                    break;
+                }
+            }
+        }
+        res.oldReturnValue = oldRet;
+        res.newReturnValue = newRet;
+        if (res.detail.empty()) {
+            res.detail = "counterexample found where old and new return values diverge";
+        }
         return res;
     }
 

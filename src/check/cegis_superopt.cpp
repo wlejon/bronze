@@ -110,9 +110,14 @@ uint32_t estimateIlFunctionCost(const il::Function& fn, std::string_view src) {
 
 std::vector<int32_t> extractConstantsFromSource(std::string_view src) {
     std::set<int32_t> found = {0, 1, -1, 2, 3, 4, 7, 8, 15, 16, 31, 255};
+    std::vector<int32_t> literalVals;
     size_t i = 0;
     while (i < src.size()) {
         if (src[i] >= '0' && src[i] <= '9') {
+            bool prevIdent =
+                (i > 0 && ((src[i - 1] >= 'a' && src[i - 1] <= 'z') ||
+                           (src[i - 1] >= 'A' && src[i - 1] <= 'Z') ||
+                           src[i - 1] == '_' || src[i - 1] == '$'));
             bool neg = (i > 0 && src[i - 1] == '-');
             size_t start = i;
             if (i + 1 < src.size() && src[i] == '0' && (src[i + 1] == 'x' || src[i + 1] == 'X')) {
@@ -126,22 +131,34 @@ std::vector<int32_t> extractConstantsFromSource(std::string_view src) {
             } else {
                 while (i < src.size() && src[i] >= '0' && src[i] <= '9') ++i;
             }
-            std::string tok(src.substr(start, i - start));
-            try {
-                long long v = std::stoll(tok, nullptr, 0);
-                if (neg) v = -v;
-                int32_t iv = static_cast<int32_t>(v);
-                found.insert(iv);
-                if (iv > 1 && iv <= 65536 && (iv & (iv - 1)) == 0) {
-                    found.insert(iv - 1);
-                    int sh = 0;
-                    while ((1 << sh) < iv && sh < 30) ++sh;
-                    found.insert(sh);
+            if (!prevIdent) {
+                std::string tok(src.substr(start, i - start));
+                try {
+                    long long v = std::stoll(tok, nullptr, 0);
+                    if (neg) v = -v;
+                    int32_t iv = static_cast<int32_t>(v);
+                    found.insert(iv);
+                    literalVals.push_back(iv);
+                    if (iv > 1 && iv <= 65536 && (iv & (iv - 1)) == 0) {
+                        found.insert(iv - 1);
+                        int sh = 0;
+                        while ((1 << sh) < iv && sh < 30) ++sh;
+                        found.insert(sh);
+                    }
+                } catch (...) {
                 }
-            } catch (...) {
             }
         } else {
             ++i;
+        }
+    }
+    for (int32_t m : literalVals) {
+        if (m > 0 && m <= 65535) {
+            for (int32_t s : literalVals) {
+                if (s >= 1 && s <= 24) {
+                    found.insert(static_cast<int32_t>(static_cast<uint32_t>(m) << s));
+                }
+            }
         }
     }
     return std::vector<int32_t>(found.begin(), found.end());

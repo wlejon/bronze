@@ -272,6 +272,8 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
     if (isSimplePositional()) {
         const size_t n = pattern.elements.size();
         il::BlockId bFast = createBlock(ilFn);
+        il::BlockId bCheckTa = createBlock(ilFn);
+        il::BlockId bFastTa = createBlock(ilFn);
         il::BlockId bSlow = createBlock(ilFn);
         il::BlockId bJoin = createBlock(ilFn);
 
@@ -295,10 +297,10 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
         brInst.result = il::kNoValue;
         brInst.operands = {isDense};
         brInst.target = il::BlockTarget{.block = bFast, .args = {}};
-        brInst.elseTarget = il::BlockTarget{.block = bSlow, .args = {}};
+        brInst.elseTarget = il::BlockTarget{.block = bCheckTa, .args = {}};
         emitInst(ilFn, brInst);
 
-        // Fast path: direct property get by index on proven dense array
+        // Fast path 1: direct property get by index on proven dense array
         setCurrentBlock(bFast);
         std::vector<il::ValueId> fastArgs;
         fastArgs.reserve(n);
@@ -321,6 +323,58 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
         jmpFast.result = il::kNoValue;
         jmpFast.target = il::BlockTarget{.block = bJoin, .args = std::move(fastArgs)};
         emitInst(ilFn, jmpFast);
+
+        // Fast path 2: pristine Float32Array (e.g. `const [r, g, b] = this._components`)
+        setCurrentBlock(bCheckTa);
+        il::ValueId isTa = ilFn.valueCount++;
+        il::Instruction isTaInst;
+        isTaInst.op = il::Op::IsTypedArray;
+        isTaInst.type = il::Type::Bool;
+        isTaInst.result = isTa;
+        isTaInst.operands = {source.id};
+        isTaInst.immI32 = static_cast<int32_t>(BRONZE_ABI_TA_KIND_FLOAT32) | il::kTypedArrayPristineLength;
+        emitInst(ilFn, isTaInst);
+
+        il::Instruction brTa;
+        brTa.op = il::Op::Branch;
+        brTa.type = il::Type::Void;
+        brTa.result = il::kNoValue;
+        brTa.operands = {isTa};
+        brTa.target = il::BlockTarget{.block = bFastTa, .args = {}};
+        brTa.elseTarget = il::BlockTarget{.block = bSlow, .args = {}};
+        emitInst(ilFn, brTa);
+
+        setCurrentBlock(bFastTa);
+        std::vector<il::ValueId> fastTaArgs;
+        fastTaArgs.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            il::ValueId idxF64 = ilFn.valueCount++;
+            il::Instruction idxInst;
+            idxInst.op = il::Op::ConstF64;
+            idxInst.type = il::Type::F64;
+            idxInst.result = idxF64;
+            idxInst.immF64 = static_cast<double>(i);
+            emitInst(ilFn, idxInst);
+
+            Value idxBoxed = boxValueIfNeeded(Value{idxF64, il::Type::F64}, ilFn);
+
+            il::ValueId elemVal = ilFn.valueCount++;
+            il::Instruction getInst;
+            getInst.op = il::Op::ElemGet;
+            getInst.type = il::Type::Dynamic;
+            getInst.result = elemVal;
+            getInst.operands = {source.id, idxBoxed.id};
+            getInst.immI32 = il::kElemFlagFloatViewReceiver | il::kElemFlagProvenIntegralIndex;
+            emitInst(ilFn, getInst);
+
+            fastTaArgs.push_back(elemVal);
+        }
+        il::Instruction jmpFastTa;
+        jmpFastTa.op = il::Op::Jump;
+        jmpFastTa.type = il::Type::Void;
+        jmpFastTa.result = il::kNoValue;
+        jmpFastTa.target = il::BlockTarget{.block = bJoin, .args = std::move(fastTaArgs)};
+        emitInst(ilFn, jmpFastTa);
 
         // Slow path: full iterator protocol for non-arrays or short arrays
         setCurrentBlock(bSlow);

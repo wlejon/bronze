@@ -656,7 +656,7 @@ bool isTerminator(Op op);
 enum class MathUnaryFn : uint32_t {
     Sqrt = 0, Abs = 1, Floor = 2, Ceil = 3, Trunc = 4, Sin = 5, Cos = 6,
     Exp = 7, Log = 8, Tan = 9, Asin = 10, Acos = 11, Atan = 12, Atan2 = 13,
-    Max = 14, Min = 15
+    Max = 14, Min = 15, Round = 16
 };
 
 }  // namespace bronze::il

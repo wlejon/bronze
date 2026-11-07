@@ -703,7 +703,10 @@ bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string
 }
 
 void rtPrepareFunctionOwnWrite(Rooted<Value>& fn) {
-    if (rtInstallGlobalConstructorStatics(fn)) bumpProtoMutationEpoch();
+    if (rtInstallGlobalConstructorStatics(fn) ||
+        fn.get().rawBits() == rtFunctionPrototypeObject().rawBits()) {
+        bumpProtoMutationEpoch();
+    }
     rtEnsureFunctionProperties(fn);
 }
 

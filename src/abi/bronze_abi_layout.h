@@ -434,6 +434,7 @@
 #define BRONZE_ABI_TAG_NULL             0xFFF5
 #define BRONZE_ABI_TAG_UNDEFINED        0xFFF6
 #define BRONZE_ABI_TAG_HOLE             0xFFF7
+#define BRONZE_ABI_TAG_SYMBOL           0xFFF8
 /* Above the number range like every other tag, and named here because the
  * inline `===` needs to tell the two values whose equality is NOT bit
  * equality — a string and a BigInt — from every value whose equality is.

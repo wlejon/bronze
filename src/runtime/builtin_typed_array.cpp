@@ -425,6 +425,8 @@ bool reverifyPristine() {
         ok = proto->getSlot(g_family.accessorSlot[i]).rawBits() ==
              g_family.accessorGetter[i].rawBits();
     }
+    ok = ok && proto->getSlot(g_family.iteratorSlot).rawBits() ==
+                   g_family.iteratorValues.rawBits();
     ok = ok && g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape ==
                    g_family.ctorBoxPristineShape;
     for (size_t k = 0; ok && k < kKindCount; ++k) {
