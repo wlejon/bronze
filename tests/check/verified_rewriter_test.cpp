@@ -1,10 +1,13 @@
 #include <doctest/doctest.h>
 
+#include "check/cegis_dag_enum.h"
 #include "check/cegis_superopt.h"
 #include "check/js_source_rewriter.h"
 
 using bronze::check::CegisSuperoptOptions;
+using bronze::check::EnumTestVector;
 using bronze::check::JsRewriteOptions;
+using bronze::check::enumerateBottomUpDags;
 using bronze::check::rewriteJsSource;
 using bronze::check::superoptimizeJsFunction;
 
@@ -353,5 +356,119 @@ TEST_CASE("js_source_rewriter (#162): sites are found in the parsed program, nev
         auto rep = rewriteSitesOnly(src, false);
         REQUIRE(rep.rewrites.size() == 1);
         CHECK(rep.rewrittenSource == "function f(x) {\n    let a = x\n    ;(x * x)\n    return a;\n}");
+    }
+}
+
+TEST_CASE("cegis_dag_enum & superopt: bottom-up observational-equivalence DAG enumeration") {
+    SUBCASE("bottom-up enumerator synthesizes ((x + y) | 0), (x ^ y), (x & 255), and (x & (~y))") {
+        CegisSuperoptOptions pureEnumOpts;
+        pureEnumOpts.maxCandidates = 0;  // Force pure bottom-up observational-equivalence enumeration
+        pureEnumOpts.enableBottomUpEnum = true;
+        pureEnumOpts.maxEnumCost = 4;
+        pureEnumOpts.maxEnumNodes = 1500;
+
+        auto addRes = superoptimizeJsFunction(R"(
+            function bitwiseAdd(x, y) {
+                return ((x ^ y) + ((x & y) << 1)) | 0;
+            }
+        )", pureEnumOpts);
+        CHECK(addRes.verified);
+        CHECK(addRes.optimized);
+        CHECK(addRes.synthesizedExpression == "((x + y) | 0)");
+        CHECK(addRes.stats.concretePruned > 0);
+
+        auto xorRes = superoptimizeJsFunction(R"(
+            function diffOrAnd(x, y) {
+                return ((x | y) - (x & y)) | 0;
+            }
+        )", pureEnumOpts);
+        CHECK(xorRes.verified);
+        CHECK(xorRes.optimized);
+        CHECK(xorRes.synthesizedExpression == "(x ^ y)");
+
+        auto maskRes = superoptimizeJsFunction(R"(
+            function splitMask(x) {
+                return (x & 15) | (x & 240);
+            }
+        )", pureEnumOpts);
+        CHECK(maskRes.verified);
+        CHECK(maskRes.optimized);
+        CHECK(maskRes.synthesizedExpression == "(x & 255)");
+
+        // ((x | y) ^ y) -> (x & (~y)) is not in any fixed template
+        auto andNotRes = superoptimizeJsFunction(R"(
+            function bitClear(x, y) {
+                return (x | y) ^ y;
+            }
+        )");
+        CHECK(andNotRes.verified);
+        CHECK(andNotRes.optimized);
+        CHECK((andNotRes.synthesizedExpression == "(x & (~y))" ||
+               andNotRes.synthesizedExpression == "(x ^ (x & y))"));
+    }
+
+    SUBCASE("enumerateBottomUpDags prunes observationally equivalent DAGs across concrete bank") {
+        std::vector<EnumTestVector> bank = {
+            {{0, 0}, 0},
+            {{5, 3}, 6},
+            {{15, 7}, 8},
+            {{-1, 42}, ~42},
+        };
+        auto dagRes = enumerateBottomUpDags({"x", "y"}, {0, 1, 15, 255}, bank, 3, 512);
+        CHECK(dagRes.totalGenerated > dagRes.uniqueEquivClasses);
+        CHECK(dagRes.prunedByObsEquiv > 0);
+        REQUIRE(!dagRes.matchingCandidates.empty());
+        CHECK(dagRes.matchingCandidates[0].expr == "(x ^ y)");
+    }
+}
+
+TEST_CASE("js_subexpr_superopt & fixed-point pipeline: sub-expression synthesis and multi-pass convergence") {
+    SUBCASE("rewrites redundant bitwise sub-expressions inside multi-statement functions") {
+        auto rep = rewriteJsSource(R"(
+            function decodePacket(x, y) {
+                const u = x | 0;
+                let lowNibble = (x & 255) & 15;
+                let recovered = (u ^ y) ^ y;
+                let symDiff = ((x | y) - (x & y)) | 0;
+                return lowNibble + recovered + symDiff;
+            }
+        )");
+        CHECK(rep.allProvenEquivalent);
+        CHECK(hasRule(rep, "subexpr-superopt"));
+        CHECK(rep.rewrittenSource.find("(x & 15)") != std::string::npos);
+        CHECK(rep.rewrittenSource.find("(x ^ y)") != std::string::npos);
+        CHECK(rep.rewrittenSource.find("(x & 255) & 15") == std::string::npos);
+        CHECK(rep.rewrittenSource.find("(u ^ y) ^ y") == std::string::npos);
+        CHECK(rep.estimatedOpsAfter < rep.estimatedOpsBefore);
+    }
+
+    SUBCASE("bounded fixed-point loop cascades strength reduction into dead-guard elimination and subexpr superopt") {
+        const char* cascadeSrc = R"(
+            function cascadePipeline(x) {
+                const u = x & 255;
+                let shifted = (Math.max(0, Math.floor(u / 4)) & 63) & 15;
+                return shifted + u;
+            }
+        )";
+
+        JsRewriteOptions singleIterOpts;
+        singleIterOpts.maxPassIterations = 1;
+        auto rep1 = rewriteJsSource(cascadeSrc, singleIterOpts);
+        CHECK(rep1.allProvenEquivalent);
+        CHECK(hasRule(rep1, "strength-reduction-shift"));
+        // In 1 iteration, DeadGuardElim ran before StrengthReduction turned Math.floor(u / 4) into (u >> 2)
+        CHECK(rep1.rewrittenSource.find("Math.max") != std::string::npos);
+
+        JsRewriteOptions multiIterOpts;
+        multiIterOpts.maxPassIterations = 4;
+        auto repMulti = rewriteJsSource(cascadeSrc, multiIterOpts);
+        CHECK(repMulti.allProvenEquivalent);
+        CHECK(hasRule(repMulti, "strength-reduction-shift"));
+        CHECK(hasRule(repMulti, "smt-dead-guard-elim"));
+        CHECK(hasRule(repMulti, "subexpr-superopt"));
+        CHECK(repMulti.rewrittenSource.find("Math.floor") == std::string::npos);
+        CHECK(repMulti.rewrittenSource.find("Math.max") == std::string::npos);
+        CHECK(repMulti.rewrittenSource.find("& 63") == std::string::npos);
+        CHECK(repMulti.bytesAfter < rep1.bytesAfter);
     }
 }

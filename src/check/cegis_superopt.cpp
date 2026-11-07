@@ -13,6 +13,7 @@
 
 #include <verify/bv_solver.hpp>
 
+#include "check/cegis_dag_enum.h"
 #include "check/prove_equiv.h"
 #include "check/solve_fn.h"
 
@@ -47,7 +48,7 @@ const il::Function* findTargetIlFn(const il::Module& mod, std::string_view prefe
 }
 
 uint32_t estimateIlFunctionCost(const il::Function& fn, std::string_view src) {
-    uint32_t cost = 0;
+    uint32_t cost = 1;
     for (const auto& blk : fn.blocks) {
         for (const auto& inst : blk.instructions) {
             using Op = il::Op;
@@ -484,11 +485,7 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
         31, 32, 42, -42, 63, 64, 100, -100, 127, -128, 255, 256,
         1024, -1024, 0x55555555, 0x7fffffff, static_cast<int32_t>(0x80000000u)};
 
-    struct TestVector {
-        std::vector<int32_t> args;
-        int32_t expected = 0;
-    };
-    std::vector<TestVector> bank;
+    std::vector<EnumTestVector> bank;
 
     auto clampDom = [&](int32_t v) -> int32_t {
         if (v < opts.domainMin) return opts.domainMin;
@@ -525,9 +522,56 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
     std::vector<CandidateDag> candidates =
         generateCandidateDags(res.paramNames, extractedConsts, opts.maxCandidates);
     res.stats.candidatesGenerated = static_cast<uint32_t>(candidates.size());
+    std::set<std::string> triedSmtExprs;
+
+    auto finalizeSuccess = [&](const std::string& expr, const std::string& desc, uint32_t cost,
+                               const std::string& candFnSrc) {
+        res.verified = true;
+        res.optimized =
+            (cost < res.stats.costBefore) || (candFnSrc.size() + 8 < fnSource.size());
+        res.synthesizedExpression = expr;
+        res.optimizedSource = candFnSrc;
+        res.ruleDescription = desc;
+        res.stats.costAfter = cost;
+        res.stats.finalVectorCount = static_cast<uint32_t>(bank.size());
+        res.certificateHash = fnv1aHex64(normalized + "===" + candFnSrc);
+        auto t1 = std::chrono::steady_clock::now();
+        res.stats.elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::ostringstream sum;
+        sum << "CEGIS superoptimizer synthesized `" << expr << "` (" << desc << "): tested "
+            << res.stats.candidatesTested << " candidates, pruned " << res.stats.concretePruned
+            << " concretely, " << res.stats.smtQueries << " SMT queries, "
+            << res.stats.counterexamplesFound << " counterexamples; cost "
+            << res.stats.costBefore << " -> " << res.stats.costAfter;
+        res.summary = sum.str();
+    };
+
+    auto recordCounterexample = [&](const std::string& expr, const EquivReport& eqReport) -> bool {
+        if (!eqReport.hasCounterexample()) return false;
+        std::vector<int32_t> cexVec;
+        for (int64_t v : eqReport.counterexampleArgs) {
+            cexVec.push_back(static_cast<int32_t>(v));
+        }
+        if (cexVec.empty()) return false;
+        int32_t expected = static_cast<int32_t>(eqReport.expectedOutput);
+        bank.push_back({cexVec, expected});
+        ++res.stats.counterexamplesFound;
+
+        CounterexampleInfo cex;
+        cex.round = res.stats.smtQueries;
+        cex.candidateSource = expr;
+        cex.args = eqReport.counterexampleArgs;
+        cex.expectedOutput = eqReport.expectedOutput;
+        cex.actualOutput = eqReport.actualOutput;
+        res.counterexamples.push_back(std::move(cex));
+        return true;
+    };
 
     for (const auto& cand : candidates) {
         if (opts.requireLowerCost && cand.cost > res.stats.costBefore) {
+            continue;
+        }
+        if (opts.maxAllowedCost > 0 && cand.cost > opts.maxAllowedCost) {
             continue;
         }
         ++res.stats.candidatesTested;
@@ -550,6 +594,7 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
         if (res.stats.smtQueries >= opts.maxSmtQueries) {
             break;
         }
+        triedSmtExprs.insert(cand.expr);
         ++res.stats.smtQueries;
 
         std::string candFnSrc =
@@ -559,47 +604,71 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
             proveSourceEquivalent(normalized, candFnSrc, "", opts.domainMin, opts.domainMax, &eqErr);
 
         if (eqReport.isEquivalent()) {
-            res.verified = true;
-            res.optimized = (cand.cost < res.stats.costBefore) ||
-                            (candFnSrc.size() + 8 < fnSource.size());
-            res.synthesizedExpression = cand.expr;
-            res.optimizedSource = candFnSrc;
-            res.ruleDescription = cand.description;
-            res.stats.costAfter = cand.cost;
-            res.stats.finalVectorCount = static_cast<uint32_t>(bank.size());
-            res.certificateHash = fnv1aHex64(normalized + "===" + candFnSrc);
-            auto t1 = std::chrono::steady_clock::now();
-            res.stats.elapsedMs =
-                std::chrono::duration<double, std::milli>(t1 - t0).count();
-            std::ostringstream sum;
-            sum << "CEGIS superoptimizer synthesized `" << cand.expr << "` (" << cand.description
-                << "): tested " << res.stats.candidatesTested << " candidates, pruned "
-                << res.stats.concretePruned << " concretely, " << res.stats.smtQueries
-                << " SMT queries, " << res.stats.counterexamplesFound
-                << " counterexamples; cost " << res.stats.costBefore << " -> "
-                << res.stats.costAfter;
-            res.summary = sum.str();
+            finalizeSuccess(cand.expr, cand.description, cand.cost, candFnSrc);
             return res;
         }
 
-        // Extract the newly discovered counterexample and add it to T!
-        if (eqReport.hasCounterexample()) {
-            std::vector<int32_t> cexVec;
-            for (int64_t v : eqReport.counterexampleArgs) {
-                cexVec.push_back(static_cast<int32_t>(v));
-            }
-            if (!cexVec.empty()) {
-                int32_t expected = static_cast<int32_t>(eqReport.expectedOutput);
-                bank.push_back({cexVec, expected});
-                ++res.stats.counterexamplesFound;
+        recordCounterexample(cand.expr, eqReport);
+    }
 
-                CounterexampleInfo cex;
-                cex.round = res.stats.smtQueries;
-                cex.candidateSource = cand.expr;
-                cex.args = eqReport.counterexampleArgs;
-                cex.expectedOutput = eqReport.expectedOutput;
-                cex.actualOutput = eqReport.actualOutput;
-                res.counterexamples.push_back(std::move(cex));
+    // Step 3: Bottom-up observational-equivalence DAG enumeration with CEGIS refinement
+    if (opts.enableBottomUpEnum && res.stats.smtQueries < opts.maxSmtQueries) {
+        bool enumStatsCounted = false;
+        while (res.stats.smtQueries < opts.maxSmtQueries) {
+            uint32_t maxCost = opts.maxEnumCost;
+            if (opts.requireLowerCost && res.stats.costBefore > 0) {
+                maxCost = std::min(maxCost, res.stats.costBefore);
+            }
+            if (opts.maxAllowedCost > 0) {
+                maxCost = std::min(maxCost, opts.maxAllowedCost);
+            }
+            DagEnumResult enumRes = enumerateBottomUpDags(
+                res.paramNames, extractedConsts, bank, maxCost, opts.maxEnumNodes);
+            if (!enumStatsCounted) {
+                res.stats.candidatesGenerated += enumRes.totalGenerated;
+                res.stats.candidatesTested += enumRes.totalGenerated;
+                uint32_t nonMatchingClasses =
+                    enumRes.uniqueEquivClasses > enumRes.matchingCandidates.size()
+                        ? enumRes.uniqueEquivClasses -
+                              static_cast<uint32_t>(enumRes.matchingCandidates.size())
+                        : 0u;
+                res.stats.concretePruned += enumRes.prunedByObsEquiv + nonMatchingClasses;
+                enumStatsCounted = true;
+            }
+
+            bool refinedWithCex = false;
+            bool triedAny = false;
+            for (const auto& cand : enumRes.matchingCandidates) {
+                if (opts.requireLowerCost && cand.cost > res.stats.costBefore) {
+                    continue;
+                }
+                if (!triedSmtExprs.insert(cand.expr).second) {
+                    continue;
+                }
+                if (res.stats.smtQueries >= opts.maxSmtQueries) {
+                    break;
+                }
+                triedAny = true;
+                ++res.stats.smtQueries;
+
+                std::string candFnSrc =
+                    buildCandidateFunctionSource(res.functionName, res.paramNames, cand.expr);
+                std::string eqErr;
+                auto eqReport = proveSourceEquivalent(
+                    normalized, candFnSrc, "", opts.domainMin, opts.domainMax, &eqErr);
+
+                if (eqReport.isEquivalent()) {
+                    finalizeSuccess(cand.expr, cand.description, cand.cost, candFnSrc);
+                    return res;
+                }
+
+                if (recordCounterexample(cand.expr, eqReport)) {
+                    refinedWithCex = true;
+                    break;
+                }
+            }
+            if (!refinedWithCex || !triedAny) {
+                break;
             }
         }
     }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "check/js_rewrite_ast.h"
+#include "check/js_subexpr_superopt.h"
 #include "check/prove_equiv.h"
 #include "check/solve_fn.h"
 
@@ -129,6 +130,30 @@ void runPass(Collector collect,
     for (auto& h : passHits) hits.push_back(std::move(h));
 }
 
+void runSubexprPass(const std::string& fnName,
+                    std::string& current,
+                    std::vector<JsRewritePassHit>& hits,
+                    std::string& error,
+                    int32_t domainMin,
+                    int32_t domainMax,
+                    CegisSuperoptStats* accumStats) {
+    std::string perr;
+    auto parsed = jsrw::ParsedJs::parse(current, &perr);
+    if (!parsed) return;
+    std::vector<jsrw::Edit> edits;
+    jsrw::collectSubexprSuperoptEdits(*parsed, fnName, edits, domainMin, domainMax, accumStats);
+    if (edits.empty()) return;
+    std::vector<JsRewritePassHit> passHits;
+    std::string next = jsrw::applyEdits(current, std::move(edits), passHits);
+    if (!jsrw::ParsedJs::parse(next, &perr)) {
+        if (!error.empty()) error += "\n";
+        error += "a rewrite pass produced source that does not parse; the pass was discarded: " + perr;
+        return;
+    }
+    current = std::move(next);
+    for (auto& h : passHits) hits.push_back(std::move(h));
+}
+
 }  // namespace
 
 std::string JsRewriteReport::toJson() const {
@@ -193,22 +218,32 @@ JsRewriteReport rewriteJsSource(std::string_view source, const JsRewriteOptions&
     std::string current = std::string(source);
     std::vector<JsRewritePassHit> candidateHits;
 
-    if (opts.enableDeadGuardElim) {
-        runPass(jsrw::collectDeadGuardEdits, fnName, current, candidateHits, report.error);
-    }
-    if (opts.enableStrengthReduction) {
-        runPass(jsrw::collectStrengthEdits, fnName, current, candidateHits, report.error);
-    }
-    if (opts.enableHorner) {
-        runPass(jsrw::collectHornerEdits, fnName, current, candidateHits, report.error);
-    }
-    if (opts.enableLoopDeforestation) {
-        runPass(jsrw::collectLoopEdits, fnName, current, candidateHits, report.error);
-    }
-
+    const uint32_t maxIters = std::clamp(opts.maxPassIterations, 1u, 8u);
     bool hasDeforestation = false;
-    for (const auto& h : candidateHits) {
-        if (h.ruleName == "loop-deforestation") hasDeforestation = true;
+    for (uint32_t iter = 0; iter < maxIters; ++iter) {
+        size_t hitsBefore = candidateHits.size();
+        if (opts.enableDeadGuardElim) {
+            runPass(jsrw::collectDeadGuardEdits, fnName, current, candidateHits, report.error);
+        }
+        if (opts.enableStrengthReduction) {
+            runPass(jsrw::collectStrengthEdits, fnName, current, candidateHits, report.error);
+        }
+        if (opts.enableHorner) {
+            runPass(jsrw::collectHornerEdits, fnName, current, candidateHits, report.error);
+        }
+        if (opts.enableLoopDeforestation && !hasDeforestation) {
+            runPass(jsrw::collectLoopEdits, fnName, current, candidateHits, report.error);
+            for (const auto& h : candidateHits) {
+                if (h.ruleName == "loop-deforestation") hasDeforestation = true;
+            }
+        }
+        if (opts.enableSubexprSuperopt && opts.enableCegisSuperopt && !hasDeforestation) {
+            runSubexprPass(fnName, current, candidateHits, report.error, opts.domainMin,
+                           opts.domainMax, &report.cegisStats);
+        }
+        if (candidateHits.size() == hitsBefore || hasDeforestation) {
+            break;
+        }
     }
 
     // Pass 5: If no rewrite happened yet (or if the function still contains branches/bit-twiddling),
@@ -237,11 +272,10 @@ JsRewriteReport rewriteJsSource(std::string_view source, const JsRewriteOptions&
         std::string eqErr;
         int32_t dMin = opts.domainMin;
         int32_t dMax = opts.domainMax;
-        // Closed-form series loop unrolling is bounded in symbolic IL, so verify on [0, 25]
+        bool hasClosedFormSeries = false;
         for (const auto& h : candidateHits) {
             if (h.ruleName == "closed-form-series") {
-                dMin = std::max(dMin, 0);
-                dMax = std::min(dMax, 25);
+                hasClosedFormSeries = true;
             }
             if (h.ruleName == "horner-polynomial" || h.ruleName == "strength-reduction-pow") {
                 dMin = std::max(dMin, -500);
@@ -250,6 +284,11 @@ JsRewriteReport rewriteJsSource(std::string_view source, const JsRewriteOptions&
         }
         std::string normNew = normalizeJsFunctionSource(current, nullptr, fnName);
         auto eq = proveSourceEquivalent(normOrig, normNew, "", dMin, dMax, &eqErr);
+        if (hasClosedFormSeries && eq.status == EquivStatus::Unknown) {
+            eqErr.clear();
+            eq = proveSourceEquivalent(normOrig, normNew, "", std::max(dMin, 0), std::min(dMax, 25),
+                                       &eqErr);
+        }
         if (!eq.isEquivalent()) {
             // Formal proof gate rejected an unverified rewrite -> preserve original source untouched!
             report.allProvenEquivalent = false;

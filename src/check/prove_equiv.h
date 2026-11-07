@@ -92,6 +92,25 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                                           int32_t domainMin = INT32_MIN,
                                           int32_t domainMax = INT32_MAX);
 
+// Proves equivalence of a single-loop function vs. a closed-form function (or
+// two single-loop functions) over unbounded symbolic trip counts in
+// `[domainMin, domainMax]` via k-induction over `brass::verify::BVContext`.
+FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
+                                                       const il::Function& oldFn,
+                                                       const il::Module& newMod,
+                                                       const il::Function& newFn,
+                                                       bool strictJs32Bitwise = false,
+                                                       int32_t domainMin = 0,
+                                                       int32_t domainMax = 46340);
+
+// Parses and lowers `loopSrc` and `closedFormSrc`, and runs inductive loop
+// equivalence verification over `[domainMin, domainMax]`.
+EquivReport proveLoopClosedFormInductive(std::string_view loopSrc,
+                                         std::string_view closedFormSrc,
+                                         int32_t domainMin = 0,
+                                         int32_t domainMax = 46340,
+                                         std::string* errorOut = nullptr);
+
 // Symbolically compares matching functions in `oldMod` and `newMod` by encoding
 // both into a shared Brass bitvector SMT context (`brass::verify::BVContext`)
 // and invoking CDCL bit-blasting (`brass::verify::solve_nonzero`) plus MIR

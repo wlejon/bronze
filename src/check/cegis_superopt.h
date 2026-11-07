@@ -14,6 +14,10 @@ struct CegisSuperoptOptions {
     uint32_t maxCandidates = 2048;
     uint32_t maxSmtQueries = 64;
     bool requireLowerCost = true;
+    bool enableBottomUpEnum = true;
+    uint32_t maxEnumCost = 4;
+    uint32_t maxEnumNodes = 1500;
+    uint32_t maxAllowedCost = 0;
 };
 
 struct CegisSuperoptStats {

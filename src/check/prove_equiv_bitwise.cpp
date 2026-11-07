@@ -79,6 +79,12 @@ private:
     BVNodeId one64_ = 0;
     BVNodeId allOnes64_ = 0;
     uint32_t totalVisits_ = 0;
+    bool hitLoopUnrollBound_ = false;
+
+public:
+    bool hitLoopUnrollBound() const { return hitLoopUnrollBound_; }
+
+private:
 
     BVNodeId getVal(const SymState& st, il::ValueId v) const {
         auto it = st.values.find(v);
@@ -145,6 +151,7 @@ private:
             return {false, "symbolic path limit exceeded", false, zero64_};
         }
         if (steps > kMaxBlockSteps) {
+            hitLoopUnrollBound_ = true;
             return {true, "loop unroll bound reached", false, zero64_};
         }
         if (blockId >= fn.blocks.size()) {
@@ -210,7 +217,12 @@ private:
                 case Op::FeedbackRecord:
                 case Op::KeepAlive:
                     break;
-                case Op::IsNumber: {
+                case Op::IsNumber:
+                case Op::IsDenseArray:
+                case Op::IsNumberArray:
+                case Op::IsShape:
+                case Op::IsArray:
+                case Op::IsTypedArray: {
                     state.values[inst.result] = one64_;
                     break;
                 }
@@ -526,9 +538,21 @@ private:
                             break;
                         }
                         if ((method == "floor" || method == "ceil" ||
-                             method == "trunc" || method == "round") &&
+                             method == "trunc" || method == "round" ||
+                             method == "fround") &&
                             inst.operands.size() >= 2) {
                             state.values[inst.result] = toBV64(getVal(state, inst.operands[1]));
+                            break;
+                        }
+                    }
+                    if (recvIt != state.globalRefs.end() && recvIt->second == "Number" &&
+                        inst.operands.size() >= 2) {
+                        if (method == "isFinite" || method == "isSafeInteger" || method == "isInteger") {
+                            state.values[inst.result] = one64_;
+                            break;
+                        }
+                        if (method == "isNaN") {
+                            state.values[inst.result] = zero64_;
                             break;
                         }
                     }
@@ -773,18 +797,30 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
 
     SymbolicIlBuilder oldSym(ctx, oldMod, strictJs32Bitwise);
     auto oldOut = oldSym.evalFunction(oldFn, argNodes);
-    if (!oldOut.supported || !oldOut.hasReturn) {
-        res.status = EquivStatus::Unknown;
-        res.detail = "old function not symbolically decidable: " + oldOut.unsupportedReason;
-        return res;
-    }
-
     SymbolicIlBuilder newSym(ctx, newMod, strictJs32Bitwise);
     auto newOut = newSym.evalFunction(newFn, argNodes);
-    if (!newOut.supported || !newOut.hasReturn) {
-        res.status = EquivStatus::Unknown;
-        res.detail = "new function not symbolically decidable: " + newOut.unsupportedReason;
-        return res;
+
+    if (!oldOut.supported || !newOut.supported ||
+        !oldOut.hasReturn || !newOut.hasReturn ||
+        oldSym.hitLoopUnrollBound() || newSym.hitLoopUnrollBound()) {
+        auto indRes = compareIlLoopFunctionPairInductive(
+            oldMod, oldFn, newMod, newFn, strictJs32Bitwise, domainMin, domainMax);
+        if (indRes.status != EquivStatus::Unknown) {
+            return indRes;
+        }
+        if (!oldOut.supported) {
+            res.status = EquivStatus::Unknown;
+            res.detail = "old function not symbolically decidable: " + oldOut.unsupportedReason;
+            return res;
+        }
+        if (!newOut.supported) {
+            res.status = EquivStatus::Unknown;
+            res.detail = "new function not symbolically decidable: " + newOut.unsupportedReason;
+            return res;
+        }
+        if (!oldOut.hasReturn || !newOut.hasReturn || domainMax > 45) {
+            return indRes;
+        }
     }
 
     if (oldOut.returnVal == newOut.returnVal) {

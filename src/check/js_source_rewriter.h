@@ -17,6 +17,8 @@ struct JsRewriteOptions {
     bool enableHorner = true;
     bool enableLoopDeforestation = true;
     bool enableCegisSuperopt = true;
+    bool enableSubexprSuperopt = true;
+    uint32_t maxPassIterations = 4;
     bool requireFormalProof = true;
 };
 

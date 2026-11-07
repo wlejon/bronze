@@ -13,6 +13,7 @@
 #include "ast/queries.h"
 #include "ast/query_walk.h"
 #include "check/js_rewrite_ast.h"
+#include "check/loop_recurrence_synth.h"
 
 namespace bronze::check::jsrw {
 
@@ -506,17 +507,17 @@ bool incrementsByOne(const Expr* e, const std::string& x) {
 }
 
 void collectClosedFormSeries(const ParsedJs& p, const std::string& fallbackFn, std::vector<Edit>& out) {
-    // let s = 0; for (let i = 0; i < n; i++) { s += i; } return s;
-    //   -> return (n <= 0) ? 0 : ((n * (n - 1)) / 2);
-    // and with `s = (s + i) | 0` in the body, the same sum ToInt32'd.
+    // let s = init; for (let i = 0; i < n; i++) { s += step(i); } return s;
+    //   -> return (n <= 0) ? init : closedForm(n);
+    // and with `s = (s + step(i)) | 0` in the body, the same sum ToInt32'd.
     for (const auto* list : p.lists()) {
         for (size_t i = 0; i + 2 < list->size(); ++i) {
             auto* sDecl = exactAs<const VarDecl*>((*list)[i].get());
             auto* loop = exactAs<const ForStmt*>((*list)[i + 1].get());
             auto* ret = exactAs<const ReturnStmt*>((*list)[i + 2].get());
             if (!sDecl || !loop || !ret || sDecl->isConst || sDecl->isVar || sDecl->pattern) continue;
-            auto zero = literalNumber(sDecl->init.get());
-            if (!zero || *zero != 0) continue;
+            auto initOpt = literalNumber(sDecl->init.get());
+            if (!initOpt || !std::isfinite(*initOpt) || std::trunc(*initOpt) != *initOpt) continue;
             const std::string& s = sDecl->name;
             if (!sameIdent(ret->value.get(), s) || loop->init.size() != 1) continue;
             auto* iDecl = exactAs<const VarDecl*>(loop->init[0].get());
@@ -533,8 +534,9 @@ void collectClosedFormSeries(const ParsedJs& p, const std::string& fallbackFn, s
             auto* asg = step ? exactAs<const Binary*>(step->expr.get()) : nullptr;
             if (!asg || !sameIdent(asg->lhs.get(), s)) continue;
             bool wraps = false;
+            const Expr* stepExpr = nullptr;
             if (asg->op == BinaryOp::PlusAssign) {
-                if (!sameIdent(asg->rhs.get(), iv)) continue;
+                stepExpr = asg->rhs.get();
             } else if (asg->op == BinaryOp::Assign) {
                 const Expr* rhs = asg->rhs.get();
                 if (auto* orz = exactAs<const Binary*>(rhs); orz && orz->op == BinaryOp::BitOr) {
@@ -544,10 +546,10 @@ void collectClosedFormSeries(const ParsedJs& p, const std::string& fallbackFn, s
                     rhs = orz->lhs.get();
                 }
                 auto* add = exactAs<const Binary*>(rhs);
-                if (!add || add->op != BinaryOp::Add || !sameIdent(add->lhs.get(), s) ||
-                    !sameIdent(add->rhs.get(), iv)) {
+                if (!add || add->op != BinaryOp::Add || !sameIdent(add->lhs.get(), s)) {
                     continue;
                 }
+                stepExpr = add->rhs.get();
             } else {
                 continue;
             }
@@ -566,10 +568,10 @@ void collectClosedFormSeries(const ParsedJs& p, const std::string& fallbackFn, s
                 if (ie.begin < ext.begin || ie.end > ext.end) mentionedOutside = true;
             }
             if (mentionedOutside) continue;
-            const std::string& nn = n->name;
-            std::string sum = "((" + nn + " * (" + nn + " - 1)) / 2)";
-            std::string after = "return (" + nn + " <= 0) ? 0 : " + (wraps ? "(" + sum + " | 0)" : sum) + ";";
-            out.push_back(makeEdit(p, ext, after, *ret, fallbackFn, "closed-form-series",
+            auto synth = synthesizePolynomialLoopClosedForm(
+                static_cast<int64_t>(*initOpt), iv, n->name, stepExpr, wraps);
+            if (!synth) continue;
+            out.push_back(makeEdit(p, ext, synth->returnStatement, *ret, fallbackFn, "closed-form-series",
                                    "Reduced O(n) arithmetic accumulation loop to O(1) closed-form Gauss formula"));
         }
     }
