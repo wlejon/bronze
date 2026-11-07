@@ -57,7 +57,11 @@ TEST_CASE("host interrupt: a busy script runs the host's function on its own thr
             std::thread requester([&] {
                 while (!done.load()) {
                     embed::requestHostInterrupt(h);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    if (hits.count.load(std::memory_order_relaxed) < 5) {
+                        std::this_thread::yield();
+                    } else {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
                 }
             });
             EvalOptions opts;
