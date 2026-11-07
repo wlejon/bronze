@@ -6,7 +6,7 @@ bronze_add_module(lower
             lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp lower_typed_elem_loop_sanitize.cpp bigint_reach.cpp
             lower_concat_chain.cpp lower_define_props.cpp lower_keyed_field_store.cpp lower_key_owner_guess.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_apply.cpp guard_region_build.cpp guard_region_ssa.cpp own_callee_calls.cpp
-            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp guard_region_feedback.cpp typed_loop_version.cpp typed_loop_index_proof.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp loop_prop_effects.cpp read_cse.cpp truth_join_threading.cpp layout_facts.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
+            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp guard_region_feedback.cpp typed_loop_version.cpp typed_body_version.cpp typed_loop_index_proof.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp loop_prop_effects.cpp read_cse.cpp truth_join_threading.cpp layout_facts.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp direct_method_guess.cpp
             lower_pattern.cpp lower_pin.cpp lower_census.cpp lower_feedback.cpp lower_final_passes.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp

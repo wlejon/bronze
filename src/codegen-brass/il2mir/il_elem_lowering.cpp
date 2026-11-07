@@ -6,6 +6,7 @@
 // pinned by the BRONZE_ABI_* offsets their static_asserts check.
 
 #include "il/il_op.h"
+#include "il/il_pin.h"
 #include "il_abi.h"
 #include "il_lowering_ops.h"
 #include "il_elem_stub.h"
@@ -231,6 +232,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
     }
     if (elem_array_receiver(flags)) return lower_elem_get_array(b, obj, index, flags);
+    if (elem_float_view_receiver(flags)) return lower_elem_get_float_view(b, obj, index, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -465,6 +467,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
         return;
     }
     if (elem_array_receiver(flags)) return lower_elem_set_array(b, obj, index, val, strict, flags);
+    if (elem_float_view_receiver(flags)) return lower_elem_set_float_view(b, obj, index, val, strict, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -879,8 +882,14 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
     b.build_br_if(is_view, bb_view, {}, bb_merge, {b.build_iconst_i32(0)});
 
     b.position_at_end(bb_view);
-    Value* kind_ok = b.build_eq(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET),
-                                b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
+    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
+    if (imm == bronze::il::kTypedArrayAnyFloat) {
+        b.build_br(bb_merge, {b.build_or(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)),
+                                         b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)))});
+        b.position_at_end(bb_merge);
+        return result;
+    }
+    Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
     if (pristine) {
         kind_ok = b.build_and(kind_ok, typed_array_chain_pristine(b, ptr, iconst(b, static_cast<uint64_t>(elem_kind))));
     }

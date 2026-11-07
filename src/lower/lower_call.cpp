@@ -277,17 +277,24 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // setFromEuler) is the same call: the alias is a local the call need not
     // read, and `this` is undefined, which no member of 21.3 looks at.
     if (const std::optional<il::MathUnaryFn> mathFn = mathUnaryCallFn(*call)) {
-        auto argVal = lowerCoercingOperand(*call->args[0], ilFn);
-        if (!argVal) return std::nullopt;
-        // Definitely numeric, so this unbox is exact.
-        Value argF64 = unboxValueIfNeeded(*argVal, il::Type::F64, ilFn);
+        // Every argument is evaluated before the first is converted, as for
+        // the call it replaces: the builtin's own steps run ToNumber(y) and
+        // then ToNumber(x) (21.3.2.8), after the argument list is built.
+        std::vector<Value> args;
+        for (const auto& a : call->args) {
+            auto argVal = lowerCoercingOperand(*a, ilFn);
+            if (!argVal) return std::nullopt;
+            args.push_back(*argVal);
+        }
+        std::vector<il::ValueId> operands;
+        for (const Value& v : args) operands.push_back(unboxValueIfNeeded(v, il::Type::F64, ilFn).id);
         recordCall(call->span.file, true, "");
         il::ValueId res = ilFn.valueCount++;
         il::Instruction inst;
         inst.op = il::Op::MathUnary;
         inst.type = il::Type::F64;
         inst.result = res;
-        inst.operands = {argF64.id};
+        inst.operands = std::move(operands);
         inst.immI32 = static_cast<int32_t>(*mathFn);
         emitInst(ilFn, inst);
         return Value{res, il::Type::F64};

@@ -207,15 +207,40 @@ bool lower_ops_instruction(
                 case 3: res_val = b.build_ceil_f64(op0); return true;
                 default: break;
             }
-            // sin and cos are the runtime's kernels, the ones Math.sin and
-            // Math.cos answer with, so an inline call and the program's own
-            // `Math.sin` give the same answer.
+            // From sin on they are the runtime's kernels, the ones the
+            // builtins answer with, so an inline call and the program's own
+            // `Math.sin` give the same answer (il_op.h, MathUnaryFn).
             std::string_view fn = "trunc";
             switch (inst_ast.imm_i64) {
                 case 4: fn = "trunc"; break;
                 case 5: fn = "bronze_math_sin_f64"; break;
                 case 6: fn = "bronze_math_cos_f64"; break;
-                default: break;
+                case 7: fn = "bronze_math_exp_f64"; break;
+                case 8: fn = "bronze_math_log_f64"; break;
+                case 9: fn = "bronze_math_tan_f64"; break;
+                case 10: fn = "bronze_math_asin_f64"; break;
+                case 11: fn = "bronze_math_acos_f64"; break;
+                case 12: fn = "bronze_math_atan_f64"; break;
+                case 13: {
+                    Value* op1 = get_opd(1);
+                    if (!op1) return false;
+                    op1 = lowering->ensure_type(op1, Type::f64(), b);
+                    res_val = b.build_call("bronze_math_atan2_f64", Type::f64(), {op0, op1});
+                    return true;
+                }
+                case 14:
+                case 15: {
+                    // Max / Min: a fold over the operands, left to right.
+                    res_val = op0;
+                    for (size_t i = 1; i < inst_ast.operands.size(); ++i) {
+                        Value* opi = get_opd(i);
+                        if (!opi) return false;
+                        res_val = build_min_max_f64(b, inst_ast.imm_i64 == 14, res_val,
+                                                    lowering->ensure_type(opi, Type::f64(), b));
+                    }
+                    return true;
+                }
+                default: return false;
             }
             res_val = b.build_call(fn, Type::f64(), {op0});
             return true;

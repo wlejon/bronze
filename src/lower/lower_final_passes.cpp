@@ -29,6 +29,7 @@
 #include "lower/transition_runs.h"
 #include "lower/truth_join_threading.h"
 #include "lower/typed_entry.h"
+#include "lower/typed_body_version.h"
 #include "lower/typed_loop_version.h"
 #include "opt/spec/feedback_plan.h"
 #include "il/print.h"
@@ -118,6 +119,8 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // reads already stand behind `is.number`, is the loop it versions.
     ColdBlocks coldLoops;
     applyTypedLoopVersions(mod, &coldLoops);
+    // The loop-free bodies the loop pass leaves, over views they are handed.
+    applyTypedBodyVersions(mod, &coldLoops);
     applyTypedEntries(mod, nullptr);
     // Last, so a body is copied as it is finished: its guarded regions
     // formed, a typed site's entry built and folded. Copied first, the

@@ -150,9 +150,18 @@ std::optional<il::MathUnaryFn> Lowerer::mathUnaryCallFn(const ast::Call& call) c
     } else if (dynamic_cast<const ast::Ident*>(call.callee.get()) != nullptr) {
         member = pristineMathAliasCall(call);
     }
-    if (member == nullptr || call.optional || call.args.size() != 1 ||
-        dynamic_cast<const ast::SpreadElement*>(call.args[0].get()) != nullptr) {
+    if (member == nullptr || call.optional) return std::nullopt;
+    // Atan2 is taken with two arguments (y, x), max and min with two to four
+    // (the shapes three.js calls them in), every other with exactly one. Any
+    // other count stays a call.
+    const size_t n = call.args.size();
+    if (*member == "max" || *member == "min") {
+        if (n < 2 || n > 4) return std::nullopt;
+    } else if (n != (*member == "atan2" ? 2u : 1u)) {
         return std::nullopt;
+    }
+    for (const auto& a : call.args) {
+        if (dynamic_cast<const ast::SpreadElement*>(a.get()) != nullptr) return std::nullopt;
     }
     std::optional<il::MathUnaryFn> fn;
     if (*member == "sqrt") fn = il::MathUnaryFn::Sqrt;
@@ -162,6 +171,15 @@ std::optional<il::MathUnaryFn> Lowerer::mathUnaryCallFn(const ast::Call& call) c
     else if (*member == "trunc") fn = il::MathUnaryFn::Trunc;
     else if (*member == "sin") fn = il::MathUnaryFn::Sin;
     else if (*member == "cos") fn = il::MathUnaryFn::Cos;
+    else if (*member == "exp") fn = il::MathUnaryFn::Exp;
+    else if (*member == "log") fn = il::MathUnaryFn::Log;
+    else if (*member == "tan") fn = il::MathUnaryFn::Tan;
+    else if (*member == "asin") fn = il::MathUnaryFn::Asin;
+    else if (*member == "acos") fn = il::MathUnaryFn::Acos;
+    else if (*member == "atan") fn = il::MathUnaryFn::Atan;
+    else if (*member == "atan2") fn = il::MathUnaryFn::Atan2;
+    else if (*member == "max") fn = il::MathUnaryFn::Max;
+    else if (*member == "min") fn = il::MathUnaryFn::Min;
     // Any argument: each of these methods begins with ToNumber(x) (21.3.2),
     // and the checked unbox the call lowers its argument through is ToNumber
     // for any value, a user valueOf and a BigInt's TypeError included. An

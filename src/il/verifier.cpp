@@ -590,11 +590,14 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             }
             // The kind is compared against the view header's kind word, so it
             // must be one of the Number kinds the typed element ops serve.
+            // kTypedArrayAnyFloat asks for either float kind, and never with
+            // the pristine-length bit.
             const int32_t taKind = inst.immI32 & ~kTypedArrayPristineLength;
+            const bool anyFloat = inst.immI32 == kTypedArrayAnyFloat;
             if (inst.op == Op::IsTypedArray &&
                 (inst.operands.size() != 1 || inst.type != Type::Bool || inst.result == kNoValue ||
-                 definedTypes[inst.operands[0]] != Type::Dynamic || taKind < 0 ||
-                 taKind > BRONZE_ABI_TA_KIND_FLOAT64)) {
+                 definedTypes[inst.operands[0]] != Type::Dynamic ||
+                 (!anyFloat && (taKind < 0 || taKind > BRONZE_ABI_TA_KIND_FLOAT64)))) {
                 diags.error(Span{}, "Function " + fn.name +
                                         ": is.typed_array takes one dynamic operand and a Number element kind, "
                                         "and is a bool");

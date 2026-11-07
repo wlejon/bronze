@@ -19,6 +19,9 @@ bool is_ops_il_op(BronzeOp op);
 Value* box_f64_bits(Builder& b, Value* f);
 // The f64 an i64 Value was boxed from by box_f64_bits, or null.
 Value* boxed_f64_source(Value* v);
+// Math.max (max) or Math.min of two f64 Numbers, NaN and -0 as 21.3.2.24/25
+// answer them (il_lowering_calls.cpp).
+Value* build_min_max_f64(Builder& b, bool max, Value* x, Value* y);
 
 // `box.str k` for the global key id `key_id` (i32): bronze_box_str_key's
 // answer, read inline from the thread's key-header table (il_box_str_key.cpp).

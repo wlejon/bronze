@@ -137,20 +137,8 @@ BuiltinTarget builtin_target(const IlLowering* lowering, const BronzeInstruction
     return t;
 }
 
-// 21.3.2.24 Math.max / 21.3.2.25 Math.min of two Numbers, as the runtime's
-// bronze_math_max2_f64 / bronze_math_min2_f64 answer it: a NaN operand is the
-// answer, two zeros are -0 only when both are (max) or either is (min) — which
-// is what `x + y` and `-(-x + -y)` give for zeros — and otherwise the ordered
-// compare picks (equal non-zeros are one value). A NaN result stays the result
-// of every later step, so a fold of it over more operands is the variadic one.
 Value* build_min_max(Builder& b, BuiltinOp op, Value* x, Value* y) {
-    const bool max = op == BuiltinOp::Max;
-    Value* pick = b.build_select(max ? b.build_slt(x, y) : b.build_slt(y, x), y, x);
-    Value* zeros = max ? b.build_add(x, y) : b.build_neg(b.build_add(b.build_neg(x), b.build_neg(y)));
-    Value* both_zero = b.build_and(b.build_eq(x, y), b.build_eq(x, b.build_fconst_f64(0.0)));
-    Value* r = b.build_select(both_zero, zeros, pick);
-    // x NaN: the compares above are all false, so `r` is x already.
-    return b.build_select(b.build_ne(y, y), y, r);
+    return build_min_max_f64(b, op == BuiltinOp::Max, x, y);
 }
 
 // A call of `method` with `this_val` and `args` (the builtin's arity of them),
@@ -383,6 +371,21 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
 }
 
 } // namespace
+
+// 21.3.2.24 Math.max / 21.3.2.25 Math.min of two Numbers, as the runtime's
+// bronze_math_max2_f64 / bronze_math_min2_f64 answer it: a NaN operand is the
+// answer, two zeros are -0 only when both are (max) or either is (min) — which
+// is what `x + y` and `-(-x + -y)` give for zeros — and otherwise the ordered
+// compare picks (equal non-zeros are one value). A NaN result stays the result
+// of every later step, so a fold of it over more operands is the variadic one.
+Value* build_min_max_f64(Builder& b, bool max, Value* x, Value* y) {
+    Value* pick = b.build_select(max ? b.build_slt(x, y) : b.build_slt(y, x), y, x);
+    Value* zeros = max ? b.build_add(x, y) : b.build_neg(b.build_add(b.build_neg(x), b.build_neg(y)));
+    Value* both_zero = b.build_and(b.build_eq(x, y), b.build_eq(x, b.build_fconst_f64(0.0)));
+    Value* r = b.build_select(both_zero, zeros, pick);
+    // x NaN: the compares above are all false, so `r` is x already.
+    return b.build_select(b.build_ne(y, y), y, r);
+}
 
 bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeInstruction& inst) {
     return builtin_target(lowering, inst).op != BuiltinOp::None;

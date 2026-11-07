@@ -56,22 +56,28 @@ bool lessForMinMax(double a, double b) {
 
 uint64_t mathMin(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     double best = std::numeric_limits<double>::infinity();
+    bool nan = false;
     for (uint32_t i = 0; i < argc; ++i) {
+        // Every argument is converted (21.3.2.24/25 step 2) before the
+        // fold, so a NaN does not end the loop: a later valueOf still runs.
         double v = rtToNumber(Value(argv[i]));
-        if (std::isnan(v)) return Value::fromDouble(v).rawBits();
-        if (lessForMinMax(v, best)) best = v;
+        if (std::isnan(v)) nan = true;
+        else if (lessForMinMax(v, best)) best = v;
     }
-    return Value::fromDouble(best).rawBits();
+    return Value::fromDouble(nan ? std::numeric_limits<double>::quiet_NaN() : best).rawBits();
 }
 
 uint64_t mathMax(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     double best = -std::numeric_limits<double>::infinity();
+    bool nan = false;
     for (uint32_t i = 0; i < argc; ++i) {
+        // Every argument is converted (21.3.2.24/25 step 2) before the
+        // fold, so a NaN does not end the loop: a later valueOf still runs.
         double v = rtToNumber(Value(argv[i]));
-        if (std::isnan(v)) return Value::fromDouble(v).rawBits();
-        if (lessForMinMax(best, v)) best = v;
+        if (std::isnan(v)) nan = true;
+        else if (lessForMinMax(best, v)) best = v;
     }
-    return Value::fromDouble(best).rawBits();
+    return Value::fromDouble(nan ? std::numeric_limits<double>::quiet_NaN() : best).rawBits();
 }
 
 uint64_t mathHypot(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
@@ -80,13 +86,19 @@ uint64_t mathHypot(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // is what the spec's "implementation-approximated" licence allows.
     if (argc == 0) return Value::fromDouble(0.0).rawBits();
     if (argc == 1) return Value::fromDouble(std::abs(argAt(argc, argv, 0))).rawBits();
+    // Each argument is converted in its own statement: ToNumber runs user
+    // valueOf code, which must see the arguments converted left to right,
+    // and a call's own argument list has no evaluation order in C++.
     if (argc == 2) {
-        return Value::fromDouble(std::hypot(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
+        const double a = argAt(argc, argv, 0);
+        const double b = argAt(argc, argv, 1);
+        return Value::fromDouble(std::hypot(a, b)).rawBits();
     }
     if (argc == 3) {
-        return Value::fromDouble(
-                   std::hypot(argAt(argc, argv, 0), argAt(argc, argv, 1), argAt(argc, argv, 2)))
-            .rawBits();
+        const double a = argAt(argc, argv, 0);
+        const double b = argAt(argc, argv, 1);
+        const double c = argAt(argc, argv, 2);
+        return Value::fromDouble(std::hypot(a, b, c)).rawBits();
     }
     double sum = 0.0;
     for (uint32_t i = 0; i < argc; ++i) {
@@ -166,9 +178,10 @@ uint64_t mathPow(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // `Math.pow(a, b)` and `a ** b` are the SAME operation in ECMA-262
     // (Number::exponentiate), so they are the same function here. Two
     // spellings of the NaN rules are two places for them to drift.
-    return Value::fromDouble(
-               rtExponentiate(argAt(argc, argv, 0), argAt(argc, argv, 1)))
-        .rawBits();
+    // Base, then exponent: ToNumber of each is user-visible (hypot above).
+    const double base = argAt(argc, argv, 0);
+    const double exponent = argAt(argc, argv, 1);
+    return Value::fromDouble(rtExponentiate(base, exponent)).rawBits();
 }
 
 // ---- Math.random (21.3.2.27) ------------------------------------------------
@@ -472,7 +485,10 @@ extern "C" uint64_t bronze_math_atan(uint64_t, uint64_t, uint32_t argc, const ui
 }
 
 extern "C" uint64_t bronze_math_atan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return Value::fromDouble(bronze_math_atan2_f64(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
+    // y, then x (21.3.2.8): ToNumber of each is user-visible (mathHypot).
+    const double y = argAt(argc, argv, 0);
+    const double x = argAt(argc, argv, 1);
+    return Value::fromDouble(bronze_math_atan2_f64(y, x)).rawBits();
 }
 
 extern "C" uint64_t bronze_math_abs(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

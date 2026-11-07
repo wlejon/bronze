@@ -262,10 +262,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             return;
         }
         // 10.4.5.5 step 1.b: a canonical numeric string that is not a valid
-        // index names nothing — the store is a no-op that reports success in
-        // both modes (10.4.5.16 TypedArraySetElement returns unused), which is
-        // the one place the language itself asks for a discarded write.
-        if (rtIsCanonicalNumericString(keyStr)) return;
+        // index names nothing — the store reports success in both modes and
+        // writes nothing, but TypedArraySetElement (10.4.5.16) still converts
+        // the VALUE first, user `valueOf` and its throw included.
+        if (rtIsCanonicalNumericString(keyStr)) {
+            Rooted<Value> viewRoot{objVal};
+            rtTypedArraySetElement(viewRoot, kNoTypedArrayIndex, Value(valBits));
+            return;
+        }
         // Any other name is an ordinary property of an ordinary object: the
         // tail below.
     }
@@ -881,7 +885,13 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // (10.4.5.5 through CanonicalNumericIndexString), and an invalid one
         // is the spec's silently-discarded store — never a named property.
         // Only an actual string key can name one.
-        if (Value(idxBits).isNumber()) return;
+        // TypedArraySetElement (10.4.5.16) converts the VALUE before it
+        // looks at the index, so the discarded store still runs ToNumber.
+        if (Value(idxBits).isNumber()) {
+            Rooted<Value> viewRoot{objVal};
+            rtTypedArraySetElement(viewRoot, kNoTypedArrayIndex, Value(valBits));
+            return;
+        }
         if (rtValueToElementIndex(Value(idxBits), idx)) {
             Rooted<Value> viewRoot{objVal};
             rtTypedArraySetElement(viewRoot, idx, Value(valBits));
@@ -893,6 +903,8 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // shape-carrying tail below.
         if (Value(idxBits).isString() &&
             rtIsCanonicalNumericString(rtUtf8Chars(Value(idxBits).asString<StringHeader>()))) {
+            Rooted<Value> viewRoot{objVal};
+            rtTypedArraySetElement(viewRoot, kNoTypedArrayIndex, Value(valBits));
             return;
         }
     }

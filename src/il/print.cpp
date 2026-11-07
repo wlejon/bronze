@@ -576,8 +576,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     case Op::MathUnary:
                         out += "math.unary %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + std::to_string(inst.immI32);
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        for (size_t k = 1; k < inst.operands.size(); ++k) out += ", %" + std::to_string(inst.operands[k]);
+                        out += ", " + std::to_string(inst.immI32);
                         break;
                     case Op::CreateObject:
                         out += "create.object";

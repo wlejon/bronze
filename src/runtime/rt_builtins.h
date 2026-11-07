@@ -511,6 +511,10 @@ Value rtNewWeakCollectionWithShape(class Shape* shape, bool isWeakSet);
 // so can run user code and can throw, which is why it takes the view rooted.
 Value rtTypedArrayElement(Value viewVal, uint32_t index);
 void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value);
+// An index no view has (a length is below 2^32-1): rtTypedArraySetElement
+// with it converts the value and stores nothing — the discarded store of an
+// invalid numeric index (10.4.5.16).
+inline constexpr uint32_t kNoTypedArrayIndex = 0xFFFFFFFFu;
 
 // Rows of builtin_array.cpp's method table whose bodies live in a translation
 // unit of their own — `sort` (builtin_array_sort.cpp) and the three iterator

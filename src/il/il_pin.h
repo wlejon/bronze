@@ -62,9 +62,23 @@ inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 //     path skips its tag and header compares; `kElemFlagProvenIntegralIndex`
 //     beside it says the boxed index is an integral Number. On `ElemSet` the
 //     flags sit above the write mode (il.h kWriteModeMask).
+//   - `kElemFlagFloatViewReceiver` (on `ElemGet` / `ElemSet`): the receiver
+//     is a Float32Array or a Float64Array, tested by a dominating
+//     `is.typed_array r, kTypedArrayAnyFloat` (typed_body_version.h), so the
+//     inline path skips the tag, Array and view header compares and the kind
+//     ladder, and asks only which of the two float kinds it is. The access
+//     keeps its exact semantics: a Number index outside the view reads
+//     `undefined` and drops a Number store inline; an index or value that is
+//     no Number takes the helper.
 inline constexpr int32_t kElemKindMask = 0xFFFF;
 inline constexpr int32_t kElemFlagProvenIntegralIndex = 1 << 16;
 inline constexpr int32_t kElemFlagProvenInBounds = 1 << 17;
 inline constexpr int32_t kElemFlagArrayReceiver = 1 << 18;
+inline constexpr int32_t kElemFlagFloatViewReceiver = 1 << 19;
+
+// `is.typed_array`'s kind selector for "a Float32Array or a Float64Array":
+// outside every element kind's number, below kTypedArrayPristineLength (il_op.h),
+// which it is never combined with.
+inline constexpr int32_t kTypedArrayAnyFloat = 0x7F;
 
 }  // namespace bronze::il

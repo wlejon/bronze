@@ -201,15 +201,15 @@ enum class Op : uint8_t {
     ElemGetTyped, // a: f64 = elem.get.typed obj, idx(f64), <immI32: elem kind>
     ElemSetTyped, // elem.set.typed obj, idx(f64), val(f64), <immI32: elem kind>
     // A call INFERENCE PROVED reaches a pristine builtin `Math` method
-    // (`immI32` is the MathUnaryFn number), with its one argument already a
-    // machine number. Only the BIT-EXACT functions are admitted — the ones
-    // IEEE 754 pins to a single result, so the intrinsic the backend emits
-    // and the libm call the runtime helper makes cannot disagree in any bit,
-    // which is what keeps the two inference modes byte-identical. `sin`,
-    // `pow` and friends stay dynamic calls: their results are
-    // implementation-defined and MUST keep coming from the one runtime
-    // kernel. Cannot throw, cannot allocate, runs no user code.
-    MathUnary,  // a: f64 = math.unary x(f64), <immI32: MathUnaryFn>
+    // (`immI32` is the MathUnaryFn number), with its argument (two for
+    // atan2, two to four for max and min) already a machine number. Admitted are the functions IEEE 754
+    // pins to a single result, which the backend may emit as an intrinsic,
+    // and the libm members whose result is implementation-defined, which the
+    // op computes by calling the runtime's own kernel — the one the builtin
+    // calls — so both inference modes stay byte-identical. `pow` stays a
+    // dynamic call (its operator form has its own kernel). Cannot throw,
+    // cannot allocate, runs no user code.
+    MathUnary,  // a: f64 = math.unary x(f64)[, x2.. (f64) for Atan2, Max, Min], <immI32: MathUnaryFn>
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
@@ -508,8 +508,12 @@ enum class Op : uint8_t {
     // call CAN change, the view's length and where its bytes are, the typed
     // element ops read afresh at every access. That is the licence for
     // `elem.get.typed` / `elem.set.typed` on the true edge, and the
-    // typed-loop versioning pass (lower/typed_loop_version.h) is its only
-    // producer. Header loads only: cannot throw, cannot collect.
+    // typed-loop versioning pass (lower/typed_loop_version.h) produces it.
+    // With immI32 kTypedArrayAnyFloat (il_pin.h) it asks whether `b` is a
+    // Float32Array or a Float64Array, the licence for the element flag
+    // kElemFlagFloatViewReceiver (typed-body versioning,
+    // lower/typed_body_version.h). Header loads only: cannot throw, cannot
+    // collect.
     //
     // With kTypedArrayPristineLength set in `immI32` it also requires what the
     // runtime's own `length` read requires to answer from the view header
@@ -640,8 +644,19 @@ bool isTerminator(Op op);
 // The function selector `math.unary` carries in `immI32`. Membership is the
 // soundness line: a function goes on this list only if IEEE 754 defines its
 // result exactly, so backend intrinsic and runtime libm agree bit for bit.
+//
+// From Sin on, the function is the runtime's own f64 kernel
+// (builtin_math.cpp, `bronze_math_<fn>_f64`), the one the builtin's native
+// code calls: the op and a dynamic `Math.<fn>(x)` answer with the same libm
+// call, so neither inference mode can see a different bit. Atan2 takes two
+// operands, y then x, both already f64; Max and Min take
+// two to four, folded left to right as 21.3.2.24/25 do once every argument is
+// a Number (NaN wins, -0 below +0); the backend's select chain is the one the
+// builtins' own speculated calls use.
 enum class MathUnaryFn : uint32_t {
-    Sqrt = 0, Abs = 1, Floor = 2, Ceil = 3, Trunc = 4, Sin = 5, Cos = 6
+    Sqrt = 0, Abs = 1, Floor = 2, Ceil = 3, Trunc = 4, Sin = 5, Cos = 6,
+    Exp = 7, Log = 8, Tan = 9, Asin = 10, Acos = 11, Atan = 12, Atan2 = 13,
+    Max = 14, Min = 15
 };
 
 }  // namespace bronze::il
