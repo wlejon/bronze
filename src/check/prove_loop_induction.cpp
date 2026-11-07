@@ -53,19 +53,16 @@ bool canReachBlock(const il::Function& fn, il::BlockId start, il::BlockId goal) 
 
 bool hasNonPow2ConstDivisor(const il::Function& fn) {
     for (const auto& blk : fn.blocks) {
-        std::unordered_map<il::ValueId, int64_t> constVals;
+        std::unordered_map<il::ValueId, int64_t> cv;
         for (const auto& inst : blk.instructions) {
-            if (inst.op == il::Op::ConstI32) {
-                constVals[inst.result] = inst.immI32;
-            } else if (inst.op == il::Op::ConstF64 && std::isfinite(inst.immF64) && std::trunc(inst.immF64) == inst.immF64) {
-                constVals[inst.result] = static_cast<int64_t>(inst.immF64);
-            } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox ||
-                        inst.op == il::Op::ToNumeric || inst.op == il::Op::ToInt32) && !inst.operands.empty()) {
-                auto it = constVals.find(inst.operands[0]);
-                if (it != constVals.end()) constVals[inst.result] = it->second;
+            if (inst.op == il::Op::ConstI32) cv[inst.result] = inst.immI32;
+            else if (inst.op == il::Op::ConstF64 && std::isfinite(inst.immF64) && std::trunc(inst.immF64) == inst.immF64)
+                cv[inst.result] = static_cast<int64_t>(inst.immF64);
+            else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox ||
+                      inst.op == il::Op::ToNumeric || inst.op == il::Op::ToInt32) && !inst.operands.empty()) {
+                if (auto it = cv.find(inst.operands[0]); it != cv.end()) cv[inst.result] = it->second;
             } else if ((inst.op == il::Op::Div || inst.op == il::Op::Mod) && inst.operands.size() >= 2) {
-                auto it = constVals.find(inst.operands[1]);
-                if (it != constVals.end() && it->second > 0) {
+                if (auto it = cv.find(inst.operands[1]); it != cv.end() && it->second > 0) {
                     uint64_t d = static_cast<uint64_t>(it->second);
                     if ((d & (d - 1)) != 0) return true;
                 }
@@ -421,7 +418,7 @@ private:
                     state.values[inst.result] = zero64_;
                     break;
                 case Op::ToInt32:
-                    state.values[inst.result] = strictJs32Bitwise_ ? toSInt32In64(op64(0)) : op64(0);
+                    state.values[inst.result] = toSInt32In64(op64(0));
                     break;
                 case Op::Box:
                 case Op::Unbox:
@@ -502,20 +499,11 @@ private:
                 }
                 case Op::Div:
                 case Op::Mod: {
-                    BVNodeId a = op64(0), b = op64(1);
-                    const auto& bNode = ctx_.nodes()[b];
-                    BVOp bvOp = (inst.op == Op::Div) ? BVOp::SDiv : BVOp::SRem;
-                    if (bNode.op == BVOp::Const) {
-                        int64_t d = static_cast<int64_t>(bNode.imm);
-                        if (d == 0) return false;
-                        if (d > 0 && d <= INT32_MAX && (static_cast<uint64_t>(d) & (static_cast<uint64_t>(d) - 1)) != 0) {
-                            BVNodeId r32 = brass::verify::expand_const_div_rem_bv(
-                                ctx_, bvOp, ctx_.make_extract(a, 31, 0), ctx_.make_const(static_cast<uint64_t>(d), 32), 32);
-                            state.values[inst.result] = ctx_.make_sext(r32, 32);
-                            break;
-                        }
+                    BVNodeId divVal = zero64_;
+                    if (!evalDivOrModSymbolic(ctx_, mod_, blk, idx, op64(0), op64(1), state.heap, divVal)) {
+                        return false;
                     }
-                    state.values[inst.result] = ctx_.make_binary(bvOp, a, b);
+                    state.values[inst.result] = divVal;
                     break;
                 }
                 case Op::Neg:
@@ -531,15 +519,11 @@ private:
                 case Op::BitNot:
                     state.values[inst.result] = ctx_.make_sext(ctx_.make_unary(BVOp::Not, op32(0)), 32);
                     break;
-                case Op::Shl:
-                    if (strictJs32Bitwise_) {
-                        BVNodeId sh32 = ctx_.make_binary(BVOp::And, op32(1), ctx_.make_const(31, 32));
-                        state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Shl, op32(0), sh32), 32);
-                    } else {
-                        state.values[inst.result] = ctx_.make_binary(
-                            BVOp::Shl, op64(0), ctx_.make_binary(BVOp::And, op64(1), ctx_.make_const(31, 64)));
-                    }
+                case Op::Shl: {
+                    BVNodeId sh32 = ctx_.make_binary(BVOp::And, op32(1), ctx_.make_const(31, 32));
+                    state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Shl, op32(0), sh32), 32);
                     break;
+                }
                 case Op::Shr:
                 case Op::UShr: {
                     BVNodeId sh32 = ctx_.make_binary(BVOp::And, op32(1), ctx_.make_const(31, 32));
@@ -583,8 +567,10 @@ private:
                     if (kind == il::MathUnaryFn::Abs) {
                         state.values[inst.result] = ctx_.make_ite(
                             ctx_.make_binary(BVOp::Slt, a, zero64_), ctx_.make_unary(BVOp::Neg, a), a);
-                    } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil ||
-                               kind == il::MathUnaryFn::Trunc) {
+                    } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
+                        state.values[inst.result] = evalFloorOrCeilSymbolic(
+                            ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil);
+                    } else if (kind == il::MathUnaryFn::Trunc) {
                         state.values[inst.result] = a;
                     } else {
                         return false;
@@ -606,8 +592,12 @@ private:
                             state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Mul, op32(1), op32(2)), 32);
                             break;
                         }
-                        if ((m == "floor" || m == "ceil" || m == "trunc" || m == "round" || m == "fround") &&
-                            inst.operands.size() >= 2) {
+                        if ((m == "floor" || m == "ceil") && inst.operands.size() >= 2) {
+                            state.values[inst.result] = evalFloorOrCeilSymbolic(
+                                ctx_, state.heap, inst.operands[1], op64(1), m == "ceil");
+                            break;
+                        }
+                        if ((m == "trunc" || m == "round" || m == "fround") && inst.operands.size() >= 2) {
                             state.values[inst.result] = op64(1);
                             break;
                         }
@@ -708,14 +698,22 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
                 argNodes.push_back(ctx.make_sext(ctx.make_var("arg_" + std::to_string(i), 32), 32));
             }
         }
+        SymbolicHeapTable heapTable(ctx);
+        SymbolicHeapState oldHeap, newHeap;
         BVNodeId oldRet = 0, newRet = 0;
-        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet) ||
-            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet) ||
-            oldRet == newRet) {
+        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet, nullptr, &heapTable, &oldHeap) ||
+            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet, nullptr, &heapTable, &newHeap)) {
             continue;
         }
-        BVNodeId badCond = ctx.make_binary(BVOp::Ne, oldRet, newRet);
-        if (numParams > 1 && (domainMin > INT32_MIN || domainMax < INT32_MAX)) {
+        BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(heapTable, oldHeap, newHeap);
+        if (oldRet == newRet && heapMismatch == 0) continue;
+
+        BVNodeId badCond = (oldRet != newRet) ? ctx.make_binary(BVOp::Ne, oldRet, newRet) : 0;
+        if (heapMismatch != 0) badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
+        BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
+        if (aliasCongruence != 0) badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
+
+        if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
             BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
             BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
             for (uint32_t i = 0; i < numParams; ++i) {
@@ -727,17 +725,20 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
         SolveOutcome satRes = solveObligation(ctx, badCond, domainMin, domainMax);
         if (satRes.status == SolveOutcome::Sat) {
             res.status = EquivStatus::Counterexample;
+            const size_t scalarVars = (numParams > 0) ? (numParams - 1) : 0;
+            const size_t totalVars = scalarVars + heapTable.varNodes().size();
             std::vector<uint64_t> model = satRes.model;
-            if (model.size() + 1 < numParams) model.resize(numParams - 1, 0);
+            if (model.size() < totalVars) model.resize(totalVars, 0);
+            for (size_t k = 0; k < totalVars; ++k) {
+                int32_t s32 = static_cast<int32_t>(static_cast<uint32_t>(model[k]));
+                model[k] = static_cast<uint64_t>(static_cast<uint32_t>(s32));
+            }
             res.counterexampleArgs.resize(numParams, 0);
             res.counterexampleArgs[boundParamIdx] = tc;
             size_t mIdx = 0;
             for (uint32_t i = 0; i < numParams; ++i) {
                 if (i == boundParamIdx) continue;
-                int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(model[mIdx]));
-                res.counterexampleArgs[i] = signed32;
-                model[mIdx] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
-                ++mIdx;
+                res.counterexampleArgs[i] = static_cast<int32_t>(static_cast<uint32_t>(model[mIdx++]));
             }
             res.oldReturnValue = static_cast<int64_t>(ctx.eval_concrete(oldRet, model));
             res.newReturnValue = static_cast<int64_t>(ctx.eval_concrete(newRet, model));

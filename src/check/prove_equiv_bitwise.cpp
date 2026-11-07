@@ -195,7 +195,8 @@ private:
 
             bool jumpedInPlace = false;
             const il::Block& blk = fn.blocks[blockId];
-            for (const auto& inst : blk.instructions) {
+            for (size_t instIdx = 0; instIdx < blk.instructions.size(); ++instIdx) {
+            const auto& inst = blk.instructions[instIdx];
             using Op = il::Op;
             switch (inst.op) {
                 case Op::ConstI32:
@@ -221,7 +222,7 @@ private:
                     break;
                 case Op::ToInt32: {
                     BVNodeId v = inst.operands.empty() ? zero64_ : getVal(state, inst.operands[0]);
-                    state.values[inst.result] = strictJs32Bitwise_ ? toSInt32In64(v) : toBV64(v);
+                    state.values[inst.result] = toSInt32In64(v);
                     break;
                 }
                 case Op::Box:
@@ -320,23 +321,12 @@ private:
                 case Op::Mod: {
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    const auto& bNode = ctx_.nodes()[b];
-                    BVOp bvOp = (inst.op == Op::Div) ? BVOp::SDiv : BVOp::SRem;
-                    if (bNode.op == BVOp::Const) {
-                        int64_t divisor = static_cast<int64_t>(bNode.imm);
-                        if (divisor == 0) {
-                            return {false, "division by zero constant", false, zero64_};
-                        }
-                        if (divisor > 0 && divisor <= INT32_MAX &&
-                            (static_cast<uint64_t>(divisor) & (static_cast<uint64_t>(divisor) - 1)) != 0) {
-                            BVNodeId a32 = ctx_.make_extract(a, 31, 0);
-                            BVNodeId b32 = ctx_.make_const(static_cast<uint64_t>(divisor), 32);
-                            BVNodeId r32 = brass::verify::expand_const_div_rem_bv(ctx_, bvOp, a32, b32, 32);
-                            state.values[inst.result] = ctx_.make_sext(r32, 32);
-                            break;
-                        }
+                    BVNodeId divVal = zero64_;
+                    std::string divErr;
+                    if (!evalDivOrModSymbolic(ctx_, mod_, blk, instIdx, a, b, state.heap, divVal, &divErr)) {
+                        return {false, divErr, false, zero64_, {}, {}};
                     }
-                    state.values[inst.result] = ctx_.make_binary(bvOp, a, b);
+                    state.values[inst.result] = divVal;
                     break;
                 }
                 case Op::Neg: {
@@ -372,20 +362,12 @@ private:
                     break;
                 }
                 case Op::Shl: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    if (strictJs32Bitwise_) {
-                        BVNodeId a32 = ctx_.make_extract(a, 31, 0);
-                        BVNodeId b32 = ctx_.make_extract(b, 31, 0);
-                        BVNodeId mask31 = ctx_.make_const(31, 32);
-                        BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, mask31);
-                        BVNodeId r32 = ctx_.make_binary(BVOp::Shl, a32, sh32);
-                        state.values[inst.result] = ctx_.make_sext(r32, 32);
-                    } else {
-                        BVNodeId mask31 = ctx_.make_const(31, 64);
-                        BVNodeId sh = ctx_.make_binary(BVOp::And, b, mask31);
-                        state.values[inst.result] = ctx_.make_binary(BVOp::Shl, a, sh);
-                    }
+                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
+                    BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
+                    BVNodeId mask31 = ctx_.make_const(31, 32);
+                    BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, mask31);
+                    BVNodeId r32 = ctx_.make_binary(BVOp::Shl, a32, sh32);
+                    state.values[inst.result] = ctx_.make_sext(r32, 32);
                     break;
                 }
                 case Op::Shr: {
@@ -414,12 +396,14 @@ private:
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b = toBV64(getVal(state, inst.operands[1]));
                     state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Eq, a, b));
+                    state.heap.recordObjComparison(inst.result, inst.operands[0], inst.operands[1], true);
                     break;
                 }
                 case Op::CmpNe: {
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b = toBV64(getVal(state, inst.operands[1]));
                     state.values[inst.result] = toBV64(ctx_.make_binary(BVOp::Ne, a, b));
+                    state.heap.recordObjComparison(inst.result, inst.operands[0], inst.operands[1], false);
                     break;
                 }
                 case Op::CmpLt:
@@ -508,9 +492,10 @@ private:
                         BVNodeId isNeg = ctx_.make_binary(BVOp::Slt, a, zero64_);
                         BVNodeId negA = ctx_.make_unary(BVOp::Neg, a);
                         state.values[inst.result] = ctx_.make_ite(isNeg, negA, a);
-                    } else if (kind == il::MathUnaryFn::Floor ||
-                               kind == il::MathUnaryFn::Ceil ||
-                               kind == il::MathUnaryFn::Trunc) {
+                    } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
+                        state.values[inst.result] = evalFloorOrCeilSymbolic(
+                            ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil);
+                    } else if (kind == il::MathUnaryFn::Trunc) {
                         state.values[inst.result] = a;
                     } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
                         BVNodeId acc = a;
@@ -603,9 +588,13 @@ private:
                             state.values[inst.result] = r;
                             break;
                         }
-                        if ((method == "floor" || method == "ceil" ||
-                             method == "trunc" || method == "round" ||
-                             method == "fround") &&
+                        if ((method == "floor" || method == "ceil") && inst.operands.size() >= 2) {
+                            BVNodeId argVal = toBV64(getVal(state, inst.operands[1]));
+                            state.values[inst.result] = evalFloorOrCeilSymbolic(
+                                ctx_, state.heap, inst.operands[1], argVal, method == "ceil");
+                            break;
+                        }
+                        if ((method == "trunc" || method == "round" || method == "fround") &&
                             inst.operands.size() >= 2) {
                             state.values[inst.result] = toBV64(getVal(state, inst.operands[1]));
                             break;
@@ -737,10 +726,12 @@ private:
                     }
 
                     SymState trueState = state;
+                    trueState.heap.unifyBranchAlias(heapTable_, inst.operands[0], condNode, true);
                     applyEdgeArgsInPlace(fn, inst.target, trueState);
                     auto trueOut = evalBlockPath(fn, inst.target.block, std::move(trueState), steps + 1, inlineDepth);
                     if (!trueOut.supported) return trueOut;
 
+                    state.heap.unifyBranchAlias(heapTable_, inst.operands[0], condNode, false);
                     applyEdgeArgsInPlace(fn, inst.elseTarget, state);
                     auto falseOut = evalBlockPath(fn, inst.elseTarget.block, std::move(state), steps + 1, inlineDepth);
                     if (!falseOut.supported) return falseOut;
@@ -785,14 +776,17 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             const std::vector<brass::verify::BVNodeId>& argNodes,
                             bool strictJs32Bitwise,
                             brass::verify::BVNodeId* outRetNode,
-                            std::string* outReason) {
-    SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise);
+                            std::string* outReason,
+                            SymbolicHeapTable* sharedHeapTable,
+                            SymbolicHeapState* outFinalHeap) {
+    SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise, sharedHeapTable);
     auto out = builder.evalFunction(fn, argNodes);
     if (!out.supported || !out.hasReturn) {
         if (outReason) *outReason = out.unsupportedReason;
         return false;
     }
     if (outRetNode) *outRetNode = out.returnVal;
+    if (outFinalHeap) *outFinalHeap = std::move(out.finalHeap);
     return true;
 }
 
@@ -876,6 +870,11 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
     }
 
+    BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
+    if (aliasCongruence != 0) {
+        badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
+    }
+
     if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
         BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
         BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
@@ -904,35 +903,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         const size_t totalVars = numParams + heapTable.varNodes().size();
         std::vector<uint64_t> bestModel = satRes.model;
         if (bestModel.size() < totalVars) bestModel.resize(totalVars, 0);
-
-        static constexpr int32_t kSmallCandidates[] = {
-            0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 7, 8, -8, 10, 16, 31, 32, -32, 64, 100, -128, 127
-        };
-        if (totalVars == 1) {
-            for (int32_t c0 : kSmallCandidates) {
-                if (c0 < domainMin || c0 > domainMax) continue;
-                std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0))};
-                if (ctx.eval_concrete(badCond, cand) != 0) {
-                    bestModel = std::move(cand);
-                    break;
-                }
-            }
-        } else if (totalVars == 2) {
-            bool foundSmall = false;
-            for (int32_t c0 : kSmallCandidates) {
-                if (c0 < domainMin || c0 > domainMax || foundSmall) continue;
-                for (int32_t c1 : kSmallCandidates) {
-                    if (c1 < domainMin || c1 > domainMax) continue;
-                    std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0)),
-                                               static_cast<uint64_t>(static_cast<uint32_t>(c1))};
-                    if (ctx.eval_concrete(badCond, cand) != 0) {
-                        bestModel = std::move(cand);
-                        foundSmall = true;
-                        break;
-                    }
-                }
-            }
-        }
+        minimizeCounterexampleModel(ctx, badCond, totalVars, domainMin, domainMax, bestModel);
 
         for (size_t i = 0; i < totalVars; ++i) {
             int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[i]));

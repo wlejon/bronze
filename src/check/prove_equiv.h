@@ -67,6 +67,9 @@ struct EquivReport {
     bool hasCounterexample() const { return status == EquivStatus::Counterexample; }
 };
 
+class SymbolicHeapTable;
+struct SymbolicHeapState;
+
 // Internal lowering helper shared across prove_equiv translation units.
 bool lowerSingleSourceForEquiv(std::string_view src,
                                std::string_view virtualName,
@@ -81,7 +84,9 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             const std::vector<brass::verify::BVNodeId>& argNodes,
                             bool strictJs32Bitwise,
                             brass::verify::BVNodeId* outRetNode,
-                            std::string* outReason = nullptr);
+                            std::string* outReason = nullptr,
+                            SymbolicHeapTable* sharedHeapTable = nullptr,
+                            SymbolicHeapState* outFinalHeap = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,

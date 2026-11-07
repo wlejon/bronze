@@ -22,10 +22,10 @@ using bronze::check::SynthTestsReport;
 }  // namespace
 
 TEST_CASE("prove-equiv: formal bitvector equivalence proofs and counterexamples") {
-    SUBCASE("proves strength reduction x * 8 === x << 3") {
+    SUBCASE("proves strength reduction (x * 8) | 0 === x << 3") {
         std::string err;
         ProveEquivReport rep = bronze::check::proveSourceEquiv(
-            "export function scale(x) { return x * 8; }",
+            "export function scale(x) { return (x * 8) | 0; }",
             "export function scale(x) { return x << 3; }",
             "", &err);
         REQUIRE(err.empty());
@@ -33,6 +33,103 @@ TEST_CASE("prove-equiv: formal bitvector equivalence proofs and counterexamples"
         CHECK(rep.functions[0].name == "scale");
         CHECK(rep.functions[0].status == EquivStatus::Equivalent);
         CHECK(rep.allEquivalent());
+    }
+
+    SUBCASE("regression 1: Shl sign-extends 32-bit result (1 << 31 === -2147483648, x * 8 !== x << 3)") {
+        std::string err;
+        ProveEquivReport rep1 = bronze::check::proveSourceEquiv(
+            "export function f(x) { return (x & 1) << 31; }",
+            "export function f(x) { return (x & 1) ? -2147483648 : 0; }",
+            "f", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep1.functions.size() == 1);
+        CHECK(rep1.functions[0].status == EquivStatus::Equivalent);
+
+        ProveEquivReport rep2 = bronze::check::proveSourceEquiv(
+            "export function scaleOverflow(x) { return x * 8; }",
+            "export function scaleOverflow(x) { return x << 3; }",
+            "scaleOverflow", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep2.functions.size() == 1);
+        CHECK(rep2.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("regression 2: float division of integer literals is not lowered as truncating SDiv") {
+        std::string err;
+        ProveEquivReport repFrac = bronze::check::proveSourceEquiv(
+            "export function third(x) { return x * (1 / 3); }",
+            "export function third(x) { return x / 3; }",
+            "third", &err);
+        REQUIRE(err.empty());
+        REQUIRE(repFrac.functions.size() == 1);
+        CHECK(repFrac.functions[0].status == EquivStatus::Unknown);
+
+        auto repCeil = bronze::check::proveSourceEquivalent(
+            "export function byteLen(bits) { return Math.ceil(bits / 8); }",
+            "export function byteLen(bits) { return (bits + 7) >> 3; }",
+            "byteLen", 0, 1048576, &err);
+        REQUIRE(err.empty());
+        CHECK(repCeil.status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("regression 3: loop concrete trip-count checker shares SymbolicHeapTable across pair") {
+        std::string err;
+        auto repLoop = bronze::check::proveLoopClosedFormInductive(
+            R"(
+                export function sumFirst(a, n) {
+                    let s = 0;
+                    for (let i = 0; i < n; i = i + 1) {
+                        s = (s + a[0]) | 0;
+                    }
+                    return s;
+                }
+            )",
+            R"(
+                export function sumFirst(a, n) {
+                    let acc = 0;
+                    for (let k = 0; k < n; k = k + 1) {
+                        acc = (acc + a[0]) | 0;
+                    }
+                    return acc;
+                }
+            )",
+            0, 16, &err);
+        REQUIRE(err.empty());
+        CHECK(repLoop.status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("regression 4: out === a branch unifies heap roots for in-place fast paths") {
+        std::string err;
+        ProveEquivReport repTranspose = bronze::check::proveSourceEquiv(
+            R"(
+                export function transpose2(out, a) {
+                    if (out === a) {
+                        const a1 = a[1];
+                        out[1] = a[2];
+                        out[2] = a1;
+                    } else {
+                        out[0] = a[0];
+                        out[1] = a[2];
+                        out[2] = a[1];
+                        out[3] = a[3];
+                    }
+                    return out;
+                }
+            )",
+            R"(
+                export function transpose2(out, a) {
+                    const a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
+                    out[0] = a0;
+                    out[1] = a2;
+                    out[2] = a1;
+                    out[3] = a3;
+                    return out;
+                }
+            )",
+            "transpose2", &err);
+        REQUIRE(err.empty());
+        REQUIRE(repTranspose.functions.size() == 1);
+        CHECK(repTranspose.functions[0].status == EquivStatus::Equivalent);
     }
 
     SUBCASE("proves De Morgan's law ~(a & b) === (~a) | (~b)") {
@@ -448,7 +545,7 @@ TEST_CASE("CLI file entry points: runProveEquiv, runDeterministicCheckFile, and 
     {
         FILE* f = std::fopen(oldFile.c_str(), "wb");
         REQUIRE(f != nullptr);
-        std::fputs("export function compute(x, y) { return (x * 8) + (~(x & y)); }\n", f);
+        std::fputs("export function compute(x, y) { return ((x * 8) | 0) + (~(x & y)); }\n", f);
         std::fclose(f);
     }
     {

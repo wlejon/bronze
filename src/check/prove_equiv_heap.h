@@ -30,15 +30,41 @@ public:
     // (`"this"`, `"arg_0"`, `"__local_0"`, etc.) so `return this;` matches across pairs.
     brass::verify::BVNodeId getObjectToken(const std::string& rootPath);
 
+    void recordAliasedRoots(const std::string& rootA,
+                            const std::string& rootB,
+                            brass::verify::BVNodeId eqCond);
+
+    // Builds a 1-bit conjunction enforcing `(eqCond => heap:rootA.k == heap:rootB.k)`
+    // across all accessed suffixes `.k` for any pair of roots tested with `===`/`!==`,
+    // or returns 0 if no alias comparisons were recorded.
+    brass::verify::BVNodeId buildAliasCongruenceCond();
+
     const std::vector<std::string>& varPaths() const { return varPaths_; }
     const std::vector<brass::verify::BVNodeId>& varNodes() const { return varNodes_; }
 
 private:
+    struct AliasedRootPair {
+        std::string rootA;
+        std::string rootB;
+        brass::verify::BVNodeId eqCond = 0;
+    };
     brass::verify::BVContext& ctx_;
     std::unordered_map<std::string, brass::verify::BVNodeId> initialVals_;
     std::unordered_map<std::string, brass::verify::BVNodeId> objectTokens_;
     std::vector<std::string> varPaths_;
     std::vector<brass::verify::BVNodeId> varNodes_;
+    std::vector<AliasedRootPair> aliasedPairs_;
+};
+
+struct PendingDivInfo {
+    brass::verify::BVNodeId num = 0;
+    brass::verify::BVNodeId den = 0;
+};
+
+struct ObjComparisonInfo {
+    std::string lhsPath;
+    std::string rhsPath;
+    bool isEq = true;
 };
 
 // Per-path symbolic object/buffer state tracking object reference aliases and
@@ -46,6 +72,8 @@ private:
 struct SymbolicHeapState {
     std::unordered_map<il::ValueId, std::string> objPaths;
     std::unordered_map<uint64_t, std::string> envObjPaths;
+    std::unordered_map<il::ValueId, ObjComparisonInfo> objComparisons;
+    std::unordered_map<il::ValueId, PendingDivInfo> divResults;
     std::map<std::string, brass::verify::BVNodeId> writes;
     uint32_t localObjCounter = 0;
 
@@ -60,6 +88,12 @@ struct SymbolicHeapState {
     void propagateAlias(il::ValueId src, il::ValueId dst);
     void propagateEnvSet(uint64_t envKey, il::ValueId src);
     void propagateEnvGet(uint64_t envKey, il::ValueId dst);
+
+    void recordObjComparison(il::ValueId resultId, il::ValueId lhsId, il::ValueId rhsId, bool isEq);
+    void unifyBranchAlias(SymbolicHeapTable& table,
+                          il::ValueId condValId,
+                          brass::verify::BVNodeId condBool1,
+                          bool isTrueBranch);
 
     brass::verify::BVNodeId createLocalObject(SymbolicHeapTable& table, il::ValueId resultId);
 
@@ -102,5 +136,34 @@ struct SymbolicHeapState {
                                                          const SymbolicHeapState& newHeap,
                                                          std::vector<std::string>* outCheckedPaths = nullptr);
 };
+
+// Evaluates `Op::Div` or `Op::Mod` at `blk.instructions[instIdx]` with IEEE-754
+// float-division awareness: only lowers `Op::Div` to integer division when
+// consumed by integer truncation (`| 0`, `Math.trunc`, `Math.floor`, `Math.ceil`)
+// or when the dividend is provably an exact multiple of the constant divisor.
+bool evalDivOrModSymbolic(brass::verify::BVContext& ctx,
+                          const il::Module& mod,
+                          const il::Block& blk,
+                          size_t instIdx,
+                          brass::verify::BVNodeId a,
+                          brass::verify::BVNodeId b,
+                          SymbolicHeapState& heap,
+                          brass::verify::BVNodeId& outVal,
+                          std::string* outReason = nullptr);
+
+// Evaluates `Math.floor` or `Math.ceil` on `argVal`, using exact integer
+// floor/ceil division when `argId` was produced by `Op::Div(num, den)`.
+brass::verify::BVNodeId evalFloorOrCeilSymbolic(brass::verify::BVContext& ctx,
+                                                const SymbolicHeapState& heap,
+                                                il::ValueId argId,
+                                                brass::verify::BVNodeId argVal,
+                                                bool isCeil);
+
+void minimizeCounterexampleModel(const brass::verify::BVContext& ctx,
+                                 brass::verify::BVNodeId badCond,
+                                 size_t totalVars,
+                                 int32_t domainMin,
+                                 int32_t domainMax,
+                                 std::vector<uint64_t>& bestModel);
 
 }  // namespace bronze::check
