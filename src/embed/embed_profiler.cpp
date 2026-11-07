@@ -1,4 +1,5 @@
 #include "embed/embed_profiler.h"
+#include "runtime/sampler.h"
 
 namespace bronze::embed {
 
@@ -19,5 +20,7 @@ bool profilerStop(const runtime::ProfilerStopOptions& options, runtime::Profiler
 void setMirNameDescriber(runtime::MirNameDescriber describer) { runtime::setMirNameDescriber(describer); }
 
 void setMirNameTier1Rejection(runtime::MirNameTier1Rejection lookup) { runtime::setMirNameTier1Rejection(lookup); }
+
+void samplerReportNow() { runtime::samplerReportNow(); }
 
 }  // namespace bronze::embed

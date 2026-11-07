@@ -38,4 +38,9 @@ BRONZE_EMBED_API void setMirNameDescriber(runtime::MirNameDescriber describer);
 // the same engine.
 BRONZE_EMBED_API void setMirNameTier1Rejection(runtime::MirNameTier1Rejection lookup);
 
+// BRONZE_SAMPLE's whole-run report, printed now (once): for a host that
+// leaves by _exit, which skips the report's atexit hook. A no-op when
+// BRONZE_SAMPLE is not set.
+BRONZE_EMBED_API void samplerReportNow();
+
 }  // namespace bronze::embed

@@ -44,4 +44,9 @@ namespace bronze::runtime {
 // several modules) are no-ops.
 void samplerNoteJsThread() noexcept;
 
+// Stops the BRONZE_SAMPLE sampler and prints its report now (once; the exit
+// hook then has nothing to print). For a host that leaves by _exit, which
+// runs no atexit hooks. A no-op when the sampler is not armed.
+void samplerReportNow() noexcept;
+
 }  // namespace bronze::runtime

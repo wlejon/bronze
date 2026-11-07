@@ -38,6 +38,7 @@ namespace bronze::runtime {
 // unwind walk). Elsewhere the note is a no-op; the campaign machine is
 // Windows and a POSIX signal-based port is a later chunk if ever needed.
 void samplerNoteJsThread() noexcept {}
+void samplerReportNow() noexcept {}
 
 #else
 
@@ -195,6 +196,7 @@ bool innermostCompiledSite(const uint64_t* pcs, uint32_t n, CodeSite& out) {
 void dumpSamplerReport() {
     SamplerState* st = g_state;
     if (st == nullptr) return;
+    g_state = nullptr;   // once: samplerReportNow and the atexit hook both land here
     ::InterlockedExchange(&st->stop, 1);
     if (st->thread) {
         ::WaitForSingleObject(st->thread, 5000);
@@ -514,6 +516,8 @@ void samplerNoteJsThread() noexcept {
     std::fprintf(stderr, "sampler: BRONZE_SAMPLE armed at %u Hz on thread %lu\n", st->hz,
                  static_cast<unsigned long>(st->targetId));
 }
+
+void samplerReportNow() noexcept { dumpSamplerReport(); }
 
 #endif  // _WIN32
 
