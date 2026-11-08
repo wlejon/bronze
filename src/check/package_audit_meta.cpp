@@ -663,7 +663,12 @@ std::string PackageAuditReport::renderJson() const {
                << ",\"stringLength\":" << c.bounds.maxStringLength << "}";
         }
         if (c.status == EquivStatus::Counterexample) {
-            os << ",\"counterexample\":{\"args\":[";
+            os << ",\"counterexample\":{\"paramNames\":[";
+            for (size_t j = 0; j < c.paramNames.size(); ++j) {
+                if (j > 0) os << ",";
+                os << "\"" << jsonEscapeStr(c.paramNames[j]) << "\"";
+            }
+            os << "],\"args\":[";
             for (size_t j = 0; j < c.counterexampleArgs.size(); ++j) {
                 if (j > 0) os << ",";
                 os << c.counterexampleArgs[j];
@@ -683,7 +688,24 @@ std::string PackageAuditReport::renderJson() const {
            << "\"kind\":\"" << jsonEscapeStr(c.propertyKind) << "\","
            << "\"property\":\"" << jsonEscapeStr(c.formalProperty) << "\","
            << "\"status\":\"" << equivStatusTag(c.status) << "\","
-           << "\"detail\":\"" << jsonEscapeStr(c.detail) << "\"}";
+           << "\"detail\":\"" << jsonEscapeStr(c.detail) << "\"";
+        if (c.status == EquivStatus::Counterexample) {
+            os << ",\"counterexample\":{\"paramNames\":[";
+            for (size_t j = 0; j < c.paramNames.size(); ++j) {
+                if (j > 0) os << ",";
+                os << "\"" << jsonEscapeStr(c.paramNames[j]) << "\"";
+            }
+            os << "],\"args\":[";
+            for (size_t j = 0; j < c.counterexampleArgs.size(); ++j) {
+                if (j > 0) os << ",";
+                os << c.counterexampleArgs[j];
+            }
+            os << "],\"expected\":" << c.expectedValue
+               << ",\"actual\":" << c.actualValue
+               << ",\"oldThrows\":" << (c.oldThrows ? "true" : "false")
+               << ",\"newThrows\":" << (c.newThrows ? "true" : "false") << "}";
+        }
+        os << "}";
     }
     os << "]}\n";
     return os.str();

@@ -347,7 +347,8 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
     BVNodeId domGuard = ctx.make_const(1, 1);
     BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
     if (seqCond != 0) domGuard = ctx.make_binary(BVOp::And, domGuard, seqCond, 1);
-    if (!floatMode && (dMin > INT32_MIN || dMax < INT32_MAX)) {
+    bool hasScalarExplicitRange = docMeta.hasExplicitRange && !floatMode && !strMode;
+    if (hasScalarExplicitRange && (dMin > INT32_MIN || dMax < INT32_MAX)) {
         BVNodeId minN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMin)), 64);
         BVNodeId maxN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMax)), 64);
         for (BVNodeId a : argNodes) {
@@ -392,7 +393,7 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
         return chk;
     }
     if (sat.status == SolveOutcome::Sat) {
-        if (!docMeta.hasExplicitRange && !docMeta.hasReturnMin) {
+        if (!hasScalarExplicitRange && !docMeta.hasReturnMin) {
             chk.inPreconditionBucket = true;
             chk.status = EquivStatus::Equivalent;
             chk.detail = "explicit guard throw outside unrefined type domain (precondition bucket)";
@@ -431,7 +432,7 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
             chk.detail = "prover/replay mismatch";
             return chk;
         }
-        if (run.completed && run.threw && !docMeta.hasExplicitRange) {
+        if (run.completed && run.threw && !hasScalarExplicitRange) {
             chk.inPreconditionBucket = true;
             chk.status = EquivStatus::Equivalent;
             chk.detail = "explicit guard throw outside unrefined type domain (precondition bucket)";
