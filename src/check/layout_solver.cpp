@@ -384,11 +384,11 @@ LayoutSolution solveLayoutSpec(const LayoutSpec& spec) {
         return s64;
     };
 
-    int64_t minCoord = INT32_MAX;
-    int64_t maxCoord = INT32_MIN;
+    int32_t minCoord = INT32_MAX;
+    int32_t maxCoord = INT32_MIN;
     auto addBound = [&](BVNodeId node, int32_t lo, int32_t hi) {
-        minCoord = std::min<int64_t>(minCoord, lo);
-        maxCoord = std::max<int64_t>(maxCoord, hi);
+        minCoord = std::min<int32_t>(minCoord, lo);
+        maxCoord = std::max<int32_t>(maxCoord, hi);
         BVNodeId loNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(lo)), 64);
         BVNodeId hiNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(hi)), 64);
         cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sge, node, loNode));

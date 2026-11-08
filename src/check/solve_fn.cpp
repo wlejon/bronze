@@ -134,17 +134,17 @@ bool prepareSolverContext(std::string_view fnSource,
     }
 
     SymbolicHeapTable heapTable(prep.ctx);
-    int64_t effMin = opts.domainMin;
-    int64_t effMax = opts.domainMax;
+    int32_t effMin = opts.domainMin;
+    int32_t effMax = opts.domainMax;
     if (!opts.varBounds.empty()) {
-        int64_t bMin = INT32_MAX;
-        int64_t bMax = INT32_MIN;
+        int32_t bMin = INT32_MAX;
+        int32_t bMax = INT32_MIN;
         bool allBounded = (prep.numParams > 0);
         for (uint32_t i = 0; i < prep.numParams; ++i) {
             auto it = opts.varBounds.find(prep.paramNames[i]);
             if (it != opts.varBounds.end()) {
-                bMin = std::min<int64_t>(bMin, std::max(opts.domainMin, it->second.first));
-                bMax = std::max<int64_t>(bMax, std::min(opts.domainMax, it->second.second));
+                bMin = std::min<int32_t>(bMin, std::max(opts.domainMin, it->second.first));
+                bMax = std::max<int32_t>(bMax, std::min(opts.domainMax, it->second.second));
             } else {
                 allBounded = false;
             }
