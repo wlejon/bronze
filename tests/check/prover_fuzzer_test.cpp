@@ -245,6 +245,11 @@ void verifyPairAgainstConcreteExecution(const GeneratedPair& pair,
 
 void crossCheckQueueWithNode(const std::vector<NodeCheckCase>& nodeQueue) {
     if (nodeQueue.empty()) return;
+#if defined(_WIN32)
+    if (std::system("node --version >NUL 2>&1") != 0) return;
+#else
+    if (std::system("node --version >/dev/null 2>&1") != 0) return;
+#endif
     namespace fs = std::filesystem;
     fs::path scriptPath = fs::temp_directory_path() / "bronze_fuzz_node_crosscheck.mjs";
     {

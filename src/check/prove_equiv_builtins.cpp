@@ -594,10 +594,6 @@ BVNodeId makeF64ConstNode(BVContext& ctx, double d) {
 
 namespace {
 
-BVNodeId makeFloatBool64(BVContext& ctx, BVNodeId cond1) {
-    return ctx.make_ite(cond1, makeF64ConstNode(ctx, 1.0), ctx.make_const(0, 64));
-}
-
 bool canReachNonEmpty(const il::Function& fn, il::BlockId start, il::BlockId goal, il::BlockId minBlock) {
     if (start >= fn.blocks.size() || goal >= fn.blocks.size()) return false;
     std::queue<il::BlockId> q;
@@ -871,7 +867,8 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
             if (inst.op == Op::BitAnd || inst.op == Op::BitOr || inst.op == Op::BitXor ||
                 inst.op == Op::BitNot || inst.op == Op::Shl || inst.op == Op::Shr ||
                 inst.op == Op::UShr || inst.op == Op::ToInt32 ||
-                inst.op == Op::Mod || inst.op == Op::ElemGet || inst.op == Op::ElemSet) {
+                inst.op == Op::Mod || inst.op == Op::ElemGet || inst.op == Op::ElemSet ||
+                inst.op == Op::Add || inst.op == Op::Sub || inst.op == Op::Mul) {
                 hasBitwiseOrElemOrMod = true;
             }
         }
@@ -894,6 +891,16 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
             }
         }
     }
+    bool sawZeroMinMax = false;
+    bool sawNonZeroMinMax = false;
+    auto checkMinMaxZeroArg = [&](const std::vector<il::ValueId>& ops, size_t startIdx) {
+        bool hasZero = false;
+        for (size_t k = startIdx; k < ops.size(); ++k) {
+            if (zeroConstIds.count(ops[k])) hasZero = true;
+        }
+        if (hasZero) sawZeroMinMax = true;
+        else sawNonZeroMinMax = true;
+    };
     for (const auto& blk : fn.blocks) {
         for (size_t i = 0; i < blk.instructions.size(); ++i) {
             const auto& inst = blk.instructions[i];
@@ -922,8 +929,8 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                     m == "fround" || m == "round") {
                     return true;
                 }
-                if ((m == "min" || m == "max") && !hasBitwiseOrElemOrMod) {
-                    return true;
+                if (m == "min" || m == "max") {
+                    checkMinMaxZeroArg(inst.operands, 1);
                 }
                 if ((m == "floor" || m == "ceil" || m == "trunc") &&
                     (inst.operands.size() < 2 || !divTrackedIds.count(inst.operands[1]))) {
@@ -934,8 +941,8 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                 if (kind == il::MathUnaryFn::Sqrt || kind == il::MathUnaryFn::Round) {
                     return true;
                 }
-                if ((kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) && !hasBitwiseOrElemOrMod) {
-                    return true;
+                if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                    checkMinMaxZeroArg(inst.operands, 0);
                 }
                 if ((kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil || kind == il::MathUnaryFn::Trunc) &&
                     (inst.operands.empty() || !divTrackedIds.count(inst.operands[0]))) {
@@ -947,6 +954,9 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                 }
             }
         }
+    }
+    if (sawZeroMinMax && !sawNonZeroMinMax && !hasBitwiseOrElemOrMod) {
+        return true;
     }
     return false;
 }

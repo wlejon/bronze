@@ -25,9 +25,32 @@
 
 namespace bronze::test {
 
+namespace detail {
+
+template <class F>
+BRONZE_TEST_NOINLINE void inOwnFrameInner(F&& f) {
+    std::forward<F>(f)();
+}
+
+template <class F>
+BRONZE_TEST_NOINLINE auto fromOwnFrameInner(F&& f) {
+    return std::forward<F>(f)();
+}
+
+}  // namespace detail
+
 // Overwrites the stack below the caller's frame, where the frames it called
-// left their words.
-BRONZE_TEST_NOINLINE inline void scrubStack() {
+// left their words (including Win64's 32-byte outgoing parameter home space).
+BRONZE_TEST_NOINLINE inline void scrubStack(uint64_t h0 = 0, uint64_t h1 = 0,
+                                            uint64_t h2 = 0, uint64_t h3 = 0) {
+    volatile uint64_t* p0 = &h0;
+    volatile uint64_t* p1 = &h1;
+    volatile uint64_t* p2 = &h2;
+    volatile uint64_t* p3 = &h3;
+    *p0 = 0;
+    *p1 = 0;
+    *p2 = 0;
+    *p3 = 0;
     volatile uint64_t words[4096];
     for (size_t i = 0; i < 4096; ++i) words[i] = 0;
     (void)words[0];
@@ -41,17 +64,19 @@ inline constexpr uint64_t hideBits(uint64_t bits) noexcept { return bits ^ kHide
 // it in a callee-saved register across a collection.
 BRONZE_TEST_NOINLINE inline uint64_t unhideBits(uint64_t hidden) noexcept { return hidden ^ kHideMask; }
 
-// Runs `f` in a frame below the caller's, never inlined into it.
+// Runs `f` in a frame below the caller's, never inlined into it. Two noinline
+// hops keep `f`'s Win64 32-byte home space inside the outer helper's frame
+// (where scrubStack() overwrites it) rather than in the caller's frame.
 template <class F>
 BRONZE_TEST_NOINLINE void inOwnFrame(F&& f) {
-    std::forward<F>(f)();
+    detail::inOwnFrameInner(std::forward<F>(f));
 }
 
 // The same, returning what `f` returns (a count, a hidden word: nothing that
 // names an object).
 template <class F>
 BRONZE_TEST_NOINLINE auto fromOwnFrame(F&& f) {
-    return std::forward<F>(f)();
+    return detail::fromOwnFrameInner(std::forward<F>(f));
 }
 
 // A root whose slot lives on the C++ heap, so no stack word holds what it
