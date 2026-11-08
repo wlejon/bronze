@@ -86,7 +86,8 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             brass::verify::BVNodeId* outRetNode,
                             std::string* outReason = nullptr,
                             SymbolicHeapTable* sharedHeapTable = nullptr,
-                            SymbolicHeapState* outFinalHeap = nullptr);
+                            SymbolicHeapState* outFinalHeap = nullptr,
+                            bool* outHitLoopUnrollBound = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,

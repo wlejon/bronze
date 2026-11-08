@@ -588,3 +588,77 @@ TEST_CASE("CLI file entry points: runProveEquiv, runDeterministicCheckFile, and 
     std::remove(outTestFile.c_str());
 }
 
+TEST_CASE("proveSourceEquiv: module-env tables, new construction, charCodeAt, typeof, and throw guards") {
+    SUBCASE("proves equivalence across module-scope lookup tables and sibling functions") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                var TABLE = [10, 20, 30, 40];
+                function helper(i) { return TABLE[i & 3]; }
+                export function lookup(x) {
+                    if (typeof x === "undefined") return 0;
+                    return helper(x) + "AB".charCodeAt(x & 1);
+                }
+            )",
+            R"(
+                export function lookup(x) {
+                    const base = ((x & 3) + 1) * 10;
+                    const ch = (x & 1) ? 66 : 65;
+                    return base + ch;
+                }
+            )",
+            "lookup", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("filters out-of-domain inputs that throw RangeError/Error") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                function Box(n) { this.length = n | 0; }
+                export function checkedLen(n) {
+                    if (n < 0 || n > 16) throw new RangeError("out of range");
+                    const b = new Box(n);
+                    return b.length * 2;
+                }
+            )",
+            R"(
+                export function checkedLen(n) {
+                    if (n < 0 || n > 16) throw new RangeError("out of range");
+                    return n << 1;
+                }
+            )",
+            "checkedLen", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("rejects unsound bounded unroll when only one function hits loop unroll bound") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                export function loopVsConst(n) {
+                    let i = n | 0;
+                    while (i > 0) {
+                        if (i === 50) return 1;
+                        i = (i - 1) | 0;
+                    }
+                    return 0;
+                }
+            )",
+            R"(
+                export function loopVsConst(n) {
+                    return 0;
+                }
+            )",
+            "loopVsConst", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status != EquivStatus::Equivalent);
+    }
+}
+
+

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -75,6 +76,7 @@ struct SymbolicHeapState {
     std::unordered_map<il::ValueId, ObjComparisonInfo> objComparisons;
     std::unordered_map<il::ValueId, PendingDivInfo> divResults;
     std::map<std::string, brass::verify::BVNodeId> writes;
+    std::map<std::string, uint32_t> propFuncRefs;
     uint32_t localObjCounter = 0;
 
     void initFunctionHeap(SymbolicHeapTable& table,
@@ -101,7 +103,8 @@ struct SymbolicHeapState {
                      il::ValueId recvId,
                      const std::string& key,
                      il::ValueId resultId,
-                     brass::verify::BVNodeId& outVal);
+                     brass::verify::BVNodeId& outVal,
+                     bool* outIsUndefined = nullptr);
 
     bool evalPropSet(SymbolicHeapTable& table,
                      il::ValueId recvId,
@@ -113,7 +116,8 @@ struct SymbolicHeapState {
                      il::ValueId recvId,
                      brass::verify::BVNodeId idxNode,
                      il::ValueId resultId,
-                     brass::verify::BVNodeId& outVal);
+                     brass::verify::BVNodeId& outVal,
+                     bool* outIsUndefined = nullptr);
 
     bool evalElemSet(SymbolicHeapTable& table,
                      il::ValueId recvId,
@@ -158,6 +162,36 @@ brass::verify::BVNodeId evalFloorOrCeilSymbolic(brass::verify::BVContext& ctx,
                                                 il::ValueId argId,
                                                 brass::verify::BVNodeId argVal,
                                                 bool isCeil);
+
+uint64_t hashStringLiteral(std::string_view s);
+
+brass::verify::BVNodeId makeClz32Symbolic(brass::verify::BVContext& ctx,
+                                          brass::verify::BVNodeId val64);
+
+brass::verify::BVNodeId evalPowSymbolic(brass::verify::BVContext& ctx,
+                                        brass::verify::BVNodeId base64,
+                                        brass::verify::BVNodeId exp64,
+                                        bool& ok);
+
+const il::Function* findMethodCalleeInModule(const il::Module& mod,
+                                             const SymbolicHeapState& heap,
+                                             const std::string& recvPath,
+                                             const std::string& method);
+
+// Evaluates `Math.*`, `Number.*`, `String.*`, `Object.*`, and `Array.*` global
+// method calls, returning true if handled (or if an explicit error was set in
+// `*outErr`).
+bool evalGlobalMethodCallSymbolic(brass::verify::BVContext& ctx,
+                                  SymbolicHeapTable& heapTable,
+                                  SymbolicHeapState& heap,
+                                  const std::string& globalName,
+                                  const std::string& method,
+                                  const std::vector<il::ValueId>& operands,
+                                  const std::vector<brass::verify::BVNodeId>& opVals,
+                                  il::ValueId resultId,
+                                  brass::verify::BVNodeId& outVal,
+                                  std::vector<brass::verify::BVNodeId>* outArrayLiteral,
+                                  std::string* outErr);
 
 void minimizeCounterexampleModel(const brass::verify::BVContext& ctx,
                                  brass::verify::BVNodeId badCond,

@@ -1,5 +1,7 @@
 #include "check/prove_equiv.h"
+#include "check/prove_equiv_heap.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -194,7 +196,12 @@ std::string ProveEquivReport::renderJson() const {
            << "\"status\":\"" << equivStatusTag(f.status) << "\","
            << "\"detail\":\"" << jsonEscape(f.detail) << "\"";
         if (f.status == EquivStatus::Counterexample) {
-            os << ",\"counterexample\":{\"args\":[";
+            os << ",\"counterexample\":{\"params\":[";
+            for (size_t j = 0; j < f.paramNames.size(); ++j) {
+                if (j > 0) os << ",";
+                os << "\"" << jsonEscape(f.paramNames[j]) << "\"";
+            }
+            os << "],\"args\":[";
             for (size_t j = 0; j < f.counterexampleArgs.size(); ++j) {
                 if (j > 0) os << ",";
                 os << f.counterexampleArgs[j];
@@ -206,6 +213,182 @@ std::string ProveEquivReport::renderJson() const {
     }
     os << "],\"allEquivalent\":" << (allEquivalent() ? "true" : "false") << "}\n";
     return os.str();
+}
+
+FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
+                                          const il::Function& oldFn,
+                                          const il::Module& newMod,
+                                          const il::Function& newFn,
+                                          bool strictJs32Bitwise,
+                                          int32_t domainMin,
+                                          int32_t domainMax) {
+    using brass::verify::BVContext;
+    using brass::verify::BVNodeId;
+    using brass::verify::BVOp;
+    using brass::verify::SolveOutcome;
+    static constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
+
+    FunctionEquivResult res;
+    res.name = !oldFn.displayName.empty() ? oldFn.displayName : oldFn.name;
+
+    uint32_t oldParams = static_cast<uint32_t>(oldFn.callerParamCount());
+    uint32_t newParams = static_cast<uint32_t>(newFn.callerParamCount());
+    uint32_t numParams = std::max(oldParams, newParams);
+
+    for (uint32_t i = 0; i < numParams; ++i) {
+        std::string pname;
+        if (i < oldParams && (oldFn.firstSourceParam() + i) < oldFn.params.size()) {
+            pname = oldFn.params[oldFn.firstSourceParam() + i].name;
+        } else if (i < newParams && (newFn.firstSourceParam() + i) < newFn.params.size()) {
+            pname = newFn.params[newFn.firstSourceParam() + i].name;
+        }
+        if (pname.empty()) pname = "arg_" + std::to_string(i);
+        res.paramNames.push_back(pname);
+    }
+
+    BVContext ctx;
+    std::vector<BVNodeId> argNodes;
+    argNodes.reserve(numParams);
+    for (uint32_t i = 0; i < numParams; ++i) {
+        BVNodeId raw32 = ctx.make_var("arg_" + std::to_string(i), 32);
+        argNodes.push_back(ctx.make_sext(raw32, 32));
+    }
+
+    SymbolicHeapTable heapTable(ctx);
+    BVNodeId oldRetNode = 0;
+    BVNodeId newRetNode = 0;
+    std::string oldReason;
+    std::string newReason;
+    SymbolicHeapState oldFinalHeap;
+    SymbolicHeapState newFinalHeap;
+    bool oldHitUnroll = false;
+    bool newHitUnroll = false;
+
+    bool oldOk = evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise,
+                                        &oldRetNode, &oldReason, &heapTable, &oldFinalHeap, &oldHitUnroll);
+    bool newOk = evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise,
+                                        &newRetNode, &newReason, &heapTable, &newFinalHeap, &newHitUnroll);
+
+    if (!oldOk || !newOk || oldHitUnroll || newHitUnroll) {
+        auto indRes = compareIlLoopFunctionPairInductive(
+            oldMod, oldFn, newMod, newFn, strictJs32Bitwise, domainMin, domainMax);
+        if (indRes.status != EquivStatus::Unknown) {
+            return indRes;
+        }
+        if (!oldOk && !oldHitUnroll) {
+            res.status = EquivStatus::Unknown;
+            res.detail = "old function not symbolically decidable: " + oldReason;
+            return res;
+        }
+        if (!newOk && !newHitUnroll) {
+            res.status = EquivStatus::Unknown;
+            res.detail = "new function not symbolically decidable: " + newReason;
+            return res;
+        }
+        if (!oldOk || !newOk || domainMax > 45 || oldHitUnroll != newHitUnroll) {
+            return indRes;
+        }
+    }
+
+    std::vector<std::string> checkedHeapPaths;
+    BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(
+        heapTable, oldFinalHeap, newFinalHeap, &checkedHeapPaths);
+
+    if (oldRetNode == newRetNode && heapMismatch == 0) {
+        res.status = EquivStatus::Equivalent;
+        res.detail = "proven equivalent by structural BV hash-consing";
+        return res;
+    }
+
+    BVNodeId badCond = 0;
+    if (oldRetNode != newRetNode) {
+        badCond = ctx.make_binary(BVOp::Ne, oldRetNode, newRetNode);
+    }
+    if (heapMismatch != 0) {
+        badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
+    }
+
+    BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, oldRetNode, throwSent));
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, newRetNode, throwSent));
+
+    BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
+    if (aliasCongruence != 0) {
+        badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
+    }
+
+    if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
+        BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
+        BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
+        auto constrainNode = [&](BVNodeId n) {
+            if (domainMin > INT32_MIN) {
+                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, n, minNode));
+            }
+            if (domainMax < INT32_MAX) {
+                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, n, maxNode));
+            }
+        };
+        for (BVNodeId arg : argNodes) constrainNode(arg);
+        for (BVNodeId hv : heapTable.varNodes()) constrainNode(hv);
+    }
+
+    SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
+
+    if (satRes.status == SolveOutcome::Unsat) {
+        res.status = EquivStatus::Equivalent;
+        res.detail = "proven equivalent across all symbolic inputs and post-states via CDCL bit-blasting";
+        return res;
+    }
+
+    if (satRes.status == SolveOutcome::Sat) {
+        res.status = EquivStatus::Counterexample;
+        const size_t totalVars = numParams + heapTable.varNodes().size();
+        std::vector<uint64_t> bestModel = satRes.model;
+        if (bestModel.size() < totalVars) bestModel.resize(totalVars, 0);
+        minimizeCounterexampleModel(ctx, badCond, totalVars, domainMin, domainMax, bestModel);
+
+        for (size_t i = 0; i < totalVars; ++i) {
+            int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[i]));
+            bestModel[i] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+        }
+        res.counterexampleArgs.resize(numParams, 0);
+        for (uint32_t i = 0; i < numParams; ++i) {
+            res.counterexampleArgs[i] = static_cast<int64_t>(static_cast<int32_t>(bestModel[i]));
+        }
+        if (!heapTable.varNodes().empty()) {
+            for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
+                res.paramNames.push_back(heapTable.varPaths()[i]);
+                res.counterexampleArgs.push_back(
+                    static_cast<int64_t>(static_cast<int32_t>(bestModel[numParams + i])));
+            }
+        }
+        int64_t oldRet = static_cast<int64_t>(ctx.eval_concrete(oldRetNode, bestModel));
+        int64_t newRet = static_cast<int64_t>(ctx.eval_concrete(newRetNode, bestModel));
+        if (oldRet == newRet && !checkedHeapPaths.empty()) {
+            for (const std::string& p : checkedHeapPaths) {
+                int64_t ov = static_cast<int64_t>(
+                    ctx.eval_concrete(oldFinalHeap.getFinalValue(heapTable, p), bestModel));
+                int64_t nv = static_cast<int64_t>(
+                    ctx.eval_concrete(newFinalHeap.getFinalValue(heapTable, p), bestModel));
+                if (ov != nv) {
+                    oldRet = ov;
+                    newRet = nv;
+                    res.detail = "counterexample found where post-state property `" + p + "` diverges";
+                    break;
+                }
+            }
+        }
+        res.oldReturnValue = oldRet;
+        res.newReturnValue = newRet;
+        if (res.detail.empty()) {
+            res.detail = "counterexample found where old and new return values diverge";
+        }
+        return res;
+    }
+
+    res.status = EquivStatus::Unknown;
+    res.detail = "solver returned UNKNOWN (unsupported non-linear op or resource bound)";
+    return res;
 }
 
 ProveEquivReport proveModuleEquiv(const il::Module& oldMod,
@@ -458,6 +641,9 @@ EquivReport proveRoundTripSource(std::string_view source, std::string_view encod
         return rep;
     }
     BVNodeId badCond = ctx.make_binary(BVOp::Ne, decRet, xNode);
+    BVNodeId throwSent = ctx.make_const(0xDEAD0000DEAD0001ULL, 64);
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, encRet, throwSent));
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, decRet, throwSent));
     if (domainMin > INT32_MIN) {
         BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
         badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, xNode, minNode));

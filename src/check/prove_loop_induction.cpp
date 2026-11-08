@@ -710,6 +710,10 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
 
         BVNodeId badCond = (oldRet != newRet) ? ctx.make_binary(BVOp::Ne, oldRet, newRet) : 0;
         if (heapMismatch != 0) badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
+        static constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
+        BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, oldRet, throwSent));
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, newRet, throwSent));
         BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
         if (aliasCongruence != 0) badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
 
@@ -946,7 +950,6 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         res.detail = "proven equivalent for unbounded loop trip count via relational loop induction";
         return res;
     }
-
     return failUnknown("functions do not match single-loop inductive proof patterns");
 }
 
@@ -955,14 +958,12 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc, std::string_v
     EquivReport out;
     out.domainMin = domainMin;
     out.domainMax = domainMax;
-
     il::Module loopMod, closedMod;
     if (!lowerSingleSourceForEquiv(loopSrc, "<loop_src>", loopMod, errorOut) ||
         !lowerSingleSourceForEquiv(closedFormSrc, "<closed_form_src>", closedMod, errorOut)) {
         out.detail = errorOut ? *errorOut : "failed to lower source";
         return out;
     }
-
     auto findTargetFn = [](const il::Module& mod) -> const il::Function* {
         for (const auto& fn : mod.functions) {
             if (!fn.isExternal && !fn.isEntryPoint && fn.name != "main" &&
@@ -972,7 +973,6 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc, std::string_v
         }
         return nullptr;
     };
-
     const il::Function* loopFn = findTargetFn(loopMod);
     const il::Function* closedFn = findTargetFn(closedMod);
     if (!loopFn || !closedFn) {
@@ -980,7 +980,6 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc, std::string_v
         if (errorOut) *errorOut = out.detail;
         return out;
     }
-
     FunctionEquivResult fnRes = compareIlLoopFunctionPairInductive(
         loopMod, *loopFn, closedMod, *closedFn, true, domainMin, domainMax);
     out.status = fnRes.status;
@@ -995,5 +994,4 @@ EquivReport proveLoopClosedFormInductive(std::string_view loopSrc, std::string_v
     }
     return out;
 }
-
 }  // namespace bronze::check
