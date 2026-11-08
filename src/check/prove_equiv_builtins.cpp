@@ -58,7 +58,8 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
                 u.op == Op::CensusRecord || u.op == Op::FeedbackRecord) {
                 continue;
             }
-            if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric) {
+            if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric ||
+                u.op == Op::Add || u.op == Op::Sub) {
                 if (u.result != il::kNoValue) tracked.insert(u.result);
                 continue;
             }

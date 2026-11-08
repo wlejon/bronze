@@ -134,6 +134,7 @@ struct SymbolicHeapState {
     std::unordered_map<il::ValueId, PendingDivInfo> divResults;
     std::map<std::string, brass::verify::BVNodeId> writes;
     std::map<std::string, uint32_t> propFuncRefs;
+    std::map<std::string, uint32_t> propFuncEnvs;
     std::map<std::string, std::string> propGlobalRefs;
     uint32_t localObjCounter = 0;
 

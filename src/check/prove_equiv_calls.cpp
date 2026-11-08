@@ -48,7 +48,10 @@ SymEvalOutcome SymbolicIlBuilder::evalFunction(const il::Function& fn,
                                                const std::vector<std::string>* callerArgPaths,
                                                uint32_t callerEnvId,
                                                const std::vector<bool>* callerUndefArgs,
-                                               bool isConstructCall) {
+                                               bool isConstructCall,
+                                               uint32_t callerThisCtor,
+                                               const std::vector<uint32_t>* callerArgCtors,
+                                               SymState* callerEnvState) {
     if (fn.blocks.empty() || fn.isExternal) {
         return {false, "external or empty function", false, zero64_, {}, {}, zero1_};
     }
@@ -57,29 +60,141 @@ SymEvalOutcome SymbolicIlBuilder::evalFunction(const il::Function& fn,
     }
 
     SymState initState = moduleState_;
+    if (callerEnvState) {
+        for (const auto& [k, v] : callerEnvState->envSlots) initState.envSlots[k] = v;
+        for (const auto& [k, v] : callerEnvState->envGlobalRefs) initState.envGlobalRefs[k] = v;
+        for (const auto& [k, v] : callerEnvState->envArrays) initState.envArrays[k] = v;
+        for (const auto& [k, v] : callerEnvState->envParent) initState.envParent[k] = v;
+        for (const auto& [k, v] : callerEnvState->envFuncRefs) initState.envFuncRefs[k] = v;
+        for (const auto& [k, v] : callerEnvState->envFuncEnvs) initState.envFuncEnvs[k] = v;
+        for (uint64_t k : callerEnvState->envUndef) initState.envUndef.insert(k);
+        initState.nextEnvId = std::max(initState.nextEnvId, callerEnvState->nextEnvId);
+        for (const auto& [k, v] : callerEnvState->funcCapturedEnvs) initState.funcCapturedEnvs[k] = v;
+        for (const auto& [k, v] : callerEnvState->protoToCtor) initState.protoToCtor[k] = v;
+        for (const auto& [k, v] : callerEnvState->ctorToProto) initState.ctorToProto[k] = v;
+        for (const auto& [k, v] : callerEnvState->funcOwnerCtor) initState.funcOwnerCtor[k] = v;
+        if (callerEnvState->moduleCtorIdx != UINT32_MAX) {
+            initState.moduleCtorIdx = callerEnvState->moduleCtorIdx;
+        }
+        for (const auto& [k, v] : callerEnvState->heap.envObjPaths) initState.heap.envObjPaths[k] = v;
+        for (const auto& [k, v] : callerEnvState->heap.propFuncEnvs) initState.heap.propFuncEnvs[k] = v;
+        for (const auto& s : callerEnvState->heap.stringPaths) initState.heap.stringPaths.insert(s);
+        for (const auto& a : callerEnvState->heap.arrayPaths) initState.heap.arrayPaths.insert(a);
+    }
     initState.isConstructCall = isConstructCall;
     initState.threwCond = zero1_;
     if (callerHeap) {
         initState.heap.writes = callerHeap->writes;
         initState.heap.propFuncRefs = callerHeap->propFuncRefs;
+        initState.heap.propFuncEnvs = callerHeap->propFuncEnvs;
         initState.heap.propGlobalRefs = callerHeap->propGlobalRefs;
         initState.heap.localObjCounter = callerHeap->localObjCounter;
     }
+
+    uint32_t fnIdx = UINT32_MAX;
+    for (size_t fi = 0; fi < mod_.functions.size(); ++fi) {
+        if (&mod_.functions[fi] == &fn) {
+            fnIdx = static_cast<uint32_t>(fi);
+            break;
+        }
+    }
+
     uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
     for (uint32_t i = 0; i < firstSrc; ++i) initState.values[i] = zero64_;
-    if (fn.needsEnv) initState.envIds[0] = callerEnvId;
+    if (fn.needsEnv) {
+        if (callerEnvId != 0) {
+            initState.envIds[0] = callerEnvId;
+        } else if (fnIdx != UINT32_MAX && initState.funcCapturedEnvs.count(fnIdx)) {
+            initState.envIds[0] = initState.funcCapturedEnvs[fnIdx];
+        } else {
+            initState.envIds[0] = 0;
+        }
+    }
+
+    uint32_t ownerCtor = UINT32_MAX;
+    if (fnIdx != UINT32_MAX && initState.funcOwnerCtor.count(fnIdx)) {
+        ownerCtor = initState.funcOwnerCtor[fnIdx];
+    } else if (fn.needsThis && initState.moduleCtorIdx != UINT32_MAX) {
+        ownerCtor = initState.moduleCtorIdx;
+    }
+
+    if (fn.needsThis) {
+        il::ValueId thisParamId = static_cast<il::ValueId>(fn.needsEnv ? 1 : 0);
+        if (isConstructCall && fnIdx != UINT32_MAX) {
+            initState.ctorOf[thisParamId] = fnIdx;
+        } else if (callerThisCtor != UINT32_MAX) {
+            initState.ctorOf[thisParamId] = callerThisCtor;
+        } else if (inlineDepth == 0 && ownerCtor != UINT32_MAX && fnIdx != ownerCtor) {
+            initState.ctorOf[thisParamId] = ownerCtor;
+        }
+    }
+
     uint32_t srcCount = static_cast<uint32_t>(fn.callerParamCount());
     for (uint32_t i = 0; i < srcCount; ++i) {
-        initState.values[firstSrc + i] = (i < argNodes.size()) ? argNodes[i] : zero64_;
+        il::ValueId pid = firstSrc + i;
+        initState.values[pid] = (i < argNodes.size()) ? argNodes[i] : zero64_;
         if ((callerUndefArgs && i < callerUndefArgs->size() && (*callerUndefArgs)[i]) || i >= argNodes.size()) {
-            initState.undefValues.insert(firstSrc + i);
+            initState.undefValues.insert(pid);
+        }
+        if (callerArgCtors && i < callerArgCtors->size() && (*callerArgCtors)[i] != UINT32_MAX) {
+            initState.ctorOf[pid] = (*callerArgCtors)[i];
+        } else if (inlineDepth == 0 && fn.needsThis && ownerCtor != UINT32_MAX && fnIdx != ownerCtor) {
+            initState.ctorOf[pid] = ownerCtor;
+        }
+        if (initState.values[pid] < ctx_.nodes().size() &&
+            ctx_.nodes()[initState.values[pid]].op == BVOp::Const) {
+            uint64_t uImm = ctx_.nodes()[initState.values[pid]].imm;
+            if ((uImm >> 48) == 0x00F0u) {
+                initState.funcRefs[pid] = static_cast<uint32_t>(uImm & 0xFFFFFFFFu);
+                initState.funcEnvs[pid] = static_cast<uint32_t>((uImm >> 32) & 0xFFFFu);
+            }
         }
     }
     initState.heap.initFunctionHeap(heapTable_, fn, initState.values, thisPath, callerArgPaths);
-    return evalBlockPath(fn, 0, initState, 0, inlineDepth);
+    auto out = evalBlockPath(fn, 0, std::move(initState), 0, inlineDepth);
+    return out;
 }
 
 void SymbolicIlBuilder::initModuleState() {
+    for (size_t fi = 0; fi < mod_.functions.size(); ++fi) {
+        const auto& f = mod_.functions[fi];
+        if (f.isExternal || f.isEntryPoint || f.name == "main") continue;
+        const std::string& dn = !f.displayName.empty() ? f.displayName : f.name;
+        auto dot = dn.find('.');
+        if (dot != std::string::npos && dot > 0) {
+            std::string clsName = dn.substr(0, dot);
+            for (size_t ci = 0; ci < mod_.functions.size(); ++ci) {
+                const auto& cf = mod_.functions[ci];
+                if (!cf.isExternal && !cf.isEntryPoint &&
+                    (cf.name == clsName || cf.displayName == clsName)) {
+                    moduleState_.funcOwnerCtor[static_cast<uint32_t>(fi)] = static_cast<uint32_t>(ci);
+                    if (moduleState_.moduleCtorIdx == UINT32_MAX) {
+                        moduleState_.moduleCtorIdx = static_cast<uint32_t>(ci);
+                    }
+                    break;
+                }
+            }
+        }
+        for (const auto& blk : f.blocks) {
+            std::unordered_map<il::ValueId, uint32_t> localFnRefs;
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) {
+                    localFnRefs[inst.result] = inst.calleeIndex;
+                } else if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                           !inst.operands.empty() && inst.keyIndex < mod_.keyConstants.size() &&
+                           mod_.keyConstants[inst.keyIndex] == "prototype" &&
+                           localFnRefs.count(inst.operands[0])) {
+                    moduleState_.moduleCtorIdx = localFnRefs[inst.operands[0]];
+                } else if (inst.op == il::Op::Construct && !inst.operands.empty() &&
+                           localFnRefs.count(inst.operands[0])) {
+                    if (moduleState_.moduleCtorIdx == UINT32_MAX) {
+                        moduleState_.moduleCtorIdx = localFnRefs[inst.operands[0]];
+                    }
+                }
+            }
+        }
+    }
+
     const il::Function* entryFn = nullptr;
     for (const auto& f : mod_.functions) {
         if (!f.isExternal && (f.isEntryPoint || f.name == "main")) {
@@ -92,7 +207,7 @@ void SymbolicIlBuilder::initModuleState() {
     uint32_t savedVisits = totalVisits_;
     bool savedHit = hitLoopUnrollBound_;
     uint32_t savedLoopBound = maxLoopBoundUsed_;
-    SymState initSt;
+    SymState initSt = moduleState_;
     initSt.threwCond = zero1_;
     initSt.exceededCond = zero1_;
     uint32_t firstSrc = static_cast<uint32_t>(entryFn->firstSourceParam());
@@ -102,6 +217,7 @@ void SymbolicIlBuilder::initModuleState() {
     if (out.supported) {
         moduleState_.heap.writes = std::move(out.finalHeap.writes);
         moduleState_.heap.propFuncRefs = std::move(out.finalHeap.propFuncRefs);
+        moduleState_.heap.propFuncEnvs = std::move(out.finalHeap.propFuncEnvs);
         moduleState_.heap.propGlobalRefs = std::move(out.finalHeap.propGlobalRefs);
         moduleState_.heap.localObjCounter = out.finalHeap.localObjCounter;
     }
@@ -184,19 +300,27 @@ void SymbolicIlBuilder::applyEdgeArgsInPlace(const il::Function& fn,
 
 void SymbolicIlBuilder::saveModuleInitSnapshot(const SymState& state) {
     if (!inModuleInit_) return;
-    moduleState_.envSlots = state.envSlots;
-    moduleState_.envGlobalRefs = state.envGlobalRefs;
-    moduleState_.envArrays = state.envArrays;
-    moduleState_.envParent = state.envParent;
-    moduleState_.envFuncRefs = state.envFuncRefs;
-    moduleState_.envFuncEnvs = state.envFuncEnvs;
-    moduleState_.envUndef = state.envUndef;
-    moduleState_.nextEnvId = state.nextEnvId;
-    moduleState_.heap.envObjPaths = state.heap.envObjPaths;
-    moduleState_.heap.writes = state.heap.writes;
-    moduleState_.heap.propFuncRefs = state.heap.propFuncRefs;
-    moduleState_.heap.propGlobalRefs = state.heap.propGlobalRefs;
-    moduleState_.heap.localObjCounter = state.heap.localObjCounter;
+    for (const auto& [k, v] : state.envSlots) moduleState_.envSlots[k] = v;
+    for (const auto& [k, v] : state.envGlobalRefs) moduleState_.envGlobalRefs[k] = v;
+    for (const auto& [k, v] : state.envArrays) moduleState_.envArrays[k] = v;
+    for (const auto& [k, v] : state.envParent) moduleState_.envParent[k] = v;
+    for (const auto& [k, v] : state.envFuncRefs) moduleState_.envFuncRefs[k] = v;
+    for (const auto& [k, v] : state.envFuncEnvs) moduleState_.envFuncEnvs[k] = v;
+    for (uint64_t k : state.envUndef) moduleState_.envUndef.insert(k);
+    moduleState_.nextEnvId = std::max(moduleState_.nextEnvId, state.nextEnvId);
+    for (const auto& [k, v] : state.funcCapturedEnvs) moduleState_.funcCapturedEnvs[k] = v;
+    for (const auto& [k, v] : state.protoToCtor) moduleState_.protoToCtor[k] = v;
+    for (const auto& [k, v] : state.ctorToProto) moduleState_.ctorToProto[k] = v;
+    for (const auto& [k, v] : state.funcOwnerCtor) moduleState_.funcOwnerCtor[k] = v;
+    if (state.moduleCtorIdx != UINT32_MAX) moduleState_.moduleCtorIdx = state.moduleCtorIdx;
+    for (const auto& [k, v] : state.heap.envObjPaths) moduleState_.heap.envObjPaths[k] = v;
+    for (const auto& [k, v] : state.heap.writes) moduleState_.heap.writes[k] = v;
+    for (const auto& [k, v] : state.heap.propFuncRefs) moduleState_.heap.propFuncRefs[k] = v;
+    for (const auto& [k, v] : state.heap.propFuncEnvs) moduleState_.heap.propFuncEnvs[k] = v;
+    for (const auto& [k, v] : state.heap.propGlobalRefs) moduleState_.heap.propGlobalRefs[k] = v;
+    for (const auto& s : state.heap.stringPaths) moduleState_.heap.stringPaths.insert(s);
+    for (const auto& a : state.heap.arrayPaths) moduleState_.heap.arrayPaths.insert(a);
+    moduleState_.heap.localObjCounter = std::max(moduleState_.heap.localObjCounter, state.heap.localObjCounter);
 }
 
 const il::Function* findMethodCalleeInModule(const il::Module& mod,
@@ -508,16 +632,38 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
                                                SymState& state,
                                                bool writeScalarRet,
                                                bool isConstructCall) {
+    uint32_t calleeIdx = UINT32_MAX;
+    for (size_t fi = 0; fi < mod_.functions.size(); ++fi) {
+        if (&mod_.functions[fi] == &callee) {
+            calleeIdx = static_cast<uint32_t>(fi);
+            break;
+        }
+    }
+    if (envId == 0 && calleeIdx != UINT32_MAX && state.funcCapturedEnvs.count(calleeIdx)) {
+        envId = state.funcCapturedEnvs[calleeIdx];
+    }
+    uint32_t callerThisCtor = UINT32_MAX;
+    std::string effThis = thisPath.empty() ? "this" : thisPath;
+    for (const auto& [vid, p] : state.heap.objPaths) {
+        if (p == effThis && state.ctorOf.count(vid)) {
+            callerThisCtor = state.ctorOf[vid];
+            break;
+        }
+    }
     std::vector<BVNodeId> callArgs;
     std::vector<std::string> callPaths;
     std::vector<bool> callUndef;
+    std::vector<uint32_t> callCtors;
     for (size_t k = startOp; k < inst.operands.size(); ++k) {
-        callArgs.push_back(toBV64(getVal(state, inst.operands[k])));
-        callPaths.push_back(state.heap.lookupObjPath(inst.operands[k]));
-        callUndef.push_back(state.undefValues.count(inst.operands[k]) > 0);
+        il::ValueId opId = inst.operands[k];
+        callArgs.push_back(toBV64(getVal(state, opId)));
+        callPaths.push_back(state.heap.lookupObjPath(opId));
+        callUndef.push_back(state.undefValues.count(opId) > 0);
+        callCtors.push_back(state.ctorOf.count(opId) ? state.ctorOf[opId] : UINT32_MAX);
     }
     auto sub = evalFunction(callee, callArgs, inlineDepth + 1, &state.heap,
-                            thisPath.empty() ? "this" : thisPath, &callPaths, envId, &callUndef, isConstructCall);
+                            effThis, &callPaths, envId, &callUndef, isConstructCall,
+                            callerThisCtor, &callCtors, &state);
     if (!sub.supported || !sub.hasReturn) {
         return {false, sub.unsupportedReason.empty() ? "callee hit loop unroll bound" : sub.unsupportedReason,
                 false, zero64_, {}, {}, zero1_};
@@ -543,11 +689,44 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
                                  : ctx_.make_binary(BVOp::Or, state.exceededCond, sub.exceededBoundNode);
     }
     state.heap.propFuncRefs = std::move(sub.finalHeap.propFuncRefs);
+    state.heap.propFuncEnvs = std::move(sub.finalHeap.propFuncEnvs);
+    state.heap.propGlobalRefs = std::move(sub.finalHeap.propGlobalRefs);
+    for (const auto& s : sub.finalHeap.stringPaths) state.heap.stringPaths.insert(s);
+    for (const auto& a : sub.finalHeap.arrayPaths) state.heap.arrayPaths.insert(a);
     state.heap.localObjCounter = sub.finalHeap.localObjCounter;
-    if (writeScalarRet) state.values[inst.result] = sub.returnVal;
+    if (inModuleInit_) {
+        for (const auto& [k, v] : moduleState_.envSlots) state.envSlots[k] = v;
+        for (const auto& [k, v] : moduleState_.envGlobalRefs) state.envGlobalRefs[k] = v;
+        for (const auto& [k, v] : moduleState_.envArrays) state.envArrays[k] = v;
+        for (const auto& [k, v] : moduleState_.envParent) state.envParent[k] = v;
+        for (const auto& [k, v] : moduleState_.envFuncRefs) state.envFuncRefs[k] = v;
+        for (const auto& [k, v] : moduleState_.envFuncEnvs) state.envFuncEnvs[k] = v;
+        state.nextEnvId = std::max(state.nextEnvId, moduleState_.nextEnvId);
+        for (const auto& [k, v] : moduleState_.funcCapturedEnvs) state.funcCapturedEnvs[k] = v;
+        for (const auto& [k, v] : moduleState_.protoToCtor) state.protoToCtor[k] = v;
+        for (const auto& [k, v] : moduleState_.ctorToProto) state.ctorToProto[k] = v;
+        for (const auto& [k, v] : moduleState_.funcOwnerCtor) state.funcOwnerCtor[k] = v;
+        if (moduleState_.moduleCtorIdx != UINT32_MAX) state.moduleCtorIdx = moduleState_.moduleCtorIdx;
+    }
+    if (writeScalarRet && inst.result != il::kNoValue) state.values[inst.result] = sub.returnVal;
     if (!sub.returnObjPath.empty() && inst.result != il::kNoValue) {
         state.heap.objPaths[inst.result] = sub.returnObjPath;
         state.values[inst.result] = sub.returnVal;
+    }
+    if (inst.result != il::kNoValue) {
+        if (sub.returnFuncRef != UINT32_MAX) {
+            state.funcRefs[inst.result] = sub.returnFuncRef;
+            state.funcEnvs[inst.result] = sub.returnFuncEnv;
+        }
+        if (sub.returnCtorOf != UINT32_MAX) {
+            state.ctorOf[inst.result] = sub.returnCtorOf;
+        }
+        if (!sub.returnGlobalRef.empty()) {
+            state.globalRefs[inst.result] = sub.returnGlobalRef;
+        }
+        if (!sub.returnArray.empty()) {
+            state.arrayValues[inst.result] = sub.returnArray;
+        }
     }
     return {true, {}, false, zero64_, {}, {}, zero1_};
 }
@@ -575,16 +754,30 @@ bool SymbolicIlBuilder::tryEvalGlobalCall(const std::string& gName,
 SymEvalOutcome SymbolicIlBuilder::evalConstructOp(const il::Instruction& inst,
                                                   uint32_t inlineDepth,
                                                   SymState& state) {
+    uint32_t ctorIdx = UINT32_MAX;
+    uint32_t ctorEnv = 0;
+    if (!inst.operands.empty()) {
+        il::ValueId op0 = inst.operands[0];
+        if (state.funcRefs.count(op0)) {
+            ctorIdx = state.funcRefs[op0];
+            ctorEnv = state.funcEnvs.count(op0) ? state.funcEnvs[op0] : 0;
+        } else {
+            BVNodeId v0 = toBV64(getVal(state, op0));
+            if (v0 < ctx_.nodes().size() && ctx_.nodes()[v0].op == BVOp::Const &&
+                (ctx_.nodes()[v0].imm >> 48) == 0x00F0u) {
+                ctorIdx = static_cast<uint32_t>(ctx_.nodes()[v0].imm & 0xFFFFFFFFu);
+                ctorEnv = static_cast<uint32_t>((ctx_.nodes()[v0].imm >> 32) & 0xFFFFu);
+            }
+        }
+    }
     if (!inModuleInit_ && !inst.operands.empty() &&
-        !state.funcRefs.count(inst.operands[0]) && !state.globalRefs.count(inst.operands[0])) {
+        ctorIdx == UINT32_MAX && !state.globalRefs.count(inst.operands[0])) {
         return {false, "unsupported IL operation: construct on unknown target", false, zero64_, {}, {}, zero1_};
     }
     state.values[inst.result] = state.heap.createLocalObject(heapTable_, inst.result);
     std::string localPath = state.heap.lookupObjPath(inst.result);
-    if (!inst.operands.empty() && state.funcRefs.count(inst.operands[0])) {
-        uint32_t ctorIdx = state.funcRefs[inst.operands[0]];
+    if (ctorIdx != UINT32_MAX) {
         state.ctorOf[inst.result] = ctorIdx;
-        uint32_t ctorEnv = state.funcEnvs.count(inst.operands[0]) ? state.funcEnvs[inst.operands[0]] : 0;
         if (ctorIdx < mod_.functions.size() && !mod_.functions[ctorIdx].isExternal) {
             return invokeCallee(mod_.functions[ctorIdx], inst, 1, localPath,
                                 ctorEnv, inlineDepth, state, false, true);
@@ -648,6 +841,45 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
     return {false, "unsupported method call: " + method, false, zero64_, {}, {}, zero1_};
 }
 
+namespace {
+
+struct FuncIteArm {
+    BVNodeId cond;
+    uint32_t calleeIdx;
+    uint32_t capEnv;
+};
+
+bool collectFuncIteArms(BVContext& ctx,
+                        BVNodeId node,
+                        BVNodeId pathCond,
+                        std::vector<FuncIteArm>& arms,
+                        BVNodeId& outInvalidCond,
+                        int depth = 0) {
+    if (depth > 8 || node >= ctx.nodes().size()) return false;
+    const auto& n = ctx.nodes()[node];
+    if (n.op == BVOp::Const) {
+        if ((n.imm >> 48) == 0x00F0u) {
+            arms.push_back({pathCond, static_cast<uint32_t>(n.imm & 0xFFFFFFFFu),
+                            static_cast<uint32_t>((n.imm >> 32) & 0xFFFFu)});
+            return true;
+        }
+        if (n.imm == 0) {
+            outInvalidCond = (outInvalidCond == 0) ? pathCond : ctx.make_binary(BVOp::Or, outInvalidCond, pathCond, 1);
+            return true;
+        }
+        return false;
+    }
+    if (n.op == BVOp::Ite) {
+        BVNodeId tCond = ctx.make_binary(BVOp::And, pathCond, n.a, 1);
+        BVNodeId fCond = ctx.make_binary(BVOp::And, pathCond, ctx.make_unary(BVOp::Not, n.a, 1), 1);
+        return collectFuncIteArms(ctx, n.b, tCond, arms, outInvalidCond, depth + 1) &&
+               collectFuncIteArms(ctx, n.c, fCond, arms, outInvalidCond, depth + 1);
+    }
+    return false;
+}
+
+}  // namespace
+
 SymEvalOutcome SymbolicIlBuilder::evalDynamicCallOp(const il::Instruction& inst,
                                                     uint32_t inlineDepth,
                                                     SymState& state) {
@@ -658,20 +890,65 @@ SymEvalOutcome SymbolicIlBuilder::evalDynamicCallOp(const il::Instruction& inst,
             return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
-    if (inst.operands.empty() || !state.funcRefs.count(inst.operands[0])) {
-        if (inModuleInit_) {
-            state.values[inst.result] = zero64_;
-            return {true, {}, false, zero64_, {}, {}, zero1_};
+    if (!inst.operands.empty()) {
+        il::ValueId op0 = inst.operands[0];
+        uint32_t calleeIdx = UINT32_MAX;
+        uint32_t capEnv = 0;
+        if (state.funcRefs.count(op0)) {
+            calleeIdx = state.funcRefs[op0];
+            capEnv = state.funcEnvs.count(op0) ? state.funcEnvs[op0] : 0;
+        } else {
+            BVNodeId v0 = toBV64(getVal(state, op0));
+            if (v0 < ctx_.nodes().size() && ctx_.nodes()[v0].op == BVOp::Const &&
+                (ctx_.nodes()[v0].imm >> 48) == 0x00F0u) {
+                calleeIdx = static_cast<uint32_t>(ctx_.nodes()[v0].imm & 0xFFFFFFFFu);
+                capEnv = static_cast<uint32_t>((ctx_.nodes()[v0].imm >> 32) & 0xFFFFu);
+            } else if (v0 < ctx_.nodes().size() && ctx_.nodes()[v0].op == BVOp::Ite) {
+                std::vector<FuncIteArm> arms;
+                BVNodeId invalidCond = 0;
+                if (collectFuncIteArms(ctx_, v0, one1_, arms, invalidCond) && !arms.empty() && arms.size() <= 8) {
+                    std::string thisPath = (inst.operands.size() > 1) ? state.heap.lookupObjPath(inst.operands[1]) : std::string{};
+                    BVNodeId mergedVal = zero64_;
+                    SymbolicHeapState mergedHeap = state.heap;
+                    for (const auto& arm : arms) {
+                        if (arm.calleeIdx >= mod_.functions.size() || mod_.functions[arm.calleeIdx].isExternal) {
+                            return {false, "external dynamic callee", false, zero64_, {}, {}, zero1_};
+                        }
+                        SymState armState = state;
+                        auto armOut = invokeCallee(mod_.functions[arm.calleeIdx], inst, 2, thisPath, arm.capEnv, inlineDepth, armState);
+                        if (!armOut.supported) return armOut;
+                        BVNodeId armRet = (inst.result != il::kNoValue) ? toBV64(getVal(armState, inst.result)) : zero64_;
+                        mergedVal = ctx_.make_ite(arm.cond, armRet, mergedVal);
+                        mergedHeap = SymbolicHeapState::mergeBranches(heapTable_, arm.cond, armState.heap, mergedHeap);
+                        if (armState.threwCond != 0 && armState.threwCond != zero1_) {
+                            BVNodeId armThrow = ctx_.make_binary(BVOp::And, arm.cond, armState.threwCond, 1);
+                            state.threwCond = (state.threwCond == 0 || state.threwCond == zero1_)
+                                                  ? armThrow : ctx_.make_binary(BVOp::Or, state.threwCond, armThrow, 1);
+                        }
+                    }
+                    if (invalidCond != 0) {
+                        state.threwCond = (state.threwCond == 0 || state.threwCond == zero1_)
+                                              ? invalidCond : ctx_.make_binary(BVOp::Or, state.threwCond, invalidCond, 1);
+                    }
+                    state.heap.writes = std::move(mergedHeap.writes);
+                    if (inst.result != il::kNoValue) state.values[inst.result] = mergedVal;
+                    return {true, {}, false, zero64_, {}, {}, zero1_};
+                }
+            }
         }
-        return {false, "unsupported IL operation: call.dynamic", false, zero64_, {}, {}, zero1_};
+        if (calleeIdx != UINT32_MAX) {
+            if (calleeIdx >= mod_.functions.size() || mod_.functions[calleeIdx].isExternal) {
+                return {false, "external dynamic callee", false, zero64_, {}, {}, zero1_};
+            }
+            std::string thisPath = (inst.operands.size() > 1) ? state.heap.lookupObjPath(inst.operands[1]) : std::string{};
+            return invokeCallee(mod_.functions[calleeIdx], inst, 2, thisPath, capEnv, inlineDepth, state);
+        }
     }
-    uint32_t calleeIdx = state.funcRefs[inst.operands[0]];
-    if (calleeIdx >= mod_.functions.size() || mod_.functions[calleeIdx].isExternal) {
-        return {false, "external dynamic callee", false, zero64_, {}, {}, zero1_};
+    if (inModuleInit_) {
+        state.values[inst.result] = zero64_;
+        return {true, {}, false, zero64_, {}, {}, zero1_};
     }
-    uint32_t capEnv = state.funcEnvs.count(inst.operands[0]) ? state.funcEnvs[inst.operands[0]] : 0;
-    std::string thisPath = (inst.operands.size() > 1) ? state.heap.lookupObjPath(inst.operands[1]) : std::string{};
-    return invokeCallee(mod_.functions[calleeIdx], inst, 2, thisPath, capEnv, inlineDepth, state);
+    return {false, "unsupported IL operation: call.dynamic", false, zero64_, {}, {}, zero1_};
 }
 
 SymEvalOutcome SymbolicIlBuilder::evalDirectCallOp(const il::Instruction& inst,

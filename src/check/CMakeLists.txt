@@ -12,6 +12,7 @@ bronze_add_module(check
         prove_loop_induction.cpp
         prove_loop_relational.cpp
         il_interp.cpp
+        il_interp_builtins.cpp
         loop_recurrence_synth.cpp
         deterministic_check.cpp
         synth_tests.cpp

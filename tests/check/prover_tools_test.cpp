@@ -682,4 +682,92 @@ TEST_CASE("proveSourceEquiv: module-env tables, new construction, charCodeAt, ty
         REQUIRE(same.functions.size() == 1);
         CHECK(same.functions[0].status == EquivStatus::Equivalent);
     }
+
+    SUBCASE("models new this.constructor(...) and instanceof on known module constructors") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                function Vec(x, y) {
+                    if (x instanceof Vec) {
+                        this.x = x.x | 0;
+                        this.y = x.y | 0;
+                    } else {
+                        this.x = x | 0;
+                        this.y = y | 0;
+                    }
+                }
+                Vec.prototype.cloneAndScale = function(k) {
+                    var c = new this.constructor(this);
+                    return ((c.x * (k | 0)) | 0) + ((c.y * (k | 0)) | 0);
+                };
+            )",
+            R"(
+                function Vec(x, y) {
+                    this.x = x | 0;
+                    this.y = y | 0;
+                }
+                Vec.prototype.cloneAndScale = function(k) {
+                    var s = k | 0;
+                    return ((this.x * s) | 0) + ((this.y * s) | 0);
+                };
+            )",
+            "cloneAndScale", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("resolves call.dynamic on local closures and const function tables") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                function addOne(v) { return (v + 1) | 0; }
+                function mulTwo(v) { return (v << 1) | 0; }
+                var TABLE = [addOne, mulTwo];
+                export function dispatch(idx, x) {
+                    const v = x | 0;
+                    const fn = TABLE[idx & 1];
+                    const localFn = function(z) { return (z ^ 7) | 0; };
+                    return localFn(fn(v));
+                }
+            )",
+            R"(
+                export function dispatch(idx, x) {
+                    const v = x | 0;
+                    const stepped = (idx & 1) ? ((v << 1) | 0) : ((v + 1) | 0);
+                    return (stepped ^ 7) | 0;
+                }
+            )",
+            "dispatch", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("models lastIndexOf, splice, and String.fromCodePoint spread") {
+        std::string err;
+        ProveEquivReport rep = bronze::check::proveSourceEquiv(
+            R"(
+                export function swapAroundDash(s) {
+                    const pos = s.lastIndexOf("-");
+                    if (pos < 0) return -1;
+                    const out = [65, 66];
+                    out.splice(1, 0, 67);
+                    const str = String.fromCodePoint(...out);
+                    return (pos | 0) + str.charCodeAt(1);
+                }
+            )",
+            R"(
+                export function swapAroundDash(s) {
+                    const pos = s.lastIndexOf("-");
+                    if (pos < 0) return -1;
+                    return (pos | 0) + 67;
+                }
+            )",
+            "swapAroundDash", &err);
+        REQUIRE(err.empty());
+        REQUIRE(rep.functions.size() == 1);
+        CHECK((rep.functions[0].status == EquivStatus::Equivalent ||
+               rep.functions[0].status == EquivStatus::Bounded));
+    }
 }

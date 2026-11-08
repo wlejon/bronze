@@ -416,7 +416,16 @@ bool SymbolicHeapState::evalElemGet(SymbolicHeapTable& table,
     if (outIsUndefined) *outIsUndefined = false;
     BVContext& ctx = table.ctx();
     if (idxNode < ctx.nodes().size() && ctx.nodes()[idxNode].op == BVOp::Const) {
-        int64_t imm = static_cast<int64_t>(ctx.nodes()[idxNode].imm);
+        uint64_t uImm = ctx.nodes()[idxNode].imm;
+        if ((uImm >> 60) == 0x5ULL) {
+            size_t sLen = static_cast<size_t>((uImm >> 56) & 0xFULL);
+            std::string sKey;
+            for (size_t i = 0; i < sLen && i < kMaxBoundedSeqLen; ++i) {
+                sKey.push_back(static_cast<char>((uImm >> (i * 7)) & 0x7FULL));
+            }
+            return evalPropGet(table, recvId, sKey, resultId, outVal, outIsUndefined);
+        }
+        int64_t imm = static_cast<int64_t>(uImm);
         return evalPropGet(table, recvId, std::to_string(imm), resultId, outVal, outIsUndefined);
     }
     auto it = objPaths.find(recvId);
@@ -463,6 +472,15 @@ bool SymbolicHeapState::evalElemGet(SymbolicHeapTable& table,
             BVNodeId eq = ctx.make_binary(BVOp::Eq, idxNode, cNode);
             res = ctx.make_ite(eq, wVal, res);
             anyBaseWrite = true;
+        } else if (localBase && wPath.rfind(base + ".", 0) == 0) {
+            std::string propKey = wPath.substr(base.size() + 1);
+            if (propKey != "length" && propKey.find('.') == std::string::npos &&
+                propKey.size() <= kMaxBoundedSeqLen) {
+                BVNodeId cNode = ctx.make_const(packConcreteString64(propKey), 64);
+                BVNodeId eq = ctx.make_binary(BVOp::Eq, idxNode, cNode);
+                res = ctx.make_ite(eq, wVal, res);
+                anyBaseWrite = true;
+            }
         }
     }
     if (localBase && !anyBaseWrite && outIsUndefined) {

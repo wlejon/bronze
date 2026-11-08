@@ -28,7 +28,8 @@ bool functionUsesStringOps(const il::Module& mod, const il::Function& fn) {
             if (inst.op == Op::MethodCall && inst.keyIndex < mod.keyConstants.size()) {
                 const std::string& m = mod.keyConstants[inst.keyIndex];
                 if (m == "charCodeAt" || m == "codePointAt" || m == "charAt" ||
-                    m == "substring" || m == "toLowerCase" || m == "toUpperCase" ||
+                    m == "substring" || m == "substr" || m == "lastIndexOf" ||
+                    m == "toLowerCase" || m == "toUpperCase" ||
                     m == "fromCharCode" || m == "fromCodePoint" ||
                     m == "startsWith" || m == "endsWith") {
                     return true;
@@ -273,6 +274,74 @@ void SymbolicIlBuilder::evalStringConcatOp(il::ValueId lhsId,
     storeBoundedSeqToNewLocal(state, resultId, out);
 }
 
+void SymbolicIlBuilder::evalArraySpreadOp(const il::Instruction& inst, SymState& state) {
+    if (inst.operands.size() < 2) return;
+    il::ValueId dstId = inst.operands[0];
+    il::ValueId srcId = inst.operands[1];
+    std::string dstPath = state.heap.lookupObjPath(dstId);
+    bool srcIsStr = state.heap.isStringValue(srcId);
+    BoundedSeq dst, src, out;
+    loadBoundedSeq(state, dstId, /*asString=*/false, dst);
+    loadBoundedSeq(state, srcId, srcIsStr, src);
+    out.isString = false;
+    BVNodeId rawLen = ctx_.make_binary(BVOp::Add, dst.len, src.len);
+    BVNodeId maxNode = ctx_.make_const(kMaxBoundedSeqLen, 64);
+    BVNodeId ovf = ctx_.make_binary(BVOp::Ugt, rawLen, maxNode, 1);
+    out.len = ctx_.make_ite(ovf, maxNode, rawLen);
+    for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+        BVNodeId kConst = ctx_.make_const(k, 64);
+        BVNodeId inDst = ctx_.make_binary(BVOp::Ult, kConst, dst.len, 1);
+        BVNodeId inOut = ctx_.make_binary(BVOp::Ult, kConst, out.len, 1);
+        BVNodeId srcIdx = ctx_.make_binary(BVOp::Sub, kConst, dst.len);
+        BVNodeId srcElem = selectBoundedSeqElem(ctx_, src, srcIdx);
+        out.elems[k] = ctx_.make_ite(inDst, dst.elems[k], ctx_.make_ite(inOut, srcElem, zero64_));
+    }
+    storeBoundedSeqInPlace(state, dstId, dstPath, out);
+}
+
+SymEvalOutcome SymbolicIlBuilder::evalCallSpreadOp(const il::Instruction& inst,
+                                                   bool isMethodSpread,
+                                                   SymState& state) {
+    std::string gName;
+    std::string method;
+    il::ValueId spreadArrId = il::kNoValue;
+    if (isMethodSpread) {
+        if (inst.operands.size() >= 2 && inst.keyIndex < mod_.keyConstants.size()) {
+            method = mod_.keyConstants[inst.keyIndex];
+            if (state.globalRefs.count(inst.operands[0])) {
+                gName = state.globalRefs[inst.operands[0]];
+            }
+            spreadArrId = inst.operands[1];
+        }
+    } else if (inst.operands.size() >= 3 && state.globalRefs.count(inst.operands[0])) {
+        const std::string& full = state.globalRefs[inst.operands[0]];
+        auto dot = full.find('.');
+        if (dot != std::string::npos) {
+            gName = full.substr(0, dot);
+            method = full.substr(dot + 1);
+        } else {
+            gName = full;
+        }
+        spreadArrId = inst.operands[2];
+    }
+    if (gName == "String" && (method == "fromCharCode" || method == "fromCodePoint") &&
+        spreadArrId != il::kNoValue) {
+        BoundedSeq seq;
+        loadBoundedSeq(state, spreadArrId, /*asString=*/false, seq);
+        seq.isString = true;
+        for (size_t i = 0; i < kMaxBoundedSeqLen; ++i) {
+            seq.elems[i] = ctx_.make_binary(BVOp::And, seq.elems[i], ctx_.make_const(0xFFFF, 64));
+        }
+        storeBoundedSeqToNewLocal(state, inst.result, seq);
+        return {true, {}, false, zero64_, {}, {}, zero1_};
+    }
+    if (inModuleInit_) {
+        if (inst.result != il::kNoValue) state.values[inst.result] = zero64_;
+        return {true, {}, false, zero64_, {}, {}, zero1_};
+    }
+    return {false, "unsupported spread call", false, zero64_, {}, {}, zero1_};
+}
+
 namespace {
 
 BVNodeId normalizeSliceIndex(BVContext& ctx, BVNodeId idx, BVNodeId len) {
@@ -392,22 +461,31 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
         return true;
     }
 
-    if (method == "indexOf" && inst.operands.size() >= 2) {
+    if (method == "indexOf" || method == "lastIndexOf") {
+        if (inst.operands.size() < 2) return false;
+        bool isLast = (method == "lastIndexOf");
         il::ValueId needleId = inst.operands[1];
         bool asString = state.heap.isStringValue(recvId) || state.heap.isStringValue(needleId) ||
                         heapTable_.isStringRoot(recvPath) || heapTable_.preferStringSeq();
+        BVNodeId defFrom = isLast ? ctx_.make_const(kMaxBoundedSeqLen, 64) : zero64_;
         BVNodeId rawFrom = (inst.operands.size() >= 3 && !state.undefValues.count(inst.operands[2]))
-                               ? toSInt32In64(getVal(state, inst.operands[2])) : zero64_;
+                               ? toSInt32In64(getVal(state, inst.operands[2])) : defFrom;
         BVNodeId fromIdx = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rawFrom, zero64_, 1), zero64_, rawFrom);
         BVNodeId res = allOnes64_;
         if (asString) {
             BoundedSeq hay, ndl;
             loadBoundedSeq(state, recvId, /*asString=*/true, hay);
             loadBoundedSeq(state, needleId, /*asString=*/true, ndl);
-            for (int p = static_cast<int>(kMaxBoundedSeqLen); p >= 0; --p) {
+            int startP = isLast ? 0 : static_cast<int>(kMaxBoundedSeqLen);
+            int endP = isLast ? (static_cast<int>(kMaxBoundedSeqLen) + 1) : -1;
+            int stepP = isLast ? 1 : -1;
+            for (int p = startP; p != endP; p += stepP) {
                 BVNodeId pConst = ctx_.make_const(static_cast<uint64_t>(p), 64);
+                BVNodeId fromCmp = isLast
+                    ? ctx_.make_binary(BVOp::Sle, pConst, fromIdx, 1)
+                    : ctx_.make_binary(BVOp::Sge, pConst, fromIdx, 1);
                 BVNodeId fits = ctx_.make_binary(
-                    BVOp::And, ctx_.make_binary(BVOp::Sge, pConst, fromIdx, 1),
+                    BVOp::And, fromCmp,
                     ctx_.make_binary(BVOp::Ule, ctx_.make_binary(BVOp::Add, pConst, ndl.len), hay.len, 1), 1);
                 for (size_t j = 0; j < kMaxBoundedSeqLen; ++j) {
                     if (static_cast<size_t>(p) + j >= kMaxBoundedSeqLen) break;
@@ -422,10 +500,16 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
             BoundedSeq arr;
             loadBoundedSeq(state, recvId, /*asString=*/false, arr);
             BVNodeId target = toBV64(getVal(state, needleId));
-            for (int p = static_cast<int>(kMaxBoundedSeqLen) - 1; p >= 0; --p) {
+            int startP = isLast ? 0 : (static_cast<int>(kMaxBoundedSeqLen) - 1);
+            int endP = isLast ? static_cast<int>(kMaxBoundedSeqLen) : -1;
+            int stepP = isLast ? 1 : -1;
+            for (int p = startP; p != endP; p += stepP) {
                 BVNodeId pConst = ctx_.make_const(static_cast<uint64_t>(p), 64);
+                BVNodeId fromCmp = isLast
+                    ? ctx_.make_binary(BVOp::Sle, pConst, fromIdx, 1)
+                    : ctx_.make_binary(BVOp::Sge, pConst, fromIdx, 1);
                 BVNodeId inRange = ctx_.make_binary(
-                    BVOp::And, ctx_.make_binary(BVOp::Sge, pConst, fromIdx, 1),
+                    BVOp::And, fromCmp,
                     ctx_.make_binary(BVOp::Ult, pConst, arr.len, 1), 1);
                 BVNodeId matchP = ctx_.make_binary(BVOp::And, inRange,
                                                    ctx_.make_binary(BVOp::Eq, arr.elems[p], target, 1), 1);
@@ -435,6 +519,32 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
         state.values[inst.result] = floatMode_
             ? ctx_.make_unary(BVOp::SiToFp, ctx_.make_extract(res, 31, 0), 64)
             : res;
+        outOutcome = {true, {}, false, zero64_, {}, {}, zero1_};
+        return true;
+    }
+
+    if (method == "substr" && inst.operands.size() >= 2) {
+        BoundedSeq seq, out;
+        loadBoundedSeq(state, recvId, /*asString=*/true, seq);
+        out.isString = true;
+        BVNodeId rawStart = !state.undefValues.count(inst.operands[1])
+                                ? toSInt32In64(getVal(state, inst.operands[1])) : zero64_;
+        BVNodeId sIdx = normalizeSliceIndex(ctx_, rawStart, seq.len);
+        BVNodeId rem = ctx_.make_binary(BVOp::Sub, seq.len, sIdx);
+        BVNodeId cnt = rem;
+        if (inst.operands.size() >= 3 && !state.undefValues.count(inst.operands[2])) {
+            BVNodeId rawLen = toSInt32In64(getVal(state, inst.operands[2]));
+            BVNodeId nonNeg = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rawLen, zero64_, 1), zero64_, rawLen);
+            cnt = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rem, nonNeg, 1), rem, nonNeg);
+        }
+        out.len = cnt;
+        for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+            BVNodeId kConst = ctx_.make_const(k, 64);
+            BVNodeId inB = ctx_.make_binary(BVOp::Ult, kConst, out.len, 1);
+            BVNodeId srcIdx = ctx_.make_binary(BVOp::Add, sIdx, kConst);
+            out.elems[k] = ctx_.make_ite(inB, selectBoundedSeqElem(ctx_, seq, srcIdx), zero64_);
+        }
+        storeBoundedSeqToNewLocal(state, inst.result, out);
         outOutcome = {true, {}, false, zero64_, {}, {}, zero1_};
         return true;
     }
@@ -575,6 +685,93 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
         return true;
     }
 
+    if (method == "reverse") {
+        BoundedSeq seq, out;
+        loadBoundedSeq(state, recvId, /*asString=*/false, seq);
+        out.isString = false;
+        out.len = seq.len;
+        for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+            BVNodeId kConst = ctx_.make_const(k, 64);
+            BVNodeId inB = ctx_.make_binary(BVOp::Ult, kConst, seq.len, 1);
+            BVNodeId revIdx = ctx_.make_binary(BVOp::Sub, ctx_.make_binary(BVOp::Sub, seq.len, one64_), kConst);
+            out.elems[k] = ctx_.make_ite(inB, selectBoundedSeqElem(ctx_, seq, revIdx), zero64_);
+        }
+        storeBoundedSeqInPlace(state, recvId, recvPath, out);
+        state.values[inst.result] = toBV64(getVal(state, recvId));
+        state.heap.propagateAlias(recvId, inst.result);
+        outOutcome = {true, {}, false, zero64_, {}, {}, zero1_};
+        return true;
+    }
+
+    if (method == "splice" && inst.operands.size() >= 2) {
+        BoundedSeq seq, rem, nextSeq;
+        loadBoundedSeq(state, recvId, /*asString=*/false, seq);
+        rem.isString = false;
+        nextSeq.isString = false;
+        BVNodeId rawStart = toSInt32In64(getVal(state, inst.operands[1]));
+        BVNodeId sIdx = normalizeSliceIndex(ctx_, rawStart, seq.len);
+        BVNodeId tailLen = ctx_.make_binary(BVOp::Sub, seq.len, sIdx);
+        BVNodeId delCnt = tailLen;
+        if (inst.operands.size() >= 3 && !state.undefValues.count(inst.operands[2])) {
+            BVNodeId rawDel = toSInt32In64(getVal(state, inst.operands[2]));
+            BVNodeId nonNeg = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rawDel, zero64_, 1), zero64_, rawDel);
+            delCnt = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, tailLen, nonNeg, 1), tailLen, nonNeg);
+        }
+        rem.len = delCnt;
+        for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+            BVNodeId kConst = ctx_.make_const(k, 64);
+            BVNodeId inRem = ctx_.make_binary(BVOp::Ult, kConst, delCnt, 1);
+            rem.elems[k] = ctx_.make_ite(inRem, selectBoundedSeqElem(ctx_, seq, ctx_.make_binary(BVOp::Add, sIdx, kConst)), zero64_);
+        }
+        bool hasIns = (inst.operands.size() >= 4);
+        BVNodeId insVal = hasIns ? toBV64(getVal(state, inst.operands[3])) : zero64_;
+        BVNodeId insCntNode = hasIns ? one64_ : zero64_;
+        BVNodeId rawNewLen = ctx_.make_binary(BVOp::Add, ctx_.make_binary(BVOp::Sub, seq.len, delCnt), insCntNode);
+        BVNodeId maxNode = ctx_.make_const(kMaxBoundedSeqLen, 64);
+        BVNodeId ovf = ctx_.make_binary(BVOp::Ugt, rawNewLen, maxNode, 1);
+        if (ovf < ctx_.nodes().size() &&
+            !(ctx_.nodes()[ovf].op == BVOp::Const && ctx_.nodes()[ovf].imm == 0)) {
+            state.exceededCond = (state.exceededCond == 0 || state.exceededCond == zero1_)
+                                     ? ovf : ctx_.make_binary(BVOp::Or, state.exceededCond, ovf, 1);
+            maxArrayBoundUsed_ = static_cast<uint32_t>(kMaxBoundedSeqLen);
+        }
+        nextSeq.len = ctx_.make_ite(ovf, maxNode, rawNewLen);
+        for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+            BVNodeId kConst = ctx_.make_const(k, 64);
+            BVNodeId inOut = ctx_.make_binary(BVOp::Ult, kConst, nextSeq.len, 1);
+            BVNodeId beforeStart = ctx_.make_binary(BVOp::Ult, kConst, sIdx, 1);
+            BVNodeId atStart = ctx_.make_binary(BVOp::Eq, kConst, sIdx, 1);
+            BVNodeId shiftIdx = ctx_.make_binary(BVOp::Add, ctx_.make_binary(BVOp::Sub, kConst, insCntNode), delCnt);
+            BVNodeId afterVal = selectBoundedSeqElem(ctx_, seq, shiftIdx);
+            BVNodeId midVal = hasIns ? ctx_.make_ite(atStart, insVal, afterVal) : afterVal;
+            BVNodeId elemK = ctx_.make_ite(beforeStart, seq.elems[k], midVal);
+            nextSeq.elems[k] = ctx_.make_ite(inOut, elemK, zero64_);
+        }
+        storeBoundedSeqInPlace(state, recvId, recvPath, nextSeq);
+        storeBoundedSeqToNewLocal(state, inst.result, rem);
+        outOutcome = {true, {}, false, zero64_, {}, {}, zero1_};
+        return true;
+    }
+
+    if (method == "set" && inst.operands.size() == 3) {
+        BoundedSeq dst, src;
+        loadBoundedSeq(state, recvId, /*asString=*/false, dst);
+        loadBoundedSeq(state, inst.operands[1], /*asString=*/false, src);
+        BVNodeId offset = toSInt32In64(getVal(state, inst.operands[2]));
+        for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
+            BVNodeId kConst = ctx_.make_const(k, 64);
+            BVNodeId rel = ctx_.make_binary(BVOp::Sub, kConst, offset);
+            BVNodeId inSrc = ctx_.make_binary(
+                BVOp::And, ctx_.make_binary(BVOp::Sge, kConst, offset, 1),
+                ctx_.make_binary(BVOp::Ult, rel, src.len, 1), 1);
+            dst.elems[k] = ctx_.make_ite(inSrc, selectBoundedSeqElem(ctx_, src, rel), dst.elems[k]);
+        }
+        storeBoundedSeqInPlace(state, recvId, recvPath, dst);
+        state.values[inst.result] = zero64_;
+        outOutcome = {true, {}, false, zero64_, {}, {}, zero1_};
+        return true;
+    }
+
     return false;
 }
 
@@ -603,6 +800,34 @@ void SymbolicIlBuilder::canonicalizeSeqReturn(il::ValueId retOpId,
         retPath = "__ret";
         ret = heapTable_.getObjectToken("__ret");
     }
+}
+
+bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
+                            const il::Module& mod,
+                            const il::Function& fn,
+                            const std::vector<brass::verify::BVNodeId>& argNodes,
+                            bool strictJs32Bitwise,
+                            brass::verify::BVNodeId* outRetNode,
+                            std::string* outReason,
+                            SymbolicHeapTable* sharedHeapTable,
+                            SymbolicHeapState* outFinalHeap,
+                            bool* outHitLoopUnrollBound,
+                            brass::verify::BVNodeId* outThrewNode,
+                            brass::verify::BVNodeId* outExceededBoundNode,
+                            ProofBounds* outBounds) {
+    SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise, sharedHeapTable);
+    auto out = builder.evalFunction(fn, argNodes);
+    if (outHitLoopUnrollBound) *outHitLoopUnrollBound = builder.hitLoopUnrollBound();
+    if (outBounds) *outBounds = builder.boundsUsed();
+    if (!out.supported || !out.hasReturn) {
+        if (outReason) *outReason = out.unsupportedReason;
+        return false;
+    }
+    if (outRetNode) *outRetNode = out.returnVal;
+    if (outFinalHeap) *outFinalHeap = std::move(out.finalHeap);
+    if (outThrewNode) *outThrewNode = (out.threwNode != 0) ? out.threwNode : ctx.make_const(0, 1);
+    if (outExceededBoundNode) *outExceededBoundNode = (out.exceededBoundNode != 0) ? out.exceededBoundNode : ctx.make_const(0, 1);
+    return true;
 }
 
 }  // namespace bronze::check

@@ -84,6 +84,33 @@ std::string jsonEscape(std::string_view s) {
     return out;
 }
 
+void populateAssignedMethodDisplayNames(il::Module& mod) {
+    for (const auto& fn : mod.functions) {
+        std::unordered_map<il::ValueId, uint32_t> fnValToCallee;
+        for (const auto& blk : fn.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if ((inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) &&
+                    inst.result != il::kNoValue && inst.calleeIndex < mod.functions.size()) {
+                    fnValToCallee[inst.result] = inst.calleeIndex;
+                } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox) &&
+                           !inst.operands.empty() && inst.result != il::kNoValue &&
+                           fnValToCallee.count(inst.operands[0])) {
+                    fnValToCallee[inst.result] = fnValToCallee[inst.operands[0]];
+                } else if ((inst.op == il::Op::PropSet || inst.op == il::Op::MethodDef) &&
+                           inst.operands.size() >= 2 && inst.keyIndex < mod.keyConstants.size()) {
+                    auto it = fnValToCallee.find(inst.operands[1]);
+                    if (it != fnValToCallee.end() && it->second < mod.functions.size()) {
+                        il::Function& target = mod.functions[it->second];
+                        if (target.displayName.empty() || target.displayName.find("anon") != std::string::npos) {
+                            target.displayName = mod.keyConstants[inst.keyIndex];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 bool lowerFileToModule(const std::string& path,
                        const std::vector<modules::ModuleRoot>& moduleRoots,
                        const std::string& importMapPath,
@@ -107,6 +134,7 @@ bool lowerFileToModule(const std::string& path,
         return false;
     }
     outMod = std::move(*lowered);
+    populateAssignedMethodDisplayNames(outMod);
     return true;
 }
 
@@ -140,6 +168,7 @@ bool lowerSingleSourceForEquiv(std::string_view src,
         return false;
     }
     outMod = std::move(*lowered);
+    populateAssignedMethodDisplayNames(outMod);
     return true;
 }
 

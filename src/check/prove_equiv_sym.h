@@ -32,6 +32,11 @@ struct SymState {
     std::unordered_map<il::ValueId, uint32_t> funcEnvs;
     std::unordered_map<uint64_t, uint32_t> envFuncRefs;
     std::unordered_map<uint64_t, uint32_t> envFuncEnvs;
+    std::unordered_map<uint32_t, uint32_t> funcCapturedEnvs;
+    std::unordered_map<std::string, uint32_t> protoToCtor;
+    std::unordered_map<uint32_t, std::string> ctorToProto;
+    std::unordered_map<uint32_t, uint32_t> funcOwnerCtor;
+    uint32_t moduleCtorIdx = UINT32_MAX;
     std::unordered_map<il::ValueId, uint32_t> ctorOf;
     std::unordered_set<il::ValueId> undefValues;
     std::unordered_set<uint64_t> envUndef;
@@ -53,6 +58,11 @@ struct SymEvalOutcome {
     std::string returnObjPath;
     brass::verify::BVNodeId threwNode = 0;
     brass::verify::BVNodeId exceededBoundNode = 0;
+    uint32_t returnFuncRef = UINT32_MAX;
+    uint32_t returnFuncEnv = 0;
+    uint32_t returnCtorOf = UINT32_MAX;
+    std::string returnGlobalRef;
+    std::vector<brass::verify::BVNodeId> returnArray;
 };
 
 class SymbolicIlBuilder {
@@ -70,7 +80,10 @@ public:
                                 const std::vector<std::string>* callerArgPaths = nullptr,
                                 uint32_t callerEnvId = 0,
                                 const std::vector<bool>* callerUndefArgs = nullptr,
-                                bool isConstructCall = false);
+                                bool isConstructCall = false,
+                                uint32_t callerThisCtor = UINT32_MAX,
+                                const std::vector<uint32_t>* callerArgCtors = nullptr,
+                                SymState* callerEnvState = nullptr);
 
     bool hitLoopUnrollBound() const { return hitLoopUnrollBound_; }
     ProofBounds boundsUsed() const { return {maxLoopBoundUsed_, maxArrayBoundUsed_, maxStringBoundUsed_}; }
@@ -131,6 +144,8 @@ private:
     void storeBoundedSeqInPlace(SymState& state, il::ValueId recvId, const std::string& path, const BoundedSeq& seq);
     void evalBoxStringLiteral(const std::string& lit, il::ValueId resultId, SymState& state);
     void evalStringConcatOp(il::ValueId lhsId, il::ValueId rhsId, il::ValueId resultId, SymState& state);
+    void evalArraySpreadOp(const il::Instruction& inst, SymState& state);
+    SymEvalOutcome evalCallSpreadOp(const il::Instruction& inst, bool isMethodSpread, SymState& state);
     bool tryEvalSeqMethodCallOp(const std::string& method,
                                 const il::Instruction& inst,
                                 SymState& state,
