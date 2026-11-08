@@ -1,5 +1,6 @@
 #include "check/prove_equiv_heap.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -90,6 +91,10 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
                     continue;
                 }
             }
+            if (u.op == Op::DynamicCall && u.operands.size() == 3 && tracked.count(u.operands[2])) {
+                sawFloorOrCeil = true;
+                continue;
+            }
             return DivUseKind::RawFloat;
         }
         curBlk = nextBlk;
@@ -101,22 +106,194 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
     return DivUseKind::RawFloat;
 }
 
-BVNodeId makeConstAwareDivOrRem(BVContext& ctx, BVOp op, BVNodeId a, BVNodeId b) {
+BVNodeId makeConstAwareDivOrRem(BVContext& ctx,
+                                BVOp op,
+                                BVNodeId a,
+                                BVNodeId b,
+                                int32_t domainMin = INT32_MIN,
+                                int32_t domainMax = INT32_MAX) {
     const auto& bNode = ctx.nodes()[b];
     if (bNode.op == BVOp::Const) {
         int64_t divisor = static_cast<int64_t>(bNode.imm);
         if (divisor > 0 && divisor <= INT32_MAX &&
             (static_cast<uint64_t>(divisor) & (static_cast<uint64_t>(divisor) - 1)) != 0) {
-            BVNodeId a32 = ctx.make_extract(a, 31, 0);
-            BVNodeId b32 = ctx.make_const(static_cast<uint64_t>(divisor), 32);
-            BVNodeId r32 = brass::verify::expand_const_div_rem_bv(ctx, op, a32, b32, 32);
-            return ctx.make_sext(r32, 32);
+            auto aIv = getSignedInterval64(ctx, a, domainMin, domainMax);
+            if (aIv.smin >= INT32_MIN && aIv.smax <= INT32_MAX) {
+                BVNodeId a32 = ctx.make_extract(a, 31, 0);
+                BVNodeId b32 = ctx.make_const(static_cast<uint64_t>(divisor), 32);
+                BVNodeId r32 = brass::verify::expand_const_div_rem_bv(ctx, op, a32, b32, 32);
+                if (r32 != UINT32_MAX) return ctx.make_sext(r32, 32);
+            }
         }
     }
     return ctx.make_binary(op, a, b);
 }
 
 }  // namespace
+
+brass::verify::BVInterval getSignedInterval64(const BVContext& ctx,
+                                              BVNodeId id,
+                                              int32_t domainMin,
+                                              int32_t domainMax,
+                                              int depth) {
+    brass::verify::BVInterval iv = ctx.interval(id);
+    if (depth <= 0) return iv;
+    const auto& n = ctx.nodes()[id];
+    if (n.op == BVOp::Const) return iv;
+    if (n.op == BVOp::Var && n.width <= 32) {
+        iv.smin = std::max<int64_t>(iv.smin, domainMin);
+        iv.smax = std::min<int64_t>(iv.smax, domainMax);
+        return iv;
+    }
+    if (n.op == BVOp::SExt || n.op == BVOp::ZExt) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        iv.smin = a.smin;
+        iv.smax = a.smax;
+        return iv;
+    }
+    if (n.width != 64) return iv;
+    auto safeAdd = [](int64_t x, int64_t y, int64_t& out) -> bool {
+        if ((y > 0 && x > INT64_MAX - y) || (y < 0 && x < INT64_MIN - y)) return false;
+        out = x + y;
+        return true;
+    };
+    auto safeSub = [](int64_t x, int64_t y, int64_t& out) -> bool {
+        if ((y < 0 && x > INT64_MAX + y) || (y > 0 && x < INT64_MIN + y)) return false;
+        out = x - y;
+        return true;
+    };
+    auto safeMul = [](int64_t x, int64_t y, int64_t& out) -> bool {
+        if (x == 0 || y == 0) { out = 0; return true; }
+        if (x == INT64_MIN || y == INT64_MIN) return false;
+        if (std::abs(x) > INT64_MAX / std::abs(y)) return false;
+        out = x * y;
+        return true;
+    };
+    if (n.op == BVOp::Sub) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
+        int64_t lo = 0, hi = 0;
+        if (safeSub(a.smin, b.smax, lo) && safeSub(a.smax, b.smin, hi)) {
+            iv.smin = lo;
+            iv.smax = hi;
+        }
+    } else if (n.op == BVOp::Add) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
+        int64_t lo = 0, hi = 0;
+        if (safeAdd(a.smin, b.smin, lo) && safeAdd(a.smax, b.smax, hi)) {
+            iv.smin = lo;
+            iv.smax = hi;
+        }
+    } else if (n.op == BVOp::Neg) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        if (a.smin > INT64_MIN) {
+            iv.smin = -a.smax;
+            iv.smax = -a.smin;
+        }
+    } else if (n.op == BVOp::Mul) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
+        int64_t p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+        if (safeMul(a.smin, b.smin, p1) && safeMul(a.smin, b.smax, p2) &&
+            safeMul(a.smax, b.smin, p3) && safeMul(a.smax, b.smax, p4)) {
+            iv.smin = std::min({p1, p2, p3, p4});
+            iv.smax = std::max({p1, p2, p3, p4});
+        }
+    } else if (n.op == BVOp::Shl && ctx.nodes()[n.b].op == BVOp::Const) {
+        uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
+        if (sh < 62) {
+            auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+            int64_t lo = 0, hi = 0;
+            if (safeMul(a.smin, 1LL << sh, lo) && safeMul(a.smax, 1LL << sh, hi)) {
+                iv.smin = lo;
+                iv.smax = hi;
+            }
+        }
+    } else if (n.op == BVOp::LShr && ctx.nodes()[n.b].op == BVOp::Const) {
+        uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
+        if (sh > 0 && sh < 64) {
+            auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+            if (a.smin >= 0) {
+                iv.smin = a.smin >> sh;
+                iv.smax = a.smax >> sh;
+            } else if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
+                int64_t hi = std::max(std::abs(a.smin), std::abs(a.smax));
+                iv.smin = 0;
+                iv.smax = hi >> sh;
+            }
+        }
+    } else if (n.op == BVOp::And || n.op == BVOp::Or || n.op == BVOp::Xor) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
+        if (a.smin >= INT32_MIN && a.smax <= INT32_MAX && b.smin >= INT32_MIN && b.smax <= INT32_MAX) {
+            iv.smin = INT32_MIN;
+            iv.smax = INT32_MAX;
+        }
+    } else if (n.op == BVOp::SDiv || n.op == BVOp::SRem) {
+        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
+            int64_t m = std::max(std::abs(a.smin), std::abs(a.smax));
+            iv.smin = -m;
+            iv.smax = m;
+        }
+    } else if (n.op == BVOp::Ite) {
+        auto t = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
+        auto f = getSignedInterval64(ctx, n.c, domainMin, domainMax, depth - 1);
+        iv.smin = std::min(t.smin, f.smin);
+        iv.smax = std::max(t.smax, f.smax);
+    }
+    return iv;
+}
+
+BVNodeId evalFloatToInt32Node(BVContext& ctx, BVNodeId f64) {
+    BVNodeId sign1 = ctx.make_extract(f64, 63, 63);
+    BVNodeId exp64 = ctx.make_zext(ctx.make_extract(f64, 62, 52), 53);
+    BVNodeId mant64 = ctx.make_zext(ctx.make_extract(f64, 51, 0), 12);
+    BVNodeId sig64 = ctx.make_binary(BVOp::Or, mant64, ctx.make_const(1ULL << 52, 64));
+    BVNodeId outOfRange = ctx.make_binary(
+        BVOp::Or,
+        ctx.make_binary(BVOp::Ult, exp64, ctx.make_const(1023, 64), 1),
+        ctx.make_binary(BVOp::Uge, exp64, ctx.make_const(1107, 64), 1), 1);
+    BVNodeId isRsh = ctx.make_binary(BVOp::Ule, exp64, ctx.make_const(1075, 64), 1);
+    BVNodeId rshAmt = ctx.make_binary(
+        BVOp::And, ctx.make_binary(BVOp::Sub, ctx.make_const(1075, 64), exp64), ctx.make_const(63, 64));
+    BVNodeId lshAmt = ctx.make_binary(
+        BVOp::And, ctx.make_binary(BVOp::Sub, exp64, ctx.make_const(1075, 64)), ctx.make_const(63, 64));
+    BVNodeId mag64 = ctx.make_ite(
+        isRsh, ctx.make_binary(BVOp::LShr, sig64, rshAmt), ctx.make_binary(BVOp::Shl, sig64, lshAmt));
+    BVNodeId signed64 = ctx.make_ite(sign1, ctx.make_unary(BVOp::Neg, mag64), mag64);
+    return ctx.make_ite(outOfRange, ctx.make_const(0, 32), ctx.make_extract(signed64, 31, 0));
+}
+
+BVNodeId roundSignedInt64AsDouble(BVContext& ctx, BVNodeId val) {
+    const auto& n = ctx.nodes()[val];
+    if (n.op == BVOp::Const) {
+        int64_t sv = static_cast<int64_t>(n.imm);
+        double dv = static_cast<double>(sv);
+        return ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dv)), 64);
+    }
+    BVNodeId zero64 = ctx.make_const(0, 64);
+    BVNodeId one64 = ctx.make_const(1, 64);
+    BVNodeId isNeg = ctx.make_binary(BVOp::Slt, val, zero64, 1);
+    BVNodeId mag = ctx.make_ite(isNeg, ctx.make_unary(BVOp::Neg, val), val);
+    BVNodeId roundedMag = mag;
+    for (uint32_t k = 1; k <= 9; ++k) {
+        BVNodeId top = ctx.make_binary(BVOp::LShr, mag, ctx.make_const(52 + k, 64));
+        BVNodeId inBinade = ctx.make_binary(BVOp::Eq, top, one64, 1);
+        BVNodeId halfBit = ctx.make_extract(mag, k - 1, k - 1);
+        BVNodeId lsbBit = ctx.make_extract(mag, k, k);
+        BVNodeId stickyBit = (k > 1)
+            ? ctx.make_binary(BVOp::Ne, ctx.make_extract(mag, k - 2, 0), ctx.make_const(0, k - 1), 1)
+            : ctx.make_const(0, 1);
+        BVNodeId roundUp1 = ctx.make_binary(BVOp::And, halfBit, ctx.make_binary(BVOp::Or, lsbBit, stickyBit, 1), 1);
+        BVNodeId shifted = ctx.make_binary(BVOp::LShr, mag, ctx.make_const(k, 64));
+        BVNodeId roundedShifted = ctx.make_binary(BVOp::Add, shifted, ctx.make_zext(roundUp1, 63));
+        BVNodeId binadeMag = ctx.make_binary(BVOp::Shl, roundedShifted, ctx.make_const(k, 64));
+        roundedMag = ctx.make_ite(inBinade, binadeMag, roundedMag);
+    }
+    return ctx.make_ite(isNeg, ctx.make_unary(BVOp::Neg, roundedMag), roundedMag);
+}
 
 bool evalDivOrModSymbolic(BVContext& ctx,
                           const il::Module& mod,
@@ -127,7 +304,9 @@ bool evalDivOrModSymbolic(BVContext& ctx,
                           BVNodeId b,
                           SymbolicHeapState& heap,
                           BVNodeId& outVal,
-                          std::string* outReason) {
+                          std::string* outReason,
+                          int32_t domainMin,
+                          int32_t domainMax) {
     const auto& inst = blk.instructions[instIdx];
     const auto& aNode = ctx.nodes()[a];
     const auto& bNode = ctx.nodes()[b];
@@ -137,13 +316,37 @@ bool evalDivOrModSymbolic(BVContext& ctx,
         return false;
     }
 
+    auto aIv = getSignedInterval64(ctx, a, domainMin, domainMax);
+    auto bIv = getSignedInterval64(ctx, b, domainMin, domainMax);
+    static constexpr int64_t kMaxSafeInt = (1LL << 53);
+    if (aIv.smin < -kMaxSafeInt || aIv.smax > kMaxSafeInt ||
+        bIv.smin < -kMaxSafeInt || bIv.smax > kMaxSafeInt) {
+        if (outReason) *outReason = "integer division/modulo operand can exceed 2^53 safe integer range";
+        return false;
+    }
+
+    const bool bCanBeZero = (bNode.op != BVOp::Const) && (bIv.smin <= 0 && bIv.smax >= 0);
+    DivUseKind useKind = classifyDivResultUsage(mod, fn, blk, instIdx);
+
     if (inst.op == il::Op::Mod) {
-        outVal = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b);
+        if (bCanBeZero && useKind != DivUseKind::TruncatedToInt) {
+            if (outReason) *outReason = "modulo by potentially zero divisor";
+            return false;
+        }
+        BVNodeId rawRem = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b, domainMin, domainMax);
+        if (bCanBeZero) {
+            BVNodeId zero64 = ctx.make_const(0, 64);
+            rawRem = ctx.make_ite(ctx.make_binary(BVOp::Eq, b, zero64, 1), zero64, rawRem);
+        }
+        outVal = rawRem;
         return true;
     }
 
-    DivUseKind useKind = classifyDivResultUsage(mod, fn, blk, instIdx);
     if (useKind == DivUseKind::FloorOrCeilOnly && inst.result != il::kNoValue) {
+        if (bCanBeZero) {
+            if (outReason) *outReason = "division by potentially zero divisor in floor/ceil";
+            return false;
+        }
         heap.divResults[inst.result] = {a, b};
     }
 
@@ -163,7 +366,7 @@ bool evalDivOrModSymbolic(BVContext& ctx,
             return true;
         }
         if (divisor > 1) {
-            BVNodeId sremNode = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b);
+            BVNodeId sremNode = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b, domainMin, domainMax);
             size_t nVars = ctx.vars().size();
             static constexpr int64_t kSamples[] = {1, 2, 3, 4, 5, -1, -2, -3};
             for (int64_t s : kSamples) {
@@ -176,7 +379,12 @@ bool evalDivOrModSymbolic(BVContext& ctx,
         }
     }
 
-    outVal = makeConstAwareDivOrRem(ctx, BVOp::SDiv, a, b);
+    BVNodeId rawDiv = makeConstAwareDivOrRem(ctx, BVOp::SDiv, a, b, domainMin, domainMax);
+    if (bCanBeZero && useKind == DivUseKind::TruncatedToInt) {
+        BVNodeId zero64 = ctx.make_const(0, 64);
+        rawDiv = ctx.make_ite(ctx.make_binary(BVOp::Eq, b, zero64, 1), zero64, rawDiv);
+    }
+    outVal = rawDiv;
     return true;
 }
 
@@ -230,7 +438,8 @@ BVNodeId makeClz32Symbolic(BVContext& ctx, BVNodeId val64) {
     return res;
 }
 
-BVNodeId evalPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& ok) {
+BVNodeId evalPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& ok,
+                         int32_t domainMin, int32_t domainMax) {
     ok = true;
     BVNodeId one64 = ctx.make_const(1, 64);
     const auto& bNode = ctx.nodes()[base64];
@@ -242,48 +451,31 @@ BVNodeId evalPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& 
     if (eNode.op == BVOp::Const) {
         int64_t expVal = static_cast<int64_t>(eNode.imm);
         if (expVal >= 0 && expVal <= 16) {
+            auto maxAbs = [](int64_t lo, int64_t hi) -> uint64_t {
+                uint64_t aLo = (lo == INT64_MIN) ? (1ULL << 63) : static_cast<uint64_t>(std::abs(lo));
+                uint64_t aHi = (hi == INT64_MIN) ? (1ULL << 63) : static_cast<uint64_t>(std::abs(hi));
+                return std::max(aLo, aHi);
+            };
             BVNodeId acc = one64;
             for (int64_t i = 0; i < expVal; ++i) {
+                auto lIv = getSignedInterval64(ctx, acc, domainMin, domainMax);
+                auto rIv = getSignedInterval64(ctx, base64, domainMin, domainMax);
+                uint64_t maxAbsL = maxAbs(lIv.smin, lIv.smax);
+                uint64_t maxAbsR = maxAbs(rIv.smin, rIv.smax);
+                if (maxAbsR > 0 && maxAbsL > (1ULL << 62) / maxAbsR) {
+                    ok = false;
+                    return ctx.make_const(0, 64);
+                }
                 acc = ctx.make_binary(BVOp::Mul, acc, base64);
+                if (maxAbsR > 0 && maxAbsL > (1ULL << 53) / maxAbsR) {
+                    acc = roundSignedInt64AsDouble(ctx, acc);
+                }
             }
             return acc;
         }
     }
     ok = false;
     return ctx.make_const(0, 64);
-}
-
-const il::Function* findMethodCalleeInModule(const il::Module& mod,
-                                             const SymbolicHeapState& heap,
-                                             const std::string& recvPath,
-                                             const std::string& method) {
-    if (!recvPath.empty()) {
-        auto pIt = heap.propFuncRefs.find(recvPath + "." + method);
-        if (pIt != heap.propFuncRefs.end() && pIt->second < mod.functions.size()) {
-            return &mod.functions[pIt->second];
-        }
-    }
-    std::string dotMethod = "." + method;
-    for (const auto& [k, fnIdx] : heap.propFuncRefs) {
-        if (fnIdx < mod.functions.size() && k.size() > dotMethod.size() &&
-            k.compare(k.size() - dotMethod.size(), dotMethod.size(), dotMethod) == 0) {
-            return &mod.functions[fnIdx];
-        }
-    }
-    std::string underMethod = "_" + method;
-    for (const auto& cand : mod.functions) {
-        if (cand.isExternal || cand.isEntryPoint || cand.name == "main") continue;
-        if (cand.name == method || cand.displayName == method ||
-            (cand.displayName.size() > dotMethod.size() &&
-             cand.displayName.compare(cand.displayName.size() - dotMethod.size(),
-                                      dotMethod.size(), dotMethod) == 0) ||
-            (cand.name.size() > underMethod.size() &&
-             cand.name.compare(cand.name.size() - underMethod.size(),
-                               underMethod.size(), underMethod) == 0)) {
-            return &cand;
-        }
-    }
-    return nullptr;
 }
 
 BVNodeId makeF64ConstNode(BVContext& ctx, double d) {
@@ -504,7 +696,7 @@ bool evalFloatBinaryOpSymbolic(BVContext& ctx,
             std::memcpy(&d, &rNode.imm, sizeof(double));
             if (std::isfinite(d) && d > 0.0 && d <= 2147483647.0 && std::trunc(d) == d) {
                 int64_t modI = static_cast<int64_t>(d);
-                BVNodeId lhsI64 = ctx.make_sext(ctx.make_unary(BVOp::FpToSi, lhs, 32), 32);
+                BVNodeId lhsI64 = ctx.make_sext(evalFloatToInt32Node(ctx, lhs), 32);
                 BVNodeId rhsI64 = ctx.make_const(static_cast<uint64_t>(modI), 64);
                 BVNodeId remI64 = makeConstAwareDivOrRem(ctx, BVOp::SRem, lhsI64, rhsI64);
                 outVal = ctx.make_unary(BVOp::SiToFp, remI64, 64);
@@ -646,272 +838,6 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                 }
             }
         }
-    }
-    return false;
-}
-
-bool evalGlobalMethodCallSymbolic(BVContext& ctx,
-                                  SymbolicHeapTable& heapTable,
-                                  SymbolicHeapState& heap,
-                                  const std::string& globalName,
-                                  const std::string& method,
-                                  const std::vector<il::ValueId>& operands,
-                                  const std::vector<BVNodeId>& opVals,
-                                  il::ValueId resultId,
-                                  BVNodeId& outVal,
-                                  std::vector<BVNodeId>* outArrayLiteral,
-                                  std::string* outErr) {
-    BVNodeId zero64 = ctx.make_const(0, 64);
-    BVNodeId one64 = ctx.make_const(1, 64);
-    BVNodeId allOnes64 = ctx.make_const(~uint64_t{0}, 64);
-    const bool floatMode = heapTable.isFloatMode();
-
-    if (method.empty()) {
-        size_t dot = globalName.find('.');
-        if (dot != std::string::npos) {
-            std::vector<il::ValueId> sOps{operands.empty() ? 0 : operands[0]};
-            std::vector<BVNodeId> sVals{zero64};
-            for (size_t k = 2; k < operands.size() && k < opVals.size(); ++k) {
-                sOps.push_back(operands[k]);
-                sVals.push_back(opVals[k]);
-            }
-            return evalGlobalMethodCallSymbolic(ctx, heapTable, heap, globalName.substr(0, dot),
-                                                globalName.substr(dot + 1), sOps, sVals,
-                                                resultId, outVal, outArrayLiteral, outErr);
-        }
-        if (globalName == "Error" || globalName == "RangeError" ||
-            globalName == "TypeError" || globalName == "SyntaxError") {
-            outVal = heap.createLocalObject(heapTable, resultId);
-            return true;
-        }
-        if (globalName == "String" || globalName == "Number" || globalName == "Boolean" ||
-            globalName == "Object") {
-            outVal = (opVals.size() >= 3) ? opVals[2] : zero64;
-            if (operands.size() >= 3) heap.propagateAlias(operands[2], resultId);
-            return true;
-        }
-        if (globalName == "isFinite") {
-            if (floatMode && opVals.size() >= 3) {
-                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, opVals[2], 64), posInf, 1));
-                return true;
-            }
-            outVal = one64;
-            return true;
-        }
-        if (globalName == "isNaN") {
-            if (floatMode && opVals.size() >= 3) {
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FNe, opVals[2], opVals[2], 1));
-                return true;
-            }
-            outVal = zero64;
-            return true;
-        }
-        if (globalName == "Array" || globalName == "Uint8Array" || globalName == "Int32Array" ||
-            globalName == "Uint32Array" || globalName == "Float64Array") {
-            outVal = heap.createLocalObject(heapTable, resultId);
-            heap.evalPropSet(heapTable, resultId, "length", (opVals.size() >= 3) ? opVals[2] : zero64);
-            return true;
-        }
-        return false;
-    }
-
-    if (globalName == "Math") {
-        if (method == "abs" && opVals.size() >= 2) {
-            BVNodeId a = opVals[1];
-            if (floatMode) {
-                outVal = ctx.make_unary(BVOp::FAbs, a, 64);
-                return true;
-            }
-            outVal = ctx.make_ite(ctx.make_binary(BVOp::Slt, a, zero64),
-                                  ctx.make_unary(BVOp::Neg, a), a);
-            return true;
-        }
-        if ((method == "min" || method == "max") && opVals.size() >= 3) {
-            BVNodeId acc = opVals[1];
-            for (size_t k = 2; k < opVals.size(); ++k) {
-                if (floatMode) {
-                    acc = ctx.make_binary((method == "min") ? BVOp::FMin : BVOp::FMax, acc, opVals[k], 64);
-                } else {
-                    BVNodeId pick = (method == "min")
-                                        ? ctx.make_binary(BVOp::Slt, opVals[k], acc)
-                                        : ctx.make_binary(BVOp::Slt, acc, opVals[k]);
-                    acc = ctx.make_ite(pick, opVals[k], acc);
-                }
-            }
-            outVal = acc;
-            return true;
-        }
-        if (method == "imul" && opVals.size() >= 3) {
-            BVNodeId a32 = floatMode ? ctx.make_unary(BVOp::FpToSi, opVals[1], 32) : ctx.make_extract(opVals[1], 31, 0);
-            BVNodeId b32 = floatMode ? ctx.make_unary(BVOp::FpToSi, opVals[2], 32) : ctx.make_extract(opVals[2], 31, 0);
-            BVNodeId prod32 = ctx.make_binary(BVOp::Mul, a32, b32);
-            outVal = floatMode ? ctx.make_unary(BVOp::SiToFp, prod32, 64) : ctx.make_sext(prod32, 32);
-            return true;
-        }
-        if (method == "sign" && opVals.size() >= 2) {
-            BVNodeId a = opVals[1];
-            if (floatMode) {
-                outVal = ctx.make_ite(
-                    ctx.make_binary(BVOp::FNe, a, a, 1), a,
-                    ctx.make_ite(ctx.make_binary(BVOp::FEq, a, zero64, 1), a,
-                                 ctx.make_ite(ctx.make_binary(BVOp::FLt, a, zero64, 1),
-                                              makeF64ConstNode(ctx, -1.0), makeF64ConstNode(ctx, 1.0))));
-                return true;
-            }
-            BVNodeId isNeg = ctx.make_binary(BVOp::Slt, a, zero64);
-            BVNodeId isPos = ctx.make_binary(BVOp::Slt, zero64, a);
-            outVal = ctx.make_ite(isNeg, allOnes64, ctx.make_ite(isPos, one64, zero64));
-            return true;
-        }
-        if (method == "clz32" && opVals.size() >= 2) {
-            BVNodeId in64 = floatMode ? ctx.make_sext(ctx.make_unary(BVOp::FpToSi, opVals[1], 32), 32) : opVals[1];
-            BVNodeId clz = makeClz32Symbolic(ctx, in64);
-            outVal = floatMode ? ctx.make_unary(BVOp::SiToFp, ctx.make_extract(clz, 31, 0), 64) : clz;
-            return true;
-        }
-        if (method == "log2" && opVals.size() >= 2 && !floatMode) {
-            outVal = ctx.make_binary(BVOp::Sub, ctx.make_const(31, 64),
-                                     makeClz32Symbolic(ctx, opVals[1]));
-            return true;
-        }
-        if (method == "pow" && opVals.size() >= 3) {
-            bool ok = false;
-            outVal = floatMode ? evalFloatPowSymbolic(ctx, opVals[1], opVals[2], ok)
-                               : evalPowSymbolic(ctx, opVals[1], opVals[2], ok);
-            if (!ok && outErr) *outErr = "unsupported symbolic Math.pow";
-            return true;
-        }
-        if ((method == "floor" || method == "ceil") && opVals.size() >= 2) {
-            if (floatMode) {
-                outVal = (method == "ceil") ? evalFloatCeilSymbolic(ctx, opVals[1])
-                                            : evalFloatFloorSymbolic(ctx, opVals[1]);
-                return true;
-            }
-            outVal = evalFloorOrCeilSymbolic(ctx, heap, operands[1], opVals[1], method == "ceil");
-            return true;
-        }
-        if (method == "trunc" && opVals.size() >= 2) {
-            if (floatMode) {
-                outVal = evalFloatTruncSymbolic(ctx, opVals[1]);
-                return true;
-            }
-            outVal = opVals[1];
-            return true;
-        }
-        if (method == "round" && opVals.size() >= 2) {
-            if (floatMode) {
-                outVal = evalFloatRoundSymbolic(ctx, opVals[1]);
-                return true;
-            }
-            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
-                if (outErr) *outErr = "unsupported fractional Math.round";
-                return true;
-            }
-            outVal = opVals[1];
-            return true;
-        }
-        if (method == "fround" && opVals.size() >= 2) {
-            if (floatMode) {
-                outVal = ctx.make_unary(BVOp::FpExt, ctx.make_unary(BVOp::FpTrunc, opVals[1], 32), 64);
-                return true;
-            }
-            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
-                if (outErr) *outErr = "unsupported fractional Math.fround";
-                return true;
-            }
-            outVal = opVals[1];
-            return true;
-        }
-        if (method == "sqrt" && opVals.size() >= 2 && floatMode) {
-            outVal = ctx.make_unary(BVOp::FSqrt, opVals[1], 64);
-            return true;
-        }
-    }
-    if (globalName == "Number" && opVals.size() >= 2) {
-        if (floatMode) {
-            BVNodeId a = opVals[1];
-            if (method == "isNaN") {
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FNe, a, a, 1));
-                return true;
-            }
-            if (method == "isFinite") {
-                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, a, 64), posInf, 1));
-                return true;
-            }
-            if (method == "isInteger") {
-                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
-                BVNodeId fin = ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, a, 64), posInf, 1);
-                BVNodeId intEq = ctx.make_binary(BVOp::FEq, evalFloatFloorSymbolic(ctx, a), a, 1);
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::And, fin, intEq, 1));
-                return true;
-            }
-        }
-        if (method == "isFinite" || method == "isSafeInteger" || method == "isInteger") {
-            outVal = one64;
-            return true;
-        }
-        if (method == "isNaN") {
-            outVal = zero64;
-            return true;
-        }
-    }
-    if (globalName == "String" &&
-        (method == "fromCharCode" || method == "fromCodePoint") && opVals.size() >= 2) {
-        BoundedSeq seq;
-        seq.isString = true;
-        size_t count = std::min<size_t>(opVals.size() - 1, kMaxBoundedSeqLen);
-        seq.len = ctx.make_const(count, 64);
-        std::vector<BVNodeId> chars;
-        for (size_t i = 0; i < kMaxBoundedSeqLen; ++i) {
-            if (i < count) {
-                BVNodeId ch = ctx.make_binary(BVOp::And, opVals[i + 1], ctx.make_const(0xFFFF, 64));
-                seq.elems[i] = ch;
-                chars.push_back(ch);
-            } else {
-                seq.elems[i] = zero64;
-            }
-        }
-        heap.createLocalObject(heapTable, resultId);
-        std::string p = heap.lookupObjPath(resultId);
-        if (!p.empty()) {
-            heap.stringPaths.insert(p);
-            heap.writes[p + ".length"] = seq.len;
-            for (size_t i = 0; i < kMaxBoundedSeqLen; ++i) {
-                heap.writes[p + "." + std::to_string(i)] = seq.elems[i];
-            }
-        }
-        outVal = packBoundedStringNode(ctx, seq.len, seq.elems);
-        if (outArrayLiteral) *outArrayLiteral = std::move(chars);
-        return true;
-    }
-    if (globalName == "Object") {
-        if (method == "is" && opVals.size() >= 3) {
-            if (floatMode) {
-                BVNodeId a = opVals[1], b = opVals[2];
-                BVNodeId bothNan = ctx.make_binary(
-                    BVOp::And, ctx.make_binary(BVOp::FNe, a, a, 1), ctx.make_binary(BVOp::FNe, b, b, 1), 1);
-                BVNodeId sameBits = ctx.make_binary(BVOp::Eq, a, b, 1);
-                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::Or, bothNan, sameBits, 1));
-            } else {
-                outVal = ctx.make_zext(ctx.make_binary(BVOp::Eq, opVals[1], opVals[2], 1), 63);
-            }
-            return true;
-        }
-        if (method == "setPrototypeOf" && operands.size() >= 2) {
-            outVal = opVals[1];
-            heap.propagateAlias(operands[1], resultId);
-            return true;
-        }
-        if (method == "create") {
-            outVal = heap.createLocalObject(heapTable, resultId);
-            return true;
-        }
-    }
-    if (globalName == "Array" && method == "isArray") {
-        outVal = floatMode ? makeF64ConstNode(ctx, 1.0) : one64;
-        return true;
     }
     return false;
 }

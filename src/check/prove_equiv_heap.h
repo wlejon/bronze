@@ -37,6 +37,13 @@ public:
     bool isFloatMode() const { return floatMode_; }
     void setFloatMode(bool floatMode) { floatMode_ = floatMode; }
 
+    int32_t domainMin() const { return domainMin_; }
+    int32_t domainMax() const { return domainMax_; }
+    void setDomainBounds(int32_t dMin, int32_t dMax) {
+        domainMin_ = dMin;
+        domainMax_ = dMax;
+    }
+
     bool preferStringSeq() const { return preferStringSeq_; }
     void setPreferStringSeq(bool v) { preferStringSeq_ = v; }
 
@@ -88,6 +95,8 @@ private:
     };
     brass::verify::BVContext& ctx_;
     bool floatMode_ = false;
+    int32_t domainMin_ = INT32_MIN;
+    int32_t domainMax_ = INT32_MAX;
     bool preferStringSeq_ = false;
     bool usedBoundedStringLen_ = false;
     bool usedBoundedArrayLen_ = false;
@@ -125,6 +134,7 @@ struct SymbolicHeapState {
     std::unordered_map<il::ValueId, PendingDivInfo> divResults;
     std::map<std::string, brass::verify::BVNodeId> writes;
     std::map<std::string, uint32_t> propFuncRefs;
+    std::map<std::string, std::string> propGlobalRefs;
     uint32_t localObjCounter = 0;
 
     std::string resolveObjPath(const std::string& p) const;
@@ -206,7 +216,9 @@ bool evalDivOrModSymbolic(brass::verify::BVContext& ctx,
                           brass::verify::BVNodeId b,
                           SymbolicHeapState& heap,
                           brass::verify::BVNodeId& outVal,
-                          std::string* outReason = nullptr);
+                          std::string* outReason = nullptr,
+                          int32_t domainMin = INT32_MIN,
+                          int32_t domainMax = INT32_MAX);
 
 // Evaluates `Math.floor` or `Math.ceil` on `argVal`, using exact integer
 // floor/ceil division when `argId` was produced by `Op::Div(num, den)`.
@@ -224,7 +236,9 @@ brass::verify::BVNodeId makeClz32Symbolic(brass::verify::BVContext& ctx,
 brass::verify::BVNodeId evalPowSymbolic(brass::verify::BVContext& ctx,
                                         brass::verify::BVNodeId base64,
                                         brass::verify::BVNodeId exp64,
-                                        bool& ok);
+                                        bool& ok,
+                                        int32_t domainMin = INT32_MIN,
+                                        int32_t domainMax = INT32_MAX);
 
 const il::Function* findMethodCalleeInModule(const il::Module& mod,
                                              const SymbolicHeapState& heap,
@@ -274,6 +288,18 @@ brass::verify::BVNodeId selectBoundedSeqElem(brass::verify::BVContext& ctx,
                                              brass::verify::BVNodeId defaultVal = 0);
 
 brass::verify::BVNodeId makeF64ConstNode(brass::verify::BVContext& ctx, double d);
+
+brass::verify::BVNodeId evalFloatToInt32Node(brass::verify::BVContext& ctx,
+                                             brass::verify::BVNodeId f64);
+
+brass::verify::BVNodeId roundSignedInt64AsDouble(brass::verify::BVContext& ctx,
+                                                 brass::verify::BVNodeId val);
+
+brass::verify::BVInterval getSignedInterval64(const brass::verify::BVContext& ctx,
+                                              brass::verify::BVNodeId id,
+                                              int32_t domainMin = INT32_MIN,
+                                              int32_t domainMax = INT32_MAX,
+                                              int depth = 16);
 
 brass::verify::BVNodeId evalFloatFloorSymbolic(brass::verify::BVContext& ctx,
                                                brass::verify::BVNodeId a);

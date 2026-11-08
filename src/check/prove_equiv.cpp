@@ -294,6 +294,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     }
 
     SymbolicHeapTable heapTable(ctx, floatMode);
+    heapTable.setDomainBounds(domainMin, domainMax);
     heapTable.setPreferStringSeq(functionUsesStringOps(oldMod, oldFn) || functionUsesStringOps(newMod, newFn));
     BVNodeId oldRetNode = 0;
     BVNodeId newRetNode = 0;

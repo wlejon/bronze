@@ -10,180 +10,6 @@ using brass::verify::BVContext;
 using brass::verify::BVNodeId;
 using brass::verify::BVOp;
 
-SymbolicIlBuilder::SymbolicIlBuilder(BVContext& ctx,
-                                     const il::Module& mod,
-                                     bool strictJs32Bitwise,
-                                     SymbolicHeapTable* sharedHeapTable)
-    : ctx_(ctx),
-      mod_(mod),
-      strictJs32Bitwise_(strictJs32Bitwise),
-      floatMode_(sharedHeapTable ? sharedHeapTable->isFloatMode() : false),
-      ownedHeapTable_(ctx, floatMode_),
-      heapTable_(sharedHeapTable ? *sharedHeapTable : ownedHeapTable_) {
-    zero1_ = ctx_.make_const(0, 1);
-    one1_ = ctx_.make_const(1, 1);
-    zero64_ = ctx_.make_const(0, 64);
-    one64_ = ctx_.make_const(1, 64);
-    f64One_ = makeF64ConstNode(ctx_, 1.0);
-    allOnes64_ = ctx_.make_const(~uint64_t{0}, 64);
-    initModuleState();
-}
-
-SymEvalOutcome SymbolicIlBuilder::evalFunction(const il::Function& fn,
-                                               const std::vector<BVNodeId>& argNodes,
-                                               uint32_t inlineDepth,
-                                               const SymbolicHeapState* callerHeap,
-                                               const std::string& thisPath,
-                                               const std::vector<std::string>* callerArgPaths,
-                                               uint32_t callerEnvId,
-                                               const std::vector<bool>* callerUndefArgs,
-                                               bool isConstructCall) {
-    if (fn.blocks.empty() || fn.isExternal) {
-        return {false, "external or empty function", false, zero64_, {}, {}, zero1_};
-    }
-    if (inlineDepth > kMaxInlineDepth) {
-        return {false, "call recursion depth exceeded", false, zero64_, {}, {}, zero1_};
-    }
-
-    SymState initState = moduleState_;
-    initState.isConstructCall = isConstructCall;
-    initState.threwCond = zero1_;
-    if (callerHeap) {
-        initState.heap.writes = callerHeap->writes;
-        initState.heap.propFuncRefs = callerHeap->propFuncRefs;
-        initState.heap.localObjCounter = callerHeap->localObjCounter;
-    }
-    uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
-    for (uint32_t i = 0; i < firstSrc; ++i) initState.values[i] = zero64_;
-    if (fn.needsEnv) initState.envIds[0] = callerEnvId;
-    uint32_t srcCount = static_cast<uint32_t>(fn.callerParamCount());
-    for (uint32_t i = 0; i < srcCount; ++i) {
-        initState.values[firstSrc + i] = (i < argNodes.size()) ? argNodes[i] : zero64_;
-        if ((callerUndefArgs && i < callerUndefArgs->size() && (*callerUndefArgs)[i]) || i >= argNodes.size()) {
-            initState.undefValues.insert(firstSrc + i);
-        }
-    }
-    initState.heap.initFunctionHeap(heapTable_, fn, initState.values, thisPath, callerArgPaths);
-    return evalBlockPath(fn, 0, initState, 0, inlineDepth);
-}
-
-void SymbolicIlBuilder::initModuleState() {
-    const il::Function* entryFn = nullptr;
-    for (const auto& f : mod_.functions) {
-        if (!f.isExternal && (f.isEntryPoint || f.name == "main")) {
-            entryFn = &f;
-            break;
-        }
-    }
-    if (!entryFn || entryFn->blocks.empty()) return;
-    inModuleInit_ = true;
-    uint32_t savedVisits = totalVisits_;
-    bool savedHit = hitLoopUnrollBound_;
-    uint32_t savedLoopBound = maxLoopBoundUsed_;
-    SymState initSt;
-    initSt.threwCond = zero1_;
-    initSt.exceededCond = zero1_;
-    uint32_t firstSrc = static_cast<uint32_t>(entryFn->firstSourceParam());
-    for (uint32_t i = 0; i < firstSrc; ++i) initSt.values[i] = zero64_;
-    initSt.heap.initFunctionHeap(heapTable_, *entryFn, initSt.values, "this", nullptr);
-    auto out = evalBlockPath(*entryFn, 0, std::move(initSt), 0, 0);
-    if (out.supported) {
-        moduleState_.heap.writes = std::move(out.finalHeap.writes);
-        moduleState_.heap.propFuncRefs = std::move(out.finalHeap.propFuncRefs);
-        moduleState_.heap.localObjCounter = out.finalHeap.localObjCounter;
-    }
-    inModuleInit_ = false;
-    totalVisits_ = savedVisits;
-    hitLoopUnrollBound_ = savedHit;
-    maxLoopBoundUsed_ = savedLoopBound;
-}
-
-uint64_t SymbolicIlBuilder::resolveEnvSlotKey(const SymState& st,
-                                              il::ValueId envVal,
-                                              uint32_t depth,
-                                              uint32_t index) const {
-    uint32_t cur = 0;
-    auto it = st.envIds.find(envVal);
-    if (it != st.envIds.end()) cur = it->second;
-    for (uint32_t d = 0; d < depth; ++d) {
-        auto pIt = st.envParent.find(cur);
-        if (pIt != st.envParent.end()) cur = pIt->second;
-        else cur = 0;
-    }
-    return (static_cast<uint64_t>(cur) << 32) | index;
-}
-
-BVNodeId SymbolicIlBuilder::getVal(const SymState& st, il::ValueId v) const {
-    auto it = st.values.find(v);
-    return (it != st.values.end()) ? it->second : zero64_;
-}
-
-BVNodeId SymbolicIlBuilder::toBool1(BVNodeId node) {
-    if (ctx_.width(node) == 1) return node;
-    BVNodeId b64 = toBV64(node);
-    if (!floatMode_) return ctx_.make_binary(BVOp::Ne, b64, zero64_);
-    const auto& n = ctx_.nodes()[b64];
-    if (n.op == BVOp::Ite && n.b == f64One_ && n.c == zero64_) return n.a;
-    return ctx_.make_binary(BVOp::And, ctx_.make_binary(BVOp::FEq, b64, b64, 1),
-                            ctx_.make_binary(BVOp::FNe, b64, zero64_, 1), 1);
-}
-
-BVNodeId SymbolicIlBuilder::toBV64(BVNodeId node) {
-    uint32_t w = ctx_.width(node);
-    if (w >= 64) return node;
-    if (w == 1) return floatMode_ ? ctx_.make_ite(node, f64One_, zero64_) : ctx_.make_zext(node, 63);
-    return floatMode_ ? ctx_.make_unary(BVOp::SiToFp, node, 64) : ctx_.make_sext(node, 64 - w);
-}
-
-BVNodeId SymbolicIlBuilder::toSInt32In64(BVNodeId node) {
-    if (floatMode_) {
-        return ctx_.make_unary(BVOp::SiToFp, ctx_.make_unary(BVOp::FpToSi, toBV64(node), 32), 64);
-    }
-    return ctx_.make_sext(ctx_.make_extract(toBV64(node), 31, 0), 32);
-}
-
-void SymbolicIlBuilder::applyEdgeArgsInPlace(const il::Function& fn,
-                                             const il::BlockTarget& edge,
-                                             SymState& state) {
-    if (edge.block >= fn.blocks.size()) return;
-    const auto& targetBlk = fn.blocks[edge.block];
-    std::vector<std::pair<il::ValueId, BVNodeId>> updates;
-    std::vector<std::pair<il::ValueId, bool>> undefUpdates;
-    updates.reserve(targetBlk.params.size());
-    for (size_t k = 0; k < targetBlk.params.size() && k < edge.args.size(); ++k) {
-        il::ValueId src = edge.args[k], dst = targetBlk.params[k].id;
-        updates.emplace_back(dst, toBV64(getVal(state, src)));
-        undefUpdates.emplace_back(dst, state.undefValues.count(src) > 0);
-        state.heap.propagateAlias(src, dst);
-        if (state.funcRefs.count(src)) state.funcRefs[dst] = state.funcRefs[src];
-        if (state.funcEnvs.count(src)) state.funcEnvs[dst] = state.funcEnvs[src];
-        if (state.ctorOf.count(src)) state.ctorOf[dst] = state.ctorOf[src];
-        if (state.envIds.count(src)) state.envIds[dst] = state.envIds[src];
-        if (state.arrayValues.count(src)) state.arrayValues[dst] = state.arrayValues[src];
-    }
-    for (const auto& [dst, val] : updates) state.values[dst] = val;
-    for (const auto& [dst, isU] : undefUpdates) {
-        if (isU) state.undefValues.insert(dst);
-        else state.undefValues.erase(dst);
-    }
-}
-
-void SymbolicIlBuilder::saveModuleInitSnapshot(const SymState& state) {
-    if (!inModuleInit_) return;
-    moduleState_.envSlots = state.envSlots;
-    moduleState_.envGlobalRefs = state.envGlobalRefs;
-    moduleState_.envArrays = state.envArrays;
-    moduleState_.envParent = state.envParent;
-    moduleState_.envFuncRefs = state.envFuncRefs;
-    moduleState_.envFuncEnvs = state.envFuncEnvs;
-    moduleState_.envUndef = state.envUndef;
-    moduleState_.nextEnvId = state.nextEnvId;
-    moduleState_.heap.envObjPaths = state.heap.envObjPaths;
-    moduleState_.heap.writes = state.heap.writes;
-    moduleState_.heap.propFuncRefs = state.heap.propFuncRefs;
-    moduleState_.heap.localObjCounter = state.heap.localObjCounter;
-}
-
 SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                                                 il::BlockId blockId,
                                                 SymState state,
@@ -493,6 +319,33 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         break;
                     }
                     BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
+                    auto lIv = getSignedInterval64(ctx_, lhs, heapTable_.domainMin(), heapTable_.domainMax());
+                    auto rIv = getSignedInterval64(ctx_, rhs, heapTable_.domainMin(), heapTable_.domainMax());
+                    if (bvOp == BVOp::Mul) {
+                        auto maxAbs = [](int64_t lo, int64_t hi) -> uint64_t {
+                            uint64_t aLo = (lo == INT64_MIN) ? (1ULL << 63) : static_cast<uint64_t>(std::abs(lo));
+                            uint64_t aHi = (hi == INT64_MIN) ? (1ULL << 63) : static_cast<uint64_t>(std::abs(hi));
+                            return std::max(aLo, aHi);
+                        };
+                        uint64_t maxAbsL = maxAbs(lIv.smin, lIv.smax);
+                        uint64_t maxAbsR = maxAbs(rIv.smin, rIv.smax);
+                        if (maxAbsR > 0 && maxAbsL > (1ULL << 62) / maxAbsR) {
+                            if (inModuleInit_) { state.values[inst.result] = zero64_; break; }
+                            return {false, "integer multiplication can exceed 2^53 safe integer range", false, zero64_, {}, {}, zero1_};
+                        }
+                        BVNodeId prod = ctx_.make_binary(BVOp::Mul, lhs, rhs);
+                        if (maxAbsR > 0 && maxAbsL > (1ULL << 53) / maxAbsR) {
+                            prod = roundSignedInt64AsDouble(ctx_, prod);
+                        }
+                        state.values[inst.result] = prod;
+                        break;
+                    }
+                    static constexpr int64_t kMaxSafeAddOperand = (1LL << 52);
+                    if (lIv.smin < -kMaxSafeAddOperand || lIv.smax > kMaxSafeAddOperand ||
+                        rIv.smin < -kMaxSafeAddOperand || rIv.smax > kMaxSafeAddOperand) {
+                        if (inModuleInit_) { state.values[inst.result] = zero64_; break; }
+                        return {false, "integer addition/subtraction can exceed 2^53 safe integer range", false, zero64_, {}, {}, zero1_};
+                    }
                     if (bvOp == BVOp::Add) {
                         const auto& ln = ctx_.nodes()[lhs];
                         const auto& rn = ctx_.nodes()[rhs];
@@ -518,7 +371,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     BVNodeId lhs = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId rhs = toBV64(getVal(state, inst.operands[1]));
                     BVNodeId r = floatMode_ ? evalFloatPowSymbolic(ctx_, lhs, rhs, ok)
-                                            : evalPowSymbolic(ctx_, lhs, rhs, ok);
+                                            : evalPowSymbolic(ctx_, lhs, rhs, ok,
+                                                              heapTable_.domainMin(), heapTable_.domainMax());
                     if (!ok) return {false, "unsupported symbolic exponentiation", false, zero64_, {}, {}, zero1_};
                     state.values[inst.result] = r;
                     break;
@@ -533,7 +387,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         if (!evalFloatBinaryOpSymbolic(ctx_, inst.op, lhs, rhs, divVal, &divErr)) {
                             return {false, divErr, false, zero64_, {}, {}, zero1_};
                         }
-                    } else if (!evalDivOrModSymbolic(ctx_, mod_, fn, blk, instIdx, lhs, rhs, state.heap, divVal, &divErr)) {
+                    } else if (!evalDivOrModSymbolic(ctx_, mod_, fn, blk, instIdx, lhs, rhs, state.heap, divVal, &divErr,
+                                                     heapTable_.domainMin(), heapTable_.domainMax())) {
                         return {false, divErr, false, zero64_, {}, {}, zero1_};
                     }
                     state.values[inst.result] = divVal;
@@ -549,8 +404,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::BitXor: {
                     BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b64 = toBV64(getVal(state, inst.operands[1]));
-                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
-                    BVNodeId b32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, b64, 32) : ctx_.make_extract(b64, 31, 0);
+                    BVNodeId a32 = floatMode_ ? evalFloatToInt32Node(ctx_, a64) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId b32 = floatMode_ ? evalFloatToInt32Node(ctx_, b64) : ctx_.make_extract(b64, 31, 0);
                     BVOp bvOp = (inst.op == Op::MathImul) ? BVOp::Mul
                                 : (inst.op == Op::BitAnd) ? BVOp::And
                                 : (inst.op == Op::BitOr)  ? BVOp::Or : BVOp::Xor;
@@ -560,7 +415,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 }
                 case Op::BitNot: {
                     BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId a32 = floatMode_ ? evalFloatToInt32Node(ctx_, a64) : ctx_.make_extract(a64, 31, 0);
                     BVNodeId r32 = ctx_.make_unary(BVOp::Not, a32);
                     state.values[inst.result] = floatMode_ ? ctx_.make_unary(BVOp::SiToFp, r32, 64) : ctx_.make_sext(r32, 32);
                     break;
@@ -570,8 +425,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::UShr: {
                     BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b64 = toBV64(getVal(state, inst.operands[1]));
-                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
-                    BVNodeId b32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, b64, 32) : ctx_.make_extract(b64, 31, 0);
+                    BVNodeId a32 = floatMode_ ? evalFloatToInt32Node(ctx_, a64) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId b32 = floatMode_ ? evalFloatToInt32Node(ctx_, b64) : ctx_.make_extract(b64, 31, 0);
                     BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, ctx_.make_const(31, 32));
                     BVOp shOp = (inst.op == Op::Shl) ? BVOp::Shl
                                                      : (inst.op == Op::Shr ? BVOp::AShr : BVOp::LShr);

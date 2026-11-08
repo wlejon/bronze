@@ -52,6 +52,7 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
             }
         }
         SymbolicHeapTable heapTable(ctx);
+        heapTable.setDomainBounds(domainMin, domainMax);
         SymbolicHeapState oldHeap, newHeap;
         BVNodeId oldRet = 0, newRet = 0;
         BVNodeId oldThrew = 0, newThrew = 0;
@@ -142,7 +143,10 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
 
     int32_t effMin = std::max<int32_t>(domainMin, -46340);
     int32_t effMax = std::min<int32_t>(domainMax, 46340);
-    if (hasNonPow2ConstDivisor(oldFn) || hasNonPow2ConstDivisor(newFn)) effMax = std::min<int32_t>(effMax, 1000);
+    if (hasNonPow2ConstDivisor(oldFn) || hasNonPow2ConstDivisor(newFn)) {
+        effMin = std::max<int32_t>(effMin, -500);
+        effMax = std::min<int32_t>(effMax, 500);
+    }
     if (effMin > effMax) effMin = effMax;
 
     BVContext ctx;
@@ -153,6 +157,7 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
     }
 
     SymbolicHeapTable heapTable(ctx);
+    heapTable.setDomainBounds(effMin, effMax);
     LoopIlEvaluator oldEval(ctx, oldMod, strictJs32Bitwise, &heapTable);
     LoopIlEvaluator newEval(ctx, newMod, strictJs32Bitwise, &heapTable);
     SingleLoopModel oldLoop, newLoop;
@@ -209,7 +214,7 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         BVNodeId initAcc = loop.initParams[loop.accIdx];
         if (effMin <= 0) {
             BVNodeId closedAtN = 0;
-            if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtN)) {
+            if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtN, nullptr, &heapTable)) {
                 return failUnknown("closed-form function not symbolically decidable");
             }
             BVNodeId condNeg = ctx.make_binary(BVOp::Ne, closedAtN, initAcc);
@@ -222,7 +227,7 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
             std::vector<BVNodeId> zeroArgs = argNodes;
             zeroArgs[boundParamIdx] = zero64;
             BVNodeId closedAtZero = 0;
-            if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, zeroArgs, strictJs32Bitwise, &closedAtZero)) {
+            if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, zeroArgs, strictJs32Bitwise, &closedAtZero, nullptr, &heapTable)) {
                 return failUnknown("closed-form function not symbolically decidable at n = 0");
             }
             if (solveObligation(ctx, addOtherArgsDomain(ctx.make_binary(BVOp::Ne, closedAtZero, initAcc)), effMin, effMax).status != SolveOutcome::Unsat) {
@@ -231,7 +236,7 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         }
 
         BVNodeId closedAtK = 0, nextAcc = 0, closedAtKPlus1 = 0;
-        if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtK)) {
+        if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, argNodes, strictJs32Bitwise, &closedAtK, nullptr, &heapTable)) {
             return failUnknown("closed-form function not symbolically decidable at k");
         }
         if (!loopEval.evalStep(loopFn, loop, argNodes[boundParamIdx], closedAtK, &nextAcc)) {
@@ -239,7 +244,7 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
         }
         std::vector<BVNodeId> nextArgs = argNodes;
         nextArgs[boundParamIdx] = ctx.make_binary(BVOp::Add, argNodes[boundParamIdx], one64);
-        if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, nextArgs, strictJs32Bitwise, &closedAtKPlus1)) {
+        if (!evalIlFunctionSymbolic(ctx, closedMod, closedFn, nextArgs, strictJs32Bitwise, &closedAtKPlus1, nullptr, &heapTable)) {
             return failUnknown("closed-form function not symbolically decidable at k + 1");
         }
         if (nextAcc != closedAtKPlus1) {

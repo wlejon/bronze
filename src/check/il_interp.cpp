@@ -352,17 +352,14 @@ struct ConcreteVM {
                         if (inst.result != il::kNoValue) vals[inst.result] = val;
                         break;
                     }
-                    case Op::NumericStep: vals[inst.result] = CVal::makeI64(opV(0).i64 + inst.immI32); break;
+                    case Op::NumericStep: vals[inst.result] = CVal::makeF64(opV(0).num + static_cast<double>(inst.immI32)); break;
                     case Op::ConcatBegin: vals[inst.result] = CVal::makeStr(""); break;
                     case Op::ConcatAppend: vals[inst.result] = CVal::makeStr(getStr(opV(0)) + getStr(opV(1))); break;
                     case Op::ConcatEnd: vals[inst.result] = CVal::makeStr(getStr(opV(0))); break;
                     case Op::Add: {
                         CVal a = opV(0), b = opV(1);
-                        bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
                         if (a.kind == CVal::Kind::String || b.kind == CVal::Kind::String) {
                             vals[inst.result] = CVal::makeStr(getStr(a) + getStr(b));
-                        } else if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num)) {
-                            vals[inst.result] = CVal::makeI64(a.i64 + b.i64);
                         } else {
                             vals[inst.result] = CVal::makeF64(a.num + b.num);
                         }
@@ -370,15 +367,12 @@ struct ConcreteVM {
                     }
                     case Op::Sub: {
                         CVal a = opV(0), b = opV(1);
-                        bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
-                        vals[inst.result] = (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num))
-                                                ? CVal::makeI64(a.i64 - b.i64) : CVal::makeF64(a.num - b.num);
+                        vals[inst.result] = CVal::makeF64(a.num - b.num);
                         break;
                     }
                     case Op::Mul: {
                         CVal a = opV(0), b = opV(1);
-                        vals[inst.result] = (a.num != 0.0 && b.num != 0.0 && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num))
-                                                ? CVal::makeI64(a.i64 * b.i64) : CVal::makeF64(a.num * b.num);
+                        vals[inst.result] = CVal::makeF64(a.num * b.num);
                         break;
                     }
                     case Op::Div: vals[inst.result] = CVal::makeF64(opV(0).num / opV(1).num); break;

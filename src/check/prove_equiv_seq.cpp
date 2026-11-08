@@ -213,6 +213,9 @@ void SymbolicIlBuilder::evalBoxStringLiteral(const std::string& lit,
         chars.push_back(ctx_.make_const(static_cast<unsigned char>(lit[i]), 64));
     }
     if (lit.size() > kMaxBoundedSeqLen) {
+        std::string p = "__strlit_" + std::to_string(resultId);
+        state.heap.objPaths[resultId] = p;
+        state.heap.stringPaths.insert(p);
         state.values[resultId] = ctx_.make_const(hashStringLiteral(lit), 64);
         state.arrayValues[resultId] = std::move(chars);
         return;

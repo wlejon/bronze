@@ -1,5 +1,8 @@
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +24,27 @@ struct GeneratedPair {
     std::string label;
 };
 
+struct NodeCheckCase {
+    std::string oldFnBody;
+    std::string newFnBody;
+    bool isCounterexample = false;
+    int64_t a = 0;
+    int64_t b = 0;
+    bool ilOldThrew = false;
+    int64_t ilOldRet = 0;
+    bool ilNewThrew = false;
+    int64_t ilNewRet = 0;
+};
+
+std::string stripExportFunction(const std::string& src, const std::string& fnRename) {
+    std::string out = src;
+    size_t pos = out.find("export function f(");
+    if (pos != std::string::npos) {
+        out.replace(pos, 18, "function " + fnRename + "(");
+    }
+    return out;
+}
+
 std::string randomExpr(std::mt19937_64& rng, int depth, bool allowDiv) {
     if (depth <= 0) {
         std::uniform_int_distribution<int> leafDist(0, 5);
@@ -33,7 +57,7 @@ std::string randomExpr(std::mt19937_64& rng, int depth, bool allowDiv) {
             default: return "16";
         }
     }
-    std::uniform_int_distribution<int> opDist(0, allowDiv ? 8 : 7);
+    std::uniform_int_distribution<int> opDist(0, allowDiv ? 10 : 9);
     int choice = opDist(rng);
     std::string lhs = randomExpr(rng, depth - 1, false);
     std::string rhs = randomExpr(rng, depth - 1, false);
@@ -46,6 +70,8 @@ std::string randomExpr(std::mt19937_64& rng, int depth, bool allowDiv) {
         case 5: return "(" + lhs + " << (" + rhs + " & 7))";
         case 6: return "(" + lhs + " >> (" + rhs + " & 7))";
         case 7: return "(" + lhs + " >>> (" + rhs + " & 7))";
+        case 8: return "((" + lhs + " * " + rhs + ") | 0)";
+        case 9: return "Math.imul(" + lhs + ", " + rhs + ")";
         default: return "((" + lhs + " / 3) | 0)";
     }
 }
@@ -53,7 +79,7 @@ std::string randomExpr(std::mt19937_64& rng, int depth, bool allowDiv) {
 GeneratedPair generateFuzzPair(std::mt19937_64& rng, size_t idx) {
     GeneratedPair out;
     out.arity = 2;
-    uint32_t kind = static_cast<uint32_t>(idx % 8);
+    uint32_t kind = static_cast<uint32_t>(idx % 9);
 
     std::string baseExpr = randomExpr(rng, 2, true);
     switch (kind) {
@@ -117,6 +143,14 @@ GeneratedPair generateFuzzPair(std::mt19937_64& rng, size_t idx) {
             out.label = "mutation_off_by_one_loop";
             break;
         }
+        case 7: {
+            // Mutation: float mul | 0 vs Math.imul (diverges above 2^53)
+            out.oldSrc = "export function f(a, b) { return ((a | 0) * (b | 0)) | 0; }";
+            out.newSrc = "export function f(a, b) { return Math.imul(a | 0, b | 0); }";
+            out.expectEquivalent = false;
+            out.label = "mutation_float_mul_vs_imul";
+            break;
+        }
         default: {
             // Mutation: sign negation (-x vs ~x)
             out.oldSrc = "export function f(a, b) { const x = " + baseExpr + "; return (-x) | 0; }";
@@ -129,7 +163,9 @@ GeneratedPair generateFuzzPair(std::mt19937_64& rng, size_t idx) {
     return out;
 }
 
-void verifyPairAgainstConcreteExecution(const GeneratedPair& pair, std::mt19937_64& rng) {
+void verifyPairAgainstConcreteExecution(const GeneratedPair& pair,
+                                        std::mt19937_64& rng,
+                                        std::vector<NodeCheckCase>& nodeQueue) {
     bronze::il::Module oldMod, newMod;
     std::string err;
     REQUIRE(bronze::check::lowerSingleSourceForEquiv(pair.oldSrc, "fuzz_old.js", oldMod, &err));
@@ -159,11 +195,16 @@ void verifyPairAgainstConcreteExecution(const GeneratedPair& pair, std::mt19937_
         REQUIRE(newRun.completed);
         CHECK_MESSAGE(bronze::check::concreteResultsDiverge(oldRun, newRun),
                       "Counterexample did not diverge in concrete execution for " << pair.label);
+        int64_t ca = fnRes.counterexampleArgs.size() > 0 ? fnRes.counterexampleArgs[0] : 0;
+        int64_t cb = fnRes.counterexampleArgs.size() > 1 ? fnRes.counterexampleArgs[1] : 0;
+        nodeQueue.push_back({pair.oldSrc, pair.newSrc, true, ca, cb,
+                             oldRun.threw, oldRun.returnI64, newRun.threw, newRun.returnI64});
     }
 
     if (fnRes.status == EquivStatus::Equivalent) {
         static constexpr int64_t kFixedInputs[] = {
-            0, 1, -1, 2, -2, 3, -3, 7, -7, 8, -8, 15, 16, 31, 32, -32, 64, 127, -128, INT32_MAX, INT32_MIN
+            0, 1, -1, 2, -2, 3, -3, 7, -7, 8, -8, 15, 16, 31, 32, -32, 64, 127, -128,
+            1073741825, 8388609, INT32_MAX, INT32_MIN
         };
         std::vector<std::string> pNames{"a", "b"};
         for (int64_t a : kFixedInputs) {
@@ -190,8 +231,69 @@ void verifyPairAgainstConcreteExecution(const GeneratedPair& pair, std::mt19937_
                 FAIL("SOUNDNESS FAILURE: Prover reported EQUIVALENT but random concrete execution diverged at a="
                      << a << ", b=" << b << " for:\n" << pair.oldSrc << "\nvs\n" << pair.newSrc);
             }
+            if (r < 4) {
+                nodeQueue.push_back({pair.oldSrc, pair.newSrc, false, a, b,
+                                     oldRun.threw, oldRun.returnI64, newRun.threw, newRun.returnI64});
+            }
+        }
+        auto hiOld = bronze::check::runIlFunctionConcrete(oldMod, *oldFn, pNames, {1073741825, 8388609});
+        auto hiNew = bronze::check::runIlFunctionConcrete(newMod, *newFn, pNames, {1073741825, 8388609});
+        nodeQueue.push_back({pair.oldSrc, pair.newSrc, false, 1073741825, 8388609,
+                             hiOld.threw, hiOld.returnI64, hiNew.threw, hiNew.returnI64});
+    }
+}
+
+void crossCheckQueueWithNode(const std::vector<NodeCheckCase>& nodeQueue) {
+    if (nodeQueue.empty()) return;
+    namespace fs = std::filesystem;
+    fs::path scriptPath = fs::temp_directory_path() / "bronze_fuzz_node_crosscheck.mjs";
+    {
+        std::ofstream ofs(scriptPath);
+        REQUIRE(ofs.good());
+        ofs << "function runOne(fn, a, b) {\n"
+            << "  try { return { threw: false, val: fn(a, b) }; }\n"
+            << "  catch (e) { return { threw: true, val: 0 }; }\n"
+            << "}\n";
+        for (size_t i = 0; i < nodeQueue.size(); ++i) {
+            const auto& c = nodeQueue[i];
+            std::string oldName = "old_" + std::to_string(i);
+            std::string newName = "new_" + std::to_string(i);
+            ofs << stripExportFunction(c.oldFnBody, oldName) << "\n";
+            ofs << stripExportFunction(c.newFnBody, newName) << "\n";
+            ofs << "{\n"
+                << "  const rOld = runOne(" << oldName << ", " << c.a << ", " << c.b << ");\n"
+                << "  const rNew = runOne(" << newName << ", " << c.a << ", " << c.b << ");\n"
+                << "  if (rOld.threw !== " << (c.ilOldThrew ? "true" : "false")
+                << " || (!rOld.threw && !Object.is(rOld.val, " << c.ilOldRet << "))) {\n"
+                << "    console.error('IL_VS_NODE_MISMATCH old case ' + " << i << " + ': got ' + JSON.stringify(rOld));\n"
+                << "    process.exit(2);\n"
+                << "  }\n"
+                << "  if (rNew.threw !== " << (c.ilNewThrew ? "true" : "false")
+                << " || (!rNew.threw && !Object.is(rNew.val, " << c.ilNewRet << "))) {\n"
+                << "    console.error('IL_VS_NODE_MISMATCH new case ' + " << i << " + ': got ' + JSON.stringify(rNew));\n"
+                << "    process.exit(2);\n"
+                << "  }\n";
+            if (c.isCounterexample) {
+                ofs << "  const diverged = (rOld.threw !== rNew.threw) || (!rOld.threw && !Object.is(rOld.val, rNew.val));\n"
+                    << "  if (!diverged) {\n"
+                    << "    console.error('NODE_CEX_DID_NOT_DIVERGE case ' + " << i << ");\n"
+                    << "    process.exit(3);\n"
+                    << "  }\n";
+            } else {
+                ofs << "  const same = (rOld.threw === rNew.threw) && (rOld.threw || Object.is(rOld.val, rNew.val));\n"
+                    << "  if (!same) {\n"
+                    << "    console.error('NODE_EQUIV_DIVERGED case ' + " << i << ");\n"
+                    << "    process.exit(4);\n"
+                    << "  }\n";
+            }
+            ofs << "}\n";
         }
     }
+    std::string cmd = "node \"" + scriptPath.string() + "\"";
+    int rc = std::system(cmd.c_str());
+    std::error_code ec;
+    fs::remove(scriptPath, ec);
+    CHECK_MESSAGE(rc == 0, "Node.js engine cross-check failed with exit code " << rc);
 }
 
 }  // namespace
@@ -310,6 +412,44 @@ TEST_CASE("prover_soundness: throw flag semantics, self-replay, and unknown op a
         REQUIRE(sinRep.functions.size() == 1);
         CHECK(sinRep.functions[0].status == EquivStatus::Unknown);
     }
+
+    SUBCASE("(a * b) | 0 vs Math.imul(a, b) must not prove EQUIVALENT (diverges above 2^53)") {
+        std::string err;
+        ProveEquivReport imulRep = bronze::check::proveSourceEquiv(
+            R"(
+                export function mul32(a, b) {
+                    return ((a | 0) * (b | 0)) | 0;
+                }
+            )",
+            R"(
+                export function mul32(a, b) {
+                    return Math.imul(a | 0, b | 0);
+                }
+            )",
+            "mul32", &err);
+        REQUIRE(err.empty());
+        REQUIRE(imulRep.functions.size() == 1);
+        CHECK(imulRep.functions[0].status != EquivStatus::Equivalent);
+        CHECK(imulRep.functions[0].status == EquivStatus::Counterexample);
+        REQUIRE(imulRep.functions[0].counterexampleArgs.size() == 2);
+
+        // Also check when product can exceed 2^62 (e.g. a * b * c) -> must return Unknown, never Equivalent
+        ProveEquivReport mul3Rep = bronze::check::proveSourceEquiv(
+            R"(
+                export function mul3(a, b, c) {
+                    return ((a | 0) * (b | 0) * (c | 0)) | 0;
+                }
+            )",
+            R"(
+                export function mul3(a, b, c) {
+                    return Math.imul(Math.imul(a | 0, b | 0), c | 0);
+                }
+            )",
+            "mul3", &err);
+        REQUIRE(err.empty());
+        REQUIRE(mul3Rep.functions.size() == 1);
+        CHECK(mul3Rep.functions[0].status == EquivStatus::Unknown);
+    }
 }
 
 TEST_CASE("prover_fuzzer: deterministic mutation and concrete execution oracle") {
@@ -317,8 +457,11 @@ TEST_CASE("prover_fuzzer: deterministic mutation and concrete execution oracle")
     const char* longEnv = std::getenv("BRONZE_FUZZ_LONG");
     const size_t numPairs = (longEnv && longEnv[0] != '\0' && longEnv[0] != '0') ? 1500 : 120;
 
+    std::vector<NodeCheckCase> nodeQueue;
+    nodeQueue.reserve(numPairs * 5);
     for (size_t i = 0; i < numPairs; ++i) {
         GeneratedPair pair = generateFuzzPair(rng, i);
-        verifyPairAgainstConcreteExecution(pair, rng);
+        verifyPairAgainstConcreteExecution(pair, rng, nodeQueue);
     }
+    crossCheckQueueWithNode(nodeQueue);
 }
