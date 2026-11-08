@@ -56,8 +56,9 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
         SymbolicHeapState oldHeap, newHeap;
         BVNodeId oldRet = 0, newRet = 0;
         BVNodeId oldThrew = 0, newThrew = 0;
-        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet, nullptr, &heapTable, &oldHeap, nullptr, &oldThrew) ||
-            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet, nullptr, &heapTable, &newHeap, nullptr, &newThrew)) {
+        BVNodeId oldExc = 0, newExc = 0;
+        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet, nullptr, &heapTable, &oldHeap, nullptr, &oldThrew, &oldExc) ||
+            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet, nullptr, &heapTable, &newHeap, nullptr, &newThrew, &newExc)) {
             continue;
         }
         BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(heapTable, oldHeap, newHeap);
@@ -70,6 +71,13 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
         BVNodeId badCond = (valMismatch != 0) ? ctx.make_binary(BVOp::And, neitherThrew, valMismatch) : 0;
         if (threwDiff != 0) badCond = (badCond == 0) ? threwDiff : ctx.make_binary(BVOp::Or, threwDiff, badCond);
         if (badCond == 0) continue;
+        BVNodeId zero1 = ctx.make_const(0, 1);
+        BVNodeId oE = (oldExc != 0) ? oldExc : zero1;
+        BVNodeId nE = (newExc != 0) ? newExc : zero1;
+        BVNodeId neitherExc = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, oE, nE));
+        badCond = ctx.make_binary(BVOp::And, badCond, neitherExc);
+        BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
+        if (seqCond != 0) badCond = ctx.make_binary(BVOp::And, badCond, seqCond);
         BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
         if (aliasCongruence != 0) badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
 

@@ -101,9 +101,11 @@ BVNodeId SymbolicHeapTable::buildBoundedSeqConstraintCond() {
     BVNodeId zero64 = ctx_.make_const(0, 64);
     BVNodeId maxLen64 = ctx_.make_const(kMaxBoundedSeqLen, 64);
     BVNodeId maxChar64 = ctx_.make_const(127, 64);
+    BVNodeId one64 = ctx_.make_const(1, 64);
     for (const std::string& p : boundedLenPaths_) {
         BVNodeId v = getInitialVal(p);
-        andCond(ctx_.make_binary(BVOp::Sge, v, zero64, 1));
+        BVNodeId minLen = (p.rfind("this.", 0) == 0 && p != "this.length") ? one64 : zero64;
+        andCond(ctx_.make_binary(BVOp::Sge, v, minLen, 1));
         andCond(ctx_.make_binary(BVOp::Sle, v, maxLen64, 1));
     }
     for (const std::string& p : charCodePaths_) {
