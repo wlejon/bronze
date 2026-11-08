@@ -114,6 +114,7 @@ private:
 struct PendingDivInfo {
     brass::verify::BVNodeId num = 0;
     brass::verify::BVNodeId den = 0;
+    brass::verify::BVNodeId intOffset = 0;
 };
 
 struct ObjComparisonInfo {
@@ -132,6 +133,7 @@ struct SymbolicHeapState {
     std::unordered_set<std::string> arrayPaths;
     std::unordered_map<il::ValueId, ObjComparisonInfo> objComparisons;
     std::unordered_map<il::ValueId, PendingDivInfo> divResults;
+    std::unordered_map<brass::verify::BVNodeId, brass::verify::BVInterval> refinedIntervals;
     std::map<std::string, brass::verify::BVNodeId> writes;
     std::map<std::string, uint32_t> propFuncRefs;
     std::map<std::string, uint32_t> propFuncEnvs;
@@ -194,7 +196,12 @@ struct SymbolicHeapState {
     static SymbolicHeapState mergeBranches(SymbolicHeapTable& table,
                                            brass::verify::BVNodeId condNode,
                                            const SymbolicHeapState& tHeap,
-                                           const SymbolicHeapState& fHeap);
+                                           const SymbolicHeapState& fHeap,
+                                           brass::verify::BVNodeId tRet = 0,
+                                           brass::verify::BVNodeId tThrew = 0,
+                                           brass::verify::BVNodeId fRet = 0,
+                                           brass::verify::BVNodeId fThrew = 0,
+                                           brass::verify::BVNodeId mergedRet = 0);
 
     // Returns a 1-bit BVNodeId that is non-zero iff any non-local mutated property
     // or buffer element differs between `oldHeap` and `newHeap`, or 0 if identical.
@@ -203,6 +210,13 @@ struct SymbolicHeapState {
                                                          const SymbolicHeapState& newHeap,
                                                          std::vector<std::string>* outCheckedPaths = nullptr);
 };
+
+int tryFoldRefinedBranchCond(
+    const brass::verify::BVContext& ctx,
+    brass::verify::BVNodeId condNode,
+    int32_t dMin,
+    int32_t dMax,
+    const std::unordered_map<brass::verify::BVNodeId, brass::verify::BVInterval>& refined);
 
 // Evaluates `Op::Div` or `Op::Mod` at `blk.instructions[instIdx]` with IEEE-754
 // float-division awareness: only lowers `Op::Div` to integer division when
@@ -224,10 +238,12 @@ bool evalDivOrModSymbolic(brass::verify::BVContext& ctx,
 // Evaluates `Math.floor` or `Math.ceil` on `argVal`, using exact integer
 // floor/ceil division when `argId` was produced by `Op::Div(num, den)`.
 brass::verify::BVNodeId evalFloorOrCeilSymbolic(brass::verify::BVContext& ctx,
-                                                const SymbolicHeapState& heap,
+                                                SymbolicHeapState& heap,
                                                 il::ValueId argId,
                                                 brass::verify::BVNodeId argVal,
-                                                bool isCeil);
+                                                bool isCeil,
+                                                int32_t domainMin = INT32_MIN,
+                                                int32_t domainMax = INT32_MAX);
 
 uint64_t hashStringLiteral(std::string_view s);
 
@@ -300,7 +316,8 @@ brass::verify::BVInterval getSignedInterval64(const brass::verify::BVContext& ct
                                               brass::verify::BVNodeId id,
                                               int32_t domainMin = INT32_MIN,
                                               int32_t domainMax = INT32_MAX,
-                                              int depth = 16);
+                                              int depth = 16,
+                                              const std::unordered_map<brass::verify::BVNodeId, brass::verify::BVInterval>* refined = nullptr);
 
 brass::verify::BVNodeId evalFloatFloorSymbolic(brass::verify::BVContext& ctx,
                                                brass::verify::BVNodeId a);

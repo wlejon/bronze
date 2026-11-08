@@ -2,11 +2,13 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "check/deterministic_check.h"
+#include "check/package_audit.h"
 #include "check/prove_equiv.h"
 #include "check/synth_tests.h"
 
@@ -769,5 +771,51 @@ TEST_CASE("proveSourceEquiv: module-env tables, new construction, charCodeAt, ty
         REQUIRE(rep.functions.size() == 1);
         CHECK((rep.functions[0].status == EquivStatus::Equivalent ||
                rep.functions[0].status == EquivStatus::Bounded));
+    }
+
+    SUBCASE("auditPackageDiff separates @private internal helpers from public API checks") {
+        namespace fs = std::filesystem;
+        const fs::path baseDir = fs::temp_directory_path() / "bronze_audit_diff_test";
+        const fs::path oldDir = baseDir / "old";
+        const fs::path newDir = baseDir / "new";
+        fs::create_directories(oldDir);
+        fs::create_directories(newDir);
+        {
+            std::ofstream f(oldDir / "package.json");
+            f << R"({"name":"test-pkg","version":"1.0.0","main":"index.js"})";
+        }
+        {
+            std::ofstream f(newDir / "package.json");
+            f << R"({"name":"test-pkg","version":"1.0.1","main":"index.js"})";
+        }
+        {
+            std::ofstream f(oldDir / "index.js");
+            f << R"(
+                /** @private */
+                export function internalHelper(x) { return (x | 0) + 1; }
+                export function publicFn(x) { return internalHelper(x) * 2; }
+            )";
+        }
+        {
+            std::ofstream f(newDir / "index.js");
+            f << R"(
+                /** @private */
+                export function internalHelper(x) { return (x | 0) + 2; }
+                export function publicFn(x) { return internalHelper(x) * 2; }
+            )";
+        }
+        bronze::check::PackageAuditReport rep =
+            bronze::check::auditPackageDiff(oldDir.string(), newDir.string());
+        fs::remove_all(baseDir);
+        CHECK(rep.totalPublicFunctions == 1);
+        CHECK(rep.internalHelperCount == 1);
+        REQUIRE(rep.checks.size() == 1);
+        CHECK(rep.checks[0].functionName == "publicFn");
+        CHECK(!rep.checks[0].isInternalHelper);
+        CHECK(rep.checks[0].status == EquivStatus::Counterexample);
+        REQUIRE(rep.internalChecks.size() == 1);
+        CHECK(rep.internalChecks[0].functionName == "internalHelper");
+        CHECK(rep.internalChecks[0].isInternalHelper);
+        CHECK(rep.internalChecks[0].status == EquivStatus::Counterexample);
     }
 }

@@ -136,23 +136,12 @@ brass::verify::BVInterval getSignedInterval64(const BVContext& ctx,
                                               BVNodeId id,
                                               int32_t domainMin,
                                               int32_t domainMax,
-                                              int depth) {
-    brass::verify::BVInterval iv = ctx.interval(id);
-    if (depth <= 0) return iv;
-    const auto& n = ctx.nodes()[id];
-    if (n.op == BVOp::Const) return iv;
-    if (n.op == BVOp::Var && n.width <= 32) {
-        iv.smin = std::max<int64_t>(iv.smin, domainMin);
-        iv.smax = std::min<int64_t>(iv.smax, domainMax);
-        return iv;
+                                              int /*depth*/,
+                                              const std::unordered_map<BVNodeId, brass::verify::BVInterval>* refined) {
+    std::unordered_map<BVNodeId, brass::verify::BVInterval> memo;
+    if (refined) {
+        memo = *refined;
     }
-    if (n.op == BVOp::SExt || n.op == BVOp::ZExt) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        iv.smin = a.smin;
-        iv.smax = a.smax;
-        return iv;
-    }
-    if (n.width != 64) return iv;
     auto safeAdd = [](int64_t x, int64_t y, int64_t& out) -> bool {
         if ((y > 0 && x > INT64_MAX - y) || (y < 0 && x < INT64_MIN - y)) return false;
         out = x + y;
@@ -170,81 +159,172 @@ brass::verify::BVInterval getSignedInterval64(const BVContext& ctx,
         out = x * y;
         return true;
     };
-    if (n.op == BVOp::Sub) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
-        int64_t lo = 0, hi = 0;
-        if (safeSub(a.smin, b.smax, lo) && safeSub(a.smax, b.smin, hi)) {
-            iv.smin = lo;
-            iv.smax = hi;
+
+    auto eval = [&](auto& self, BVNodeId cur) -> brass::verify::BVInterval {
+        auto it = memo.find(cur);
+        if (it != memo.end()) return it->second;
+        brass::verify::BVInterval iv = ctx.interval(cur);
+        const auto& n = ctx.nodes()[cur];
+        if (n.width > 0 && n.width <= 32) {
+            int64_t wLo = -(1LL << (n.width - 1));
+            int64_t wHi = (1LL << (n.width - 1)) - 1;
+            iv.smin = std::max<int64_t>(iv.smin, wLo);
+            iv.smax = std::min<int64_t>(iv.smax, wHi);
         }
-    } else if (n.op == BVOp::Add) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
-        int64_t lo = 0, hi = 0;
-        if (safeAdd(a.smin, b.smin, lo) && safeAdd(a.smax, b.smax, hi)) {
-            iv.smin = lo;
-            iv.smax = hi;
+        if (n.op == BVOp::Const) {
+            memo[cur] = iv;
+            return iv;
         }
-    } else if (n.op == BVOp::Neg) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        if (a.smin > INT64_MIN) {
-            iv.smin = -a.smax;
-            iv.smax = -a.smin;
+        if (n.op == BVOp::Var && n.width <= 32) {
+            const std::string& vName = (n.imm < ctx.vars().size()) ? ctx.vars()[n.imm].name : std::string{};
+            if (vName.rfind("heap:", 0) == 0 && vName.size() > 7 &&
+                vName.substr(vName.size() - 7) == ".length") {
+                iv.smin = 0;
+                iv.smax = static_cast<int64_t>(kMaxBoundedSeqLen);
+            } else {
+                iv.smin = std::max<int64_t>(iv.smin, domainMin);
+                iv.smax = std::min<int64_t>(iv.smax, domainMax);
+            }
+            memo[cur] = iv;
+            return iv;
         }
-    } else if (n.op == BVOp::Mul) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
-        int64_t p1 = 0, p2 = 0, p3 = 0, p4 = 0;
-        if (safeMul(a.smin, b.smin, p1) && safeMul(a.smin, b.smax, p2) &&
-            safeMul(a.smax, b.smin, p3) && safeMul(a.smax, b.smax, p4)) {
-            iv.smin = std::min({p1, p2, p3, p4});
-            iv.smax = std::max({p1, p2, p3, p4});
+        if (n.op == BVOp::SExt) {
+            auto a = self(self, n.a);
+            uint32_t srcW = ctx.nodes()[n.a].width;
+            iv.smin = a.smin;
+            iv.smax = a.smax;
+            if (srcW > 0 && srcW <= 32) {
+                iv.smin = std::max<int64_t>(iv.smin, -(1LL << (srcW - 1)));
+                iv.smax = std::min<int64_t>(iv.smax, (1LL << (srcW - 1)) - 1);
+            }
+            memo[cur] = iv;
+            return iv;
         }
-    } else if (n.op == BVOp::Shl && ctx.nodes()[n.b].op == BVOp::Const) {
-        uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
-        if (sh < 62) {
-            auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
+        if (n.op == BVOp::ZExt) {
+            auto a = self(self, n.a);
+            uint32_t srcW = ctx.nodes()[n.a].width;
+            iv.smin = (a.smin >= 0) ? a.smin : 0;
+            iv.smax = (a.smin >= 0) ? a.smax : ((srcW < 63) ? ((1LL << srcW) - 1) : INT64_MAX);
+            if (srcW < 63) iv.smax = std::min<int64_t>(iv.smax, (1LL << srcW) - 1);
+            memo[cur] = iv;
+            return iv;
+        }
+        if (n.width != 64) {
+            memo[cur] = iv;
+            return iv;
+        }
+        if (n.op == BVOp::Sub) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
             int64_t lo = 0, hi = 0;
-            if (safeMul(a.smin, 1LL << sh, lo) && safeMul(a.smax, 1LL << sh, hi)) {
+            if (safeSub(a.smin, b.smax, lo) && safeSub(a.smax, b.smin, hi)) {
                 iv.smin = lo;
                 iv.smax = hi;
             }
-        }
-    } else if (n.op == BVOp::LShr && ctx.nodes()[n.b].op == BVOp::Const) {
-        uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
-        if (sh > 0 && sh < 64) {
-            auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-            if (a.smin >= 0) {
-                iv.smin = a.smin >> sh;
-                iv.smax = a.smax >> sh;
-            } else if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
-                int64_t hi = std::max(std::abs(a.smin), std::abs(a.smax));
-                iv.smin = 0;
-                iv.smax = hi >> sh;
+        } else if (n.op == BVOp::Add) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            int64_t lo = 0, hi = 0;
+            if (safeAdd(a.smin, b.smin, lo) && safeAdd(a.smax, b.smax, hi)) {
+                iv.smin = lo;
+                iv.smax = hi;
             }
+        } else if (n.op == BVOp::Neg) {
+            auto a = self(self, n.a);
+            if (a.smin > INT64_MIN) {
+                iv.smin = -a.smax;
+                iv.smax = -a.smin;
+            }
+        } else if (n.op == BVOp::Mul) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            int64_t p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+            if (safeMul(a.smin, b.smin, p1) && safeMul(a.smin, b.smax, p2) &&
+                safeMul(a.smax, b.smin, p3) && safeMul(a.smax, b.smax, p4)) {
+                iv.smin = std::min({p1, p2, p3, p4});
+                iv.smax = std::max({p1, p2, p3, p4});
+            }
+        } else if (n.op == BVOp::Shl && ctx.nodes()[n.b].op == BVOp::Const) {
+            uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
+            if (sh < 62) {
+                auto a = self(self, n.a);
+                int64_t lo = 0, hi = 0;
+                if (safeMul(a.smin, 1LL << sh, lo) && safeMul(a.smax, 1LL << sh, hi)) {
+                    iv.smin = lo;
+                    iv.smax = hi;
+                }
+            }
+        } else if ((n.op == BVOp::LShr || n.op == BVOp::AShr) && ctx.nodes()[n.b].op == BVOp::Const) {
+            uint32_t sh = static_cast<uint32_t>(ctx.nodes()[n.b].imm & 63);
+            if (sh > 0 && sh < 64) {
+                auto a = self(self, n.a);
+                if (n.op == BVOp::AShr && a.smin > INT64_MIN && a.smax < INT64_MAX) {
+                    iv.smin = a.smin >> sh;
+                    iv.smax = a.smax >> sh;
+                } else if (a.smin >= 0) {
+                    iv.smin = a.smin >> sh;
+                    iv.smax = a.smax >> sh;
+                } else if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
+                    int64_t hi = std::max(std::abs(a.smin), std::abs(a.smax));
+                    iv.smin = 0;
+                    iv.smax = hi >> sh;
+                }
+            }
+        } else if (n.op == BVOp::And) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            if (b.smin >= 0) {
+                iv.smin = 0;
+                iv.smax = (a.smin >= 0) ? std::min(a.smax, b.smax) : b.smax;
+            } else if (a.smin >= 0) {
+                iv.smin = 0;
+                iv.smax = a.smax;
+            } else if (a.smin >= INT32_MIN && a.smax <= INT32_MAX && b.smin >= INT32_MIN && b.smax <= INT32_MAX) {
+                iv.smin = INT32_MIN;
+                iv.smax = INT32_MAX;
+            }
+        } else if (n.op == BVOp::Or || n.op == BVOp::Xor) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            if (a.smin >= INT32_MIN && a.smax <= INT32_MAX && b.smin >= INT32_MIN && b.smax <= INT32_MAX) {
+                iv.smin = INT32_MIN;
+                iv.smax = INT32_MAX;
+            }
+        } else if (n.op == BVOp::SRem) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            if (b.smin > 0 && b.smax < INT64_MAX) {
+                int64_t rMax = b.smax - 1;
+                iv.smin = (a.smin >= 0) ? 0 : -rMax;
+                iv.smax = rMax;
+            } else if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
+                int64_t m = std::max(std::abs(a.smin), std::abs(a.smax));
+                iv.smin = -m;
+                iv.smax = m;
+            }
+        } else if (n.op == BVOp::SDiv) {
+            auto a = self(self, n.a);
+            auto b = self(self, n.b);
+            if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
+                int64_t m = std::max(std::abs(a.smin), std::abs(a.smax));
+                if (b.smin > 0) {
+                    iv.smin = (a.smin >= 0) ? (a.smin / b.smax) : -(m / b.smin);
+                    iv.smax = m / b.smin;
+                } else {
+                    iv.smin = -m;
+                    iv.smax = m;
+                }
+            }
+        } else if (n.op == BVOp::Ite) {
+            auto t = self(self, n.b);
+            auto f = self(self, n.c);
+            iv.smin = std::min(t.smin, f.smin);
+            iv.smax = std::max(t.smax, f.smax);
         }
-    } else if (n.op == BVOp::And || n.op == BVOp::Or || n.op == BVOp::Xor) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        auto b = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
-        if (a.smin >= INT32_MIN && a.smax <= INT32_MAX && b.smin >= INT32_MIN && b.smax <= INT32_MAX) {
-            iv.smin = INT32_MIN;
-            iv.smax = INT32_MAX;
-        }
-    } else if (n.op == BVOp::SDiv || n.op == BVOp::SRem) {
-        auto a = getSignedInterval64(ctx, n.a, domainMin, domainMax, depth - 1);
-        if (a.smin > INT64_MIN && a.smax < INT64_MAX) {
-            int64_t m = std::max(std::abs(a.smin), std::abs(a.smax));
-            iv.smin = -m;
-            iv.smax = m;
-        }
-    } else if (n.op == BVOp::Ite) {
-        auto t = getSignedInterval64(ctx, n.b, domainMin, domainMax, depth - 1);
-        auto f = getSignedInterval64(ctx, n.c, domainMin, domainMax, depth - 1);
-        iv.smin = std::min(t.smin, f.smin);
-        iv.smax = std::max(t.smax, f.smax);
-    }
-    return iv;
+        memo[cur] = iv;
+        return iv;
+    };
+    return eval(eval, id);
 }
 
 BVNodeId evalFloatToInt32Node(BVContext& ctx, BVNodeId f64) {
@@ -317,8 +397,8 @@ bool evalDivOrModSymbolic(BVContext& ctx,
         return false;
     }
 
-    auto aIv = getSignedInterval64(ctx, a, domainMin, domainMax);
-    auto bIv = getSignedInterval64(ctx, b, domainMin, domainMax);
+    auto aIv = getSignedInterval64(ctx, a, domainMin, domainMax, 16, &heap.refinedIntervals);
+    auto bIv = getSignedInterval64(ctx, b, domainMin, domainMax, 16, &heap.refinedIntervals);
     static constexpr int64_t kMaxSafeInt = (1LL << 53);
     if (aIv.smin < -kMaxSafeInt || aIv.smax > kMaxSafeInt ||
         bIv.smin < -kMaxSafeInt || bIv.smax > kMaxSafeInt) {
@@ -344,7 +424,9 @@ bool evalDivOrModSymbolic(BVContext& ctx,
     }
 
     if (useKind == DivUseKind::FloorOrCeilOnly && inst.result != il::kNoValue) {
-        if (bCanBeZero) {
+        const bool isDirectParam = (bNode.op == BVOp::Var) ||
+                                   (bNode.op == BVOp::SExt && ctx.nodes()[bNode.a].op == BVOp::Var);
+        if (bCanBeZero && isDirectParam) {
             if (outReason) *outReason = "division by potentially zero divisor in floor/ceil";
             return false;
         }
@@ -385,37 +467,62 @@ bool evalDivOrModSymbolic(BVContext& ctx,
         BVNodeId zero64 = ctx.make_const(0, 64);
         rawDiv = ctx.make_ite(ctx.make_binary(BVOp::Eq, b, zero64, 1), zero64, rawDiv);
     }
+    if (aIv.smin > INT64_MIN && aIv.smax < INT64_MAX) {
+        brass::verify::BVInterval divIv = ctx.interval(rawDiv);
+        int64_t m = std::max(std::abs(aIv.smin), std::abs(aIv.smax));
+        divIv.smin = (bIv.smin > 0 && aIv.smin >= 0) ? (aIv.smin / bIv.smax) : -m;
+        divIv.smax = (bIv.smin > 0) ? (m / bIv.smin) : m;
+        heap.refinedIntervals[rawDiv] = divIv;
+    }
     outVal = rawDiv;
     return true;
 }
 
 BVNodeId evalFloorOrCeilSymbolic(BVContext& ctx,
-                                 const SymbolicHeapState& heap,
+                                 SymbolicHeapState& heap,
                                  il::ValueId argId,
                                  BVNodeId argVal,
-                                 bool isCeil) {
+                                 bool isCeil,
+                                 int32_t domainMin,
+                                 int32_t domainMax) {
     auto it = heap.divResults.find(argId);
     if (it == heap.divResults.end()) return argVal;
 
     BVNodeId a = it->second.num;
     BVNodeId b = it->second.den;
+    auto aIv = getSignedInterval64(ctx, a, domainMin, domainMax, 16, &heap.refinedIntervals);
+    auto bIv = getSignedInterval64(ctx, b, domainMin, domainMax, 16, &heap.refinedIntervals);
     BVNodeId zero64 = ctx.make_const(0, 64);
     BVNodeId one64 = ctx.make_const(1, 64);
-    BVNodeId sdiv = makeConstAwareDivOrRem(ctx, BVOp::SDiv, a, b);
-    BVNodeId srem = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b);
+    BVNodeId sdiv = makeConstAwareDivOrRem(ctx, BVOp::SDiv, a, b, domainMin, domainMax);
+    BVNodeId srem = makeConstAwareDivOrRem(ctx, BVOp::SRem, a, b, domainMin, domainMax);
+    if (aIv.smin > INT64_MIN && aIv.smax < INT64_MAX) {
+        brass::verify::BVInterval qIv = ctx.interval(sdiv);
+        int64_t m = std::max(std::abs(aIv.smin), std::abs(aIv.smax));
+        qIv.smin = (bIv.smin > 0) ? ((aIv.smin >= 0) ? (aIv.smin / bIv.smax) : -(m / bIv.smin)) : -m;
+        qIv.smax = (bIv.smin > 0) ? (m / bIv.smin) : m;
+        heap.refinedIntervals[sdiv] = qIv;
+    }
 
     BVNodeId remNonZero = ctx.make_binary(BVOp::Ne, srem, zero64);
     BVNodeId aNeg = ctx.make_binary(BVOp::Slt, a, zero64);
     BVNodeId bNeg = ctx.make_binary(BVOp::Slt, b, zero64);
+    BVNodeId res = 0;
     if (isCeil) {
         BVNodeId sameSign = ctx.make_binary(BVOp::Eq, aNeg, bNeg);
         BVNodeId needInc = ctx.make_binary(BVOp::And, remNonZero, sameSign);
-        return ctx.make_ite(needInc, ctx.make_binary(BVOp::Add, sdiv, one64), sdiv);
+        res = ctx.make_ite(needInc, ctx.make_binary(BVOp::Add, sdiv, one64), sdiv);
     } else {
         BVNodeId diffSign = ctx.make_binary(BVOp::Ne, aNeg, bNeg);
         BVNodeId needDec = ctx.make_binary(BVOp::And, remNonZero, diffSign);
-        return ctx.make_ite(needDec, ctx.make_binary(BVOp::Sub, sdiv, one64), sdiv);
+        res = ctx.make_ite(needDec, ctx.make_binary(BVOp::Sub, sdiv, one64), sdiv);
     }
+    if (it->second.intOffset != 0) {
+        res = ctx.make_binary(BVOp::Add, it->second.intOffset, res);
+    }
+    auto resIv = getSignedInterval64(ctx, res, domainMin, domainMax, 16, &heap.refinedIntervals);
+    heap.refinedIntervals[res] = resIv;
+    return res;
 }
 
 uint64_t hashStringLiteral(std::string_view s) {
@@ -541,6 +648,7 @@ uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn, std::vector<ui
             }
         }
     }
+    if (nested && headers.size() >= 3 && fn.blocks.size() > 20) return 1u;
     if (nested) return 3u;
     if (headers.size() >= 2) return 5u;
     return 8u;
@@ -841,76 +949,6 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
         }
     }
     return false;
-}
-
-void minimizeCounterexampleModel(const BVContext& ctx,
-                                 BVNodeId badCond,
-                                 size_t totalVars,
-                                 int32_t domainMin,
-                                 int32_t domainMax,
-                                 std::vector<uint64_t>& bestModel) {
-    static constexpr int32_t kSmallCandidates[] = {
-        0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 7, 8, -8, 10, 16, 31, 32, -32, 64, 100, -128, 127
-    };
-    if (totalVars == 1) {
-        for (int32_t c0 : kSmallCandidates) {
-            if (c0 < domainMin || c0 > domainMax) continue;
-            std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0))};
-            if (ctx.eval_concrete(badCond, cand) != 0) {
-                bestModel = std::move(cand);
-                return;
-            }
-        }
-    } else if (totalVars == 2) {
-        for (int32_t c0 : kSmallCandidates) {
-            if (c0 < domainMin || c0 > domainMax) continue;
-            for (int32_t c1 : kSmallCandidates) {
-                if (c1 < domainMin || c1 > domainMax) continue;
-                std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0)),
-                                           static_cast<uint64_t>(static_cast<uint32_t>(c1))};
-                if (ctx.eval_concrete(badCond, cand) != 0) {
-                    bestModel = std::move(cand);
-                    return;
-                }
-            }
-        }
-    }
-}
-
-void minimizeFloatCounterexampleModel(const BVContext& ctx,
-                                      BVNodeId badCond,
-                                      size_t totalVars,
-                                      std::vector<uint64_t>& bestModel) {
-    const double kFloatCandidates[] = {
-        0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0,
-        std::numeric_limits<double>::quiet_NaN(),
-        std::numeric_limits<double>::infinity(),
-        -std::numeric_limits<double>::infinity()
-    };
-    auto toBits = [](double d) {
-        uint64_t b = 0;
-        std::memcpy(&b, &d, sizeof(double));
-        return b;
-    };
-    if (totalVars == 1) {
-        for (double d0 : kFloatCandidates) {
-            std::vector<uint64_t> cand{toBits(d0)};
-            if (ctx.eval_concrete(badCond, cand) != 0) {
-                bestModel = std::move(cand);
-                return;
-            }
-        }
-    } else if (totalVars == 2) {
-        for (double d0 : kFloatCandidates) {
-            for (double d1 : kFloatCandidates) {
-                std::vector<uint64_t> cand{toBits(d0), toBits(d1)};
-                if (ctx.eval_concrete(badCond, cand) != 0) {
-                    bestModel = std::move(cand);
-                    return;
-                }
-            }
-        }
-    }
 }
 
 }  // namespace bronze::check

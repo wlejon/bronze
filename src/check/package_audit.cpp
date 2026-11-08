@@ -44,14 +44,12 @@ std::string toLowerCopy(std::string_view sv) {
     return out;
 }
 
-bool isCandidatePublicFunction(const il::Function& fn) {
+bool isCandidateAuditFunction(const il::Function& fn) {
     if (fn.isExternal || fn.isEntryPoint || fn.blocks.empty()) return false;
     std::string name = effectiveAuditFnName(fn);
     if (name.empty() || name == "main" || name == "constructor") return false;
     if (name.find("anon") != std::string::npos || name.find('$') != std::string::npos) return false;
-    std::string shortName = shortMethodName(name);
-    if (shortName.empty() || shortName[0] == '_') return false;
-    return true;
+    return !shortMethodName(name).empty();
 }
 
 bool lowerEntryFileForAudit(const std::string& path,
@@ -77,6 +75,7 @@ bool lowerEntryFileForAudit(const std::string& path,
         return false;
     }
     outMod = std::move(*lowered);
+    std::unordered_map<uint32_t, uint32_t> envSlotToCallee;
     for (const auto& fn : outMod.functions) {
         std::unordered_map<il::ValueId, uint32_t> fnValToCallee;
         for (const auto& blk : fn.blocks) {
@@ -88,6 +87,12 @@ bool lowerEntryFileForAudit(const std::string& path,
                            !inst.operands.empty() && inst.result != il::kNoValue &&
                            fnValToCallee.count(inst.operands[0])) {
                     fnValToCallee[inst.result] = fnValToCallee[inst.operands[0]];
+                } else if (inst.op == il::Op::EnvSet && inst.operands.size() >= 2 &&
+                           fnValToCallee.count(inst.operands[1])) {
+                    envSlotToCallee[inst.envIndex] = fnValToCallee[inst.operands[1]];
+                } else if ((inst.op == il::Op::EnvGet || inst.op == il::Op::EnvGetTdz) &&
+                           inst.result != il::kNoValue && envSlotToCallee.count(inst.envIndex)) {
+                    fnValToCallee[inst.result] = envSlotToCallee[inst.envIndex];
                 } else if ((inst.op == il::Op::PropSet || inst.op == il::Op::MethodDef) &&
                            inst.operands.size() >= 2 && inst.keyIndex < outMod.keyConstants.size()) {
                     auto it = fnValToCallee.find(inst.operands[1]);
@@ -122,6 +127,69 @@ FunctionDocMeta lookupFunctionDocMeta(const std::map<std::string, FunctionDocMet
         meta.documentedAntisymmetric = true;
     }
     return meta;
+}
+
+std::unordered_set<uint32_t> collectPublicExportIndices(
+    const il::Module& mod,
+    const std::map<std::string, FunctionDocMeta>& docMap) {
+    std::unordered_set<uint32_t> attachedOrExported;
+    std::unordered_map<uint32_t, uint32_t> envSlotToCallee;
+    for (const auto& fn : mod.functions) {
+        std::unordered_map<il::ValueId, uint32_t> fnValToCallee;
+        for (const auto& blk : fn.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if ((inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) &&
+                    inst.result != il::kNoValue && inst.calleeIndex < mod.functions.size()) {
+                    fnValToCallee[inst.result] = inst.calleeIndex;
+                } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox) &&
+                           !inst.operands.empty() && inst.result != il::kNoValue &&
+                           fnValToCallee.count(inst.operands[0])) {
+                    fnValToCallee[inst.result] = fnValToCallee[inst.operands[0]];
+                } else if (inst.op == il::Op::EnvSet && inst.operands.size() >= 2 &&
+                           fnValToCallee.count(inst.operands[1])) {
+                    envSlotToCallee[inst.envIndex] = fnValToCallee[inst.operands[1]];
+                } else if ((inst.op == il::Op::EnvGet || inst.op == il::Op::EnvGetTdz) &&
+                           inst.result != il::kNoValue && envSlotToCallee.count(inst.envIndex)) {
+                    fnValToCallee[inst.result] = envSlotToCallee[inst.envIndex];
+                } else if ((inst.op == il::Op::PropSet || inst.op == il::Op::DefineOwnAttr ||
+                            inst.op == il::Op::MethodDef) && inst.operands.size() >= 2) {
+                    auto it = fnValToCallee.find(inst.operands[1]);
+                    if (it != fnValToCallee.end()) attachedOrExported.insert(it->second);
+                } else if (inst.op == il::Op::Ret && !inst.operands.empty()) {
+                    auto it = fnValToCallee.find(inst.operands[0]);
+                    if (it != fnValToCallee.end()) attachedOrExported.insert(it->second);
+                }
+            }
+        }
+    }
+    bool anyPrivateInDoc = false;
+    for (const auto& [_, m] : docMap) {
+        if (m.isPrivate) anyPrivateInDoc = true;
+    }
+    for (size_t i = 0; i < mod.functions.size(); ++i) {
+        const auto& fn = mod.functions[i];
+        if (!isCandidateAuditFunction(fn)) continue;
+        std::string name = effectiveAuditFnName(fn);
+        FunctionDocMeta meta = lookupFunctionDocMeta(docMap, fn);
+        if (meta.isExported || name.find('.') != std::string::npos) {
+            attachedOrExported.insert(static_cast<uint32_t>(i));
+        }
+    }
+    bool hasExplicitSignals = !attachedOrExported.empty() || anyPrivateInDoc;
+    std::unordered_set<uint32_t> pubSet;
+    for (size_t i = 0; i < mod.functions.size(); ++i) {
+        const auto& fn = mod.functions[i];
+        if (!isCandidateAuditFunction(fn)) continue;
+        std::string name = effectiveAuditFnName(fn);
+        std::string shortN = shortMethodName(name);
+        if (shortN.empty() || shortN[0] == '_') continue;
+        FunctionDocMeta meta = lookupFunctionDocMeta(docMap, fn);
+        if (meta.isPrivate) continue;
+        if (!hasExplicitSignals || attachedOrExported.count(static_cast<uint32_t>(i)) > 0) {
+            pubSet.insert(static_cast<uint32_t>(i));
+        }
+    }
+    return pubSet;
 }
 
 bool areMorphologicalInverseNames(std::string_view encFull, std::string_view decFull) {
@@ -667,15 +735,23 @@ PackageAuditReport auditPackage(const std::string& targetPath,
 
     std::set<std::string> seenFnNames;
     for (const il::Module& mod : loadedModules) {
+        std::unordered_set<uint32_t> pubSet = collectPublicExportIndices(mod, docMeta);
         std::vector<const il::Function*> pubFns;
-        for (const auto& fn : mod.functions) {
-            if (!isCandidatePublicFunction(fn)) continue;
+        std::vector<const il::Function*> internalFns;
+        for (size_t fi = 0; fi < mod.functions.size(); ++fi) {
+            const auto& fn = mod.functions[fi];
+            if (!isCandidateAuditFunction(fn)) continue;
             std::string name = effectiveAuditFnName(fn);
             if (!fnFilter.empty() && name != fnFilter && shortMethodName(name) != fnFilter) continue;
             if (!seenFnNames.insert(name).second) continue;
-            pubFns.push_back(&fn);
+            if (pubSet.count(static_cast<uint32_t>(fi)) || !fnFilter.empty()) {
+                pubFns.push_back(&fn);
+            } else {
+                internalFns.push_back(&fn);
+            }
         }
         report.totalPublicFunctions += static_cast<uint32_t>(pubFns.size());
+        report.internalHelperCount += static_cast<uint32_t>(internalFns.size());
 
         for (const il::Function* fn : pubFns) {
             FunctionDocMeta meta = lookupFunctionDocMeta(docMeta, *fn);
@@ -688,6 +764,18 @@ PackageAuditReport auditPackage(const std::string& targetPath,
             if (analyzed) {
                 checkBinaryAlgebraicLaws(mod, *fn, meta, report);
             }
+        }
+
+        for (const il::Function* fn : internalFns) {
+            FunctionDocMeta meta = lookupFunctionDocMeta(docMeta, *fn);
+            bool analyzed = false;
+            AuditPropertyCheck domChk = checkFunctionDomainSafety(mod, *fn, meta, analyzed);
+            domChk.isInternalHelper = true;
+            if (analyzed) report.internalAnalyzedCount++;
+            if (!domChk.inPreconditionBucket && domChk.status == EquivStatus::Counterexample) {
+                report.internalCounterexampleCount++;
+            }
+            report.internalChecks.push_back(std::move(domChk));
         }
 
         // Round-trip checks on morphologically paired public functions in the same module.
@@ -785,27 +873,33 @@ PackageAuditReport auditPackageDiff(const std::string& oldTargetPath,
         return report;
     }
 
-    for (const auto& oldFn : oldMod.functions) {
-        if (!isCandidatePublicFunction(oldFn)) continue;
+    std::unordered_set<uint32_t> oldPubSet = collectPublicExportIndices(oldMod, oldDoc);
+    std::unordered_set<uint32_t> newPubSet = collectPublicExportIndices(newMod, newDoc);
+
+    for (size_t ofi = 0; ofi < oldMod.functions.size(); ++ofi) {
+        const auto& oldFn = oldMod.functions[ofi];
+        if (!isCandidateAuditFunction(oldFn)) continue;
         std::string name = effectiveAuditFnName(oldFn);
         if (!fnFilter.empty() && name != fnFilter && shortMethodName(name) != fnFilter) continue;
         const il::Function* newFn = nullptr;
-        for (const auto& cand : newMod.functions) {
-            if (!isCandidatePublicFunction(cand)) continue;
+        size_t nfiMatch = 0;
+        for (size_t nfi = 0; nfi < newMod.functions.size(); ++nfi) {
+            const auto& cand = newMod.functions[nfi];
+            if (!isCandidateAuditFunction(cand)) continue;
             if (cand.callerParamCount() != oldFn.callerParamCount()) continue;
             if (effectiveAuditFnName(cand) == name || shortMethodName(effectiveAuditFnName(cand)) == shortMethodName(name)) {
                 newFn = &cand;
+                nfiMatch = nfi;
                 break;
             }
         }
         if (!newFn) continue;
-        report.totalPublicFunctions++;
+        bool isPub = (oldPubSet.count(static_cast<uint32_t>(ofi)) > 0 &&
+                      newPubSet.count(static_cast<uint32_t>(nfiMatch)) > 0) ||
+                     !fnFilter.empty();
 
         FunctionDocMeta meta = lookupFunctionDocMeta(newDoc, *newFn);
         FunctionEquivResult eqRes = compareIlFunctionPair(oldMod, oldFn, newMod, *newFn, true, meta.domainMin, meta.domainMax);
-        if (eqRes.status != EquivStatus::Unknown) {
-            report.analyzedFunctions++;
-        }
 
         AuditPropertyCheck chk;
         chk.functionName = name;
@@ -820,9 +914,19 @@ PackageAuditReport auditPackageDiff(const std::string& oldTargetPath,
         chk.actualValue = eqRes.newReturnValue;
         chk.oldThrows = eqRes.oldThrows;
         chk.newThrows = eqRes.newThrows;
+        chk.isInternalHelper = !isPub;
         chk.detail = eqRes.detail;
-        recordVerdictCounts(report, chk);
-        report.checks.push_back(std::move(chk));
+        if (isPub) {
+            report.totalPublicFunctions++;
+            if (eqRes.status != EquivStatus::Unknown) report.analyzedFunctions++;
+            recordVerdictCounts(report, chk);
+            report.checks.push_back(std::move(chk));
+        } else {
+            report.internalHelperCount++;
+            if (eqRes.status != EquivStatus::Unknown) report.internalAnalyzedCount++;
+            if (eqRes.status == EquivStatus::Counterexample) report.internalCounterexampleCount++;
+            report.internalChecks.push_back(std::move(chk));
+        }
     }
 
     return report;

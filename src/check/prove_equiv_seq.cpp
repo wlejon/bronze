@@ -129,7 +129,9 @@ void SymbolicIlBuilder::loadBoundedSeq(SymState& state,
             if (eIt != state.heap.writes.end()) {
                 rawElem = eIt->second;
             } else if (!isLocal) {
-                rawElem = asString ? heapTable_.getCharCodeVal(ek) : heapTable_.getInitialVal(ek);
+                rawElem = asString
+                              ? ctx_.make_binary(BVOp::And, heapTable_.getCharCodeVal(ek), ctx_.make_const(0x7F, 64))
+                              : heapTable_.getInitialVal(ek);
             }
             BVNodeId inB = ctx_.make_binary(BVOp::Ult, ctx_.make_const(i, 64), outSeq.len, 1);
             outSeq.elems[i] = ctx_.make_ite(inB, rawElem, zero64_);
@@ -714,8 +716,13 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
         BVNodeId delCnt = tailLen;
         if (inst.operands.size() >= 3 && !state.undefValues.count(inst.operands[2])) {
             BVNodeId rawDel = toSInt32In64(getVal(state, inst.operands[2]));
-            BVNodeId nonNeg = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rawDel, zero64_, 1), zero64_, rawDel);
-            delCnt = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, tailLen, nonNeg, 1), tailLen, nonNeg);
+            if (rawDel < ctx_.nodes().size() && ctx_.nodes()[rawDel].op == BVOp::Const &&
+                static_cast<int64_t>(ctx_.nodes()[rawDel].imm) <= 0) {
+                delCnt = zero64_;
+            } else {
+                BVNodeId nonNeg = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, rawDel, zero64_, 1), zero64_, rawDel);
+                delCnt = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, tailLen, nonNeg, 1), tailLen, nonNeg);
+            }
         }
         rem.len = delCnt;
         for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
@@ -735,7 +742,7 @@ bool SymbolicIlBuilder::tryEvalSeqMethodCallOp(const std::string& method,
                                      ? ovf : ctx_.make_binary(BVOp::Or, state.exceededCond, ovf, 1);
             maxArrayBoundUsed_ = static_cast<uint32_t>(kMaxBoundedSeqLen);
         }
-        nextSeq.len = ctx_.make_ite(ovf, maxNode, rawNewLen);
+        nextSeq.len = ctx_.make_binary(BVOp::And, ctx_.make_ite(ovf, maxNode, rawNewLen), ctx_.make_const(0xF, 64));
         for (size_t k = 0; k < kMaxBoundedSeqLen; ++k) {
             BVNodeId kConst = ctx_.make_const(k, 64);
             BVNodeId inOut = ctx_.make_binary(BVOp::Ult, kConst, nextSeq.len, 1);

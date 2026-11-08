@@ -46,6 +46,8 @@ struct FunctionDocMeta {
     bool documentedSymmetric = false;
     bool documentedAntisymmetric = false;
     bool documentedCompare = false;
+    bool isPrivate = false;
+    bool isExported = false;
 };
 
 struct AuditPropertyCheck {
@@ -61,6 +63,7 @@ struct AuditPropertyCheck {
     bool oldThrows = false;
     bool newThrows = false;
     bool inPreconditionBucket = false;
+    bool isInternalHelper = false;
     std::string detail;
 };
 
@@ -79,8 +82,13 @@ struct PackageAuditReport {
     uint32_t preconditionBucketCount = 0;
     uint32_t unknownCount = 0;
 
+    uint32_t internalHelperCount = 0;
+    uint32_t internalAnalyzedCount = 0;
+    uint32_t internalCounterexampleCount = 0;
+
     std::map<std::string, uint32_t> unknownReasons;
     std::vector<AuditPropertyCheck> checks;
+    std::vector<AuditPropertyCheck> internalChecks;
 
     std::string renderText() const;
     std::string renderJson() const;

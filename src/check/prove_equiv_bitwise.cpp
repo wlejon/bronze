@@ -18,7 +18,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
     const uint32_t maxSteps = inModuleInit_ ? kMaxModuleInitSteps : kMaxBlockSteps;
     const uint32_t maxVisits = inModuleInit_ ? kMaxModuleInitVisits : kMaxTotalBlockVisits;
     std::vector<uint8_t> blockInCycle;
-    const uint32_t symLoopBound = inModuleInit_ ? 64u : computeFunctionSymbolicLoopBound(fn, blockInCycle);
+    const uint32_t rawLoopBound = inModuleInit_ ? 64u : computeFunctionSymbolicLoopBound(fn, blockInCycle);
+    const uint32_t symLoopBound = (inlineDepth > 0 && !inModuleInit_) ? std::min(rawLoopBound, 2u) : rawLoopBound;
     auto checkBackedgeLimit = [&](il::BlockId srcBlk, il::BlockId dstBlk, SymState& st) -> bool {
         if (dstBlk > srcBlk) return true;
         for (auto& [bId, cnt] : st.loopHeaderVisits) {
@@ -274,12 +275,13 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         }
                         break;
                     }
+                    std::string rPath = state.heap.lookupObjPath(inst.operands[0]);
                     auto arrIt = state.arrayValues.find(inst.operands[0]);
-                    if (arrIt != state.arrayValues.end() && key == "length") {
+                    if (arrIt != state.arrayValues.end() && key == "length" &&
+                        (rPath.empty() || !state.heap.writes.count(rPath + ".length"))) {
                         state.values[inst.result] = ctx_.make_const(arrIt->second.size(), 64);
                         break;
                     }
-                    std::string rPath = state.heap.lookupObjPath(inst.operands[0]);
                     if (!rPath.empty() && state.heap.propFuncRefs.count(rPath + "." + key)) {
                         state.funcRefs[inst.result] = state.heap.propFuncRefs[rPath + "." + key];
                         if (state.heap.propFuncEnvs.count(rPath + "." + key)) {
@@ -422,8 +424,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         break;
                     }
                     BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
-                    auto lIv = getSignedInterval64(ctx_, lhs, heapTable_.domainMin(), heapTable_.domainMax());
-                    auto rIv = getSignedInterval64(ctx_, rhs, heapTable_.domainMin(), heapTable_.domainMax());
+                    auto lIv = getSignedInterval64(ctx_, lhs, heapTable_.domainMin(), heapTable_.domainMax(), 16, &state.heap.refinedIntervals);
+                    auto rIv = getSignedInterval64(ctx_, rhs, heapTable_.domainMin(), heapTable_.domainMax(), 16, &state.heap.refinedIntervals);
                     if (bvOp == BVOp::Mul) {
                         auto maxAbs = [](int64_t lo, int64_t hi) -> uint64_t {
                             uint64_t aLo = (lo == INT64_MIN) ? (1ULL << 63) : static_cast<uint64_t>(std::abs(lo));
@@ -466,15 +468,15 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                             }
                         }
                     }
-                    if (inst.operands.size() >= 2) {
+                    if (inst.operands.size() >= 2 && bvOp == BVOp::Add) {
                         if (state.heap.divResults.count(inst.operands[1])) {
                             const auto& d = state.heap.divResults[inst.operands[1]];
-                            state.heap.divResults[inst.result] = {
-                                ctx_.make_binary(bvOp, ctx_.make_binary(BVOp::Mul, lhs, d.den), d.num), d.den};
+                            BVNodeId off = (d.intOffset != 0) ? ctx_.make_binary(BVOp::Add, lhs, d.intOffset) : lhs;
+                            state.heap.divResults[inst.result] = {d.num, d.den, off};
                         } else if (state.heap.divResults.count(inst.operands[0])) {
                             const auto& d = state.heap.divResults[inst.operands[0]];
-                            state.heap.divResults[inst.result] = {
-                                ctx_.make_binary(bvOp, d.num, ctx_.make_binary(BVOp::Mul, rhs, d.den)), d.den};
+                            BVNodeId off = (d.intOffset != 0) ? ctx_.make_binary(BVOp::Add, d.intOffset, rhs) : rhs;
+                            state.heap.divResults[inst.result] = {d.num, d.den, off};
                         }
                     }
                     state.values[inst.result] = ctx_.make_binary(bvOp, lhs, rhs);
@@ -701,7 +703,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                                                                   ctx_.make_unary(BVOp::Neg, a), a);
                     } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
                         state.values[inst.result] = evalFloorOrCeilSymbolic(
-                            ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil);
+                            ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil,
+                            heapTable_.domainMin(), heapTable_.domainMax());
                     } else if (kind == il::MathUnaryFn::Trunc) {
                         state.values[inst.result] = a;
                     } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
@@ -881,9 +884,10 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     break;
                 case Op::Branch: {
                     BVNodeId condNode = toBool1(toBV64(getVal(state, inst.operands[0])));
-                    const auto& cNode = ctx_.nodes()[condNode];
-                    if (cNode.op == BVOp::Const) {
-                        const il::BlockTarget& edge = (cNode.imm != 0) ? inst.target : inst.elseTarget;
+                    int folded = tryFoldRefinedBranchCond(ctx_, condNode, heapTable_.domainMin(),
+                                                          heapTable_.domainMax(), state.heap.refinedIntervals);
+                    if (folded >= 0) {
+                        const il::BlockTarget& edge = (folded != 0) ? inst.target : inst.elseTarget;
                         if (!checkBackedgeLimit(blockId, edge.block, state)) {
                             return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
                         }
@@ -926,7 +930,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         BVNodeId mergedThrew = (tThrew == fThrew) ? tThrew : ctx_.make_ite(condNode, tThrew, fThrew);
                         BVNodeId mergedExc = (tExc == fExc) ? tExc : ctx_.make_ite(condNode, tExc, fExc);
                         SymbolicHeapState mergedHeap = SymbolicHeapState::mergeBranches(
-                            heapTable_, condNode, trueOut.finalHeap, falseOut.finalHeap);
+                            heapTable_, condNode, trueOut.finalHeap, falseOut.finalHeap,
+                            trueOut.returnVal, tThrew, falseOut.returnVal, fThrew, merged);
                         std::string retObj = (trueOut.returnObjPath == falseOut.returnObjPath)
                                                  ? trueOut.returnObjPath : std::string{};
                         return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew, mergedExc};

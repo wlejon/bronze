@@ -88,6 +88,7 @@ SymEvalOutcome SymbolicIlBuilder::evalFunction(const il::Function& fn,
         initState.heap.propFuncRefs = callerHeap->propFuncRefs;
         initState.heap.propFuncEnvs = callerHeap->propFuncEnvs;
         initState.heap.propGlobalRefs = callerHeap->propGlobalRefs;
+        initState.heap.refinedIntervals = callerHeap->refinedIntervals;
         initState.heap.localObjCounter = callerHeap->localObjCounter;
     }
 
@@ -250,8 +251,11 @@ BVNodeId SymbolicIlBuilder::getVal(const SymState& st, il::ValueId v) const {
 BVNodeId SymbolicIlBuilder::toBool1(BVNodeId node) {
     if (ctx_.width(node) == 1) return node;
     BVNodeId b64 = toBV64(node);
-    if (!floatMode_) return ctx_.make_binary(BVOp::Ne, b64, zero64_);
     const auto& n = ctx_.nodes()[b64];
+    if (!floatMode_) {
+        if (n.op == BVOp::ZExt && ctx_.width(n.a) == 1) return n.a;
+        return ctx_.make_binary(BVOp::Ne, b64, zero64_);
+    }
     if (n.op == BVOp::Ite && n.b == f64One_ && n.c == zero64_) return n.a;
     return ctx_.make_binary(BVOp::And, ctx_.make_binary(BVOp::FEq, b64, b64, 1),
                             ctx_.make_binary(BVOp::FNe, b64, zero64_, 1), 1);
@@ -495,7 +499,8 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
                                             : evalFloatFloorSymbolic(ctx, opVals[1]);
                 return true;
             }
-            outVal = evalFloorOrCeilSymbolic(ctx, heap, operands[1], opVals[1], method == "ceil");
+            outVal = evalFloorOrCeilSymbolic(ctx, heap, operands[1], opVals[1], method == "ceil",
+                                             heapTable.domainMin(), heapTable.domainMax());
             return true;
         }
         if (method == "trunc" && opVals.size() >= 2) {
@@ -691,6 +696,9 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
     state.heap.propFuncRefs = std::move(sub.finalHeap.propFuncRefs);
     state.heap.propFuncEnvs = std::move(sub.finalHeap.propFuncEnvs);
     state.heap.propGlobalRefs = std::move(sub.finalHeap.propGlobalRefs);
+    for (const auto& [nid, iv] : sub.finalHeap.refinedIntervals) {
+        if (nid == sub.returnVal) state.heap.refinedIntervals[nid] = iv;
+    }
     for (const auto& s : sub.finalHeap.stringPaths) state.heap.stringPaths.insert(s);
     for (const auto& a : sub.finalHeap.arrayPaths) state.heap.arrayPaths.insert(a);
     state.heap.localObjCounter = sub.finalHeap.localObjCounter;

@@ -218,6 +218,13 @@ void parseDtsSignatures(const std::string& content,
 
         FunctionDocMeta meta;
         meta.name = fnName;
+        if (trimmed.rfind("private ", 0) == 0 || trimmed.rfind("protected ", 0) == 0 ||
+            pendingComment.find("@private") != std::string::npos ||
+            pendingComment.find("@internal") != std::string::npos) {
+            meta.isPrivate = true;
+        } else {
+            meta.isExported = true;
+        }
         applyTextDomainRefinements(pendingComment, meta.domainMin, meta.domainMax, meta.hasExplicitRange,
                                    &meta.documentedSymmetric, &meta.documentedAntisymmetric, &meta.documentedCompare);
 
@@ -304,6 +311,15 @@ void parseJsDocComments(const std::string& content,
 
         FunctionDocMeta& meta = outMeta[fnName];
         if (meta.name.empty()) meta.name = fnName;
+        if (comment.find("@private") != std::string::npos ||
+            comment.find("@internal") != std::string::npos) {
+            meta.isPrivate = true;
+        } else if (comment.find("@public") != std::string::npos ||
+                   comment.find("@memberOf") != std::string::npos ||
+                   comment.find("@memberof") != std::string::npos ||
+                   comment.find("@exports") != std::string::npos) {
+            meta.isExported = true;
+        }
         applyTextDomainRefinements(comment, meta.domainMin, meta.domainMax, meta.hasExplicitRange,
                                    &meta.documentedSymmetric, &meta.documentedAntisymmetric, &meta.documentedCompare);
 
@@ -350,6 +366,61 @@ void parseJsDocComments(const std::string& content,
                 retDesc.find("non-negative") != std::string::npos) {
                 meta.hasReturnMin = true;
                 meta.returnMin = 0;
+            }
+        }
+    }
+
+    // Scan source lines for ESM/CommonJS export declarations to mark exported functions.
+    std::istringstream ess(content);
+    std::string eline;
+    while (std::getline(ess, eline)) {
+        std::string t = trimStr(eline);
+        auto markExported = [&](const std::string& id) {
+            if (id.empty() || id == "default" || id == "function" || id == "class" ||
+                id == "const" || id == "let" || id == "var") {
+                return;
+            }
+            FunctionDocMeta& m = outMeta[id];
+            if (m.name.empty()) m.name = id;
+            if (!m.isPrivate) m.isExported = true;
+        };
+        for (const char* kw : {"export function ", "export const ", "export let ", "export var ", "export default function "}) {
+            if (t.rfind(kw, 0) == 0) {
+                size_t ns = std::strlen(kw);
+                while (ns < t.size() && std::isspace(static_cast<unsigned char>(t[ns]))) ++ns;
+                size_t ne = ns;
+                while (ne < t.size() && (std::isalnum(static_cast<unsigned char>(t[ne])) || t[ne] == '_' || t[ne] == '$')) ++ne;
+                if (ne > ns) markExported(t.substr(ns, ne - ns));
+            }
+        }
+        if (t.rfind("export {", 0) == 0 || t.rfind("export{", 0) == 0) {
+            size_t lb = t.find('{');
+            size_t rb = t.find('}', lb + 1);
+            if (lb != std::string::npos && rb != std::string::npos) {
+                std::string list = t.substr(lb + 1, rb - (lb + 1));
+                size_t s = 0;
+                while (s < list.size()) {
+                    size_t c = list.find(',', s);
+                    if (c == std::string::npos) c = list.size();
+                    std::string item = trimStr(list.substr(s, c - s));
+                    s = c + 1;
+                    auto asPos = item.find(" as ");
+                    if (asPos != std::string::npos) {
+                        markExported(trimStr(item.substr(0, asPos)));
+                        markExported(trimStr(item.substr(asPos + 4)));
+                    } else {
+                        markExported(item);
+                    }
+                }
+            }
+        }
+        for (const char* cjs : {"exports.", "module.exports."}) {
+            auto cpos = t.find(cjs);
+            if (cpos != std::string::npos) {
+                size_t ns = cpos + std::strlen(cjs);
+                size_t ne = ns;
+                while (ne < t.size() && (std::isalnum(static_cast<unsigned char>(t[ne])) || t[ne] == '_' || t[ne] == '$')) ++ne;
+                if (ne > ns) markExported(t.substr(ns, ne - ns));
             }
         }
     }
@@ -533,6 +604,23 @@ std::string PackageAuditReport::renderText() const {
         }
         os << "\n";
     }
+    if (internalHelperCount > 0) {
+        os << "Internal helpers (reported separately): " << internalAnalyzedCount
+           << " / " << internalHelperCount << " analyzed, COUNTEREXAMPLE="
+           << internalCounterexampleCount << "\n";
+        for (const auto& c : internalChecks) {
+            if (c.status != EquivStatus::Counterexample) continue;
+            os << "  [internal-helper] " << c.functionName << " [" << c.propertyKind << "] "
+               << c.formalProperty << " -> COUNTEREXAMPLE (";
+            for (size_t i = 0; i < c.counterexampleArgs.size(); ++i) {
+                if (i > 0) os << ", ";
+                std::string pn = (i < c.paramNames.size()) ? c.paramNames[i] : ("arg_" + std::to_string(i));
+                os << pn << "=" << c.counterexampleArgs[i];
+            }
+            os << " => expected=" << (c.oldThrows ? std::string("throws") : std::to_string(c.expectedValue))
+               << ", actual=" << (c.newThrows ? std::string("throws") : std::to_string(c.actualValue)) << ")\n";
+        }
+    }
     return os.str();
 }
 
@@ -549,6 +637,9 @@ std::string PackageAuditReport::renderJson() const {
        << "\"counterexampleCount\":" << counterexampleCount << ","
        << "\"preconditionBucketCount\":" << preconditionBucketCount << ","
        << "\"unknownCount\":" << unknownCount << ","
+       << "\"internalHelperCount\":" << internalHelperCount << ","
+       << "\"internalAnalyzedCount\":" << internalAnalyzedCount << ","
+       << "\"internalCounterexampleCount\":" << internalCounterexampleCount << ","
        << "\"unknownReasons\":{";
     bool firstR = true;
     for (const auto& [reason, cnt] : unknownReasons) {
@@ -583,6 +674,16 @@ std::string PackageAuditReport::renderJson() const {
                << ",\"newThrows\":" << (c.newThrows ? "true" : "false") << "}";
         }
         os << "}";
+    }
+    os << "],\"internalChecks\":[";
+    for (size_t i = 0; i < internalChecks.size(); ++i) {
+        if (i > 0) os << ",";
+        const auto& c = internalChecks[i];
+        os << "{\"function\":\"" << jsonEscapeStr(c.functionName) << "\","
+           << "\"kind\":\"" << jsonEscapeStr(c.propertyKind) << "\","
+           << "\"property\":\"" << jsonEscapeStr(c.formalProperty) << "\","
+           << "\"status\":\"" << equivStatusTag(c.status) << "\","
+           << "\"detail\":\"" << jsonEscapeStr(c.detail) << "\"}";
     }
     os << "]}\n";
     return os.str();

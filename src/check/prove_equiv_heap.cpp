@@ -1,6 +1,8 @@
 #include "check/prove_equiv_heap.h"
 
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <set>
 #include <unordered_set>
 
@@ -241,6 +243,108 @@ void SymbolicHeapState::unifyBranchAlias(SymbolicHeapTable& table,
                                          il::ValueId condValId,
                                          BVNodeId condBool1,
                                          bool isTrueBranch) {
+    BVContext& ctx = table.ctx();
+    int32_t dMin = table.domainMin();
+    int32_t dMax = table.domainMax();
+    auto tighten = [&](auto& selfT, BVNodeId id, int64_t lo, int64_t hi, int depth) -> void {
+        if (id >= ctx.nodes().size() || lo > hi || depth <= 0) return;
+        auto cur = getSignedInterval64(ctx, id, dMin, dMax, 16, &refinedIntervals);
+        cur.smin = std::max(cur.smin, lo);
+        cur.smax = std::min(cur.smax, hi);
+        if (cur.smin <= cur.smax) refinedIntervals[id] = cur;
+        const auto& n = ctx.nodes()[id];
+        if (n.op == BVOp::Add && ctx.nodes()[n.b].op == BVOp::Const) {
+            int64_t c = static_cast<int64_t>(ctx.nodes()[n.b].imm);
+            int64_t nLo = (lo == INT64_MIN) ? INT64_MIN : (lo - c);
+            int64_t nHi = (hi == INT64_MAX) ? INT64_MAX : (hi - c);
+            selfT(selfT, n.a, nLo, nHi, depth - 1);
+        } else if (n.op == BVOp::Add && ctx.nodes()[n.a].op == BVOp::Const) {
+            int64_t c = static_cast<int64_t>(ctx.nodes()[n.a].imm);
+            int64_t nLo = (lo == INT64_MIN) ? INT64_MIN : (lo - c);
+            int64_t nHi = (hi == INT64_MAX) ? INT64_MAX : (hi - c);
+            selfT(selfT, n.b, nLo, nHi, depth - 1);
+        } else if (n.op == BVOp::Sub && ctx.nodes()[n.b].op == BVOp::Const) {
+            int64_t c = static_cast<int64_t>(ctx.nodes()[n.b].imm);
+            int64_t nLo = (lo == INT64_MIN) ? INT64_MIN : (lo + c);
+            int64_t nHi = (hi == INT64_MAX) ? INT64_MAX : (hi + c);
+            selfT(selfT, n.a, nLo, nHi, depth - 1);
+        } else if (n.op == BVOp::Sub && ctx.nodes()[n.a].op == BVOp::Const) {
+            int64_t c = static_cast<int64_t>(ctx.nodes()[n.a].imm);
+            int64_t nLo = (hi == INT64_MAX) ? INT64_MIN : (c - hi);
+            int64_t nHi = (lo == INT64_MIN) ? INT64_MAX : (c - lo);
+            selfT(selfT, n.b, nLo, nHi, depth - 1);
+        }
+    };
+    auto applyTighten = [&](BVNodeId id, int64_t lo, int64_t hi) {
+        tighten(tighten, id, lo, hi, 4);
+    };
+    auto refineCond = [&](auto& self, BVNodeId cId, bool truth) -> void {
+        if (cId >= ctx.nodes().size()) return;
+        const auto& cn = ctx.nodes()[cId];
+        if (cn.op == BVOp::ZExt || cn.op == BVOp::SExt) {
+            self(self, cn.a, truth);
+            return;
+        }
+        if (cn.op == BVOp::Ne && ctx.nodes()[cn.b].op == BVOp::Const && ctx.nodes()[cn.b].imm == 0) {
+            self(self, cn.a, truth);
+            return;
+        }
+        if (cn.op == BVOp::Eq && ctx.nodes()[cn.b].op == BVOp::Const && ctx.nodes()[cn.b].imm == 0) {
+            self(self, cn.a, !truth);
+            return;
+        }
+        if (cn.op == BVOp::Not) {
+            self(self, cn.a, !truth);
+            return;
+        }
+        if (cn.op == BVOp::And && truth) {
+            self(self, cn.a, true);
+            self(self, cn.b, true);
+            return;
+        }
+        if (cn.op == BVOp::Or && !truth) {
+            self(self, cn.a, false);
+            self(self, cn.b, false);
+            return;
+        }
+        if (cn.op != BVOp::Slt && cn.op != BVOp::Sle) return;
+        BVNodeId L = cn.a;
+        BVNodeId R = cn.b;
+        bool strict = (cn.op == BVOp::Slt);
+        auto lIv = getSignedInterval64(ctx, L, dMin, dMax, 16, &refinedIntervals);
+        auto rIv = getSignedInterval64(ctx, R, dMin, dMax, 16, &refinedIntervals);
+        if (truth) {
+            int64_t d = strict ? 1 : 0;
+            if (rIv.smax < INT64_MAX) applyTighten(L, INT64_MIN, rIv.smax - d);
+            if (lIv.smin > INT64_MIN) applyTighten(R, lIv.smin + d, INT64_MAX);
+            applyTighten(ctx.make_binary(BVOp::Sub, L, R), INT64_MIN, -d);
+            applyTighten(ctx.make_binary(BVOp::Sub, R, L), d, INT64_MAX);
+            if (ctx.nodes()[R].op == BVOp::Add && ctx.nodes()[ctx.nodes()[R].b].op == BVOp::Const) {
+                int64_t c = static_cast<int64_t>(ctx.nodes()[ctx.nodes()[R].b].imm);
+                applyTighten(ctx.make_binary(BVOp::Sub, L, ctx.nodes()[R].a), INT64_MIN, c - d);
+            }
+            if (ctx.nodes()[L].op == BVOp::Add && ctx.nodes()[ctx.nodes()[L].b].op == BVOp::Const) {
+                int64_t c = static_cast<int64_t>(ctx.nodes()[ctx.nodes()[L].b].imm);
+                applyTighten(ctx.make_binary(BVOp::Sub, R, ctx.nodes()[L].a), d - c, INT64_MAX);
+            }
+        } else {
+            int64_t d = strict ? 0 : 1;
+            if (rIv.smin > INT64_MIN) applyTighten(L, rIv.smin + d, INT64_MAX);
+            if (lIv.smax < INT64_MAX) applyTighten(R, INT64_MIN, lIv.smax - d);
+            applyTighten(ctx.make_binary(BVOp::Sub, L, R), d, INT64_MAX);
+            applyTighten(ctx.make_binary(BVOp::Sub, R, L), INT64_MIN, -d);
+            if (ctx.nodes()[R].op == BVOp::Add && ctx.nodes()[ctx.nodes()[R].b].op == BVOp::Const) {
+                int64_t c = static_cast<int64_t>(ctx.nodes()[ctx.nodes()[R].b].imm);
+                applyTighten(ctx.make_binary(BVOp::Sub, L, ctx.nodes()[R].a), c + d, INT64_MAX);
+            }
+            if (ctx.nodes()[L].op == BVOp::Add && ctx.nodes()[ctx.nodes()[L].b].op == BVOp::Const) {
+                int64_t c = static_cast<int64_t>(ctx.nodes()[ctx.nodes()[L].b].imm);
+                applyTighten(ctx.make_binary(BVOp::Sub, R, ctx.nodes()[L].a), INT64_MIN, c - d);
+            }
+        }
+    };
+    refineCond(refineCond, condBool1, isTrueBranch);
+
     auto it = objComparisons.find(condValId);
     if (it == objComparisons.end()) return;
     const auto& info = it->second;
@@ -531,10 +635,42 @@ BVNodeId SymbolicHeapState::getFinalValue(SymbolicHeapTable& table,
     return table.getInitialVal(path);
 }
 
+int tryFoldRefinedBranchCond(
+    const BVContext& ctx,
+    BVNodeId condNode,
+    int32_t dMin,
+    int32_t dMax,
+    const std::unordered_map<BVNodeId, brass::verify::BVInterval>& refined) {
+    if (condNode >= ctx.nodes().size()) return -1;
+    const auto& n = ctx.nodes()[condNode];
+    if (n.op == BVOp::Const) return (n.imm != 0) ? 1 : 0;
+    if (n.op == BVOp::Not) {
+        int sub = tryFoldRefinedBranchCond(ctx, n.a, dMin, dMax, refined);
+        return (sub < 0) ? -1 : (1 - sub);
+    }
+    if (n.op == BVOp::Slt || n.op == BVOp::Sle) {
+        auto lIv = getSignedInterval64(ctx, n.a, dMin, dMax, 16, &refined);
+        auto rIv = getSignedInterval64(ctx, n.b, dMin, dMax, 16, &refined);
+        if (n.op == BVOp::Slt) {
+            if (lIv.smax < rIv.smin) return 1;
+            if (lIv.smin >= rIv.smax) return 0;
+        } else {
+            if (lIv.smax <= rIv.smin) return 1;
+            if (lIv.smin > rIv.smax) return 0;
+        }
+    }
+    return -1;
+}
+
 SymbolicHeapState SymbolicHeapState::mergeBranches(SymbolicHeapTable& table,
                                                    BVNodeId condNode,
                                                    const SymbolicHeapState& tHeap,
-                                                   const SymbolicHeapState& fHeap) {
+                                                   const SymbolicHeapState& fHeap,
+                                                   BVNodeId tRet,
+                                                   BVNodeId tThrew,
+                                                   BVNodeId fRet,
+                                                   BVNodeId fThrew,
+                                                   BVNodeId mergedRet) {
     BVContext& ctx = table.ctx();
     SymbolicHeapState merged = tHeap;
     for (const auto& [k, v] : fHeap.objPaths) {
@@ -552,6 +688,43 @@ SymbolicHeapState SymbolicHeapState::mergeBranches(SymbolicHeapTable& table,
     for (const auto& s : fHeap.stringPaths) merged.stringPaths.insert(s);
     for (const auto& a : fHeap.arrayPaths) merged.arrayPaths.insert(a);
     merged.localObjCounter = std::max(tHeap.localObjCounter, fHeap.localObjCounter);
+
+    bool tAlwaysThrows = (tThrew != 0 && tThrew < ctx.nodes().size() &&
+                          ctx.nodes()[tThrew].op == BVOp::Const && ctx.nodes()[tThrew].imm != 0);
+    bool fAlwaysThrows = (fThrew != 0 && fThrew < ctx.nodes().size() &&
+                          ctx.nodes()[fThrew].op == BVOp::Const && ctx.nodes()[fThrew].imm != 0);
+    if (tAlwaysThrows && !fAlwaysThrows) {
+        merged.refinedIntervals = fHeap.refinedIntervals;
+    } else if (fAlwaysThrows && !tAlwaysThrows) {
+        merged.refinedIntervals = tHeap.refinedIntervals;
+    } else {
+        merged.refinedIntervals.clear();
+        for (const auto& [nid, tIv] : tHeap.refinedIntervals) {
+            auto fIt = fHeap.refinedIntervals.find(nid);
+            if (fIt != fHeap.refinedIntervals.end()) {
+                brass::verify::BVInterval mIv = tIv;
+                mIv.smin = std::min(tIv.smin, fIt->second.smin);
+                mIv.smax = std::max(tIv.smax, fIt->second.smax);
+                merged.refinedIntervals[nid] = mIv;
+            }
+        }
+    }
+    if (mergedRet != 0) {
+        int32_t dMin = table.domainMin();
+        int32_t dMax = table.domainMax();
+        auto tIv = getSignedInterval64(ctx, tRet, dMin, dMax, 16, &tHeap.refinedIntervals);
+        auto fIv = getSignedInterval64(ctx, fRet, dMin, dMax, 16, &fHeap.refinedIntervals);
+        if (tAlwaysThrows && !fAlwaysThrows) {
+            merged.refinedIntervals[mergedRet] = fIv;
+        } else if (fAlwaysThrows && !tAlwaysThrows) {
+            merged.refinedIntervals[mergedRet] = tIv;
+        } else {
+            brass::verify::BVInterval mIv = tIv;
+            mIv.smin = std::min(tIv.smin, fIv.smin);
+            mIv.smax = std::max(tIv.smax, fIv.smax);
+            merged.refinedIntervals[mergedRet] = mIv;
+        }
+    }
 
     std::set<std::string> allPaths;
     for (const auto& [p, _] : tHeap.writes) allPaths.insert(p);
@@ -648,6 +821,76 @@ BVNodeId SymbolicHeapState::buildHeapMismatchCond(SymbolicHeapTable& table,
     }
 
     return mismatch;
+}
+
+void minimizeCounterexampleModel(const BVContext& ctx,
+                                 BVNodeId badCond,
+                                 size_t totalVars,
+                                 int32_t domainMin,
+                                 int32_t domainMax,
+                                 std::vector<uint64_t>& bestModel) {
+    static constexpr int32_t kSmallCandidates[] = {
+        0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 7, 8, -8, 10, 16, 31, 32, -32, 64, 100, -128, 127
+    };
+    if (totalVars == 1) {
+        for (int32_t c0 : kSmallCandidates) {
+            if (c0 < domainMin || c0 > domainMax) continue;
+            std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0))};
+            if (ctx.eval_concrete(badCond, cand) != 0) {
+                bestModel = std::move(cand);
+                return;
+            }
+        }
+    } else if (totalVars == 2) {
+        for (int32_t c0 : kSmallCandidates) {
+            if (c0 < domainMin || c0 > domainMax) continue;
+            for (int32_t c1 : kSmallCandidates) {
+                if (c1 < domainMin || c1 > domainMax) continue;
+                std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0)),
+                                           static_cast<uint64_t>(static_cast<uint32_t>(c1))};
+                if (ctx.eval_concrete(badCond, cand) != 0) {
+                    bestModel = std::move(cand);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void minimizeFloatCounterexampleModel(const BVContext& ctx,
+                                      BVNodeId badCond,
+                                      size_t totalVars,
+                                      std::vector<uint64_t>& bestModel) {
+    const double kFloatCandidates[] = {
+        0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()
+    };
+    auto toBits = [](double d) {
+        uint64_t b = 0;
+        std::memcpy(&b, &d, sizeof(double));
+        return b;
+    };
+    if (totalVars == 1) {
+        for (double d0 : kFloatCandidates) {
+            std::vector<uint64_t> cand{toBits(d0)};
+            if (ctx.eval_concrete(badCond, cand) != 0) {
+                bestModel = std::move(cand);
+                return;
+            }
+        }
+    } else if (totalVars == 2) {
+        for (double d0 : kFloatCandidates) {
+            for (double d1 : kFloatCandidates) {
+                std::vector<uint64_t> cand{toBits(d0), toBits(d1)};
+                if (ctx.eval_concrete(badCond, cand) != 0) {
+                    bestModel = std::move(cand);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 }  // namespace bronze::check
