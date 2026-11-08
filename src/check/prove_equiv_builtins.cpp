@@ -498,6 +498,19 @@ bool evalFloatBinaryOpSymbolic(BVContext& ctx,
         return true;
     }
     if (op == Op::Mod) {
+        const auto& rNode = ctx.nodes()[rhs];
+        if (rNode.op == BVOp::Const) {
+            double d = 0.0;
+            std::memcpy(&d, &rNode.imm, sizeof(double));
+            if (std::isfinite(d) && d > 0.0 && d <= 2147483647.0 && std::trunc(d) == d) {
+                int64_t modI = static_cast<int64_t>(d);
+                BVNodeId lhsI64 = ctx.make_sext(ctx.make_unary(BVOp::FpToSi, lhs, 32), 32);
+                BVNodeId rhsI64 = ctx.make_const(static_cast<uint64_t>(modI), 64);
+                BVNodeId remI64 = makeConstAwareDivOrRem(ctx, BVOp::SRem, lhsI64, rhsI64);
+                outVal = ctx.make_unary(BVOp::SiToFp, remI64, 64);
+                return true;
+            }
+        }
         if (outReason) *outReason = "unsupported floating-point modulo";
         return false;
     }
@@ -546,11 +559,19 @@ bool tryEvalGlobalPropGetSymbolic(BVContext& ctx,
 }
 
 bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
+    bool hasBitwiseOrElemOrMod = false;
     for (const auto& blk : fn.blocks) {
         for (const auto& inst : blk.instructions) {
-            if (inst.op == il::Op::MethodCall && inst.keyIndex < mod.keyConstants.size() &&
+            using Op = il::Op;
+            if (inst.op == Op::MethodCall && inst.keyIndex < mod.keyConstants.size() &&
                 mod.keyConstants[inst.keyIndex] == "isSafeInteger") {
                 return false;
+            }
+            if (inst.op == Op::BitAnd || inst.op == Op::BitOr || inst.op == Op::BitXor ||
+                inst.op == Op::BitNot || inst.op == Op::Shl || inst.op == Op::Shr ||
+                inst.op == Op::UShr || inst.op == Op::ToInt32 ||
+                inst.op == Op::Mod || inst.op == Op::ElemGet || inst.op == Op::ElemSet) {
+                hasBitwiseOrElemOrMod = true;
             }
         }
     }
@@ -597,7 +618,10 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
             } else if (inst.op == Op::MethodCall && inst.keyIndex < mod.keyConstants.size()) {
                 const std::string& m = mod.keyConstants[inst.keyIndex];
                 if (m == "isNaN" || m == "isFinite" || m == "is" || m == "sqrt" ||
-                    m == "fround" || m == "round" || m == "min" || m == "max") {
+                    m == "fround" || m == "round") {
+                    return true;
+                }
+                if ((m == "min" || m == "max") && !hasBitwiseOrElemOrMod) {
                     return true;
                 }
                 if ((m == "floor" || m == "ceil" || m == "trunc") &&
@@ -606,8 +630,10 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                 }
             } else if (inst.op == Op::MathUnary) {
                 auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                if (kind == il::MathUnaryFn::Sqrt || kind == il::MathUnaryFn::Round ||
-                    kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                if (kind == il::MathUnaryFn::Sqrt || kind == il::MathUnaryFn::Round) {
+                    return true;
+                }
+                if ((kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) && !hasBitwiseOrElemOrMod) {
                     return true;
                 }
                 if ((kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil || kind == il::MathUnaryFn::Trunc) &&

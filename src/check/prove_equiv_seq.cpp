@@ -18,7 +18,12 @@ bool functionUsesStringOps(const il::Module& mod, const il::Function& fn) {
                 return true;
             }
             if (inst.op == Op::Box && inst.operands.empty() && inst.keyIndex < mod.keyConstants.size()) {
-                return true;
+                const std::string& s = mod.keyConstants[inst.keyIndex];
+                if (s.size() <= kMaxBoundedSeqLen &&
+                    s != "undefined" && s != "object" && s != "boolean" && s != "number" &&
+                    s != "string" && s != "function" && s != "symbol" && s != "bigint") {
+                    return true;
+                }
             }
             if (inst.op == Op::MethodCall && inst.keyIndex < mod.keyConstants.size()) {
                 const std::string& m = mod.keyConstants[inst.keyIndex];

@@ -77,6 +77,30 @@ bool lowerEntryFileForAudit(const std::string& path,
         return false;
     }
     outMod = std::move(*lowered);
+    for (const auto& fn : outMod.functions) {
+        std::unordered_map<il::ValueId, uint32_t> fnValToCallee;
+        for (const auto& blk : fn.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if ((inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) &&
+                    inst.result != il::kNoValue && inst.calleeIndex < outMod.functions.size()) {
+                    fnValToCallee[inst.result] = inst.calleeIndex;
+                } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox) &&
+                           !inst.operands.empty() && inst.result != il::kNoValue &&
+                           fnValToCallee.count(inst.operands[0])) {
+                    fnValToCallee[inst.result] = fnValToCallee[inst.operands[0]];
+                } else if ((inst.op == il::Op::PropSet || inst.op == il::Op::MethodDef) &&
+                           inst.operands.size() >= 2 && inst.keyIndex < outMod.keyConstants.size()) {
+                    auto it = fnValToCallee.find(inst.operands[1]);
+                    if (it != fnValToCallee.end() && it->second < outMod.functions.size()) {
+                        il::Function& target = outMod.functions[it->second];
+                        if (target.displayName.empty() || target.displayName.find("anon") != std::string::npos) {
+                            target.displayName = outMod.keyConstants[inst.keyIndex];
+                        }
+                    }
+                }
+            }
+        }
+    }
     return true;
 }
 
