@@ -79,12 +79,14 @@ private:
     brass::verify::BVContext& ctx_;
     const il::Module& mod_;
     bool strictJs32Bitwise_ = false;
+    bool floatMode_ = false;
     SymbolicHeapTable ownedHeapTable_;
     SymbolicHeapTable& heapTable_;
     brass::verify::BVNodeId zero1_ = 0;
     brass::verify::BVNodeId one1_ = 0;
     brass::verify::BVNodeId zero64_ = 0;
     brass::verify::BVNodeId one64_ = 0;
+    brass::verify::BVNodeId f64One_ = 0;
     brass::verify::BVNodeId allOnes64_ = 0;
     uint32_t totalVisits_ = 0;
     bool hitLoopUnrollBound_ = false;

@@ -18,6 +18,21 @@ int32_t jsToInt32(double d) {
     return static_cast<int32_t>(u32);
 }
 
+double jsMathRound(double a) {
+    if (std::isnan(a) || !std::isfinite(a) || a == 0.0) return a;
+    if (a < 0.0 && a >= -0.5) return -0.0;
+    return std::floor(a + 0.5);
+}
+
+double jsMathMinMax(double a, double b, bool isMin) {
+    if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<double>::quiet_NaN();
+    if (a == 0.0 && b == 0.0) {
+        return isMin ? ((std::signbit(a) || std::signbit(b)) ? -0.0 : 0.0)
+                     : ((std::signbit(a) && std::signbit(b)) ? -0.0 : 0.0);
+    }
+    return isMin ? std::min(a, b) : std::max(a, b);
+}
+
 struct CVal {
     enum class Kind : uint8_t { Undefined, Null, Bool, Number, String, Object, Function };
     Kind kind = Kind::Number;
@@ -291,6 +306,14 @@ struct ConcreteVM {
                         const std::string& key = mod.keyConstants[inst.keyIndex];
                         CVal recv = opV(0);
                         if (!recv.globalName.empty()) {
+                            if (recv.globalName == "Number") {
+                                if (key == "NaN") { vals[inst.result] = CVal::makeF64(std::numeric_limits<double>::quiet_NaN()); break; }
+                                if (key == "POSITIVE_INFINITY") { vals[inst.result] = CVal::makeF64(std::numeric_limits<double>::infinity()); break; }
+                                if (key == "NEGATIVE_INFINITY") { vals[inst.result] = CVal::makeF64(-std::numeric_limits<double>::infinity()); break; }
+                                if (key == "EPSILON") { vals[inst.result] = CVal::makeF64(std::numeric_limits<double>::epsilon()); break; }
+                                if (key == "MAX_SAFE_INTEGER") { vals[inst.result] = CVal::makeF64(9007199254740991.0); break; }
+                                if (key == "MIN_SAFE_INTEGER") { vals[inst.result] = CVal::makeF64(-9007199254740991.0); break; }
+                            }
                             CVal gv = CVal::makeI64(1);
                             gv.globalName = recv.globalName + "." + key;
                             vals[inst.result] = gv;
@@ -336,11 +359,12 @@ struct ConcreteVM {
                     }
                     case Op::Add: {
                         CVal a = opV(0), b = opV(1);
+                        bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
                         if (a.kind == CVal::Kind::String || b.kind == CVal::Kind::String) {
                             std::string sa = (a.kind == CVal::Kind::String) ? a.str : std::to_string(a.i64);
                             std::string sb = (b.kind == CVal::Kind::String) ? b.str : std::to_string(b.i64);
                             vals[inst.result] = CVal::makeStr(sa + sb);
-                        } else if (std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
+                        } else if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
                                    std::isfinite(a.num) && std::isfinite(b.num)) {
                             vals[inst.result] = CVal::makeI64(a.i64 + b.i64);
                         } else {
@@ -350,7 +374,8 @@ struct ConcreteVM {
                     }
                     case Op::Sub: {
                         CVal a = opV(0), b = opV(1);
-                        if (std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
+                        bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
+                        if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
                             std::isfinite(a.num) && std::isfinite(b.num)) {
                             vals[inst.result] = CVal::makeI64(a.i64 - b.i64);
                         } else {
@@ -360,7 +385,7 @@ struct ConcreteVM {
                     }
                     case Op::Mul: {
                         CVal a = opV(0), b = opV(1);
-                        if (std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
+                        if (a.num != 0.0 && b.num != 0.0 && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
                             std::isfinite(a.num) && std::isfinite(b.num)) {
                             vals[inst.result] = CVal::makeI64(a.i64 * b.i64);
                         } else {
@@ -454,13 +479,12 @@ struct ConcreteVM {
                         else if (kind == il::MathUnaryFn::Floor) vals[inst.result] = CVal::makeF64(std::floor(a));
                         else if (kind == il::MathUnaryFn::Ceil) vals[inst.result] = CVal::makeF64(std::ceil(a));
                         else if (kind == il::MathUnaryFn::Trunc) vals[inst.result] = CVal::makeF64(std::trunc(a));
-                        else if (kind == il::MathUnaryFn::Round) vals[inst.result] = CVal::makeF64(std::floor(a + 0.5));
+                        else if (kind == il::MathUnaryFn::Round) vals[inst.result] = CVal::makeF64(jsMathRound(a));
                         else if (kind == il::MathUnaryFn::Sqrt) vals[inst.result] = CVal::makeF64(std::sqrt(a));
                         else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
                             double acc = a;
                             for (size_t k = 1; k < inst.operands.size(); ++k) {
-                                double rhs = opV(k).num;
-                                acc = (kind == il::MathUnaryFn::Min) ? std::min(acc, rhs) : std::max(acc, rhs);
+                                acc = jsMathMinMax(acc, opV(k).num, kind == il::MathUnaryFn::Min);
                             }
                             vals[inst.result] = CVal::makeF64(acc);
                         } else {
@@ -519,7 +543,9 @@ struct ConcreteVM {
                             if (m == "floor") { vals[inst.result] = CVal::makeF64(std::floor(a)); break; }
                             if (m == "ceil") { vals[inst.result] = CVal::makeF64(std::ceil(a)); break; }
                             if (m == "trunc") { vals[inst.result] = CVal::makeF64(std::trunc(a)); break; }
-                            if (m == "round") { vals[inst.result] = CVal::makeF64(std::floor(a + 0.5)); break; }
+                            if (m == "round") { vals[inst.result] = CVal::makeF64(jsMathRound(a)); break; }
+                            if (m == "fround") { vals[inst.result] = CVal::makeF64(static_cast<double>(static_cast<float>(a))); break; }
+                            if (m == "sqrt") { vals[inst.result] = CVal::makeF64(std::sqrt(a)); break; }
                             if (m == "imul") {
                                 int32_t x = jsToInt32(a), y = jsToInt32(b);
                                 vals[inst.result] = CVal::makeI64(static_cast<int32_t>(static_cast<uint32_t>(x) * static_cast<uint32_t>(y)));
@@ -532,16 +558,34 @@ struct ConcreteVM {
                                 vals[inst.result] = CVal::makeI64(lz);
                                 break;
                             }
-                            if (m == "sign") { vals[inst.result] = CVal::makeI64(a < 0 ? -1 : (a > 0 ? 1 : 0)); break; }
+                            if (m == "sign") {
+                                double s = std::isnan(a) ? a : (a == 0.0 ? a : (a < 0.0 ? -1.0 : 1.0));
+                                vals[inst.result] = CVal::makeF64(s);
+                                break;
+                            }
                             if (m == "pow") { vals[inst.result] = CVal::makeF64(std::pow(a, b)); break; }
                             if (m == "min" || m == "max") {
                                 double acc = a;
                                 for (size_t k = 2; k < inst.operands.size(); ++k) {
-                                    acc = (m == "min") ? std::min(acc, opV(k).num) : std::max(acc, opV(k).num);
+                                    acc = jsMathMinMax(acc, opV(k).num, m == "min");
                                 }
                                 vals[inst.result] = CVal::makeF64(acc);
                                 break;
                             }
+                        }
+                        if (recv.globalName == "Object" && m == "is") {
+                            double a = opV(1).num, b = opV(2).num;
+                            bool same = (std::isnan(a) && std::isnan(b)) || (a == b && std::signbit(a) == std::signbit(b));
+                            vals[inst.result] = CVal::makeBool(same);
+                            break;
+                        }
+                        if (m == "isNaN" && inst.operands.size() >= 2) {
+                            vals[inst.result] = CVal::makeBool(std::isnan(opV(1).num));
+                            break;
+                        }
+                        if (m == "isFinite" && inst.operands.size() >= 2) {
+                            vals[inst.result] = CVal::makeBool(std::isfinite(opV(1).num));
+                            break;
                         }
                         if (recv.globalName == "Number") {
                             double a = opV(1).num;
@@ -609,6 +653,14 @@ struct ConcreteVM {
                     }
                     case Op::DynamicCall: {
                         CVal calleeV = opV(0);
+                        if (calleeV.globalName == "isNaN" && inst.operands.size() >= 3) {
+                            vals[inst.result] = CVal::makeBool(std::isnan(opV(2).num));
+                            break;
+                        }
+                        if (calleeV.globalName == "isFinite" && inst.operands.size() >= 3) {
+                            vals[inst.result] = CVal::makeBool(std::isfinite(opV(2).num));
+                            break;
+                        }
                         if (calleeV.globalName == "Error" || calleeV.globalName == "RangeError" ||
                             calleeV.globalName == "TypeError" || calleeV.globalName == "SyntaxError") {
                             vals[inst.result] = CVal::makeObj(allocObj("__err"));
@@ -724,7 +776,8 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
                                    const il::Function& fn,
                                    const std::vector<std::string>& paramNames,
                                    const std::vector<int64_t>& argValues,
-                                   uint32_t maxSteps) {
+                                   uint32_t maxSteps,
+                                   bool floatBitArgs) {
     ConcreteVM vm(mod, maxSteps);
     for (const auto& f : mod.functions) {
         if (!f.isExternal && (f.isEntryPoint || f.name == "main") && !f.blocks.empty()) {
@@ -740,6 +793,15 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
     uint32_t thisObjId = vm.allocObj("this");
     CVal thisVal = CVal::makeObj(thisObjId, static_cast<int64_t>(0x00B1000000000001ULL));
 
+    auto decodeArgVal = [&](int64_t raw) -> CVal {
+        if (floatBitArgs) {
+            double d = 0.0;
+            std::memcpy(&d, &raw, sizeof(double));
+            return CVal::makeF64(d);
+        }
+        return CVal::makeI64(raw);
+    };
+
     uint32_t srcCount = static_cast<uint32_t>(fn.callerParamCount());
     std::vector<CVal> callArgs(srcCount);
     std::unordered_map<std::string, uint32_t> rootObjs;
@@ -749,7 +811,7 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
         uint32_t oid = vm.allocObj(rName);
         rootObjs[rName] = oid;
         int64_t scalar = (i < argValues.size()) ? argValues[i] : 0;
-        callArgs[i] = CVal::makeI64(scalar);
+        callArgs[i] = decodeArgVal(scalar);
         callArgs[i].objId = oid;
     }
 
@@ -765,7 +827,7 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
         while (true) {
             auto nextDot = rest.find('.');
             if (nextDot == std::string::npos) {
-                vm.heap[curObj].props[rest] = CVal::makeI64(argValues[i]);
+                vm.heap[curObj].props[rest] = decodeArgVal(argValues[i]);
                 break;
             }
             std::string seg = rest.substr(0, nextDot);
@@ -797,7 +859,9 @@ bool concreteResultsDiverge(const InterpResult& oldRun,
     bool oldNaN = std::isnan(oldRun.returnNum);
     bool newNaN = std::isnan(newRun.returnNum);
     if (oldNaN != newNaN) return true;
-    if (!oldNaN && (oldRun.returnI64 != newRun.returnI64 || oldRun.returnNum != newRun.returnNum)) {
+    bool signZeroDiff = (oldRun.returnNum == 0.0 && newRun.returnNum == 0.0 &&
+                         std::signbit(oldRun.returnNum) != std::signbit(newRun.returnNum));
+    if (!oldNaN && (oldRun.returnI64 != newRun.returnI64 || oldRun.returnNum != newRun.returnNum || signZeroDiff)) {
         if (outOldScalar) *outOldScalar = oldRun.returnI64;
         if (outNewScalar) *outNewScalar = newRun.returnI64;
         return true;
@@ -818,10 +882,11 @@ bool verifyCounterexampleWithReplay(const il::Module& oldMod,
                                     const il::Function& oldFn,
                                     const il::Module& newMod,
                                     const il::Function& newFn,
-                                    FunctionEquivResult& res) {
+                                    FunctionEquivResult& res,
+                                    bool floatBitArgs) {
     if (res.status != EquivStatus::Counterexample) return true;
-    InterpResult oldRun = runIlFunctionConcrete(oldMod, oldFn, res.paramNames, res.counterexampleArgs);
-    InterpResult newRun = runIlFunctionConcrete(newMod, newFn, res.paramNames, res.counterexampleArgs);
+    InterpResult oldRun = runIlFunctionConcrete(oldMod, oldFn, res.paramNames, res.counterexampleArgs, 50000, floatBitArgs);
+    InterpResult newRun = runIlFunctionConcrete(newMod, newFn, res.paramNames, res.counterexampleArgs, 50000, floatBitArgs);
     if (!oldRun.completed || !newRun.completed) {
         return true;
     }

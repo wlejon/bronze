@@ -1,6 +1,10 @@
 #include "check/prove_equiv_heap.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <queue>
 #include <unordered_set>
 
 namespace bronze::check {
@@ -282,6 +286,344 @@ const il::Function* findMethodCalleeInModule(const il::Module& mod,
     return nullptr;
 }
 
+BVNodeId makeF64ConstNode(BVContext& ctx, double d) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &d, sizeof(double));
+    return ctx.make_const(bits, 64);
+}
+
+namespace {
+
+BVNodeId makeFloatBool64(BVContext& ctx, BVNodeId cond1) {
+    return ctx.make_ite(cond1, makeF64ConstNode(ctx, 1.0), ctx.make_const(0, 64));
+}
+
+bool canReachNonEmpty(const il::Function& fn, il::BlockId start, il::BlockId goal, il::BlockId minBlock) {
+    if (start >= fn.blocks.size() || goal >= fn.blocks.size()) return false;
+    std::queue<il::BlockId> q;
+    std::vector<uint8_t> vis(fn.blocks.size(), 0);
+    auto pushEdge = [&](il::BlockId dst) {
+        if (dst >= fn.blocks.size() || dst < minBlock) return false;
+        if (dst == goal) return true;
+        if (!vis[dst]) {
+            vis[dst] = 1;
+            q.push(dst);
+        }
+        return false;
+    };
+    const auto& sBlk = fn.blocks[start];
+    if (!sBlk.instructions.empty()) {
+        const auto& term = sBlk.instructions.back();
+        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
+        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
+    }
+    while (!q.empty()) {
+        il::BlockId cur = q.front();
+        q.pop();
+        const auto& blk = fn.blocks[cur];
+        if (blk.instructions.empty()) continue;
+        const auto& term = blk.instructions.back();
+        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
+        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn, std::vector<uint8_t>& outInCycle) {
+    outInCycle.assign(fn.blocks.size(), 0);
+    std::vector<il::BlockId> headers;
+    for (il::BlockId b = 0; b < fn.blocks.size(); ++b) {
+        if (canReachNonEmpty(fn, b, b, 0)) outInCycle[b] = 1;
+        if (canReachNonEmpty(fn, b, b, b)) headers.push_back(b);
+    }
+    bool nested = false;
+    for (size_t i = 0; i < headers.size() && !nested; ++i) {
+        for (size_t j = i + 1; j < headers.size(); ++j) {
+            if (canReachNonEmpty(fn, headers[i], headers[j], headers[i]) &&
+                canReachNonEmpty(fn, headers[j], headers[i], headers[i])) {
+                nested = true;
+                break;
+            }
+        }
+    }
+    if (nested) return 3u;
+    if (headers.size() >= 2) return 5u;
+    return 8u;
+}
+
+BVNodeId evalFloatFloorSymbolic(BVContext& ctx, BVNodeId a) {
+    BVNodeId sign1 = ctx.make_extract(a, 63, 63);
+    BVNodeId exp64 = ctx.make_zext(ctx.make_extract(a, 62, 52), 53);
+    BVNodeId mag64 = ctx.make_binary(BVOp::And, a, ctx.make_const(0x7FFFFFFFFFFFFFFFULL, 64));
+    BVNodeId isZeroOrLarge = ctx.make_binary(
+        BVOp::Or, ctx.make_binary(BVOp::Eq, mag64, ctx.make_const(0, 64), 1),
+        ctx.make_binary(BVOp::Uge, exp64, ctx.make_const(1075, 64), 1), 1);
+    BVNodeId isSubUnit = ctx.make_binary(BVOp::Ult, exp64, ctx.make_const(1023, 64), 1);
+    BVNodeId subUnitRes = ctx.make_ite(sign1, makeF64ConstNode(ctx, -1.0), ctx.make_const(0, 64));
+
+    BVNodeId k = ctx.make_binary(BVOp::Sub, ctx.make_const(1075, 64), exp64);
+    BVNodeId ulp = ctx.make_binary(BVOp::Shl, ctx.make_const(1, 64), k);
+    BVNodeId fracMask = ctx.make_binary(BVOp::Sub, ulp, ctx.make_const(1, 64));
+    BVNodeId truncBits = ctx.make_binary(BVOp::And, a, ctx.make_unary(BVOp::Not, fracMask));
+    BVNodeId hasFrac = ctx.make_binary(BVOp::Ne, ctx.make_binary(BVOp::And, a, fracMask), ctx.make_const(0, 64), 1);
+    BVNodeId midRes = ctx.make_ite(ctx.make_binary(BVOp::And, sign1, hasFrac, 1),
+                                   ctx.make_binary(BVOp::Add, truncBits, ulp), truncBits);
+    return ctx.make_ite(isZeroOrLarge, a, ctx.make_ite(isSubUnit, subUnitRes, midRes));
+}
+
+BVNodeId evalFloatCeilSymbolic(BVContext& ctx, BVNodeId a) {
+    return ctx.make_unary(BVOp::FNeg, evalFloatFloorSymbolic(ctx, ctx.make_unary(BVOp::FNeg, a, 64)), 64);
+}
+
+BVNodeId evalFloatTruncSymbolic(BVContext& ctx, BVNodeId a) {
+    return ctx.make_ite(ctx.make_extract(a, 63, 63), evalFloatCeilSymbolic(ctx, a), evalFloatFloorSymbolic(ctx, a));
+}
+
+BVNodeId evalFloatRoundSymbolic(BVContext& ctx, BVNodeId a) {
+    BVNodeId sign1 = ctx.make_extract(a, 63, 63);
+    BVNodeId exp64 = ctx.make_zext(ctx.make_extract(a, 62, 52), 53);
+    BVNodeId mant64 = ctx.make_zext(ctx.make_extract(a, 51, 0), 12);
+    BVNodeId mag64 = ctx.make_binary(BVOp::And, a, ctx.make_const(0x7FFFFFFFFFFFFFFFULL, 64));
+    BVNodeId posZero = ctx.make_const(0, 64);
+    BVNodeId negZero = makeF64ConstNode(ctx, -0.0);
+    BVNodeId posOne = makeF64ConstNode(ctx, 1.0);
+    BVNodeId negOne = makeF64ConstNode(ctx, -1.0);
+
+    BVNodeId isZeroOrLarge = ctx.make_binary(
+        BVOp::Or, ctx.make_binary(BVOp::Eq, mag64, posZero, 1),
+        ctx.make_binary(BVOp::Uge, exp64, ctx.make_const(1075, 64), 1), 1);
+    BVNodeId isLtHalf = ctx.make_binary(BVOp::Ult, exp64, ctx.make_const(1022, 64), 1);
+    BVNodeId ltHalfRes = ctx.make_ite(sign1, negZero, posZero);
+    BVNodeId isHalfToOne = ctx.make_binary(BVOp::Eq, exp64, ctx.make_const(1022, 64), 1);
+    BVNodeId negHalfToOne = ctx.make_ite(ctx.make_binary(BVOp::Eq, mant64, posZero, 1), negZero, negOne);
+    BVNodeId halfToOneRes = ctx.make_ite(sign1, negHalfToOne, posOne);
+
+    BVNodeId k = ctx.make_binary(BVOp::Sub, ctx.make_const(1075, 64), exp64);
+    BVNodeId ulp = ctx.make_binary(BVOp::Shl, ctx.make_const(1, 64), k);
+    BVNodeId halfUlp = ctx.make_binary(BVOp::Shl, ctx.make_const(1, 64), ctx.make_binary(BVOp::Sub, k, ctx.make_const(1, 64)));
+    BVNodeId fracMask = ctx.make_binary(BVOp::Sub, ulp, ctx.make_const(1, 64));
+    BVNodeId fracBits = ctx.make_binary(BVOp::And, a, fracMask);
+    BVNodeId truncBits = ctx.make_binary(BVOp::And, a, ctx.make_unary(BVOp::Not, fracMask));
+    BVNodeId roundAway = ctx.make_ite(sign1, ctx.make_binary(BVOp::Ugt, fracBits, halfUlp, 1),
+                                      ctx.make_binary(BVOp::Uge, fracBits, halfUlp, 1));
+    BVNodeId midRes = ctx.make_ite(roundAway, ctx.make_binary(BVOp::Add, truncBits, ulp), truncBits);
+    return ctx.make_ite(isZeroOrLarge, a,
+                        ctx.make_ite(isLtHalf, ltHalfRes,
+                                     ctx.make_ite(isHalfToOne, halfToOneRes, midRes)));
+}
+
+BVNodeId evalFloatPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& ok) {
+    ok = true;
+    const auto& eNode = ctx.nodes()[exp64];
+    if (eNode.op == BVOp::Const) {
+        double expD = 0.0;
+        std::memcpy(&expD, &eNode.imm, sizeof(double));
+        if (expD == 0.0) return makeF64ConstNode(ctx, 1.0);
+        if (expD == 1.0) return ctx.make_binary(BVOp::FAdd, base64, makeF64ConstNode(ctx, -0.0), 64);
+        if (expD == 2.0) return ctx.make_binary(BVOp::FMul, base64, base64, 64);
+        if (expD == 3.0) {
+            BVNodeId sq = ctx.make_binary(BVOp::FMul, base64, base64, 64);
+            return ctx.make_binary(BVOp::FMul, sq, base64, 64);
+        }
+        if (expD == 4.0) {
+            BVNodeId sq = ctx.make_binary(BVOp::FMul, base64, base64, 64);
+            return ctx.make_binary(BVOp::FMul, sq, sq, 64);
+        }
+    }
+    ok = false;
+    return ctx.make_const(0, 64);
+}
+
+bool evalFloatBinaryOpSymbolic(BVContext& ctx,
+                               il::Op op,
+                               BVNodeId lhs,
+                               BVNodeId rhs,
+                               BVNodeId& outVal,
+                               std::string* outReason) {
+    using Op = il::Op;
+    if (op == Op::Add) {
+        outVal = ctx.make_binary(BVOp::FAdd, lhs, rhs, 64);
+        return true;
+    }
+    if (op == Op::Sub) {
+        outVal = ctx.make_binary(BVOp::FSub, lhs, rhs, 64);
+        return true;
+    }
+    if (op == Op::Mul) {
+        outVal = ctx.make_binary(BVOp::FMul, lhs, rhs, 64);
+        return true;
+    }
+    if (op == Op::Div) {
+        const auto& rNode = ctx.nodes()[rhs];
+        if (rNode.op == BVOp::Const) {
+            double d = 0.0;
+            std::memcpy(&d, &rNode.imm, sizeof(double));
+            if (std::isfinite(d) && d != 0.0) {
+                uint64_t mant = rNode.imm & 0xFFFFFFFFFFFFFULL;
+                uint64_t exp = (rNode.imm >> 52) & 0x7FFULL;
+                if (mant != 0 || exp == 0) {
+                    if (outReason) *outReason = "non-dyadic floating-point division";
+                    return false;
+                }
+                double inv = 1.0 / d;
+                uint64_t invBits = 0;
+                std::memcpy(&invBits, &inv, sizeof(double));
+                if (std::isfinite(inv) && (invBits & 0xFFFFFFFFFFFFFULL) == 0 && ((invBits >> 52) & 0x7FFULL) != 0) {
+                    outVal = ctx.make_binary(BVOp::FMul, lhs, ctx.make_const(invBits, 64), 64);
+                    return true;
+                }
+            }
+        }
+        const auto& lNode = ctx.nodes()[lhs];
+        BVNodeId rawDiv = ctx.make_binary(BVOp::FDiv, lhs, rhs, 64);
+        if (lNode.op == BVOp::Const) {
+            double numD = 0.0;
+            std::memcpy(&numD, &lNode.imm, sizeof(double));
+            if (std::isfinite(numD) && numD != 0.0) {
+                const double s = std::signbit(numD) ? -1.0 : 1.0;
+                BVNodeId pZero = ctx.make_const(0, 64);
+                BVNodeId nZero = makeF64ConstNode(ctx, -0.0);
+                BVNodeId pInf = makeF64ConstNode(ctx, s * std::numeric_limits<double>::infinity());
+                BVNodeId nInf = makeF64ConstNode(ctx, -s * std::numeric_limits<double>::infinity());
+                BVNodeId qNaN = makeF64ConstNode(ctx, std::numeric_limits<double>::quiet_NaN());
+                rawDiv = ctx.make_ite(
+                    ctx.make_binary(BVOp::FNe, rhs, rhs, 1), qNaN,
+                    ctx.make_ite(ctx.make_binary(BVOp::Eq, rhs, pZero, 1), pInf,
+                                 ctx.make_ite(ctx.make_binary(BVOp::Eq, rhs, nZero, 1), nInf, rawDiv)));
+            }
+        }
+        outVal = rawDiv;
+        return true;
+    }
+    if (op == Op::Mod) {
+        if (outReason) *outReason = "unsupported floating-point modulo";
+        return false;
+    }
+    return false;
+}
+
+bool tryEvalGlobalPropGetSymbolic(BVContext& ctx,
+                                  const std::string& globalName,
+                                  const std::string& key,
+                                  bool floatMode,
+                                  BVNodeId& outVal,
+                                  bool& outIsMethodRef,
+                                  std::string* outReason) {
+    outIsMethodRef = false;
+    double cVal = 0.0;
+    bool isConst = false;
+    if (globalName == "Number") {
+        if (key == "NaN") { cVal = std::numeric_limits<double>::quiet_NaN(); isConst = true; }
+        else if (key == "POSITIVE_INFINITY") { cVal = std::numeric_limits<double>::infinity(); isConst = true; }
+        else if (key == "NEGATIVE_INFINITY") { cVal = -std::numeric_limits<double>::infinity(); isConst = true; }
+        else if (key == "EPSILON") { cVal = std::numeric_limits<double>::epsilon(); isConst = true; }
+        else if (key == "MAX_VALUE") { cVal = std::numeric_limits<double>::max(); isConst = true; }
+        else if (key == "MIN_VALUE") { cVal = std::numeric_limits<double>::denorm_min(); isConst = true; }
+        else if (key == "MAX_SAFE_INTEGER") { cVal = 9007199254740991.0; isConst = true; }
+        else if (key == "MIN_SAFE_INTEGER") { cVal = -9007199254740991.0; isConst = true; }
+    } else if (globalName == "Math") {
+        if (key == "PI") { cVal = 3.14159265358979323846; isConst = true; }
+        else if (key == "E") { cVal = 2.71828182845904523536; isConst = true; }
+        else if (key == "LN2") { cVal = 0.693147180559945309417; isConst = true; }
+        else if (key == "LN10") { cVal = 2.30258509299404568402; isConst = true; }
+        else if (key == "LOG2E") { cVal = 1.44269504088896340736; isConst = true; }
+        else if (key == "LOG10E") { cVal = 0.434294481903251827651; isConst = true; }
+        else if (key == "SQRT2") { cVal = 1.41421356237309504880; isConst = true; }
+        else if (key == "SQRT1_2") { cVal = 0.707106781186547524401; isConst = true; }
+    }
+    if (isConst) {
+        if (!floatMode) {
+            if (outReason) *outReason = "floating-point constant requires float mode";
+            return false;
+        }
+        outVal = makeF64ConstNode(ctx, cVal);
+        return true;
+    }
+    outIsMethodRef = true;
+    return true;
+}
+
+bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
+    for (const auto& blk : fn.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == il::Op::MethodCall && inst.keyIndex < mod.keyConstants.size() &&
+                mod.keyConstants[inst.keyIndex] == "isSafeInteger") {
+                return false;
+            }
+        }
+    }
+    std::unordered_set<il::ValueId> zeroConstIds;
+    std::unordered_set<il::ValueId> divTrackedIds;
+    for (const auto& blk : fn.blocks) {
+        for (size_t i = 0; i < blk.instructions.size(); ++i) {
+            const auto& inst = blk.instructions[i];
+            if (inst.op == il::Op::ConstI32 && inst.immI32 == 0 && inst.result != il::kNoValue) {
+                zeroConstIds.insert(inst.result);
+            } else if (inst.op == il::Op::ConstF64 && inst.immF64 == 0.0 && inst.result != il::kNoValue) {
+                zeroConstIds.insert(inst.result);
+            } else if (inst.op == il::Op::Div && inst.result != il::kNoValue) {
+                divTrackedIds.insert(inst.result);
+            } else if ((inst.op == il::Op::Box || inst.op == il::Op::Unbox || inst.op == il::Op::ToNumeric) &&
+                       !inst.operands.empty() && inst.result != il::kNoValue) {
+                if (zeroConstIds.count(inst.operands[0])) zeroConstIds.insert(inst.result);
+                if (divTrackedIds.count(inst.operands[0])) divTrackedIds.insert(inst.result);
+            }
+        }
+    }
+    for (const auto& blk : fn.blocks) {
+        for (size_t i = 0; i < blk.instructions.size(); ++i) {
+            const auto& inst = blk.instructions[i];
+            using Op = il::Op;
+            if (inst.op == Op::ConstF64) {
+                double d = inst.immF64;
+                if (std::isnan(d) || std::isinf(d) || (d == 0.0 && std::signbit(d)) || std::trunc(d) != d) {
+                    return true;
+                }
+            } else if (inst.op == Op::Neg && !inst.operands.empty() && zeroConstIds.count(inst.operands[0])) {
+                return true;
+            } else if ((inst.op == Op::GlobalGet || inst.op == Op::ResolveName) &&
+                       inst.keyIndex < mod.keyConstants.size()) {
+                const std::string& g = mod.keyConstants[inst.keyIndex];
+                if (g == "NaN" || g == "Infinity" || g == "isNaN" || g == "isFinite") return true;
+            } else if (inst.op == Op::PropGet && inst.keyIndex < mod.keyConstants.size()) {
+                const std::string& k = mod.keyConstants[inst.keyIndex];
+                if (k == "NaN" || k == "POSITIVE_INFINITY" || k == "NEGATIVE_INFINITY" ||
+                    k == "EPSILON" || k == "MAX_VALUE" || k == "MIN_VALUE" ||
+                    k == "PI" || k == "E" || k == "SQRT2" || k == "SQRT1_2" || k == "LN2" || k == "LN10") {
+                    return true;
+                }
+            } else if (inst.op == Op::MethodCall && inst.keyIndex < mod.keyConstants.size()) {
+                const std::string& m = mod.keyConstants[inst.keyIndex];
+                if (m == "isNaN" || m == "isFinite" || m == "is" || m == "sqrt" ||
+                    m == "fround" || m == "round" || m == "min" || m == "max") {
+                    return true;
+                }
+                if ((m == "floor" || m == "ceil" || m == "trunc") &&
+                    (inst.operands.size() < 2 || !divTrackedIds.count(inst.operands[1]))) {
+                    return true;
+                }
+            } else if (inst.op == Op::MathUnary) {
+                auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
+                if (kind == il::MathUnaryFn::Sqrt || kind == il::MathUnaryFn::Round ||
+                    kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                    return true;
+                }
+                if ((kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil || kind == il::MathUnaryFn::Trunc) &&
+                    (inst.operands.empty() || !divTrackedIds.count(inst.operands[0]))) {
+                    return true;
+                }
+            } else if (inst.op == Op::Div) {
+                if (classifyDivResultUsage(mod, fn, blk, i) == DivUseKind::RawFloat) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 bool evalGlobalMethodCallSymbolic(BVContext& ctx,
                                   SymbolicHeapTable& heapTable,
                                   SymbolicHeapState& heap,
@@ -296,6 +638,7 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
     BVNodeId zero64 = ctx.make_const(0, 64);
     BVNodeId one64 = ctx.make_const(1, 64);
     BVNodeId allOnes64 = ctx.make_const(~uint64_t{0}, 64);
+    const bool floatMode = heapTable.isFloatMode();
 
     if (method.empty()) {
         size_t dot = globalName.find('.');
@@ -322,10 +665,19 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
             return true;
         }
         if (globalName == "isFinite") {
+            if (floatMode && opVals.size() >= 3) {
+                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, opVals[2], 64), posInf, 1));
+                return true;
+            }
             outVal = one64;
             return true;
         }
         if (globalName == "isNaN") {
+            if (floatMode && opVals.size() >= 3) {
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FNe, opVals[2], opVals[2], 1));
+                return true;
+            }
             outVal = zero64;
             return true;
         }
@@ -341,6 +693,10 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
     if (globalName == "Math") {
         if (method == "abs" && opVals.size() >= 2) {
             BVNodeId a = opVals[1];
+            if (floatMode) {
+                outVal = ctx.make_unary(BVOp::FAbs, a, 64);
+                return true;
+            }
             outVal = ctx.make_ite(ctx.make_binary(BVOp::Slt, a, zero64),
                                   ctx.make_unary(BVOp::Neg, a), a);
             return true;
@@ -348,60 +704,124 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
         if ((method == "min" || method == "max") && opVals.size() >= 3) {
             BVNodeId acc = opVals[1];
             for (size_t k = 2; k < opVals.size(); ++k) {
-                BVNodeId pick = (method == "min")
-                                    ? ctx.make_binary(BVOp::Slt, opVals[k], acc)
-                                    : ctx.make_binary(BVOp::Slt, acc, opVals[k]);
-                acc = ctx.make_ite(pick, opVals[k], acc);
+                if (floatMode) {
+                    acc = ctx.make_binary((method == "min") ? BVOp::FMin : BVOp::FMax, acc, opVals[k], 64);
+                } else {
+                    BVNodeId pick = (method == "min")
+                                        ? ctx.make_binary(BVOp::Slt, opVals[k], acc)
+                                        : ctx.make_binary(BVOp::Slt, acc, opVals[k]);
+                    acc = ctx.make_ite(pick, opVals[k], acc);
+                }
             }
             outVal = acc;
             return true;
         }
         if (method == "imul" && opVals.size() >= 3) {
-            BVNodeId a32 = ctx.make_extract(opVals[1], 31, 0);
-            BVNodeId b32 = ctx.make_extract(opVals[2], 31, 0);
-            outVal = ctx.make_sext(ctx.make_binary(BVOp::Mul, a32, b32), 32);
+            BVNodeId a32 = floatMode ? ctx.make_unary(BVOp::FpToSi, opVals[1], 32) : ctx.make_extract(opVals[1], 31, 0);
+            BVNodeId b32 = floatMode ? ctx.make_unary(BVOp::FpToSi, opVals[2], 32) : ctx.make_extract(opVals[2], 31, 0);
+            BVNodeId prod32 = ctx.make_binary(BVOp::Mul, a32, b32);
+            outVal = floatMode ? ctx.make_unary(BVOp::SiToFp, prod32, 64) : ctx.make_sext(prod32, 32);
             return true;
         }
         if (method == "sign" && opVals.size() >= 2) {
             BVNodeId a = opVals[1];
+            if (floatMode) {
+                outVal = ctx.make_ite(
+                    ctx.make_binary(BVOp::FNe, a, a, 1), a,
+                    ctx.make_ite(ctx.make_binary(BVOp::FEq, a, zero64, 1), a,
+                                 ctx.make_ite(ctx.make_binary(BVOp::FLt, a, zero64, 1),
+                                              makeF64ConstNode(ctx, -1.0), makeF64ConstNode(ctx, 1.0))));
+                return true;
+            }
             BVNodeId isNeg = ctx.make_binary(BVOp::Slt, a, zero64);
             BVNodeId isPos = ctx.make_binary(BVOp::Slt, zero64, a);
             outVal = ctx.make_ite(isNeg, allOnes64, ctx.make_ite(isPos, one64, zero64));
             return true;
         }
         if (method == "clz32" && opVals.size() >= 2) {
-            outVal = makeClz32Symbolic(ctx, opVals[1]);
+            BVNodeId in64 = floatMode ? ctx.make_sext(ctx.make_unary(BVOp::FpToSi, opVals[1], 32), 32) : opVals[1];
+            BVNodeId clz = makeClz32Symbolic(ctx, in64);
+            outVal = floatMode ? ctx.make_unary(BVOp::SiToFp, ctx.make_extract(clz, 31, 0), 64) : clz;
             return true;
         }
-        if (method == "log2" && opVals.size() >= 2) {
+        if (method == "log2" && opVals.size() >= 2 && !floatMode) {
             outVal = ctx.make_binary(BVOp::Sub, ctx.make_const(31, 64),
                                      makeClz32Symbolic(ctx, opVals[1]));
             return true;
         }
         if (method == "pow" && opVals.size() >= 3) {
             bool ok = false;
-            outVal = evalPowSymbolic(ctx, opVals[1], opVals[2], ok);
+            outVal = floatMode ? evalFloatPowSymbolic(ctx, opVals[1], opVals[2], ok)
+                               : evalPowSymbolic(ctx, opVals[1], opVals[2], ok);
             if (!ok && outErr) *outErr = "unsupported symbolic Math.pow";
             return true;
         }
         if ((method == "floor" || method == "ceil") && opVals.size() >= 2) {
+            if (floatMode) {
+                outVal = (method == "ceil") ? evalFloatCeilSymbolic(ctx, opVals[1])
+                                            : evalFloatFloorSymbolic(ctx, opVals[1]);
+                return true;
+            }
             outVal = evalFloorOrCeilSymbolic(ctx, heap, operands[1], opVals[1], method == "ceil");
             return true;
         }
         if (method == "trunc" && opVals.size() >= 2) {
-            outVal = opVals[1];
-            return true;
-        }
-        if ((method == "round" || method == "fround") && opVals.size() >= 2) {
-            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
-                if (outErr) *outErr = "unsupported fractional Math." + method;
+            if (floatMode) {
+                outVal = evalFloatTruncSymbolic(ctx, opVals[1]);
                 return true;
             }
             outVal = opVals[1];
             return true;
         }
+        if (method == "round" && opVals.size() >= 2) {
+            if (floatMode) {
+                outVal = evalFloatRoundSymbolic(ctx, opVals[1]);
+                return true;
+            }
+            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
+                if (outErr) *outErr = "unsupported fractional Math.round";
+                return true;
+            }
+            outVal = opVals[1];
+            return true;
+        }
+        if (method == "fround" && opVals.size() >= 2) {
+            if (floatMode) {
+                outVal = ctx.make_unary(BVOp::FpExt, ctx.make_unary(BVOp::FpTrunc, opVals[1], 32), 64);
+                return true;
+            }
+            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
+                if (outErr) *outErr = "unsupported fractional Math.fround";
+                return true;
+            }
+            outVal = opVals[1];
+            return true;
+        }
+        if (method == "sqrt" && opVals.size() >= 2 && floatMode) {
+            outVal = ctx.make_unary(BVOp::FSqrt, opVals[1], 64);
+            return true;
+        }
     }
     if (globalName == "Number" && opVals.size() >= 2) {
+        if (floatMode) {
+            BVNodeId a = opVals[1];
+            if (method == "isNaN") {
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FNe, a, a, 1));
+                return true;
+            }
+            if (method == "isFinite") {
+                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, a, 64), posInf, 1));
+                return true;
+            }
+            if (method == "isInteger") {
+                BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
+                BVNodeId fin = ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, a, 64), posInf, 1);
+                BVNodeId intEq = ctx.make_binary(BVOp::FEq, ctx.make_unary(BVOp::FFloor, a, 64), a, 1);
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::And, fin, intEq, 1));
+                return true;
+            }
+        }
         if (method == "isFinite" || method == "isSafeInteger" || method == "isInteger") {
             outVal = one64;
             return true;
@@ -419,6 +839,18 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
         return true;
     }
     if (globalName == "Object") {
+        if (method == "is" && opVals.size() >= 3) {
+            if (floatMode) {
+                BVNodeId a = opVals[1], b = opVals[2];
+                BVNodeId bothNan = ctx.make_binary(
+                    BVOp::And, ctx.make_binary(BVOp::FNe, a, a, 1), ctx.make_binary(BVOp::FNe, b, b, 1), 1);
+                BVNodeId sameBits = ctx.make_binary(BVOp::Eq, a, b, 1);
+                outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::Or, bothNan, sameBits, 1));
+            } else {
+                outVal = ctx.make_zext(ctx.make_binary(BVOp::Eq, opVals[1], opVals[2], 1), 63);
+            }
+            return true;
+        }
         if (method == "setPrototypeOf" && operands.size() >= 2) {
             outVal = opVals[1];
             heap.propagateAlias(operands[1], resultId);
@@ -430,7 +862,7 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
         }
     }
     if (globalName == "Array" && method == "isArray") {
-        outVal = one64;
+        outVal = floatMode ? makeF64ConstNode(ctx, 1.0) : one64;
         return true;
     }
     return false;
@@ -461,6 +893,42 @@ void minimizeCounterexampleModel(const BVContext& ctx,
                 if (c1 < domainMin || c1 > domainMax) continue;
                 std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c0)),
                                            static_cast<uint64_t>(static_cast<uint32_t>(c1))};
+                if (ctx.eval_concrete(badCond, cand) != 0) {
+                    bestModel = std::move(cand);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void minimizeFloatCounterexampleModel(const BVContext& ctx,
+                                      BVNodeId badCond,
+                                      size_t totalVars,
+                                      std::vector<uint64_t>& bestModel) {
+    const double kFloatCandidates[] = {
+        0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()
+    };
+    auto toBits = [](double d) {
+        uint64_t b = 0;
+        std::memcpy(&b, &d, sizeof(double));
+        return b;
+    };
+    if (totalVars == 1) {
+        for (double d0 : kFloatCandidates) {
+            std::vector<uint64_t> cand{toBits(d0)};
+            if (ctx.eval_concrete(badCond, cand) != 0) {
+                bestModel = std::move(cand);
+                return;
+            }
+        }
+    } else if (totalVars == 2) {
+        for (double d0 : kFloatCandidates) {
+            for (double d1 : kFloatCandidates) {
+                std::vector<uint64_t> cand{toBits(d0), toBits(d1)};
                 if (ctx.eval_concrete(badCond, cand) != 0) {
                     bestModel = std::move(cand);
                     return;

@@ -2,70 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
-#include <queue>
+#include <limits>
 
 namespace bronze::check {
 
 using brass::verify::BVContext;
 using brass::verify::BVNodeId;
 using brass::verify::BVOp;
-
-namespace {
-
-bool canReachNonEmpty(const il::Function& fn, il::BlockId start, il::BlockId goal, il::BlockId minBlock) {
-    if (start >= fn.blocks.size() || goal >= fn.blocks.size()) return false;
-    std::queue<il::BlockId> q;
-    std::vector<uint8_t> vis(fn.blocks.size(), 0);
-    auto pushEdge = [&](il::BlockId dst) {
-        if (dst >= fn.blocks.size() || dst < minBlock) return false;
-        if (dst == goal) return true;
-        if (!vis[dst]) {
-            vis[dst] = 1;
-            q.push(dst);
-        }
-        return false;
-    };
-    const auto& sBlk = fn.blocks[start];
-    if (!sBlk.instructions.empty()) {
-        const auto& term = sBlk.instructions.back();
-        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
-        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
-    }
-    while (!q.empty()) {
-        il::BlockId cur = q.front();
-        q.pop();
-        const auto& blk = fn.blocks[cur];
-        if (blk.instructions.empty()) continue;
-        const auto& term = blk.instructions.back();
-        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
-        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
-    }
-    return false;
-}
-
-uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn, std::vector<uint8_t>& outInCycle) {
-    outInCycle.assign(fn.blocks.size(), 0);
-    std::vector<il::BlockId> headers;
-    for (il::BlockId b = 0; b < fn.blocks.size(); ++b) {
-        if (canReachNonEmpty(fn, b, b, 0)) outInCycle[b] = 1;
-        if (canReachNonEmpty(fn, b, b, b)) headers.push_back(b);
-    }
-    bool nested = false;
-    for (size_t i = 0; i < headers.size() && !nested; ++i) {
-        for (size_t j = i + 1; j < headers.size(); ++j) {
-            if (canReachNonEmpty(fn, headers[i], headers[j], headers[i]) &&
-                canReachNonEmpty(fn, headers[j], headers[i], headers[i])) {
-                nested = true;
-                break;
-            }
-        }
-    }
-    if (nested) return 3u;
-    if (headers.size() >= 2) return 5u;
-    return 8u;
-}
-
-}  // namespace
 
 SymbolicIlBuilder::SymbolicIlBuilder(BVContext& ctx,
                                      const il::Module& mod,
@@ -74,12 +17,14 @@ SymbolicIlBuilder::SymbolicIlBuilder(BVContext& ctx,
     : ctx_(ctx),
       mod_(mod),
       strictJs32Bitwise_(strictJs32Bitwise),
-      ownedHeapTable_(ctx),
+      floatMode_(sharedHeapTable ? sharedHeapTable->isFloatMode() : false),
+      ownedHeapTable_(ctx, floatMode_),
       heapTable_(sharedHeapTable ? *sharedHeapTable : ownedHeapTable_) {
     zero1_ = ctx_.make_const(0, 1);
     one1_ = ctx_.make_const(1, 1);
     zero64_ = ctx_.make_const(0, 64);
     one64_ = ctx_.make_const(1, 64);
+    f64One_ = makeF64ConstNode(ctx_, 1.0);
     allOnes64_ = ctx_.make_const(~uint64_t{0}, 64);
     initModuleState();
 }
@@ -174,15 +119,26 @@ BVNodeId SymbolicIlBuilder::getVal(const SymState& st, il::ValueId v) const {
 }
 
 BVNodeId SymbolicIlBuilder::toBool1(BVNodeId node) {
-    return (ctx_.width(node) == 1) ? node : ctx_.make_binary(BVOp::Ne, toBV64(node), zero64_);
+    if (ctx_.width(node) == 1) return node;
+    BVNodeId b64 = toBV64(node);
+    if (!floatMode_) return ctx_.make_binary(BVOp::Ne, b64, zero64_);
+    const auto& n = ctx_.nodes()[b64];
+    if (n.op == BVOp::Ite && n.b == f64One_ && n.c == zero64_) return n.a;
+    return ctx_.make_binary(BVOp::And, ctx_.make_binary(BVOp::FEq, b64, b64, 1),
+                            ctx_.make_binary(BVOp::FNe, b64, zero64_, 1), 1);
 }
 
 BVNodeId SymbolicIlBuilder::toBV64(BVNodeId node) {
     uint32_t w = ctx_.width(node);
-    return (w >= 64) ? node : ((w == 1) ? ctx_.make_zext(node, 64 - w) : ctx_.make_sext(node, 64 - w));
+    if (w >= 64) return node;
+    if (w == 1) return floatMode_ ? ctx_.make_ite(node, f64One_, zero64_) : ctx_.make_zext(node, 63);
+    return floatMode_ ? ctx_.make_unary(BVOp::SiToFp, node, 64) : ctx_.make_sext(node, 64 - w);
 }
 
 BVNodeId SymbolicIlBuilder::toSInt32In64(BVNodeId node) {
+    if (floatMode_) {
+        return ctx_.make_unary(BVOp::SiToFp, ctx_.make_unary(BVOp::FpToSi, toBV64(node), 32), 64);
+    }
     return ctx_.make_sext(ctx_.make_extract(toBV64(node), 31, 0), 32);
 }
 
@@ -280,9 +236,15 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
             using Op = il::Op;
             switch (inst.op) {
                 case Op::ConstI32:
-                    state.values[inst.result] = ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64);
+                    state.values[inst.result] = floatMode_
+                        ? makeF64ConstNode(ctx_, static_cast<double>(inst.immI32))
+                        : ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64);
                     break;
                 case Op::ConstF64: {
+                    if (floatMode_) {
+                        state.values[inst.result] = makeF64ConstNode(ctx_, inst.immF64);
+                        break;
+                    }
                     if (std::isnan(inst.immF64) || std::isinf(inst.immF64) || std::trunc(inst.immF64) != inst.immF64) {
                         if (inModuleInit_) { state.values[inst.result] = zero64_; break; }
                         return {false, std::isnan(inst.immF64) || std::isinf(inst.immF64)
@@ -293,7 +255,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     break;
                 }
                 case Op::ConstBool:
-                    state.values[inst.result] = (inst.immI32 != 0) ? one64_ : zero64_;
+                    state.values[inst.result] = (inst.immI32 != 0) ? (floatMode_ ? f64One_ : one64_) : zero64_;
                     break;
                 case Op::ConstNull:
                 case Op::ConstUndefined:
@@ -301,16 +263,19 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     state.undefValues.insert(inst.result);
                     break;
                 case Op::IsNullish:
-                    state.values[inst.result] = (!inst.operands.empty() && state.undefValues.count(inst.operands[0])) ? one64_ : zero64_;
+                    state.values[inst.result] = (!inst.operands.empty() && state.undefValues.count(inst.operands[0]))
+                                                    ? (floatMode_ ? f64One_ : one64_) : zero64_;
                     break;
                 case Op::ToInt32:
                     state.values[inst.result] = toSInt32In64(inst.operands.empty() ? zero64_ : getVal(state, inst.operands[0]));
                     break;
+                case Op::NumTruthy:
+                    state.values[inst.result] = toBV64(toBool1(inst.operands.empty() ? zero64_ : getVal(state, inst.operands[0])));
+                    break;
                 case Op::Box:
                 case Op::Unbox:
                 case Op::ToNumeric:
-                case Op::ToStr:
-                case Op::NumTruthy: {
+                case Op::ToStr: {
                     if (!inst.operands.empty()) {
                         il::ValueId src = inst.operands[0];
                         state.values[inst.result] = toBV64(getVal(state, src));
@@ -418,8 +383,18 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     const std::string& key = mod_.keyConstants[inst.keyIndex];
                     auto gIt = state.globalRefs.find(inst.operands[0]);
                     if (gIt != state.globalRefs.end()) {
-                        state.globalRefs[inst.result] = gIt->second + "." + key;
-                        state.values[inst.result] = one64_;
+                        BVNodeId gVal = zero64_;
+                        bool isMethodRef = false;
+                        std::string gErr;
+                        if (!tryEvalGlobalPropGetSymbolic(ctx_, gIt->second, key, floatMode_, gVal, isMethodRef, &gErr)) {
+                            return {false, gErr, false, zero64_, {}, {}, zero1_};
+                        }
+                        if (isMethodRef) {
+                            state.globalRefs[inst.result] = gIt->second + "." + key;
+                            state.values[inst.result] = one64_;
+                        } else {
+                            state.values[inst.result] = gVal;
+                        }
                         break;
                     }
                     auto arrIt = state.arrayValues.find(inst.operands[0]);
@@ -469,16 +444,24 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     break;
                 }
                 case Op::NumericStep:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Add, toBV64(getVal(state, inst.operands[0])),
-                        ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64));
+                    state.values[inst.result] = floatMode_
+                        ? ctx_.make_binary(BVOp::FAdd, toBV64(getVal(state, inst.operands[0])),
+                                           makeF64ConstNode(ctx_, static_cast<double>(inst.immI32)), 64)
+                        : ctx_.make_binary(BVOp::Add, toBV64(getVal(state, inst.operands[0])),
+                                           ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64));
                     break;
                 case Op::Add:
                 case Op::Sub:
                 case Op::Mul: {
-                    BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
                     BVNodeId lhs = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId rhs = toBV64(getVal(state, inst.operands[1]));
+                    if (floatMode_) {
+                        BVNodeId fOut = zero64_;
+                        evalFloatBinaryOpSymbolic(ctx_, inst.op, lhs, rhs, fOut);
+                        state.values[inst.result] = fOut;
+                        break;
+                    }
+                    BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
                     if (bvOp == BVOp::Add) {
                         const auto& ln = ctx_.nodes()[lhs];
                         const auto& rn = ctx_.nodes()[rhs];
@@ -501,8 +484,10 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 }
                 case Op::Pow: {
                     bool ok = false;
-                    BVNodeId r = evalPowSymbolic(ctx_, toBV64(getVal(state, inst.operands[0])),
-                                                 toBV64(getVal(state, inst.operands[1])), ok);
+                    BVNodeId lhs = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId rhs = toBV64(getVal(state, inst.operands[1]));
+                    BVNodeId r = floatMode_ ? evalFloatPowSymbolic(ctx_, lhs, rhs, ok)
+                                            : evalPowSymbolic(ctx_, lhs, rhs, ok);
                     if (!ok) return {false, "unsupported symbolic exponentiation", false, zero64_, {}, {}, zero1_};
                     state.values[inst.result] = r;
                     break;
@@ -511,45 +496,62 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::Mod: {
                     BVNodeId divVal = zero64_;
                     std::string divErr;
-                    if (!evalDivOrModSymbolic(ctx_, mod_, fn, blk, instIdx, toBV64(getVal(state, inst.operands[0])),
-                                              toBV64(getVal(state, inst.operands[1])), state.heap, divVal, &divErr)) {
+                    BVNodeId lhs = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId rhs = toBV64(getVal(state, inst.operands[1]));
+                    if (floatMode_) {
+                        if (!evalFloatBinaryOpSymbolic(ctx_, inst.op, lhs, rhs, divVal, &divErr)) {
+                            return {false, divErr, false, zero64_, {}, {}, zero1_};
+                        }
+                    } else if (!evalDivOrModSymbolic(ctx_, mod_, fn, blk, instIdx, lhs, rhs, state.heap, divVal, &divErr)) {
                         return {false, divErr, false, zero64_, {}, {}, zero1_};
                     }
                     state.values[inst.result] = divVal;
                     break;
                 }
                 case Op::Neg:
-                    state.values[inst.result] = ctx_.make_unary(BVOp::Neg, toBV64(getVal(state, inst.operands[0])));
+                    state.values[inst.result] = ctx_.make_unary(
+                        floatMode_ ? BVOp::FNeg : BVOp::Neg, toBV64(getVal(state, inst.operands[0])), 64);
                     break;
                 case Op::MathImul:
                 case Op::BitAnd:
                 case Op::BitOr:
                 case Op::BitXor: {
-                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
-                    BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
+                    BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId b64 = toBV64(getVal(state, inst.operands[1]));
+                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId b32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, b64, 32) : ctx_.make_extract(b64, 31, 0);
                     BVOp bvOp = (inst.op == Op::MathImul) ? BVOp::Mul
                                 : (inst.op == Op::BitAnd) ? BVOp::And
                                 : (inst.op == Op::BitOr)  ? BVOp::Or : BVOp::Xor;
-                    state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(bvOp, a32, b32), 32);
+                    BVNodeId r32 = ctx_.make_binary(bvOp, a32, b32);
+                    state.values[inst.result] = floatMode_ ? ctx_.make_unary(BVOp::SiToFp, r32, 64) : ctx_.make_sext(r32, 32);
                     break;
                 }
                 case Op::BitNot: {
-                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
-                    state.values[inst.result] = ctx_.make_sext(ctx_.make_unary(BVOp::Not, a32), 32);
+                    BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId r32 = ctx_.make_unary(BVOp::Not, a32);
+                    state.values[inst.result] = floatMode_ ? ctx_.make_unary(BVOp::SiToFp, r32, 64) : ctx_.make_sext(r32, 32);
                     break;
                 }
                 case Op::Shl:
                 case Op::Shr:
                 case Op::UShr: {
-                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
-                    BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
+                    BVNodeId a64 = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId b64 = toBV64(getVal(state, inst.operands[1]));
+                    BVNodeId a32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, a64, 32) : ctx_.make_extract(a64, 31, 0);
+                    BVNodeId b32 = floatMode_ ? ctx_.make_unary(BVOp::FpToSi, b64, 32) : ctx_.make_extract(b64, 31, 0);
                     BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, ctx_.make_const(31, 32));
                     BVOp shOp = (inst.op == Op::Shl) ? BVOp::Shl
                                                      : (inst.op == Op::Shr ? BVOp::AShr : BVOp::LShr);
                     BVNodeId r32 = ctx_.make_binary(shOp, a32, sh32);
-                    state.values[inst.result] = (inst.op == Op::UShr)
-                                                    ? ctx_.make_zext(r32, 32)
-                                                    : ctx_.make_sext(r32, 32);
+                    if (floatMode_) {
+                        state.values[inst.result] = (inst.op == Op::UShr)
+                            ? ctx_.make_unary(BVOp::SiToFp, ctx_.make_zext(r32, 32), 64)
+                            : ctx_.make_unary(BVOp::SiToFp, r32, 64);
+                    } else {
+                        state.values[inst.result] = (inst.op == Op::UShr) ? ctx_.make_zext(r32, 32) : ctx_.make_sext(r32, 32);
+                    }
                     break;
                 }
                 case Op::CmpEq:
@@ -557,12 +559,14 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::LooseEq:
                 case Op::CmpNe: {
                     bool isEq = (inst.op != Op::CmpNe);
+                    BVNodeId tVal = floatMode_ ? f64One_ : one64_;
                     bool u0 = state.undefValues.count(inst.operands[0]) > 0;
                     bool u1 = state.undefValues.count(inst.operands[1]) > 0;
-                    if (u0 != u1) { state.values[inst.result] = isEq ? zero64_ : one64_; break; }
-                    if (u0 && u1) { state.values[inst.result] = isEq ? one64_ : zero64_; break; }
+                    if (u0 != u1) { state.values[inst.result] = isEq ? zero64_ : tVal; break; }
+                    if (u0 && u1) { state.values[inst.result] = isEq ? tVal : zero64_; break; }
                     BVNodeId a = toBV64(getVal(state, inst.operands[0])), b = toBV64(getVal(state, inst.operands[1]));
-                    state.values[inst.result] = toBV64(ctx_.make_binary(isEq ? BVOp::Eq : BVOp::Ne, a, b));
+                    BVOp cmpOp = floatMode_ ? (isEq ? BVOp::FEq : BVOp::FNe) : (isEq ? BVOp::Eq : BVOp::Ne);
+                    state.values[inst.result] = toBV64(ctx_.make_binary(cmpOp, a, b, 1));
                     state.heap.recordObjComparison(inst.result, inst.operands[0], inst.operands[1], isEq);
                     break;
                 }
@@ -571,7 +575,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     BVNodeId a = toBV64(getVal(state, inst.operands[0])), b = toBV64(getVal(state, inst.operands[1]));
                     bool swapOps = (inst.op == Op::CmpGt || inst.op == Op::RelGt || inst.op == Op::CmpGe || inst.op == Op::RelGe);
                     bool isLe = (inst.op == Op::CmpLe || inst.op == Op::RelLe || inst.op == Op::CmpGe || inst.op == Op::RelGe);
-                    state.values[inst.result] = toBV64(ctx_.make_binary(isLe ? BVOp::Sle : BVOp::Slt, swapOps ? b : a, swapOps ? a : b));
+                    BVOp cmpOp = floatMode_ ? (isLe ? BVOp::FLe : BVOp::FLt) : (isLe ? BVOp::Sle : BVOp::Slt);
+                    state.values[inst.result] = toBV64(ctx_.make_binary(cmpOp, swapOps ? b : a, swapOps ? a : b, 1));
                     break;
                 }
                 case Op::CreateArray: {
@@ -647,6 +652,31 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::MathUnary: {
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
+                    if (floatMode_) {
+                        if (kind == il::MathUnaryFn::Abs) {
+                            state.values[inst.result] = ctx_.make_unary(BVOp::FAbs, a, 64);
+                        } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
+                            state.values[inst.result] = (kind == il::MathUnaryFn::Ceil)
+                                ? evalFloatCeilSymbolic(ctx_, a)
+                                : evalFloatFloorSymbolic(ctx_, a);
+                        } else if (kind == il::MathUnaryFn::Trunc) {
+                            state.values[inst.result] = evalFloatTruncSymbolic(ctx_, a);
+                        } else if (kind == il::MathUnaryFn::Round) {
+                            state.values[inst.result] = evalFloatRoundSymbolic(ctx_, a);
+                        } else if (kind == il::MathUnaryFn::Sqrt) {
+                            state.values[inst.result] = ctx_.make_unary(BVOp::FSqrt, a, 64);
+                        } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
+                            BVNodeId acc = a;
+                            for (size_t k = 1; k < inst.operands.size(); ++k) {
+                                BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
+                                acc = ctx_.make_binary(kind == il::MathUnaryFn::Min ? BVOp::FMin : BVOp::FMax, acc, rhs, 64);
+                            }
+                            state.values[inst.result] = acc;
+                        } else {
+                            return {false, "unsupported transcendental MathUnary", false, zero64_, {}, {}, zero1_};
+                        }
+                        break;
+                    }
                     if (kind == il::MathUnaryFn::Abs) {
                         state.values[inst.result] = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, a, zero64_),
                                                                   ctx_.make_unary(BVOp::Neg, a), a);
@@ -676,9 +706,26 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         gName = mod_.keyConstants[inst.keyIndex];
                         state.globalRefs[inst.result] = gName;
                     }
-                    if (gName == "undefined" || gName == "NaN") {
+                    if (gName == "undefined") {
                         state.values[inst.result] = zero64_;
                         state.undefValues.insert(inst.result);
+                        break;
+                    }
+                    if (gName == "NaN") {
+                        if (floatMode_) {
+                            state.values[inst.result] = makeF64ConstNode(ctx_, std::numeric_limits<double>::quiet_NaN());
+                        } else {
+                            state.values[inst.result] = zero64_;
+                            state.undefValues.insert(inst.result);
+                        }
+                        break;
+                    }
+                    if (gName == "Infinity") {
+                        if (!floatMode_) {
+                            if (inModuleInit_) { state.values[inst.result] = zero64_; break; }
+                            return {false, "Infinity constant requires float mode", false, zero64_, {}, {}, zero1_};
+                        }
+                        state.values[inst.result] = makeF64ConstNode(ctx_, std::numeric_limits<double>::infinity());
                         break;
                     }
                     std::string gPath = "__fn_" + (gName.empty() ? std::string("global") : gName);

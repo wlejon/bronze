@@ -278,15 +278,22 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         res.paramNames.push_back(pname);
     }
 
+    const bool floatMode = (domainMin == INT32_MIN && domainMax == INT32_MAX) &&
+                           (functionRequiresFloatMode(oldMod, oldFn) || functionRequiresFloatMode(newMod, newFn));
+
     BVContext ctx;
     std::vector<BVNodeId> argNodes;
     argNodes.reserve(numParams);
     for (uint32_t i = 0; i < numParams; ++i) {
-        BVNodeId raw32 = ctx.make_var("arg_" + std::to_string(i), 32);
-        argNodes.push_back(ctx.make_sext(raw32, 32));
+        if (floatMode) {
+            argNodes.push_back(ctx.make_var("arg_" + std::to_string(i), 64, true));
+        } else {
+            BVNodeId raw32 = ctx.make_var("arg_" + std::to_string(i), 32);
+            argNodes.push_back(ctx.make_sext(raw32, 32));
+        }
     }
 
-    SymbolicHeapTable heapTable(ctx);
+    SymbolicHeapTable heapTable(ctx, floatMode);
     BVNodeId oldRetNode = 0;
     BVNodeId newRetNode = 0;
     BVNodeId oldThrewNode = 0;
@@ -375,18 +382,24 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                 const size_t totalVars = numParams + heapTable.varNodes().size();
                 std::vector<uint64_t> candModel = excSat.model;
                 if (candModel.size() < totalVars) candModel.resize(totalVars, 0);
-                minimizeCounterexampleModel(ctx, excDiff, totalVars, domainMin, domainMax, candModel);
+                if (floatMode) {
+                    minimizeFloatCounterexampleModel(ctx, excDiff, totalVars, candModel);
+                } else {
+                    minimizeCounterexampleModel(ctx, excDiff, totalVars, domainMin, domainMax, candModel);
+                }
                 std::vector<std::string> candNames = res.paramNames;
                 std::vector<int64_t> candArgs(numParams, 0);
                 for (uint32_t i = 0; i < numParams; ++i) {
-                    candArgs[i] = static_cast<int64_t>(static_cast<int32_t>(candModel[i]));
+                    candArgs[i] = floatMode ? static_cast<int64_t>(candModel[i])
+                                            : static_cast<int64_t>(static_cast<int32_t>(candModel[i]));
                 }
                 for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
                     candNames.push_back(heapTable.varPaths()[i]);
-                    candArgs.push_back(static_cast<int64_t>(static_cast<int32_t>(candModel[numParams + i])));
+                    candArgs.push_back(floatMode ? static_cast<int64_t>(candModel[numParams + i])
+                                                 : static_cast<int64_t>(static_cast<int32_t>(candModel[numParams + i])));
                 }
-                InterpResult oRun = runIlFunctionConcrete(oldMod, oldFn, candNames, candArgs);
-                InterpResult nRun = runIlFunctionConcrete(newMod, newFn, candNames, candArgs);
+                InterpResult oRun = runIlFunctionConcrete(oldMod, oldFn, candNames, candArgs, 50000, floatMode);
+                InterpResult nRun = runIlFunctionConcrete(newMod, newFn, candNames, candArgs, 50000, floatMode);
                 int64_t oVal = 0, nVal = 0;
                 if (oRun.completed && nRun.completed && concreteResultsDiverge(oRun, nRun, &oVal, &nVal)) {
                     res.status = EquivStatus::Counterexample;
@@ -423,7 +436,15 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
 
     BVNodeId valMismatch = 0;
     if (oldRetNode != newRetNode) {
-        valMismatch = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Eq, oldRetNode, newRetNode));
+        if (floatMode) {
+            BVNodeId oldNaN = ctx.make_binary(BVOp::FNe, oldRetNode, oldRetNode, 1);
+            BVNodeId newNaN = ctx.make_binary(BVOp::FNe, newRetNode, newRetNode, 1);
+            BVNodeId bothNaN = ctx.make_binary(BVOp::And, oldNaN, newNaN, 1);
+            BVNodeId bitEq = ctx.make_binary(BVOp::Eq, oldRetNode, newRetNode, 1);
+            valMismatch = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, bothNaN, bitEq, 1), 1);
+        } else {
+            valMismatch = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Eq, oldRetNode, newRetNode));
+        }
     }
     if (heapMismatch != 0) {
         valMismatch = (valMismatch == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, valMismatch, heapMismatch);
@@ -458,21 +479,27 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         const size_t totalVars = numParams + heapTable.varNodes().size();
         std::vector<uint64_t> bestModel = satRes.model;
         if (bestModel.size() < totalVars) bestModel.resize(totalVars, 0);
-        minimizeCounterexampleModel(ctx, badCond, totalVars, domainMin, domainMax, bestModel);
-
-        for (size_t i = 0; i < totalVars; ++i) {
-            int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[i]));
-            bestModel[i] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+        if (floatMode) {
+            minimizeFloatCounterexampleModel(ctx, badCond, totalVars, bestModel);
+        } else {
+            minimizeCounterexampleModel(ctx, badCond, totalVars, domainMin, domainMax, bestModel);
+            for (size_t i = 0; i < totalVars; ++i) {
+                int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[i]));
+                bestModel[i] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+            }
         }
         res.counterexampleArgs.resize(numParams, 0);
         for (uint32_t i = 0; i < numParams; ++i) {
-            res.counterexampleArgs[i] = static_cast<int64_t>(static_cast<int32_t>(bestModel[i]));
+            res.counterexampleArgs[i] = floatMode
+                ? static_cast<int64_t>(bestModel[i])
+                : static_cast<int64_t>(static_cast<int32_t>(bestModel[i]));
         }
         if (!heapTable.varNodes().empty()) {
             for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
                 res.paramNames.push_back(heapTable.varPaths()[i]);
                 res.counterexampleArgs.push_back(
-                    static_cast<int64_t>(static_cast<int32_t>(bestModel[numParams + i])));
+                    floatMode ? static_cast<int64_t>(bestModel[numParams + i])
+                              : static_cast<int64_t>(static_cast<int32_t>(bestModel[numParams + i])));
             }
         }
         int64_t oldRet = static_cast<int64_t>(ctx.eval_concrete(oldRetNode, bestModel));
@@ -498,7 +525,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         if (res.detail.empty()) {
             res.detail = "counterexample found where old and new return values diverge";
         }
-        verifyCounterexampleWithReplay(oldMod, oldFn, newMod, newFn, res);
+        verifyCounterexampleWithReplay(oldMod, oldFn, newMod, newFn, res, floatMode);
         return res;
     }
 

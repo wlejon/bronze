@@ -29,7 +29,8 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
                                    const il::Function& fn,
                                    const std::vector<std::string>& paramNames,
                                    const std::vector<int64_t>& argValues,
-                                   uint32_t maxSteps = 50000);
+                                   uint32_t maxSteps = 50000,
+                                   bool floatBitArgs = false);
 
 // Returns true if two completed concrete executions diverge in exception behavior,
 // return value, or mutated post-state heap properties.
@@ -46,6 +47,7 @@ bool verifyCounterexampleWithReplay(const il::Module& oldMod,
                                     const il::Function& oldFn,
                                     const il::Module& newMod,
                                     const il::Function& newFn,
-                                    FunctionEquivResult& res);
+                                    FunctionEquivResult& res,
+                                    bool floatBitArgs = false);
 
 }  // namespace bronze::check

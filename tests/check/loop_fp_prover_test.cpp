@@ -366,3 +366,139 @@ TEST_CASE("Bounded loop unrolling: BOUNDED verdict for multi-loop, nested loops,
         CHECK(repBug.functions[0].status == EquivStatus::Counterexample);
     }
 }
+
+TEST_CASE("IEEE-754 double semantics: NaN, Infinity, -0, division, and Math built-ins") {
+    SUBCASE("NaN self-inequality vs Number.isNaN, and ordered comparison negation failure on NaN") {
+        const char* nanA = R"(
+            export function checkNaN(x) {
+                return Number.isNaN(x);
+            }
+        )";
+        const char* nanB = R"(
+            export function checkNaN(x) {
+                return x !== x;
+            }
+        )";
+        ProveEquivReport repEq = proveSourceEquiv(nanA, nanB, "checkNaN");
+        REQUIRE(repEq.functions.size() == 1);
+        CHECK(repEq.functions[0].status == EquivStatus::Equivalent);
+
+        const char* cmpA = R"(
+            export function isLess(x) {
+                return x < 1.5;
+            }
+        )";
+        const char* cmpB = R"(
+            export function isLess(x) {
+                return !(x >= 1.5);
+            }
+        )";
+        ProveEquivReport repNaNCmp = proveSourceEquiv(cmpA, cmpB, "isLess");
+        REQUIRE(repNaNCmp.functions.size() == 1);
+        CHECK(repNaNCmp.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("-0.0 vs +0.0 with 1/x, Object.is, and Math.min") {
+        const char* negZeroA = R"(
+            export function isNegZero(x) {
+                return Object.is(x, -0);
+            }
+        )";
+        const char* negZeroB = R"(
+            export function isNegZero(x) {
+                return x === 0 && (1 / x) === -Infinity;
+            }
+        )";
+        ProveEquivReport repNZ = proveSourceEquiv(negZeroA, negZeroB, "isNegZero");
+        REQUIRE(repNZ.functions.size() == 1);
+        CHECK(repNZ.functions[0].status == EquivStatus::Equivalent);
+
+        const char* minA = R"(
+            export function clampZero(x) {
+                return Math.min(x, 0.0);
+            }
+        )";
+        const char* minB = R"(
+            export function clampZero(x) {
+                return x < 0.0 ? x : 0.0;
+            }
+        )";
+        ProveEquivReport repMin = proveSourceEquiv(minA, minB, "clampZero");
+        REQUIRE(repMin.functions.size() == 1);
+        CHECK(repMin.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("Infinity and Number.isFinite") {
+        const char* finA = R"(
+            export function checkFin(x) {
+                return Number.isFinite(x);
+            }
+        )";
+        const char* finB = R"(
+            export function checkFin(x) {
+                return !Number.isNaN(x) && x !== Infinity && x !== -Infinity;
+            }
+        )";
+        ProveEquivReport repFin = proveSourceEquiv(finA, finB, "checkFin");
+        REQUIRE(repFin.functions.size() == 1);
+        CHECK(repFin.functions[0].status == EquivStatus::Equivalent);
+    }
+
+    SUBCASE("Dyadic float division x / 2 === x * 0.5 and Math.floor / ceil / round / pow") {
+        const char* divA = R"(
+            export function half(x) {
+                return x / 2;
+            }
+        )";
+        const char* divB = R"(
+            export function half(x) {
+                return x * 0.5;
+            }
+        )";
+        ProveEquivReport repHalf = proveSourceEquiv(divA, divB, "half");
+        REQUIRE(repHalf.functions.size() == 1);
+        CHECK(repHalf.functions[0].status == EquivStatus::Equivalent);
+
+        const char* floorCeilA = R"(
+            export function fc(x) {
+                return Math.floor(x);
+            }
+        )";
+        const char* floorCeilB = R"(
+            export function fc(x) {
+                return -Math.ceil(-x);
+            }
+        )";
+        ProveEquivReport repFC = proveSourceEquiv(floorCeilA, floorCeilB, "fc");
+        REQUIRE(repFC.functions.size() == 1);
+        CHECK(repFC.functions[0].status == EquivStatus::Equivalent);
+
+        const char* roundA = R"(
+            export function r(x) {
+                return Math.round(x);
+            }
+        )";
+        const char* roundB = R"(
+            export function r(x) {
+                return Math.floor(x + 0.5);
+            }
+        )";
+        ProveEquivReport repRound = proveSourceEquiv(roundA, roundB, "r");
+        REQUIRE(repRound.functions.size() == 1);
+        CHECK(repRound.functions[0].status == EquivStatus::Counterexample);
+
+        const char* powA = R"(
+            export function sq(x) {
+                return Math.pow(x, 2);
+            }
+        )";
+        const char* powB = R"(
+            export function sq(x) {
+                return x * x;
+            }
+        )";
+        ProveEquivReport repPow = proveSourceEquiv(powA, powB, "sq");
+        REQUIRE(repPow.functions.size() == 1);
+        CHECK(repPow.functions[0].status == EquivStatus::Equivalent);
+    }
+}

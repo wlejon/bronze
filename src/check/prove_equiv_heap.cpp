@@ -51,12 +51,12 @@ bool parseConstElemPath(const std::string& path, std::string& outBase, int64_t& 
 BVNodeId SymbolicHeapTable::getInitialVal(const std::string& path) {
     auto it = initialVals_.find(path);
     if (it != initialVals_.end()) return it->second;
-    BVNodeId raw32 = ctx_.make_var("heap:" + path, 32);
-    BVNodeId sext64 = ctx_.make_sext(raw32, 32);
-    initialVals_[path] = sext64;
+    BVNodeId var64 = floatMode_ ? ctx_.make_var("heap:" + path, 64, /*is_float=*/true)
+                                : ctx_.make_sext(ctx_.make_var("heap:" + path, 32), 32);
+    initialVals_[path] = var64;
     varPaths_.push_back(path);
-    varNodes_.push_back(sext64);
-    return sext64;
+    varNodes_.push_back(var64);
+    return var64;
 }
 
 BVNodeId SymbolicHeapTable::getObjectToken(const std::string& rootPath) {

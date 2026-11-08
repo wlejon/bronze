@@ -19,10 +19,14 @@ namespace bronze::check {
 // functions read identical BVNodeIds for the same input property or buffer element.
 class SymbolicHeapTable {
 public:
-    explicit SymbolicHeapTable(brass::verify::BVContext& ctx) : ctx_(ctx) {}
+    explicit SymbolicHeapTable(brass::verify::BVContext& ctx, bool floatMode = false)
+        : ctx_(ctx), floatMode_(floatMode) {}
 
     brass::verify::BVContext& ctx() { return ctx_; }
     const brass::verify::BVContext& ctx() const { return ctx_; }
+
+    bool isFloatMode() const { return floatMode_; }
+    void setFloatMode(bool floatMode) { floatMode_ = floatMode; }
 
     // Returns the canonical 64-bit sign-extended symbolic variable for `path`.
     brass::verify::BVNodeId getInitialVal(const std::string& path);
@@ -50,6 +54,7 @@ private:
         brass::verify::BVNodeId eqCond = 0;
     };
     brass::verify::BVContext& ctx_;
+    bool floatMode_ = false;
     std::unordered_map<std::string, brass::verify::BVNodeId> initialVals_;
     std::unordered_map<std::string, brass::verify::BVNodeId> objectTokens_;
     std::vector<std::string> varPaths_;
@@ -200,5 +205,49 @@ void minimizeCounterexampleModel(const brass::verify::BVContext& ctx,
                                  int32_t domainMin,
                                  int32_t domainMax,
                                  std::vector<uint64_t>& bestModel);
+
+void minimizeFloatCounterexampleModel(const brass::verify::BVContext& ctx,
+                                      brass::verify::BVNodeId badCond,
+                                      size_t totalVars,
+                                      std::vector<uint64_t>& bestModel);
+
+uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn,
+                                          std::vector<uint8_t>& outInCycle);
+
+bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn);
+
+brass::verify::BVNodeId makeF64ConstNode(brass::verify::BVContext& ctx, double d);
+
+brass::verify::BVNodeId evalFloatFloorSymbolic(brass::verify::BVContext& ctx,
+                                               brass::verify::BVNodeId a);
+
+brass::verify::BVNodeId evalFloatCeilSymbolic(brass::verify::BVContext& ctx,
+                                              brass::verify::BVNodeId a);
+
+brass::verify::BVNodeId evalFloatTruncSymbolic(brass::verify::BVContext& ctx,
+                                               brass::verify::BVNodeId a);
+
+brass::verify::BVNodeId evalFloatRoundSymbolic(brass::verify::BVContext& ctx,
+                                               brass::verify::BVNodeId a);
+
+brass::verify::BVNodeId evalFloatPowSymbolic(brass::verify::BVContext& ctx,
+                                             brass::verify::BVNodeId base64,
+                                             brass::verify::BVNodeId exp64,
+                                             bool& ok);
+
+bool evalFloatBinaryOpSymbolic(brass::verify::BVContext& ctx,
+                               il::Op op,
+                               brass::verify::BVNodeId lhs,
+                               brass::verify::BVNodeId rhs,
+                               brass::verify::BVNodeId& outVal,
+                               std::string* outReason = nullptr);
+
+bool tryEvalGlobalPropGetSymbolic(brass::verify::BVContext& ctx,
+                                  const std::string& globalName,
+                                  const std::string& key,
+                                  bool floatMode,
+                                  brass::verify::BVNodeId& outVal,
+                                  bool& outIsMethodRef,
+                                  std::string* outReason = nullptr);
 
 }  // namespace bronze::check
