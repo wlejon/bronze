@@ -659,6 +659,27 @@ TEST_CASE("proveSourceEquiv: module-env tables, new construction, charCodeAt, ty
         REQUIRE(rep.functions.size() == 1);
         CHECK(rep.functions[0].status != EquivStatus::Equivalent);
     }
+
+    SUBCASE("one side throwing where the other returns is a counterexample; both throwing is not") {
+        const char* returns = R"(
+            export function f(x) { x = x | 0; return x + 1; }
+        )";
+        const char* throwsAt5 = R"(
+            export function f(x) { x = x | 0; if (x === 5) throw new RangeError("five"); return x + 1; }
+        )";
+        const char* throwsAt5Too = R"(
+            export function f(x) { x = x | 0; if (x === 5) throw new RangeError("other"); return x + 1; }
+        )";
+        std::string err;
+        ProveEquivReport diff = bronze::check::proveSourceEquiv(returns, throwsAt5, "f", &err);
+        REQUIRE(err.empty());
+        REQUIRE(diff.functions.size() == 1);
+        CHECK(diff.functions[0].status == EquivStatus::Counterexample);
+        REQUIRE(diff.functions[0].counterexampleArgs.size() == 1);
+        CHECK(diff.functions[0].counterexampleArgs[0] == 5);
+        ProveEquivReport same = bronze::check::proveSourceEquiv(throwsAt5, throwsAt5Too, "f", &err);
+        REQUIRE(err.empty());
+        REQUIRE(same.functions.size() == 1);
+        CHECK(same.functions[0].status == EquivStatus::Equivalent);
+    }
 }
-
-

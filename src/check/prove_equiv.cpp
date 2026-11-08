@@ -177,7 +177,10 @@ std::string ProveEquivReport::renderText() const {
                 std::string pname = (i < f.paramNames.size()) ? f.paramNames[i] : ("arg_" + std::to_string(i));
                 os << pname << " = " << f.counterexampleArgs[i];
             }
-            os << ") -> old = " << f.oldReturnValue << ", new = " << f.newReturnValue;
+            auto ret = [](int64_t v) {
+                return v == static_cast<int64_t>(0xDEAD0000DEAD0001ULL) ? std::string("throws") : std::to_string(v);
+            };
+            os << ") -> old = " << ret(f.oldReturnValue) << ", new = " << ret(f.newReturnValue);
         } else if (f.status == EquivStatus::Unknown && !f.detail.empty()) {
             os << " (" << f.detail << ")";
         }
@@ -206,8 +209,11 @@ std::string ProveEquivReport::renderJson() const {
                 if (j > 0) os << ",";
                 os << f.counterexampleArgs[j];
             }
+            const int64_t thrown = static_cast<int64_t>(0xDEAD0000DEAD0001ULL);
             os << "],\"oldReturn\":" << f.oldReturnValue
-               << ",\"newReturn\":" << f.newReturnValue << "}";
+               << ",\"newReturn\":" << f.newReturnValue
+               << ",\"oldThrows\":" << (f.oldReturnValue == thrown ? "true" : "false")
+               << ",\"newThrows\":" << (f.newReturnValue == thrown ? "true" : "false") << "}";
         }
         os << "}";
     }
@@ -308,9 +314,13 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
     }
 
+    // Inputs on which both sides throw are outside the compared domain. One side throwing
+    // and the other returning is a difference: the sentinel differs from every value a
+    // returning side produces, so the return inequality above already covers it.
     BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
-    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, oldRetNode, throwSent));
-    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, newRetNode, throwSent));
+    BVNodeId bothThrow = ctx.make_binary(BVOp::And, ctx.make_binary(BVOp::Eq, oldRetNode, throwSent),
+                                         ctx.make_binary(BVOp::Eq, newRetNode, throwSent));
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, bothThrow));
 
     BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
     if (aliasCongruence != 0) {
@@ -642,8 +652,9 @@ EquivReport proveRoundTripSource(std::string_view source, std::string_view encod
     }
     BVNodeId badCond = ctx.make_binary(BVOp::Ne, decRet, xNode);
     BVNodeId throwSent = ctx.make_const(0xDEAD0000DEAD0001ULL, 64);
+    // An x encode throws on is outside its domain; decode throwing on what encode
+    // produced is a round-trip failure, so only the encode side is excluded.
     badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, encRet, throwSent));
-    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, decRet, throwSent));
     if (domainMin > INT32_MIN) {
         BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
         badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, xNode, minNode));

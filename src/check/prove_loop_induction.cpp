@@ -712,8 +712,10 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
         if (heapMismatch != 0) badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
         static constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
         BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, oldRet, throwSent));
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, newRet, throwSent));
+        // Excluded only when both sides throw (prove_equiv.cpp): one side throwing is a difference.
+        BVNodeId bothThrow = ctx.make_binary(BVOp::And, ctx.make_binary(BVOp::Eq, oldRet, throwSent),
+                                             ctx.make_binary(BVOp::Eq, newRet, throwSent));
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, bothThrow));
         BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
         if (aliasCongruence != 0) badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
 
