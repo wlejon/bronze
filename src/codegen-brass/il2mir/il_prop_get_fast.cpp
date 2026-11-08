@@ -16,7 +16,10 @@
 // stub, and the stub saved callee-saved registers for it on every call. Here
 // every tag, payload and half-word test is a shift and a compare against an
 // immediate, each way is a compare and a branch of its own, and each answer
-// returns from its own block.
+// returns from its own block. Past that, it is register pressure: the own
+// hit's path uses only argument and scratch registers when no more than seven
+// values are live anywhere in the stub (the miss's three operands among them),
+// and one more cost a callee-saved save and restore on every call.
 //
 // The site calls this one function, not a call-free half and then the full
 // stub on its miss: that split (the half declared nocollect, so the caller's
@@ -73,6 +76,8 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
     // way 0 is compared and read there, and an install at way 0 writes both.
     Value* row = b.add_block_param(entry, Type::i64());
     const std::string p = "pfast";
+    BasicBlock* call_slow = b.append_block(p + "_call_slow");
+    Value* slow_obj = b.add_block_param(call_slow, Type::i64());
     BasicBlock* miss = b.append_block(p + "_miss");
     BasicBlock* object = b.append_block(p + "_object");
     BasicBlock* hit = b.append_block(p + "_hit");
@@ -94,11 +99,12 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
 
     // A plain object: the object tag, then the header's flags.
     b.position_at_end(entry);
-    b.build_br_if(object_tagged(b, obj), object, miss);
+    b.build_br_if(object_tagged(b, obj), object, {}, call_slow, {obj});
     b.position_at_end(object);
     Value* ptr = payload(b, obj);
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), ways[0], miss);
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), ways[0], {}, call_slow,
+                  {obj});
 
     // Its shape against each way; an entry is (shape, slot word, epoch).
     for (int w = 0; w < BRONZE_ABI_IC_WAYS; ++w) {
@@ -136,22 +142,27 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
         Value* index = b.build_lshr(h, imm(b, 64 - BRONZE_ABI_MEGA_PROP_BITS));
         static_assert(BRONZE_ABI_MEGA_PROP_ENTRY_WORDS * 8 == 32, "the index scales by a shift of 5");
         Value* at = b.build_add(tls, b.build_add(b.build_shl(index, imm(b, 5)), imm(b, BRONZE_TLS_MEGA_PROP_OFF)));
-        Value* match = b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), shape),
-                                   b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * 8), key));
+        // The entry's shape, then its key, then its slot word, each tested
+        // or used before the next is loaded: three loads held at once took
+        // two callee-saved registers, saved and restored on every call.
+        BasicBlock* mega_key = b.append_block(p + "_mega_key");
+        BasicBlock* mega_hit = b.append_block(p + "_mega_hit");
+        BasicBlock* shift = to_front ? b.append_block(p + "_shift") : nullptr;
+        b.position_at_end(mega);
+        b.build_br_if(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), shape), mega_key, miss);
+        b.position_at_end(mega_key);
+        b.build_br_if(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * 8), key), mega_hit,
+                      miss);
+        b.position_at_end(mega_hit);
         Value* mword = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
         if (!to_front) {
-            b.build_br_if(match, hit, {mword, at}, miss, {});
+            b.build_br(hit, {mword, at});
         } else {
             // An entry is about its (shape, key) pair alone (rt_prop_mega.h),
             // so the table's is this site's too: installed at way 0 as the
             // runtime installs one (InlineCacheSite::install, move to front),
             // and left out when way 0 holds an array-method sentinel, which
             // stays there.
-            BasicBlock* front = b.append_block(p + "_front");
-            BasicBlock* shift = b.append_block(p + "_shift");
-            b.position_at_end(mega);
-            b.build_br_if(match, front, miss);
-            b.position_at_end(front);
             Value* sentinel = b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET),
                                          imm(b, static_cast<int64_t>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD)));
             b.build_br_if(sentinel, hit, {mword, at}, shift, {});
@@ -221,7 +232,9 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
                           proto_plain, miss);
             b.position_at_end(proto_plain);
             Value* pshape = b.build_load(Type::i64(), pptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-            Value* not_dict = b.build_eq(b.build_load(Type::i64(), pshape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0));
+            // `< 1` rather than `== 0`: the compare takes the load as its
+            // memory operand, where a test against zero needed a register.
+            Value* not_dict = b.build_ult(b.build_load(Type::i64(), pshape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 1));
             if (!next) {
                 b.build_br_if(not_dict, holder_found, {pptr}, miss, {});
                 break;
@@ -239,8 +252,13 @@ void build_prop_get_fast_stub(Function* fn, bool to_front) {
     b.position_at_end(holder_found);
     b.build_ret(load_slot(b, holder, b.build_lshr(b.build_shl(word, imm(b, 32)), imm(b, 32))));
 
+    // A miss before the receiver is known to be a plain object passes it as
+    // it came; every later one boxes it again from its payload (the tag was
+    // tested), so the argument's register is free past the header check.
     b.position_at_end(miss);
-    b.build_ret(b.build_call(kPropGetSlowStub, Type::i64(), {obj, key_id, site}));
+    b.build_br(call_slow, {b.build_or(ptr, imm(b, static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)))});
+    b.position_at_end(call_slow);
+    b.build_ret(b.build_call(kPropGetSlowStub, Type::i64(), {slow_obj, key_id, site}));
     fn->rebuild_cfg_predecessors();
 }
 

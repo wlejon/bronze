@@ -1,0 +1,15 @@
+getters g1:1,g2:2,g3:3,g4:4,g5:5,g6:6,own:0,g1:1,g2:2,g3:3,g4:4,g5:5,g6:6,own:0,g1:1,g2:2,g3:3,g4:4,g5:5,g6:6,own:0
+dictionary d1,d2,d3,d4,d5,d1,d2,d3,d4,d5,d1,d2,d3,d4,d5
+swapped protos even s0,odd,even s2,odd,even s0,odd,even s2,odd,even s0,odd,even s2,odd
+table v undefined,v1,undefined,v3,undefined,v5,undefined,v7,undefined,v9,undefined,v11,undefined,v1,undefined,v3,undefined,v5,undefined,v7,undefined,v9,undefined,v11,undefined,v1,undefined,v3,undefined,v5,undefined,v7,undefined,v9,undefined,v11
+table w w0,undefined,w2,undefined,w4,undefined,w6,undefined,w8,undefined,w10,undefined,w0,undefined,w2,undefined,w4,undefined,w6,undefined,w8,undefined,w10,undefined,w0,undefined,w2,undefined,w4,undefined,w6,undefined,w8,undefined,w10,undefined
+before base,base,base,base,base,base,base,base,base
+after write changed,changed,changed,changed,changed,changed,changed,changed,changed
+after define getter false,getter false,getter true,getter false,getter false,getter true,getter false,getter false,getter true
+after delete undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined
+gc 0 g1:1,g2:2,g3:3,g1:1,g2:2,g3:3,g1:1,g2:2,g3:3
+gc 400 g1:1,g2:2,g3:3,g1:1,g2:2,g3:3,g1:1,g2:2,g3:3
+gc 800 g1:1,g2:2,g3:3,g1:1,g2:2,g3:3,g1:1,g2:2,g3:3
+gc 1200 g1:1,g2:2,g3:3,g1:1,g2:2,g3:3,g1:1,g2:2,g3:3
+gc 1600 g1:1,g2:2,g3:3,g1:1,g2:2,g3:3,g1:1,g2:2,g3:3
+kept 2000
