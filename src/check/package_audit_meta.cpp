@@ -344,6 +344,13 @@ void parseJsDocComments(const std::string& content,
             if (lb != std::string::npos && rb != std::string::npos && rb - lb < 64) {
                 meta.returnType = classifyTypeToken(comment.substr(lb + 1, rb - (lb + 1)));
             }
+            std::string retDesc = toLowerAscii(comment.substr(rPos));
+            if (retDesc.find("in the range `0` to") != std::string::npos ||
+                retDesc.find("in the range 0 to") != std::string::npos ||
+                retDesc.find("non-negative") != std::string::npos) {
+                meta.hasReturnMin = true;
+                meta.returnMin = 0;
+            }
         }
     }
 }

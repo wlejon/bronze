@@ -41,6 +41,8 @@ struct FunctionDocMeta {
     int32_t domainMin = INT32_MIN;
     int32_t domainMax = INT32_MAX;
     bool hasExplicitRange = false;
+    bool hasReturnMin = false;
+    int32_t returnMin = INT32_MIN;
     bool documentedSymmetric = false;
     bool documentedAntisymmetric = false;
     bool documentedCompare = false;

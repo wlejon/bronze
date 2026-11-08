@@ -229,6 +229,9 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
                    (!docMeta.params.empty() && docMeta.params[0].type == DocValType::String);
     std::string domStr = formatDomainRange(dMin, dMax, floatMode, strMode);
     chk.formalProperty = "forall x in " + domStr + ": !throws(" + chk.functionName + "(x)) && !isNaN(" + chk.functionName + "(x))";
+    if (docMeta.hasReturnMin && !floatMode) {
+        chk.formalProperty += " && " + chk.functionName + "(x) >= " + std::to_string(docMeta.returnMin);
+    }
 
     uint32_t numParams = static_cast<uint32_t>(fn.callerParamCount());
     BVContext ctx;
@@ -295,13 +298,21 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
             return chk;
         }
     }
-    if (tNode == zero1) {
+    BVNodeId retMinFail = zero1;
+    if (docMeta.hasReturnMin && !floatMode) {
+        BVNodeId minRetN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(docMeta.returnMin)), 64);
+        retMinFail = ctx.make_binary(BVOp::Slt, retNode, minRetN, 1);
+    }
+    if (tNode == zero1 && retMinFail == zero1) {
         chk.status = isBounded ? EquivStatus::Bounded : EquivStatus::Equivalent;
         chk.detail = "proven no-throw across all symbolic inputs in domain";
         return chk;
     }
 
-    BVNodeId badCond = ctx.make_binary(BVOp::And, tNode, domGuard, 1);
+    BVNodeId errOrRetFail = (retMinFail == zero1)
+        ? tNode
+        : ctx.make_binary(BVOp::Or, tNode, ctx.make_binary(BVOp::And, ctx.make_unary(BVOp::Not, tNode, 1), retMinFail, 1), 1);
+    BVNodeId badCond = ctx.make_binary(BVOp::And, errOrRetFail, domGuard, 1);
     if (eNode != zero1) {
         badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, eNode, 1), 1);
     }
@@ -313,7 +324,7 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
         return chk;
     }
     if (sat.status == SolveOutcome::Sat) {
-        if (!docMeta.hasExplicitRange) {
+        if (!docMeta.hasExplicitRange && !docMeta.hasReturnMin) {
             chk.inPreconditionBucket = true;
             chk.status = EquivStatus::Equivalent;
             chk.detail = "explicit guard throw outside unrefined type domain (precondition bucket)";
@@ -322,6 +333,18 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
         size_t totalVars = numParams + heapTable.varNodes().size();
         std::vector<uint64_t> model = sat.model;
         if (model.size() < totalVars) model.resize(totalVars, 0);
+        if (!floatMode) {
+            static constexpr int32_t kCands[] = {0, 1, -1, 47, 48, 64, 65, 96, 97, 127, 255, INT32_MAX, INT32_MIN};
+            for (int32_t c : kCands) {
+                if (c < dMin || c > dMax) continue;
+                std::vector<uint64_t> tryM = model;
+                tryM[0] = static_cast<uint64_t>(static_cast<uint32_t>(c));
+                if (ctx.eval_concrete(badCond, tryM) != 0) {
+                    model = std::move(tryM);
+                    break;
+                }
+            }
+        }
         std::vector<std::string> replayNames = chk.paramNames;
         std::vector<int64_t> replayArgs(numParams, 0);
         for (uint32_t i = 0; i < numParams; ++i) {
@@ -334,16 +357,29 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
                                            : static_cast<int64_t>(static_cast<int32_t>(model[numParams + i])));
         }
         InterpResult run = runIlFunctionConcrete(mod, fn, replayNames, replayArgs, 50000, floatMode);
-        if (run.completed && !run.threw) {
+        bool violatedRetMin = docMeta.hasReturnMin && run.completed && !run.threw && (run.returnI64 < docMeta.returnMin);
+        if (run.completed && !run.threw && !violatedRetMin) {
             chk.status = EquivStatus::Unknown;
             chk.detail = "prover/replay mismatch";
+            return chk;
+        }
+        if (run.completed && run.threw && !docMeta.hasExplicitRange) {
+            chk.inPreconditionBucket = true;
+            chk.status = EquivStatus::Equivalent;
+            chk.detail = "explicit guard throw outside unrefined type domain (precondition bucket)";
             return chk;
         }
         chk.status = EquivStatus::Counterexample;
         chk.paramNames = std::move(replayNames);
         chk.counterexampleArgs = std::move(replayArgs);
-        chk.newThrows = true;
-        chk.detail = "throws inside documented domain";
+        chk.newThrows = run.threw;
+        if (violatedRetMin) {
+            chk.expectedValue = docMeta.returnMin;
+            chk.actualValue = run.returnI64;
+            chk.detail = "return value violates documented @returns range and confirmed by concrete replay";
+        } else {
+            chk.detail = "throws inside documented domain";
+        }
         return chk;
     }
     chk.status = EquivStatus::Unknown;
@@ -421,6 +457,12 @@ AuditPropertyCheck checkRoundTripPair(const il::Module& mod,
         return chk;
     }
     if (sat.status == SolveOutcome::Sat) {
+        if (!encMeta.hasExplicitRange) {
+            chk.inPreconditionBucket = true;
+            chk.status = EquivStatus::Equivalent;
+            chk.detail = "round-trip divergence outside unrefined type domain (precondition bucket)";
+            return chk;
+        }
         int32_t xVal = static_cast<int32_t>(sat.model.empty() ? 0 : sat.model[0]);
         static constexpr int32_t kCands[] = {0, 1, -1, 2, -2, 63, 64, 127, 128, -128, 255, 256, INT32_MAX, INT32_MIN};
         for (int32_t c : kCands) {

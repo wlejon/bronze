@@ -742,6 +742,11 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
             export function compare(a, b) {
                 return (a - b) | 0; // Bug on INT32_MIN: compare(a, b) !== -compare(b, a)
             }
+            /** @returns {Number} The numeric value of a basic code point in the range 0 to 36 */
+            export function charToDigit(cp) {
+                if (cp - 0x30 < 0x0A) return cp - 0x16; // Bug: cp < 0x30 returns negative!
+                return 36;
+            }
         )";
     }
     {
@@ -769,6 +774,11 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
                 if (a === b) return 0;
                 return a < b ? -1 : 1; // Fixed!
             }
+            /** @returns {Number} The numeric value of a basic code point in the range 0 to 36 */
+            export function charToDigit(cp) {
+                if (cp >= 0x30 && cp < 0x3A) return cp - 0x16; // Fixed!
+                return 36;
+            }
             export function lessThanObj(a, b) {
                 return a.val < b.val ? 1 : 0;
             }
@@ -776,13 +786,13 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
     }
 
     PackageAuditReport repOld = auditPackage(pkgOld.generic_string());
-    CHECK(repOld.totalPublicFunctions == 4);
-    CHECK(repOld.analyzedFunctions == 4);
-    CHECK(repOld.counterexampleCount >= 2);
+    CHECK(repOld.totalPublicFunctions == 5);
+    CHECK(repOld.analyzedFunctions == 5);
+    CHECK(repOld.counterexampleCount >= 3);
 
     PackageAuditReport repNew = auditPackage(pkgNew.generic_string());
-    CHECK(repNew.totalPublicFunctions == 5);
-    CHECK(repNew.analyzedFunctions == 5);
+    CHECK(repNew.totalPublicFunctions == 6);
+    CHECK(repNew.analyzedFunctions == 6);
     CHECK(repNew.counterexampleCount == 0);
     for (const auto& c : repNew.checks) {
         if (c.functionName == "lessThanObj") {
@@ -791,8 +801,8 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
     }
 
     PackageAuditReport repDiff = auditPackageDiff(pkgOld.generic_string(), pkgNew.generic_string());
-    CHECK(repDiff.totalPublicFunctions == 4);
-    CHECK(repDiff.counterexampleCount == 2);
+    CHECK(repDiff.totalPublicFunctions == 5);
+    CHECK(repDiff.counterexampleCount == 3);
     CHECK(repDiff.equivalentCount == 2);
 
     fs::remove_all(tmpRoot, ec);
