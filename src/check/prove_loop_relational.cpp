@@ -1,4 +1,5 @@
 #include "check/prove_loop_induction.h"
+#include "check/il_interp.h"
 
 #include <algorithm>
 #include <vector>
@@ -76,21 +77,21 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
         SymbolicHeapTable heapTable(ctx);
         SymbolicHeapState oldHeap, newHeap;
         BVNodeId oldRet = 0, newRet = 0;
-        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet, nullptr, &heapTable, &oldHeap) ||
-            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet, nullptr, &heapTable, &newHeap)) {
+        BVNodeId oldThrew = 0, newThrew = 0;
+        if (!evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise, &oldRet, nullptr, &heapTable, &oldHeap, nullptr, &oldThrew) ||
+            !evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise, &newRet, nullptr, &heapTable, &newHeap, nullptr, &newThrew)) {
             continue;
         }
         BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(heapTable, oldHeap, newHeap);
-        if (oldRet == newRet && heapMismatch == 0) continue;
+        if (oldRet == newRet && heapMismatch == 0 && oldThrew == newThrew) continue;
 
-        BVNodeId badCond = (oldRet != newRet) ? ctx.make_binary(BVOp::Ne, oldRet, newRet) : 0;
-        if (heapMismatch != 0) badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
-        static constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
-        BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
-        // Excluded only when both sides throw (prove_equiv.cpp): one side throwing is a difference.
-        BVNodeId bothThrow = ctx.make_binary(BVOp::And, ctx.make_binary(BVOp::Eq, oldRet, throwSent),
-                                             ctx.make_binary(BVOp::Eq, newRet, throwSent));
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, bothThrow));
+        BVNodeId valMismatch = (oldRet != newRet) ? ctx.make_binary(BVOp::Ne, oldRet, newRet) : 0;
+        if (heapMismatch != 0) valMismatch = (valMismatch == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, valMismatch, heapMismatch);
+        BVNodeId threwDiff = (oldThrew != newThrew) ? ctx.make_binary(BVOp::Ne, oldThrew, newThrew) : 0;
+        BVNodeId neitherThrew = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, oldThrew, newThrew));
+        BVNodeId badCond = (valMismatch != 0) ? ctx.make_binary(BVOp::And, neitherThrew, valMismatch) : 0;
+        if (threwDiff != 0) badCond = (badCond == 0) ? threwDiff : ctx.make_binary(BVOp::Or, threwDiff, badCond);
+        if (badCond == 0) continue;
         BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
         if (aliasCongruence != 0) badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
 
@@ -121,9 +122,15 @@ bool checkConcreteTripCounts(const il::Module& oldMod, const il::Function& oldFn
                 if (i == boundParamIdx) continue;
                 res.counterexampleArgs[i] = static_cast<int32_t>(static_cast<uint32_t>(model[mIdx++]));
             }
+            for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
+                res.paramNames.push_back(heapTable.varPaths()[i]);
+                res.counterexampleArgs.push_back(
+                    static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(model[mIdx++]))));
+            }
             res.oldReturnValue = static_cast<int64_t>(ctx.eval_concrete(oldRet, model));
             res.newReturnValue = static_cast<int64_t>(ctx.eval_concrete(newRet, model));
             res.detail = "counterexample found on concrete loop trip count";
+            verifyCounterexampleWithReplay(oldMod, oldFn, newMod, newFn, res);
             return true;
         }
     }
@@ -178,7 +185,8 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
     uint32_t boundParamIdx = 0;
     BVNodeId refBound = oldIsLoop ? oldLoop.boundNode : (newIsLoop ? newLoop.boundNode : 0);
     for (uint32_t i = 0; i < numParams; ++i) {
-        if (argNodes[i] == refBound) {
+        BVNodeId sint32Arg = ctx.make_sext(ctx.make_extract(argNodes[i], 31, 0), 32);
+        if (argNodes[i] == refBound || sint32Arg == refBound) {
             boundParamIdx = i;
             break;
         }
@@ -306,7 +314,19 @@ FunctionEquivResult compareIlLoopFunctionPairInductive(const il::Module& oldMod,
                 if (stepSat.status == SolveOutcome::Sat && heapStepDiff != 0) {
                     res.status = EquivStatus::Counterexample;
                     res.counterexampleArgs.assign(numParams, 1);
+                    for (size_t i = 0; i < heapTable.varPaths().size(); ++i) {
+                        std::string hp = heapTable.varPaths()[i];
+                        auto lb = hp.find("[@");
+                        if (lb != std::string::npos) hp = hp.substr(0, lb) + ".0";
+                        res.paramNames.push_back(hp);
+                        int64_t mv = (numParams + 1 + i < stepSat.model.size())
+                                         ? static_cast<int32_t>(static_cast<uint32_t>(stepSat.model[numParams + 1 + i]))
+                                         : 1;
+                        if (mv == 0) mv = 1;
+                        res.counterexampleArgs.push_back(mv);
+                    }
                     res.detail = "counterexample found where loop buffer store diverges";
+                    verifyCounterexampleWithReplay(oldMod, oldFn, newMod, newFn, res);
                     return res;
                 }
                 return failUnknown("relational loop step transitions are not provably equivalent");

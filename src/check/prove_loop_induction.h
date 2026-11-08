@@ -95,7 +95,7 @@ private:
                    LoopSymState state,
                    uint32_t steps,
                    brass::verify::BVNodeId* outRet);
-    bool execNonTerminators(const il::Block& blk, LoopSymState& state);
+    bool execNonTerminators(const il::Function& fn, const il::Block& blk, LoopSymState& state);
 };
 
 // Proves equivalence of a single-loop function vs. a closed-form function (or

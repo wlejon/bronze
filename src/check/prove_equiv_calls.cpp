@@ -13,7 +13,8 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
                                                uint32_t envId,
                                                uint32_t inlineDepth,
                                                SymState& state,
-                                               bool writeScalarRet) {
+                                               bool writeScalarRet,
+                                               bool isConstructCall) {
     std::vector<BVNodeId> callArgs;
     std::vector<std::string> callPaths;
     std::vector<bool> callUndef;
@@ -23,12 +24,26 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
         callUndef.push_back(state.undefValues.count(inst.operands[k]) > 0);
     }
     auto sub = evalFunction(callee, callArgs, inlineDepth + 1, &state.heap,
-                            thisPath.empty() ? "this" : thisPath, &callPaths, envId, &callUndef);
+                            thisPath.empty() ? "this" : thisPath, &callPaths, envId, &callUndef, isConstructCall);
     if (!sub.supported || !sub.hasReturn) {
         return {false, sub.unsupportedReason.empty() ? "callee hit loop unroll bound" : sub.unsupportedReason,
-                false, zero64_, {}, {}};
+                false, zero64_, {}, {}, zero1_};
     }
-    state.heap.writes = std::move(sub.finalHeap.writes);
+    BVNodeId calleeThrew = (sub.threwNode != 0) ? sub.threwNode : zero1_;
+    if (calleeThrew < ctx_.nodes().size() && ctx_.nodes()[calleeThrew].op == BVOp::Const &&
+        ctx_.nodes()[calleeThrew].imm != 0) {
+        return {true, {}, true, zero64_, std::move(state.heap), {}, one1_};
+    }
+    if (calleeThrew != zero1_) {
+        state.threwCond = (state.threwCond == 0 || state.threwCond == zero1_)
+                              ? calleeThrew
+                              : ctx_.make_binary(BVOp::Or, state.threwCond, calleeThrew);
+        SymbolicHeapState merged = SymbolicHeapState::mergeBranches(
+            heapTable_, calleeThrew, state.heap, sub.finalHeap);
+        state.heap.writes = std::move(merged.writes);
+    } else {
+        state.heap.writes = std::move(sub.finalHeap.writes);
+    }
     state.heap.propFuncRefs = std::move(sub.finalHeap.propFuncRefs);
     state.heap.localObjCounter = sub.finalHeap.localObjCounter;
     if (writeScalarRet) state.values[inst.result] = sub.returnVal;
@@ -36,7 +51,7 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
         state.heap.objPaths[inst.result] = sub.returnObjPath;
         state.values[inst.result] = sub.returnVal;
     }
-    return {true, {}, false, zero64_, {}, {}};
+    return {true, {}, false, zero64_, {}, {}, zero1_};
 }
 
 bool SymbolicIlBuilder::tryEvalGlobalCall(const std::string& gName,
@@ -66,10 +81,11 @@ SymEvalOutcome SymbolicIlBuilder::evalConstructOp(const il::Instruction& inst,
     std::string localPath = state.heap.lookupObjPath(inst.result);
     if (!inst.operands.empty() && state.funcRefs.count(inst.operands[0])) {
         uint32_t ctorIdx = state.funcRefs[inst.operands[0]];
+        state.ctorOf[inst.result] = ctorIdx;
         uint32_t ctorEnv = state.funcEnvs.count(inst.operands[0]) ? state.funcEnvs[inst.operands[0]] : 0;
         if (ctorIdx < mod_.functions.size() && !mod_.functions[ctorIdx].isExternal) {
             return invokeCallee(mod_.functions[ctorIdx], inst, 1, localPath,
-                                ctorEnv, inlineDepth, state, false);
+                                ctorEnv, inlineDepth, state, false, true);
         }
     }
     if (inst.operands.size() >= 2) {
@@ -94,21 +110,21 @@ SymEvalOutcome SymbolicIlBuilder::evalConstructOp(const il::Instruction& inst,
     } else {
         state.heap.evalPropSet(heapTable_, inst.result, "length", zero64_);
     }
-    return {true, {}, false, zero64_, {}, {}};
+    return {true, {}, false, zero64_, {}, {}, zero1_};
 }
 
 SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
                                                    uint32_t inlineDepth,
                                                    SymState& state) {
     if (inst.operands.empty() || inst.keyIndex >= mod_.keyConstants.size()) {
-        return {false, "unsupported dynamic method call", false, zero64_, {}, {}};
+        return {false, "unsupported dynamic method call", false, zero64_, {}, {}, zero1_};
     }
     const std::string& method = mod_.keyConstants[inst.keyIndex];
     if (state.globalRefs.count(inst.operands[0])) {
         std::string gErr;
         if (tryEvalGlobalCall(state.globalRefs[inst.operands[0]], method, inst, state, gErr)) {
-            if (!gErr.empty()) return {false, gErr, false, zero64_, {}, {}};
-            return {true, {}, false, zero64_, {}, {}};
+            if (!gErr.empty()) return {false, gErr, false, zero64_, {}, {}, zero1_};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
     if ((method == "charCodeAt" || method == "codePointAt" || method == "charAt") && inst.operands.size() >= 2) {
@@ -120,12 +136,12 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
                 res = ctx_.make_ite(ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64)), arrIt->second[i], res);
             }
             state.values[inst.result] = res;
-            return {true, {}, false, zero64_, {}, {}};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
         BVNodeId chVal = zero64_;
         if (state.heap.evalElemGet(heapTable_, inst.operands[0], idx, inst.result, chVal)) {
             state.values[inst.result] = ctx_.make_binary(BVOp::And, chVal, ctx_.make_const(0xFFFF, 64));
-            return {true, {}, false, zero64_, {}, {}};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
     if (method == "push" && inst.operands.size() >= 2) {
@@ -136,7 +152,7 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
             BVNodeId newLen = ctx_.make_binary(BVOp::Add, curLen, one64_);
             state.heap.evalPropSet(heapTable_, inst.operands[0], "length", newLen);
             state.values[inst.result] = newLen;
-            return {true, {}, false, zero64_, {}, {}};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
     if (method == "pop" && !inst.operands.empty()) {
@@ -153,13 +169,13 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
             state.heap.evalPropSet(heapTable_, inst.operands[0], "length", newLen);
             if (isU) state.undefValues.insert(inst.result);
             state.values[inst.result] = lastElem;
-            return {true, {}, false, zero64_, {}, {}};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
     if ((method == "slice" || method == "subarray") && !inst.operands.empty()) {
         state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
         state.heap.propagateAlias(inst.operands[0], inst.result);
-        return {true, {}, false, zero64_, {}, {}};
+        return {true, {}, false, zero64_, {}, {}, zero1_};
     }
     std::string recvPath = state.heap.lookupObjPath(inst.operands[0]);
     const il::Function* callee = (inst.directTarget != il::Instruction::kNoDirectTarget &&
@@ -171,9 +187,9 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
     }
     if (inModuleInit_) {
         state.values[inst.result] = zero64_;
-        return {true, {}, false, zero64_, {}, {}};
+        return {true, {}, false, zero64_, {}, {}, zero1_};
     }
-    return {false, "unsupported method call: " + method, false, zero64_, {}, {}};
+    return {false, "unsupported method call: " + method, false, zero64_, {}, {}, zero1_};
 }
 
 SymEvalOutcome SymbolicIlBuilder::evalDynamicCallOp(const il::Instruction& inst,
@@ -182,20 +198,20 @@ SymEvalOutcome SymbolicIlBuilder::evalDynamicCallOp(const il::Instruction& inst,
     if (!inst.operands.empty() && state.globalRefs.count(inst.operands[0])) {
         std::string gErr;
         if (tryEvalGlobalCall(state.globalRefs[inst.operands[0]], "", inst, state, gErr)) {
-            if (!gErr.empty()) return {false, gErr, false, zero64_, {}, {}};
-            return {true, {}, false, zero64_, {}, {}};
+            if (!gErr.empty()) return {false, gErr, false, zero64_, {}, {}, zero1_};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
     if (inst.operands.empty() || !state.funcRefs.count(inst.operands[0])) {
         if (inModuleInit_) {
             state.values[inst.result] = zero64_;
-            return {true, {}, false, zero64_, {}, {}};
+            return {true, {}, false, zero64_, {}, {}, zero1_};
         }
-        return {false, "unsupported IL operation: call.dynamic", false, zero64_, {}, {}};
+        return {false, "unsupported IL operation: call.dynamic", false, zero64_, {}, {}, zero1_};
     }
     uint32_t calleeIdx = state.funcRefs[inst.operands[0]];
     if (calleeIdx >= mod_.functions.size() || mod_.functions[calleeIdx].isExternal) {
-        return {false, "external dynamic callee", false, zero64_, {}, {}};
+        return {false, "external dynamic callee", false, zero64_, {}, {}, zero1_};
     }
     uint32_t capEnv = state.funcEnvs.count(inst.operands[0]) ? state.funcEnvs[inst.operands[0]] : 0;
     std::string thisPath = (inst.operands.size() > 1) ? state.heap.lookupObjPath(inst.operands[1]) : std::string{};
@@ -206,7 +222,7 @@ SymEvalOutcome SymbolicIlBuilder::evalDirectCallOp(const il::Instruction& inst,
                                                    uint32_t inlineDepth,
                                                    SymState& state) {
     if (inst.calleeIndex >= mod_.functions.size()) {
-        return {false, "invalid callee index", false, zero64_, {}, {}};
+        return {false, "invalid callee index", false, zero64_, {}, {}, zero1_};
     }
     const il::Function& callee = mod_.functions[inst.calleeIndex];
     uint32_t calleeEnvId = 0;

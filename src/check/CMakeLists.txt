@@ -10,6 +10,7 @@ bronze_add_module(check
         prove_equiv_calls.cpp
         prove_loop_induction.cpp
         prove_loop_relational.cpp
+        il_interp.cpp
         loop_recurrence_synth.cpp
         deterministic_check.cpp
         synth_tests.cpp
@@ -32,6 +33,7 @@ bronze_add_module(check
         ../../tests/check/verified_rewriter_test.cpp
         ../../tests/check/loop_fp_prover_test.cpp
         ../../tests/check/threejs_math_prover_test.cpp
+        ../../tests/check/prover_fuzzer_test.cpp
     TEST_DEPS lex parse
 )
 

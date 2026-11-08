@@ -18,7 +18,6 @@ inline constexpr uint32_t kMaxTotalBlockVisits = 1536;
 inline constexpr uint32_t kMaxInlineDepth = 6;
 inline constexpr uint32_t kMaxModuleInitSteps = 12000;
 inline constexpr uint32_t kMaxModuleInitVisits = 24000;
-inline constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
 
 struct SymState {
     std::unordered_map<il::ValueId, brass::verify::BVNodeId> values;
@@ -33,9 +32,12 @@ struct SymState {
     std::unordered_map<il::ValueId, uint32_t> funcEnvs;
     std::unordered_map<uint64_t, uint32_t> envFuncRefs;
     std::unordered_map<uint64_t, uint32_t> envFuncEnvs;
+    std::unordered_map<il::ValueId, uint32_t> ctorOf;
     std::unordered_set<il::ValueId> undefValues;
     std::unordered_set<uint64_t> envUndef;
     uint32_t nextEnvId = 1;
+    bool isConstructCall = false;
+    brass::verify::BVNodeId threwCond = 0;
     SymbolicHeapState heap;
 };
 
@@ -46,6 +48,7 @@ struct SymEvalOutcome {
     brass::verify::BVNodeId returnVal = 0;
     SymbolicHeapState finalHeap;
     std::string returnObjPath;
+    brass::verify::BVNodeId threwNode = 0;
 };
 
 class SymbolicIlBuilder {
@@ -62,7 +65,8 @@ public:
                                 const std::string& thisPath = "this",
                                 const std::vector<std::string>* callerArgPaths = nullptr,
                                 uint32_t callerEnvId = 0,
-                                const std::vector<bool>* callerUndefArgs = nullptr);
+                                const std::vector<bool>* callerUndefArgs = nullptr,
+                                bool isConstructCall = false);
 
     bool hitLoopUnrollBound() const { return hitLoopUnrollBound_; }
 
@@ -72,10 +76,11 @@ private:
     bool strictJs32Bitwise_ = false;
     SymbolicHeapTable ownedHeapTable_;
     SymbolicHeapTable& heapTable_;
+    brass::verify::BVNodeId zero1_ = 0;
+    brass::verify::BVNodeId one1_ = 0;
     brass::verify::BVNodeId zero64_ = 0;
     brass::verify::BVNodeId one64_ = 0;
     brass::verify::BVNodeId allOnes64_ = 0;
-    brass::verify::BVNodeId throwSentinel64_ = 0;
     uint32_t totalVisits_ = 0;
     bool hitLoopUnrollBound_ = false;
     bool inModuleInit_ = false;
@@ -97,7 +102,8 @@ private:
                                 uint32_t envId,
                                 uint32_t inlineDepth,
                                 SymState& state,
-                                bool writeScalarRet = true);
+                                bool writeScalarRet = true,
+                                bool isConstructCall = false);
 
     bool tryEvalGlobalCall(const std::string& gName,
                            const std::string& method,

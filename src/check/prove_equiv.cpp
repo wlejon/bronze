@@ -1,5 +1,6 @@
 #include "check/prove_equiv.h"
 #include "check/prove_equiv_heap.h"
+#include "check/il_interp.h"
 
 #include <algorithm>
 #include <sstream>
@@ -177,10 +178,8 @@ std::string ProveEquivReport::renderText() const {
                 std::string pname = (i < f.paramNames.size()) ? f.paramNames[i] : ("arg_" + std::to_string(i));
                 os << pname << " = " << f.counterexampleArgs[i];
             }
-            auto ret = [](int64_t v) {
-                return v == static_cast<int64_t>(0xDEAD0000DEAD0001ULL) ? std::string("throws") : std::to_string(v);
-            };
-            os << ") -> old = " << ret(f.oldReturnValue) << ", new = " << ret(f.newReturnValue);
+            os << ") -> old = " << (f.oldThrows ? std::string("throws") : std::to_string(f.oldReturnValue))
+               << ", new = " << (f.newThrows ? std::string("throws") : std::to_string(f.newReturnValue));
         } else if (f.status == EquivStatus::Unknown && !f.detail.empty()) {
             os << " (" << f.detail << ")";
         }
@@ -209,11 +208,10 @@ std::string ProveEquivReport::renderJson() const {
                 if (j > 0) os << ",";
                 os << f.counterexampleArgs[j];
             }
-            const int64_t thrown = static_cast<int64_t>(0xDEAD0000DEAD0001ULL);
             os << "],\"oldReturn\":" << f.oldReturnValue
                << ",\"newReturn\":" << f.newReturnValue
-               << ",\"oldThrows\":" << (f.oldReturnValue == thrown ? "true" : "false")
-               << ",\"newThrows\":" << (f.newReturnValue == thrown ? "true" : "false") << "}";
+               << ",\"oldThrows\":" << (f.oldThrows ? "true" : "false")
+               << ",\"newThrows\":" << (f.newThrows ? "true" : "false") << "}";
         }
         os << "}";
     }
@@ -232,7 +230,6 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     using brass::verify::BVNodeId;
     using brass::verify::BVOp;
     using brass::verify::SolveOutcome;
-    static constexpr uint64_t kThrowSentinelImm = 0xDEAD0000DEAD0001ULL;
 
     FunctionEquivResult res;
     res.name = !oldFn.displayName.empty() ? oldFn.displayName : oldFn.name;
@@ -263,6 +260,8 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     SymbolicHeapTable heapTable(ctx);
     BVNodeId oldRetNode = 0;
     BVNodeId newRetNode = 0;
+    BVNodeId oldThrewNode = 0;
+    BVNodeId newThrewNode = 0;
     std::string oldReason;
     std::string newReason;
     SymbolicHeapState oldFinalHeap;
@@ -271,9 +270,11 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     bool newHitUnroll = false;
 
     bool oldOk = evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise,
-                                        &oldRetNode, &oldReason, &heapTable, &oldFinalHeap, &oldHitUnroll);
+                                        &oldRetNode, &oldReason, &heapTable, &oldFinalHeap,
+                                        &oldHitUnroll, &oldThrewNode);
     bool newOk = evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise,
-                                        &newRetNode, &newReason, &heapTable, &newFinalHeap, &newHitUnroll);
+                                        &newRetNode, &newReason, &heapTable, &newFinalHeap,
+                                        &newHitUnroll, &newThrewNode);
 
     if (!oldOk || !newOk || oldHitUnroll || newHitUnroll) {
         auto indRes = compareIlLoopFunctionPairInductive(
@@ -300,27 +301,27 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(
         heapTable, oldFinalHeap, newFinalHeap, &checkedHeapPaths);
 
-    if (oldRetNode == newRetNode && heapMismatch == 0) {
+    if (oldRetNode == newRetNode && heapMismatch == 0 && oldThrewNode == newThrewNode) {
         res.status = EquivStatus::Equivalent;
         res.detail = "proven equivalent by structural BV hash-consing";
         return res;
     }
 
-    BVNodeId badCond = 0;
+    BVNodeId valMismatch = 0;
     if (oldRetNode != newRetNode) {
-        badCond = ctx.make_binary(BVOp::Ne, oldRetNode, newRetNode);
+        valMismatch = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Eq, oldRetNode, newRetNode));
     }
     if (heapMismatch != 0) {
-        badCond = (badCond == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, badCond, heapMismatch);
+        valMismatch = (valMismatch == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, valMismatch, heapMismatch);
     }
 
-    // Inputs on which both sides throw are outside the compared domain. One side throwing
-    // and the other returning is a difference: the sentinel differs from every value a
-    // returning side produces, so the return inequality above already covers it.
-    BVNodeId throwSent = ctx.make_const(kThrowSentinelImm, 64);
-    BVNodeId bothThrow = ctx.make_binary(BVOp::And, ctx.make_binary(BVOp::Eq, oldRetNode, throwSent),
-                                         ctx.make_binary(BVOp::Eq, newRetNode, throwSent));
-    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, bothThrow));
+    BVNodeId threwDiff = (oldThrewNode != newThrewNode)
+                             ? ctx.make_binary(BVOp::Ne, oldThrewNode, newThrewNode) : 0;
+    BVNodeId neitherThrew = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, oldThrewNode, newThrewNode));
+    BVNodeId badCond = (valMismatch != 0) ? ctx.make_binary(BVOp::And, neitherThrew, valMismatch) : 0;
+    if (threwDiff != 0) {
+        badCond = (badCond == 0) ? threwDiff : ctx.make_binary(BVOp::Or, threwDiff, badCond);
+    }
 
     BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
     if (aliasCongruence != 0) {
@@ -390,9 +391,12 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         }
         res.oldReturnValue = oldRet;
         res.newReturnValue = newRet;
+        res.oldThrows = (ctx.eval_concrete(oldThrewNode, bestModel) != 0);
+        res.newThrows = (ctx.eval_concrete(newThrewNode, bestModel) != 0);
         if (res.detail.empty()) {
             res.detail = "counterexample found where old and new return values diverge";
         }
+        verifyCounterexampleWithReplay(oldMod, oldFn, newMod, newFn, res);
         return res;
     }
 
@@ -639,22 +643,22 @@ EquivReport proveRoundTripSource(std::string_view source, std::string_view encod
     BVNodeId raw32 = ctx.make_var("x", 32);
     BVNodeId xNode = ctx.make_sext(raw32, 32);
     BVNodeId encRet = 0, decRet = 0;
+    BVNodeId encThrew = 0, decThrew = 0;
     std::string reason;
-    if (!evalIlFunctionSymbolic(ctx, mod, *encFn, {xNode}, true, &encRet, &reason)) {
+    if (!evalIlFunctionSymbolic(ctx, mod, *encFn, {xNode}, true, &encRet, &reason, nullptr, nullptr, nullptr, &encThrew)) {
         rep.status = EquivStatus::Unknown;
         rep.detail = "encode function not symbolically decidable: " + reason;
         return rep;
     }
-    if (!evalIlFunctionSymbolic(ctx, mod, *decFn, {encRet}, true, &decRet, &reason)) {
+    if (!evalIlFunctionSymbolic(ctx, mod, *decFn, {encRet}, true, &decRet, &reason, nullptr, nullptr, nullptr, &decThrew)) {
         rep.status = EquivStatus::Unknown;
         rep.detail = "decode function not symbolically decidable: " + reason;
         return rep;
     }
-    BVNodeId badCond = ctx.make_binary(BVOp::Ne, decRet, xNode);
-    BVNodeId throwSent = ctx.make_const(0xDEAD0000DEAD0001ULL, 64);
+    BVNodeId badCond = ctx.make_binary(BVOp::Or, decThrew, ctx.make_binary(BVOp::Ne, decRet, xNode));
     // An x encode throws on is outside its domain; decode throwing on what encode
     // produced is a round-trip failure, so only the encode side is excluded.
-    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Ne, encRet, throwSent));
+    badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, encThrew));
     if (domainMin > INT32_MIN) {
         BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
         badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, xNode, minNode));

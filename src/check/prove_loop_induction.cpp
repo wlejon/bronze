@@ -102,7 +102,7 @@ bool LoopIlEvaluator::extractSingleLoop(const il::Function& fn,
             for (size_t p = 0; p < blk.params.size(); ++p) out.initParams[p] = getVal(state, blk.params[p].id);
             return analyzeHeader(fn, out);
         }
-        if (!execNonTerminators(blk, state)) return false;
+        if (!execNonTerminators(fn, blk, state)) return false;
         if (term.op == il::Op::Jump) {
             state = applyEdge(fn, state, term.target);
             cur = term.target.block;
@@ -136,7 +136,7 @@ bool LoopIlEvaluator::evalHeaderBranch(const il::Function& fn,
     params[loop.ivIdx] = ivVal;
     outSt = loop.preHeaderState;
     for (size_t p = 0; p < headerBlk.params.size(); ++p) outSt.values[headerBlk.params[p].id] = params[p];
-    if (!execNonTerminators(headerBlk, outSt)) return false;
+    if (!execNonTerminators(fn, headerBlk, outSt)) return false;
     outTerm = &headerBlk.instructions.back();
     return outTerm->op == il::Op::Branch;
 }
@@ -230,7 +230,7 @@ bool LoopIlEvaluator::analyzeHeader(const il::Function& fn, SingleLoopModel& out
     for (size_t p = 0; p < K; ++p) {
         st.values[headerBlk.params[p].id] = probeParams[p];
     }
-    if (!probeEval.execNonTerminators(headerBlk, st)) return false;
+    if (!probeEval.execNonTerminators(fn, headerBlk, st)) return false;
 
     const auto& term = headerBlk.instructions.back();
     if (term.op != il::Op::Branch || term.operands.empty()) return false;
@@ -305,7 +305,7 @@ bool LoopIlEvaluator::evalToHeader(const il::Function& fn,
                                    SymbolicHeapState* outHeap) {
     if (steps > 24 || cur >= fn.blocks.size()) return false;
     const auto& blk = fn.blocks[cur];
-    if (blk.instructions.empty() || !execNonTerminators(blk, state)) return false;
+    if (blk.instructions.empty() || !execNonTerminators(fn, blk, state)) return false;
 
     const auto& term = blk.instructions.back();
     const size_t K = fn.blocks[headerId].params.size();
@@ -354,7 +354,7 @@ bool LoopIlEvaluator::evalToRet(const il::Function& fn,
                                 BVNodeId* outRet) {
     if (steps > 24 || cur >= fn.blocks.size()) return false;
     const auto& blk = fn.blocks[cur];
-    if (blk.instructions.empty() || !execNonTerminators(blk, state)) return false;
+    if (blk.instructions.empty() || !execNonTerminators(fn, blk, state)) return false;
 
     const auto& term = blk.instructions.back();
     if (term.op == il::Op::Ret) {
@@ -382,7 +382,7 @@ bool LoopIlEvaluator::evalToRet(const il::Function& fn,
     return false;
 }
 
-bool LoopIlEvaluator::execNonTerminators(const il::Block& blk, LoopSymState& state) {
+bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block& blk, LoopSymState& state) {
     if (blk.instructions.empty()) return false;
     for (size_t idx = 0; idx + 1 < blk.instructions.size(); ++idx) {
         const auto& inst = blk.instructions[idx];
@@ -491,7 +491,7 @@ bool LoopIlEvaluator::execNonTerminators(const il::Block& blk, LoopSymState& sta
             case Op::Div:
             case Op::Mod: {
                 BVNodeId divVal = zero64_;
-                if (!evalDivOrModSymbolic(ctx_, mod_, blk, idx, op64(0), op64(1), state.heap, divVal)) {
+                if (!evalDivOrModSymbolic(ctx_, mod_, fn, blk, idx, op64(0), op64(1), state.heap, divVal)) {
                     return false;
                 }
                 state.values[inst.result] = divVal;

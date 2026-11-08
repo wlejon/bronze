@@ -13,59 +13,83 @@ namespace {
 
 enum class DivUseKind : uint8_t { TruncatedToInt, FloorOrCeilOnly, RawFloat };
 
-DivUseKind classifyDivResultUsage(const il::Module& mod, const il::Block& blk, size_t divInstIdx) {
-    il::ValueId rootRes = blk.instructions[divInstIdx].result;
+DivUseKind classifyDivResultUsage(const il::Module& mod,
+                                  const il::Function& fn,
+                                  const il::Block& startBlk,
+                                  size_t divInstIdx) {
+    il::ValueId rootRes = startBlk.instructions[divInstIdx].result;
     if (rootRes == il::kNoValue) return DivUseKind::TruncatedToInt;
     std::unordered_set<il::ValueId> tracked{rootRes};
     bool sawFloorOrCeil = false;
     bool sawTrunc = false;
 
-    for (size_t j = divInstIdx + 1; j < blk.instructions.size(); ++j) {
-        const auto& u = blk.instructions[j];
-        bool usesTracked = false;
-        for (il::ValueId op : u.operands) {
-            if (tracked.count(op)) {
-                usesTracked = true;
-                break;
+    const il::Block* curBlk = &startBlk;
+    size_t startIdx = divInstIdx + 1;
+    for (int hop = 0; hop < 4 && curBlk != nullptr; ++hop) {
+        const il::Block* nextBlk = nullptr;
+        for (size_t j = startIdx; j < curBlk->instructions.size(); ++j) {
+            const auto& u = curBlk->instructions[j];
+            using Op = il::Op;
+            if (u.op == Op::Jump && u.target.block < fn.blocks.size()) {
+                const auto& tb = fn.blocks[u.target.block];
+                for (size_t k = 0; k < tb.params.size() && k < u.target.args.size(); ++k) {
+                    if (tracked.count(u.target.args[k])) {
+                        tracked.insert(tb.params[k].id);
+                        nextBlk = &tb;
+                    }
+                }
+                continue;
             }
-        }
-        if (!usesTracked) continue;
+            bool usesTracked = false;
+            for (il::ValueId op : u.operands) {
+                if (tracked.count(op)) {
+                    usesTracked = true;
+                    break;
+                }
+            }
+            if (!usesTracked) continue;
 
-        using Op = il::Op;
-        if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric) {
-            if (u.result != il::kNoValue) tracked.insert(u.result);
-            continue;
-        }
-        if (u.op == Op::ToInt32 || u.op == Op::BitOr || u.op == Op::BitAnd ||
-            u.op == Op::BitXor || u.op == Op::Shl || u.op == Op::Shr || u.op == Op::UShr) {
-            sawTrunc = true;
-            continue;
-        }
-        if (u.op == Op::MathUnary) {
-            auto kind = static_cast<il::MathUnaryFn>(u.immI32);
-            if (kind == il::MathUnaryFn::Trunc) {
+            if (u.op == Op::KeepAlive || u.op == Op::PinGuard ||
+                u.op == Op::CensusRecord || u.op == Op::FeedbackRecord) {
+                continue;
+            }
+            if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric) {
+                if (u.result != il::kNoValue) tracked.insert(u.result);
+                continue;
+            }
+            if (u.op == Op::ToInt32 || u.op == Op::BitOr || u.op == Op::BitAnd ||
+                u.op == Op::BitXor || u.op == Op::Shl || u.op == Op::Shr || u.op == Op::UShr) {
                 sawTrunc = true;
                 continue;
             }
-            if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
-                sawFloorOrCeil = true;
-                continue;
+            if (u.op == Op::MathUnary) {
+                auto kind = static_cast<il::MathUnaryFn>(u.immI32);
+                if (kind == il::MathUnaryFn::Trunc) {
+                    sawTrunc = true;
+                    continue;
+                }
+                if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
+                    sawFloorOrCeil = true;
+                    continue;
+                }
+                return DivUseKind::RawFloat;
+            }
+            if (u.op == Op::MethodCall && u.keyIndex < mod.keyConstants.size() &&
+                u.operands.size() == 2 && tracked.count(u.operands[1])) {
+                const std::string& m = mod.keyConstants[u.keyIndex];
+                if (m == "trunc") {
+                    sawTrunc = true;
+                    continue;
+                }
+                if (m == "floor" || m == "ceil") {
+                    sawFloorOrCeil = true;
+                    continue;
+                }
             }
             return DivUseKind::RawFloat;
         }
-        if (u.op == Op::MethodCall && u.keyIndex < mod.keyConstants.size() &&
-            u.operands.size() == 2 && tracked.count(u.operands[1])) {
-            const std::string& m = mod.keyConstants[u.keyIndex];
-            if (m == "trunc") {
-                sawTrunc = true;
-                continue;
-            }
-            if (m == "floor" || m == "ceil") {
-                sawFloorOrCeil = true;
-                continue;
-            }
-        }
-        return DivUseKind::RawFloat;
+        curBlk = nextBlk;
+        startIdx = 0;
     }
 
     if (sawFloorOrCeil && !sawTrunc) return DivUseKind::FloorOrCeilOnly;
@@ -92,6 +116,7 @@ BVNodeId makeConstAwareDivOrRem(BVContext& ctx, BVOp op, BVNodeId a, BVNodeId b)
 
 bool evalDivOrModSymbolic(BVContext& ctx,
                           const il::Module& mod,
+                          const il::Function& fn,
                           const il::Block& blk,
                           size_t instIdx,
                           BVNodeId a,
@@ -113,7 +138,7 @@ bool evalDivOrModSymbolic(BVContext& ctx,
         return true;
     }
 
-    DivUseKind useKind = classifyDivResultUsage(mod, blk, instIdx);
+    DivUseKind useKind = classifyDivResultUsage(mod, fn, blk, instIdx);
     if (useKind == DivUseKind::FloorOrCeilOnly && inst.result != il::kNoValue) {
         heap.divResults[inst.result] = {a, b};
     }
@@ -291,7 +316,7 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
             return true;
         }
         if (globalName == "String" || globalName == "Number" || globalName == "Boolean" ||
-            globalName == "Object" || globalName == "parseInt" || globalName == "parseFloat") {
+            globalName == "Object") {
             outVal = (opVals.size() >= 3) ? opVals[2] : zero64;
             if (operands.size() >= 3) heap.propagateAlias(operands[2], resultId);
             return true;
@@ -363,7 +388,15 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
             outVal = evalFloorOrCeilSymbolic(ctx, heap, operands[1], opVals[1], method == "ceil");
             return true;
         }
-        if ((method == "trunc" || method == "round" || method == "fround") && opVals.size() >= 2) {
+        if (method == "trunc" && opVals.size() >= 2) {
+            outVal = opVals[1];
+            return true;
+        }
+        if ((method == "round" || method == "fround") && opVals.size() >= 2) {
+            if (operands.size() >= 2 && heap.divResults.count(operands[1])) {
+                if (outErr) *outErr = "unsupported fractional Math." + method;
+                return true;
+            }
             outVal = opVals[1];
             return true;
         }

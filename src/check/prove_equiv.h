@@ -36,6 +36,8 @@ struct FunctionEquivResult {
     int64_t oldReturnValue = 0;
     int64_t newReturnValue = 0;
     std::string detail;
+    bool oldThrows = false;
+    bool newThrows = false;
 };
 
 struct ProveEquivReport {
@@ -87,7 +89,8 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             std::string* outReason = nullptr,
                             SymbolicHeapTable* sharedHeapTable = nullptr,
                             SymbolicHeapState* outFinalHeap = nullptr,
-                            bool* outHitLoopUnrollBound = nullptr);
+                            bool* outHitLoopUnrollBound = nullptr,
+                            brass::verify::BVNodeId* outThrewNode = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,

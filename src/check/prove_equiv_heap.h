@@ -147,6 +147,7 @@ struct SymbolicHeapState {
 // or when the dividend is provably an exact multiple of the constant divisor.
 bool evalDivOrModSymbolic(brass::verify::BVContext& ctx,
                           const il::Module& mod,
+                          const il::Function& fn,
                           const il::Block& blk,
                           size_t instIdx,
                           brass::verify::BVNodeId a,
