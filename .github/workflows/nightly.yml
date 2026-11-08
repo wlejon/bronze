@@ -66,8 +66,29 @@ jobs:
         if: runner.os == 'macOS'
         run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ninja
 
+      - name: Seed sccache tool cache
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ARCH="x64"; ASSET="sccache-v0.19.0-x86_64-pc-windows-msvc.tar.gz"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            ARCH="arm64"; ASSET="sccache-v0.19.0-aarch64-apple-darwin.tar.gz"
+          else
+            ARCH="x64"; ASSET="sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz"
+          fi
+          DEST="$RUNNER_TOOL_CACHE/sccache/0.19.0/$ARCH"
+          mkdir -p "$DEST"
+          if gh release download v0.19.0 -R mozilla/sccache -p "$ASSET" -O "$RUNNER_TEMP/$ASSET"; then
+            tar -xzf "$RUNNER_TEMP/$ASSET" --strip-components=1 -C "$DEST"
+            touch "${DEST}.complete"
+          fi
+
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
 
       # Put cl.exe on PATH so Windows can use the dev preset's Ninja generator
       # (this is what dev.cmd does locally). `bronze build` itself needs no
@@ -83,16 +104,20 @@ jobs:
 
       - name: vcpkg (pinned)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git clone --reference-if-able "${VCPKG_INSTALLATION_ROOT:-}" https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout "$VCPKG_COMMIT"
+          . "$RUNNER_TEMP/vcpkg/scripts/vcpkg-tool-metadata.txt"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+            gh release download "$VCPKG_TOOL_RELEASE_TAG" -R microsoft/vcpkg-tool -p "vcpkg.exe" -O "$RUNNER_TEMP/vcpkg/vcpkg.exe" || "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
           elif [ "$RUNNER_OS" = "Linux" ]; then
-            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics -musl || "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+            (gh release download "$VCPKG_TOOL_RELEASE_TAG" -R microsoft/vcpkg-tool -p "vcpkg-glibc" -O "$RUNNER_TEMP/vcpkg/vcpkg" && chmod +x "$RUNNER_TEMP/vcpkg/vcpkg") || "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           else
-            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+            (gh release download "$VCPKG_TOOL_RELEASE_TAG" -R microsoft/vcpkg-tool -p "vcpkg-macos" -O "$RUNNER_TEMP/vcpkg/vcpkg" && chmod +x "$RUNNER_TEMP/vcpkg/vcpkg") || "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           fi
+          touch "$RUNNER_TEMP/vcpkg/vcpkg.disable-metrics"
           mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-bincache" >> "$GITHUB_ENV"
