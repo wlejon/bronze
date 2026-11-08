@@ -82,6 +82,10 @@ bool SymbolicIlBuilder::tryEvalGlobalCall(const std::string& gName,
 SymEvalOutcome SymbolicIlBuilder::evalConstructOp(const il::Instruction& inst,
                                                   uint32_t inlineDepth,
                                                   SymState& state) {
+    if (!inModuleInit_ && !inst.operands.empty() &&
+        !state.funcRefs.count(inst.operands[0]) && !state.globalRefs.count(inst.operands[0])) {
+        return {false, "unsupported IL operation: construct on unknown target", false, zero64_, {}, {}, zero1_};
+    }
     state.values[inst.result] = state.heap.createLocalObject(heapTable_, inst.result);
     std::string localPath = state.heap.lookupObjPath(inst.result);
     if (!inst.operands.empty() && state.funcRefs.count(inst.operands[0])) {

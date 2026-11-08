@@ -297,10 +297,12 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::TypeOf: {
                     std::string tag = "number";
                     if (!inst.operands.empty()) {
-                        if (state.undefValues.count(inst.operands[0])) tag = "undefined";
-                        else if (state.funcRefs.count(inst.operands[0])) tag = "function";
+                        il::ValueId op0 = inst.operands[0];
+                        if (state.undefValues.count(op0)) tag = "undefined";
+                        else if (state.funcRefs.count(op0)) tag = "function";
+                        else if (state.heap.isStringValue(op0)) tag = "string";
                     }
-                    state.values[inst.result] = ctx_.make_const(hashStringLiteral(tag), 64);
+                    evalBoxStringLiteral(tag, inst.result, state);
                     break;
                 }
                 case Op::GetNewTarget:
@@ -341,6 +343,12 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     state.envIds[inst.result] = (!inst.operands.empty() && state.funcEnvs.count(inst.operands[0]))
                                                     ? state.funcEnvs[inst.operands[0]] : 0;
                     state.values[inst.result] = zero64_;
+                    break;
+                case Op::ClassExtend:
+                    if (!inModuleInit_ && (inst.operands.size() < 2 ||
+                        (!state.funcRefs.count(inst.operands[1]) && !state.globalRefs.count(inst.operands[1])))) {
+                        return {false, "unsupported IL operation: class.extend", false, zero64_, {}, {}, zero1_};
+                    }
                     break;
                 case Op::PinGuard:
                 case Op::CensusRecord:

@@ -272,25 +272,38 @@ AuditPropertyCheck checkFunctionDomainSafety(const il::Module& mod,
 
     BVNodeId zero1 = ctx.make_const(0, 1);
     BVNodeId tNode = (threwNode != 0) ? threwNode : zero1;
+    BVNodeId eNode = (exceededNode != 0) ? exceededNode : zero1;
+    BVNodeId domGuard = ctx.make_const(1, 1);
+    BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
+    if (seqCond != 0) domGuard = ctx.make_binary(BVOp::And, domGuard, seqCond, 1);
+    if (!floatMode && (dMin > INT32_MIN || dMax < INT32_MAX)) {
+        BVNodeId minN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMin)), 64);
+        BVNodeId maxN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMax)), 64);
+        for (BVNodeId a : argNodes) {
+            if (dMin > INT32_MIN) domGuard = ctx.make_binary(BVOp::And, domGuard, ctx.make_binary(BVOp::Sge, a, minN, 1), 1);
+            if (dMax < INT32_MAX) domGuard = ctx.make_binary(BVOp::And, domGuard, ctx.make_binary(BVOp::Sle, a, maxN, 1), 1);
+        }
+    }
+    if (eNode != zero1) {
+        BVNodeId inBounds = ctx.make_binary(
+            BVOp::And, domGuard,
+            ctx.make_binary(BVOp::And, ctx.make_unary(BVOp::Not, eNode, 1), ctx.make_unary(BVOp::Not, tNode, 1), 1), 1);
+        if (brass::verify::solve_nonzero(ctx, inBounds).status != SolveOutcome::Sat) {
+            outAnalyzed = false;
+            chk.status = EquivStatus::Unknown;
+            chk.detail = "loop minimum trip count exceeds bounded unroll limit";
+            return chk;
+        }
+    }
     if (tNode == zero1) {
         chk.status = isBounded ? EquivStatus::Bounded : EquivStatus::Equivalent;
         chk.detail = "proven no-throw across all symbolic inputs in domain";
         return chk;
     }
 
-    BVNodeId badCond = tNode;
-    if (exceededNode != 0 && exceededNode != zero1) {
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, exceededNode, 1), 1);
-    }
-    BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
-    if (seqCond != 0) badCond = ctx.make_binary(BVOp::And, badCond, seqCond, 1);
-    if (!floatMode && (dMin > INT32_MIN || dMax < INT32_MAX)) {
-        BVNodeId minN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMin)), 64);
-        BVNodeId maxN = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(dMax)), 64);
-        for (BVNodeId a : argNodes) {
-            if (dMin > INT32_MIN) badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, a, minN, 1), 1);
-            if (dMax < INT32_MAX) badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, a, maxN, 1), 1);
-        }
+    BVNodeId badCond = ctx.make_binary(BVOp::And, tNode, domGuard, 1);
+    if (eNode != zero1) {
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_unary(BVOp::Not, eNode, 1), 1);
     }
 
     SolveOutcome sat = brass::verify::solve_nonzero(ctx, badCond);
@@ -472,20 +485,27 @@ void checkBinaryAlgebraicLaws(const il::Module& mod,
     BVNodeId bNode = floatMode ? ctx.make_var("arg_1", 64, true)
                                : ctx.make_sext(ctx.make_var("arg_1", 32), 32);
     SymbolicHeapTable heapTable(ctx, floatMode);
-    BVNodeId retAB = 0, retBA = 0, threwAB = 0, threwBA = 0, excAB = 0, excBA = 0;
-    ProofBounds boundsAB, boundsBA;
-    bool unrollAB = false, unrollBA = false;
-    SymbolicHeapState heapAB, heapBA;
+    SymbolicIlBuilder builderAB(ctx, mod, true, &heapTable);
+    std::vector<std::string> pathsAB = {"arg_0", "arg_1"};
+    auto outAB = builderAB.evalFunction(fn, {aNode, bNode}, 0, nullptr, "this", &pathsAB);
+    if (!outAB.supported || !outAB.hasReturn) return;
 
-    if (!evalIlFunctionSymbolic(ctx, mod, fn, {aNode, bNode}, true, &retAB, nullptr,
-                                &heapTable, &heapAB, &unrollAB, &threwAB, &excAB, &boundsAB)) {
-        return;
-    }
-    if (!evalIlFunctionSymbolic(ctx, mod, fn, {bNode, aNode}, true, &retBA, nullptr,
-                                &heapTable, &heapBA, &unrollBA, &threwBA, &excBA, &boundsBA)) {
-        return;
-    }
-    if (!heapAB.writes.empty() || !heapBA.writes.empty()) return;
+    SymbolicIlBuilder builderBA(ctx, mod, true, &heapTable);
+    std::vector<std::string> pathsBA = {"arg_1", "arg_0"};
+    auto outBA = builderBA.evalFunction(fn, {bNode, aNode}, 0, nullptr, "this", &pathsBA);
+    if (!outBA.supported || !outBA.hasReturn) return;
+
+    BVNodeId retAB = outAB.returnVal;
+    BVNodeId retBA = outBA.returnVal;
+    BVNodeId threwAB = outAB.threwNode;
+    BVNodeId threwBA = outBA.threwNode;
+    BVNodeId excAB = outAB.exceededBoundNode;
+    BVNodeId excBA = outBA.exceededBoundNode;
+    ProofBounds boundsAB = builderAB.boundsUsed();
+    ProofBounds boundsBA = builderBA.boundsUsed();
+    bool unrollAB = builderAB.hitLoopUnrollBound();
+    bool unrollBA = builderBA.hitLoopUnrollBound();
+    if (!outAB.finalHeap.writes.empty() || !outBA.finalHeap.writes.empty()) return;
 
     BVNodeId zero1 = ctx.make_const(0, 1);
     BVNodeId neitherThrew = ctx.make_unary(
@@ -495,6 +515,7 @@ void checkBinaryAlgebraicLaws(const il::Module& mod,
     BVNodeId baseGuard = ctx.make_binary(BVOp::And, neitherThrew, neitherExc, 1);
     BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
     if (seqCond != 0) baseGuard = ctx.make_binary(BVOp::And, baseGuard, seqCond, 1);
+    if (brass::verify::solve_nonzero(ctx, baseGuard).status != SolveOutcome::Sat) return;
 
     ProofBounds cBounds;
     cBounds.maxLoopIterations = std::max(boundsAB.maxLoopIterations, boundsBA.maxLoopIterations);
@@ -702,8 +723,21 @@ PackageAuditReport auditPackageDiff(const std::string& oldTargetPath,
     report.secondEntryPath = newPkgName + "@" + newPkgVer;
 
     il::Module oldMod, newMod;
-    if (!lowerEntryFileForAudit(oldEntries.front(), moduleRoots, importMapPath, oldMod, err) ||
-        !lowerEntryFileForAudit(newEntries.front(), moduleRoots, importMapPath, newMod, err)) {
+    bool oldLoaded = false, newLoaded = false;
+    for (const std::string& ef : oldEntries) {
+        if (lowerEntryFileForAudit(ef, moduleRoots, importMapPath, oldMod, err)) {
+            report.entryPath = ef;
+            oldLoaded = true;
+            break;
+        }
+    }
+    for (const std::string& ef : newEntries) {
+        if (lowerEntryFileForAudit(ef, moduleRoots, importMapPath, newMod, err)) {
+            newLoaded = true;
+            break;
+        }
+    }
+    if (!oldLoaded || !newLoaded) {
         report.unknownCount = 1;
         report.unknownReasons["diff module load/lower failed"] = 1;
         return report;
@@ -716,6 +750,7 @@ PackageAuditReport auditPackageDiff(const std::string& oldTargetPath,
         const il::Function* newFn = nullptr;
         for (const auto& cand : newMod.functions) {
             if (!isCandidatePublicFunction(cand)) continue;
+            if (cand.callerParamCount() != oldFn.callerParamCount()) continue;
             if (effectiveAuditFnName(cand) == name || shortMethodName(effectiveAuditFnName(cand)) == shortMethodName(name)) {
                 newFn = &cand;
                 break;

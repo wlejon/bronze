@@ -271,6 +271,7 @@ struct ConcreteVM {
                         if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                         break;
                     case Op::ClosureEnv: { CVal v = CVal::makeI64(0); v.envId = opV(0).envId; vals[inst.result] = v; break; }
+                    case Op::ClassExtend:
                     case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
                     case Op::CreateObject: case Op::CreateArray: {
                         uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
@@ -489,6 +490,10 @@ struct ConcreteVM {
                             if (sub.threw) return sub;
                             vals[inst.result] = newObj;
                             break;
+                        }
+                        if (calleeV.globalName.empty()) {
+                            res.failReason = "unsupported construct on unknown target";
+                            return res;
                         }
                         if (inst.operands.size() >= 2) setProp(newObj, "length", opV(1));
                         vals[inst.result] = newObj;
@@ -811,6 +816,8 @@ struct ConcreteVM {
                         res.finalHeapWrites = recordedWrites;
                         if (r.objId > 0 && r.objId < heap.size() && heap[r.objId].rootPath.rfind("__local_", 0) == 0) {
                             for (const auto& [k, pv] : heap[r.objId].props) res.finalHeapWrites["__ret." + k] = pv.i64;
+                            res.returnI64 = static_cast<int64_t>(0x00B100000000FFFFULL);
+                            res.returnNum = static_cast<double>(res.returnI64);
                         }
                         return res;
                     }

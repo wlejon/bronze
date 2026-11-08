@@ -765,8 +765,12 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
                 return (b + a) | 0;
             }
             export function compare(a, b) {
+                if (typeof a !== "number" || typeof b !== "number") throw new TypeError("expected number");
                 if (a === b) return 0;
                 return a < b ? -1 : 1; // Fixed!
+            }
+            export function lessThanObj(a, b) {
+                return a.val < b.val ? 1 : 0;
             }
         )";
     }
@@ -777,9 +781,14 @@ TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and 
     CHECK(repOld.counterexampleCount >= 2);
 
     PackageAuditReport repNew = auditPackage(pkgNew.generic_string());
-    CHECK(repNew.totalPublicFunctions == 4);
-    CHECK(repNew.analyzedFunctions == 4);
+    CHECK(repNew.totalPublicFunctions == 5);
+    CHECK(repNew.analyzedFunctions == 5);
     CHECK(repNew.counterexampleCount == 0);
+    for (const auto& c : repNew.checks) {
+        if (c.functionName == "lessThanObj") {
+            CHECK(c.propertyKind != "commutativity");
+        }
+    }
 
     PackageAuditReport repDiff = auditPackageDiff(pkgOld.generic_string(), pkgNew.generic_string());
     CHECK(repDiff.totalPublicFunctions == 4);
