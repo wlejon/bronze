@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <verify/bv_solver.hpp>
@@ -12,6 +13,14 @@
 #include "il/il.h"
 
 namespace bronze::check {
+
+inline constexpr size_t kMaxBoundedSeqLen = 8;
+
+struct BoundedSeq {
+    brass::verify::BVNodeId len = 0;
+    brass::verify::BVNodeId elems[kMaxBoundedSeqLen] = {};
+    bool isString = false;
+};
 
 // Shared table of canonical initial symbolic values for object fields and buffer
 // elements read during symbolic IL execution (`this.x`, `arg_0.x`, `this.elements.0`,
@@ -28,8 +37,32 @@ public:
     bool isFloatMode() const { return floatMode_; }
     void setFloatMode(bool floatMode) { floatMode_ = floatMode; }
 
+    bool preferStringSeq() const { return preferStringSeq_; }
+    void setPreferStringSeq(bool v) { preferStringSeq_ = v; }
+
     // Returns the canonical 64-bit sign-extended symbolic variable for `path`.
     brass::verify::BVNodeId getInitialVal(const std::string& path);
+
+    // Returns a symbolic length variable for `path` (`base.length`) constrained to [0, 8].
+    brass::verify::BVNodeId getBoundedLenVal(const std::string& path, bool isString);
+
+    // Returns a symbolic character code variable for `path` (`base.k`) constrained to [0, 127].
+    brass::verify::BVNodeId getCharCodeVal(const std::string& path);
+
+    void markStringRoot(const std::string& basePath);
+    void markArrayRoot(const std::string& basePath);
+    bool isStringRoot(const std::string& basePath) const { return stringRoots_.count(basePath) > 0; }
+    bool isArrayRoot(const std::string& basePath) const { return arrayRoots_.count(basePath) > 0; }
+    bool hasBoundedLen(const std::string& basePath) const {
+        return stringRoots_.count(basePath) > 0 || arrayRoots_.count(basePath) > 0 ||
+               boundedLenPaths_.count(basePath + ".length") > 0;
+    }
+    bool isBoundedLenPath(const std::string& path) const { return boundedLenPaths_.count(path) > 0; }
+    bool isCharCodePath(const std::string& path) const { return charCodePaths_.count(path) > 0; }
+    bool usedBoundedStringLen() const { return usedBoundedStringLen_; }
+    bool usedBoundedArrayLen() const { return usedBoundedArrayLen_; }
+
+    brass::verify::BVNodeId buildBoundedSeqConstraintCond();
 
     // Returns a deterministic non-zero 64-bit identity token for an object reference
     // (`"this"`, `"arg_0"`, `"__local_0"`, etc.) so `return this;` matches across pairs.
@@ -55,11 +88,18 @@ private:
     };
     brass::verify::BVContext& ctx_;
     bool floatMode_ = false;
+    bool preferStringSeq_ = false;
+    bool usedBoundedStringLen_ = false;
+    bool usedBoundedArrayLen_ = false;
     std::unordered_map<std::string, brass::verify::BVNodeId> initialVals_;
     std::unordered_map<std::string, brass::verify::BVNodeId> objectTokens_;
     std::vector<std::string> varPaths_;
     std::vector<brass::verify::BVNodeId> varNodes_;
     std::vector<AliasedRootPair> aliasedPairs_;
+    std::unordered_set<std::string> stringRoots_;
+    std::unordered_set<std::string> arrayRoots_;
+    std::unordered_set<std::string> boundedLenPaths_;
+    std::unordered_set<std::string> charCodePaths_;
 };
 
 struct PendingDivInfo {
@@ -78,11 +118,18 @@ struct ObjComparisonInfo {
 struct SymbolicHeapState {
     std::unordered_map<il::ValueId, std::string> objPaths;
     std::unordered_map<uint64_t, std::string> envObjPaths;
+    std::unordered_map<std::string, std::string> propObjAliases;
+    std::unordered_set<std::string> stringPaths;
+    std::unordered_set<std::string> arrayPaths;
     std::unordered_map<il::ValueId, ObjComparisonInfo> objComparisons;
     std::unordered_map<il::ValueId, PendingDivInfo> divResults;
     std::map<std::string, brass::verify::BVNodeId> writes;
     std::map<std::string, uint32_t> propFuncRefs;
     uint32_t localObjCounter = 0;
+
+    std::string resolveObjPath(const std::string& p) const;
+    bool isStringPath(const std::string& p) const;
+    bool isStringValue(il::ValueId id) const;
 
     void initFunctionHeap(SymbolicHeapTable& table,
                           const il::Function& fn,
@@ -215,6 +262,16 @@ uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn,
                                           std::vector<uint8_t>& outInCycle);
 
 bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn);
+bool functionUsesStringOps(const il::Module& mod, const il::Function& fn);
+
+uint64_t packConcreteString64(std::string_view s);
+brass::verify::BVNodeId packBoundedStringNode(brass::verify::BVContext& ctx,
+                                              brass::verify::BVNodeId len,
+                                              const brass::verify::BVNodeId elems[kMaxBoundedSeqLen]);
+brass::verify::BVNodeId selectBoundedSeqElem(brass::verify::BVContext& ctx,
+                                             const BoundedSeq& seq,
+                                             brass::verify::BVNodeId idx,
+                                             brass::verify::BVNodeId defaultVal = 0);
 
 brass::verify::BVNodeId makeF64ConstNode(brass::verify::BVContext& ctx, double d);
 

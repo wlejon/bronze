@@ -132,55 +132,9 @@ SymEvalOutcome SymbolicIlBuilder::evalMethodCallOp(const il::Instruction& inst,
             return {true, {}, false, zero64_, {}, {}, zero1_};
         }
     }
-    if ((method == "charCodeAt" || method == "codePointAt" || method == "charAt") && inst.operands.size() >= 2) {
-        BVNodeId idx = toBV64(getVal(state, inst.operands[1]));
-        auto arrIt = state.arrayValues.find(inst.operands[0]);
-        if (arrIt != state.arrayValues.end() && !arrIt->second.empty()) {
-            BVNodeId res = zero64_;
-            for (size_t i = 0; i < arrIt->second.size(); ++i) {
-                res = ctx_.make_ite(ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64)), arrIt->second[i], res);
-            }
-            state.values[inst.result] = res;
-            return {true, {}, false, zero64_, {}, {}, zero1_};
-        }
-        BVNodeId chVal = zero64_;
-        if (state.heap.evalElemGet(heapTable_, inst.operands[0], idx, inst.result, chVal)) {
-            state.values[inst.result] = ctx_.make_binary(BVOp::And, chVal, ctx_.make_const(0xFFFF, 64));
-            return {true, {}, false, zero64_, {}, {}, zero1_};
-        }
-    }
-    if (method == "push" && inst.operands.size() >= 2) {
-        BVNodeId elem = toBV64(getVal(state, inst.operands[1])), curLen = zero64_;
-        if (state.arrayValues.count(inst.operands[0])) state.arrayValues[inst.operands[0]].push_back(elem);
-        if (state.heap.evalPropGet(heapTable_, inst.operands[0], "length", il::kNoValue, curLen)) {
-            state.heap.evalElemSet(heapTable_, inst.operands[0], curLen, elem, inst.operands[1]);
-            BVNodeId newLen = ctx_.make_binary(BVOp::Add, curLen, one64_);
-            state.heap.evalPropSet(heapTable_, inst.operands[0], "length", newLen);
-            state.values[inst.result] = newLen;
-            return {true, {}, false, zero64_, {}, {}, zero1_};
-        }
-    }
-    if (method == "pop" && !inst.operands.empty()) {
-        auto arrIt = state.arrayValues.find(inst.operands[0]);
-        if (arrIt != state.arrayValues.end() && !arrIt->second.empty()) {
-            state.values[inst.result] = arrIt->second.back();
-            arrIt->second.pop_back();
-        }
-        BVNodeId curLen = zero64_;
-        if (state.heap.evalPropGet(heapTable_, inst.operands[0], "length", il::kNoValue, curLen)) {
-            BVNodeId newLen = ctx_.make_binary(BVOp::Sub, curLen, one64_), lastElem = zero64_;
-            bool isU = false;
-            state.heap.evalElemGet(heapTable_, inst.operands[0], newLen, inst.result, lastElem, &isU);
-            state.heap.evalPropSet(heapTable_, inst.operands[0], "length", newLen);
-            if (isU) state.undefValues.insert(inst.result);
-            state.values[inst.result] = lastElem;
-            return {true, {}, false, zero64_, {}, {}, zero1_};
-        }
-    }
-    if ((method == "slice" || method == "subarray") && !inst.operands.empty()) {
-        state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
-        state.heap.propagateAlias(inst.operands[0], inst.result);
-        return {true, {}, false, zero64_, {}, {}, zero1_};
+    SymEvalOutcome seqOut;
+    if (tryEvalSeqMethodCallOp(method, inst, state, seqOut)) {
+        return seqOut;
     }
     std::string recvPath = state.heap.lookupObjPath(inst.operands[0]);
     const il::Function* callee = (inst.directTarget != il::Instruction::kNoDirectTarget &&

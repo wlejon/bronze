@@ -817,7 +817,7 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
             if (method == "isInteger") {
                 BVNodeId posInf = makeF64ConstNode(ctx, std::numeric_limits<double>::infinity());
                 BVNodeId fin = ctx.make_binary(BVOp::FLt, ctx.make_unary(BVOp::FAbs, a, 64), posInf, 1);
-                BVNodeId intEq = ctx.make_binary(BVOp::FEq, ctx.make_unary(BVOp::FFloor, a, 64), a, 1);
+                BVNodeId intEq = ctx.make_binary(BVOp::FEq, evalFloatFloorSymbolic(ctx, a), a, 1);
                 outVal = makeFloatBool64(ctx, ctx.make_binary(BVOp::And, fin, intEq, 1));
                 return true;
             }
@@ -833,9 +833,31 @@ bool evalGlobalMethodCallSymbolic(BVContext& ctx,
     }
     if (globalName == "String" &&
         (method == "fromCharCode" || method == "fromCodePoint") && opVals.size() >= 2) {
-        BVNodeId ch = ctx.make_binary(BVOp::And, opVals[1], ctx.make_const(0xFFFF, 64));
-        outVal = ch;
-        if (outArrayLiteral) *outArrayLiteral = {ch};
+        BoundedSeq seq;
+        seq.isString = true;
+        size_t count = std::min<size_t>(opVals.size() - 1, kMaxBoundedSeqLen);
+        seq.len = ctx.make_const(count, 64);
+        std::vector<BVNodeId> chars;
+        for (size_t i = 0; i < kMaxBoundedSeqLen; ++i) {
+            if (i < count) {
+                BVNodeId ch = ctx.make_binary(BVOp::And, opVals[i + 1], ctx.make_const(0xFFFF, 64));
+                seq.elems[i] = ch;
+                chars.push_back(ch);
+            } else {
+                seq.elems[i] = zero64;
+            }
+        }
+        heap.createLocalObject(heapTable, resultId);
+        std::string p = heap.lookupObjPath(resultId);
+        if (!p.empty()) {
+            heap.stringPaths.insert(p);
+            heap.writes[p + ".length"] = seq.len;
+            for (size_t i = 0; i < kMaxBoundedSeqLen; ++i) {
+                heap.writes[p + "." + std::to_string(i)] = seq.elems[i];
+            }
+        }
+        outVal = packBoundedStringNode(ctx, seq.len, seq.elems);
+        if (outArrayLiteral) *outArrayLiteral = std::move(chars);
         return true;
     }
     if (globalName == "Object") {

@@ -126,6 +126,20 @@ private:
     SymEvalOutcome evalDynamicCallOp(const il::Instruction& inst, uint32_t inlineDepth, SymState& state);
     SymEvalOutcome evalDirectCallOp(const il::Instruction& inst, uint32_t inlineDepth, SymState& state);
 
+    void loadBoundedSeq(SymState& state, il::ValueId valId, bool asString, BoundedSeq& outSeq);
+    void storeBoundedSeqToNewLocal(SymState& state, il::ValueId resultId, const BoundedSeq& seq);
+    void storeBoundedSeqInPlace(SymState& state, il::ValueId recvId, const std::string& path, const BoundedSeq& seq);
+    void evalBoxStringLiteral(const std::string& lit, il::ValueId resultId, SymState& state);
+    void evalStringConcatOp(il::ValueId lhsId, il::ValueId rhsId, il::ValueId resultId, SymState& state);
+    bool tryEvalSeqMethodCallOp(const std::string& method,
+                                const il::Instruction& inst,
+                                SymState& state,
+                                SymEvalOutcome& outOutcome);
+    void canonicalizeSeqReturn(il::ValueId retOpId,
+                               SymState& state,
+                               std::string& retPath,
+                               brass::verify::BVNodeId& ret);
+
     SymEvalOutcome evalBlockPath(const il::Function& fn,
                                  il::BlockId blockId,
                                  SymState state,

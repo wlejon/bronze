@@ -294,6 +294,7 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     }
 
     SymbolicHeapTable heapTable(ctx, floatMode);
+    heapTable.setPreferStringSeq(functionUsesStringOps(oldMod, oldFn) || functionUsesStringOps(newMod, newFn));
     BVNodeId oldRetNode = 0;
     BVNodeId newRetNode = 0;
     BVNodeId oldThrewNode = 0;
@@ -341,6 +342,12 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     }
     combinedBounds.maxArrayLength = std::max(oldBounds.maxArrayLength, newBounds.maxArrayLength);
     combinedBounds.maxStringLength = std::max(oldBounds.maxStringLength, newBounds.maxStringLength);
+    if (heapTable.usedBoundedArrayLen() && combinedBounds.maxArrayLength == 0) {
+        combinedBounds.maxArrayLength = static_cast<uint32_t>(kMaxBoundedSeqLen);
+    }
+    if (heapTable.usedBoundedStringLen() && combinedBounds.maxStringLength == 0) {
+        combinedBounds.maxStringLength = static_cast<uint32_t>(kMaxBoundedSeqLen);
+    }
     if ((oldHitUnroll || newHitUnroll) && combinedBounds.maxLoopIterations == 0) {
         combinedBounds.maxLoopIterations = 8;
     }
@@ -352,6 +359,10 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     BVNodeId neitherExceeded = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, oExc, nExc));
 
     auto applyDomainConstraints = [&](BVNodeId cond) {
+        BVNodeId seqCond = heapTable.buildBoundedSeqConstraintCond();
+        if (seqCond != 0) {
+            cond = ctx.make_binary(BVOp::And, cond, seqCond);
+        }
         if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
             BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
             BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
@@ -364,7 +375,11 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                 }
             };
             for (BVNodeId arg : argNodes) constrainNode(arg);
-            for (BVNodeId hv : heapTable.varNodes()) constrainNode(hv);
+            for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
+                const std::string& vp = heapTable.varPaths()[i];
+                if (heapTable.isBoundedLenPath(vp) || heapTable.isCharCodePath(vp)) continue;
+                constrainNode(heapTable.varNodes()[i]);
+            }
         }
         return cond;
     };

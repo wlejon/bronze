@@ -8,6 +8,7 @@ bronze_add_module(check
         prove_equiv_builtins.cpp
         prove_equiv_bitwise.cpp
         prove_equiv_calls.cpp
+        prove_equiv_seq.cpp
         prove_loop_induction.cpp
         prove_loop_relational.cpp
         il_interp.cpp

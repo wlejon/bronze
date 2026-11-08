@@ -288,11 +288,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         if (state.envIds.count(src)) state.envIds[inst.result] = state.envIds[src];
                         if (state.undefValues.count(src)) state.undefValues.insert(inst.result);
                     } else if (inst.op == Op::Box && inst.keyIndex < mod_.keyConstants.size()) {
-                        const std::string& lit = mod_.keyConstants[inst.keyIndex];
-                        state.values[inst.result] = ctx_.make_const(hashStringLiteral(lit), 64);
-                        std::vector<BVNodeId> chars;
-                        for (unsigned char c : lit) chars.push_back(ctx_.make_const(c, 64));
-                        state.arrayValues[inst.result] = std::move(chars);
+                        evalBoxStringLiteral(mod_.keyConstants[inst.keyIndex], inst.result, state);
                     } else {
                         state.values[inst.result] = zero64_;
                     }
@@ -440,9 +436,31 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         if (inModuleInit_) break;
                         return {false, "unsupported PropSet on non-tracked receiver", false, zero64_, {}, {}, zero1_};
                     }
+                    if (key == "length") state.arrayValues.erase(inst.operands[0]);
                     if (inst.result != il::kNoValue) state.values[inst.result] = valNode;
                     break;
                 }
+                case Op::ConcatBegin:
+                    if (inst.operands.empty()) {
+                        evalBoxStringLiteral("", inst.result, state);
+                    } else if (inst.operands.size() == 1) {
+                        state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
+                        state.heap.propagateAlias(inst.operands[0], inst.result);
+                    } else {
+                        evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                    }
+                    break;
+                case Op::ConcatAppend:
+                    if (inst.operands.size() >= 2) {
+                        evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                    }
+                    break;
+                case Op::ConcatEnd:
+                    if (!inst.operands.empty()) {
+                        state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
+                        state.heap.propagateAlias(inst.operands[0], inst.result);
+                    }
+                    break;
                 case Op::NumericStep:
                     state.values[inst.result] = floatMode_
                         ? ctx_.make_binary(BVOp::FAdd, toBV64(getVal(state, inst.operands[0])),
@@ -453,6 +471,11 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::Add:
                 case Op::Sub:
                 case Op::Mul: {
+                    if (inst.op == Op::Add && inst.operands.size() >= 2 &&
+                        (state.heap.isStringValue(inst.operands[0]) || state.heap.isStringValue(inst.operands[1]))) {
+                        evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                        break;
+                    }
                     BVNodeId lhs = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId rhs = toBV64(getVal(state, inst.operands[1]));
                     if (floatMode_) {
@@ -893,6 +916,9 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     if (inModuleInit_) saveModuleInitSnapshot(state);
                     BVNodeId ret = inst.operands.empty() ? zero64_ : toBV64(getVal(state, inst.operands[0]));
                     std::string retPath = inst.operands.empty() ? std::string{} : state.heap.lookupObjPath(inst.operands[0]);
+                    if (inlineDepth == 0 && !inModuleInit_ && !inst.operands.empty()) {
+                        canonicalizeSeqReturn(inst.operands[0], state, retPath, ret);
+                    }
                     if (inlineDepth == 0 && !inModuleInit_ && !retPath.empty() && retPath.rfind("__local_", 0) == 0) {
                         std::string pref = retPath + ".";
                         std::vector<std::pair<std::string, BVNodeId>> retProps;

@@ -59,7 +59,7 @@ struct CVal {
     static CVal makeStr(std::string s) {
         CVal v;
         v.kind = Kind::String;
-        v.i64 = static_cast<int64_t>(hashStringLiteral(s));
+        v.i64 = static_cast<int64_t>(packConcreteString64(s));
         v.num = static_cast<double>(v.i64);
         v.str = std::move(s);
         return v;
@@ -122,6 +122,23 @@ struct ConcreteVM {
         return (static_cast<uint64_t>(curEnv) << 32) | index;
     }
 
+    std::string getStr(const CVal& v) const {
+        if (v.kind == CVal::Kind::String) return v.str;
+        if (v.objId > 0 && v.objId < heap.size()) {
+            const auto& obj = heap[v.objId];
+            auto lIt = obj.props.find("length");
+            if (lIt != obj.props.end() && lIt->second.i64 >= 0 && lIt->second.i64 <= 32) {
+                std::string s;
+                for (int64_t i = 0; i < lIt->second.i64; ++i) {
+                    auto cIt = obj.props.find(std::to_string(i));
+                    s.push_back(static_cast<char>((cIt != obj.props.end()) ? (cIt->second.i64 & 0x7F) : 0));
+                }
+                return s;
+            }
+        }
+        return std::to_string(v.i64);
+    }
+
     CVal getProp(const CVal& recv, const std::string& key) {
         if (recv.kind == CVal::Kind::String && key == "length") {
             return CVal::makeI64(static_cast<int64_t>(recv.str.size()));
@@ -138,7 +155,13 @@ struct ConcreteVM {
         if (key == "_isBigNumber" || key == "isBigNumber" || key == "isDecimal") return CVal::makeI64(1);
         if (key == "sigBytes") return CVal::makeI64(4);
         if (obj.rootPath.rfind("__local_", 0) == 0) return CVal::makeUndef();
-        return CVal::makeI64(0);
+        CVal def = CVal::makeI64(0);
+        if (!obj.rootPath.empty() && obj.rootPath.rfind("__fn_", 0) != 0) {
+            uint32_t subId = allocObj(obj.rootPath + "." + key);
+            def.objId = subId;
+            heap[recv.objId].props[key] = def;
+        }
+        return def;
     }
 
     void setProp(const CVal& recv, const std::string& key, const CVal& val) {
@@ -147,6 +170,17 @@ struct ConcreteVM {
         obj.props[key] = val;
         if (!obj.rootPath.empty() && obj.rootPath.rfind("__local_", 0) != 0 && obj.rootPath.rfind("__fn_", 0) != 0) {
             recordedWrites[obj.rootPath + "." + key] = val.i64;
+        }
+        if (key == "length") {
+            for (int64_t i = std::max<int64_t>(0, val.i64); i < 16; ++i) {
+                std::string k = std::to_string(i);
+                if (obj.props.count(k)) {
+                    obj.props[k] = CVal::makeI64(0);
+                    if (!obj.rootPath.empty() && obj.rootPath.rfind("__local_", 0) != 0 && obj.rootPath.rfind("__fn_", 0) != 0) {
+                        recordedWrites[obj.rootPath + "." + k] = 0;
+                    }
+                }
+            }
         }
     }
 
@@ -206,20 +240,11 @@ struct ConcreteVM {
                     }
                     case Op::ToInt32: vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num)); break;
                     case Op::Box:
-                        if (inst.operands.empty() && inst.keyIndex < mod.keyConstants.size()) {
-                            vals[inst.result] = CVal::makeStr(mod.keyConstants[inst.keyIndex]);
-                        } else {
-                            vals[inst.result] = opV(0);
-                        }
+                        vals[inst.result] = (inst.operands.empty() && inst.keyIndex < mod.keyConstants.size())
+                                                ? CVal::makeStr(mod.keyConstants[inst.keyIndex]) : opV(0);
                         break;
-                    case Op::Unbox:
-                    case Op::ToNumeric:
-                    case Op::ToStr:
-                        vals[inst.result] = opV(0);
-                        break;
-                    case Op::NumTruthy:
-                        vals[inst.result] = CVal::makeBool(opV(0).isTruthy());
-                        break;
+                    case Op::Unbox: case Op::ToNumeric: case Op::ToStr: vals[inst.result] = opV(0); break;
+                    case Op::NumTruthy: vals[inst.result] = CVal::makeBool(opV(0).isTruthy()); break;
                     case Op::TypeOf: {
                         CVal v = opV(0);
                         std::string t = (v.kind == CVal::Kind::Undefined) ? "undefined"
@@ -230,46 +255,24 @@ struct ConcreteVM {
                         vals[inst.result] = CVal::makeStr(t);
                         break;
                     }
-                    case Op::GetNewTarget:
-                        vals[inst.result] = isConstruct ? CVal::makeBool(true) : CVal::makeUndef();
-                        break;
+                    case Op::GetNewTarget: vals[inst.result] = isConstruct ? CVal::makeBool(true) : CVal::makeUndef(); break;
                     case Op::InstanceOf: {
                         CVal l = opV(0), r = opV(1);
-                        if (l.objId > 0 && l.objId < heap.size() && r.kind == CVal::Kind::Function &&
-                            heap[l.objId].ctorIdx != UINT32_MAX) {
+                        if (l.objId > 0 && l.objId < heap.size() && r.kind == CVal::Kind::Function && heap[l.objId].ctorIdx != UINT32_MAX) {
                             vals[inst.result] = CVal::makeBool(heap[l.objId].ctorIdx == r.fnIdx);
                             break;
                         }
                         res.failReason = "unsupported instanceof";
                         return res;
                     }
-                    case Op::ClosureIs:
-                    case Op::IsNumber:
-                    case Op::IsDenseArray:
-                    case Op::IsNumberArray:
-                    case Op::IsShape:
-                    case Op::IsArray:
-                    case Op::IsTypedArray:
-                    case Op::LayoutEpoch:
-                    case Op::LayoutFact:
-                    case Op::MethodIcIs:
-                    case Op::AccessorIcIs:
+                    case Op::ClosureIs: case Op::IsNumber: case Op::IsDenseArray: case Op::IsNumberArray:
+                    case Op::IsShape: case Op::IsArray: case Op::IsTypedArray: case Op::LayoutEpoch:
+                    case Op::LayoutFact: case Op::MethodIcIs: case Op::AccessorIcIs:
                         if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                         break;
-                    case Op::ClosureEnv: {
-                        CVal v = CVal::makeI64(0);
-                        v.envId = opV(0).envId;
-                        vals[inst.result] = v;
-                        break;
-                    }
-                    case Op::PinGuard:
-                    case Op::CensusRecord:
-                    case Op::FeedbackRecord:
-                    case Op::KeepAlive:
-                    case Op::EnvInitTdz:
-                        break;
-                    case Op::CreateObject:
-                    case Op::CreateArray: {
+                    case Op::ClosureEnv: { CVal v = CVal::makeI64(0); v.envId = opV(0).envId; vals[inst.result] = v; break; }
+                    case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
+                    case Op::CreateObject: case Op::CreateArray: {
                         uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
                         heap[oid].props["length"] = CVal::makeI64(std::max(0, inst.immI32));
                         vals[inst.result] = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));
@@ -285,8 +288,7 @@ struct ConcreteVM {
                         }
                         break;
                     }
-                    case Op::CreateFunction:
-                    case Op::FunctionRef: {
+                    case Op::CreateFunction: case Op::FunctionRef: {
                         CVal fv = CVal::makeObj(allocObj("__fn_" + std::to_string(inst.calleeIndex)));
                         fv.kind = CVal::Kind::Function;
                         fv.fnIdx = inst.calleeIndex;
@@ -345,27 +347,22 @@ struct ConcreteVM {
                         vals[inst.result] = getProp(recv, std::to_string(idx.i64));
                         break;
                     }
-                    case Op::ElemSet:
-                    case Op::ElemSetTyped: {
+                    case Op::ElemSet: case Op::ElemSetTyped: {
                         CVal recv = opV(0), idx = opV(1), val = opV(2);
                         setProp(recv, std::to_string(idx.i64), val);
                         if (inst.result != il::kNoValue) vals[inst.result] = val;
                         break;
                     }
-                    case Op::NumericStep: {
-                        CVal a = opV(0);
-                        vals[inst.result] = CVal::makeI64(a.i64 + inst.immI32);
-                        break;
-                    }
+                    case Op::NumericStep: vals[inst.result] = CVal::makeI64(opV(0).i64 + inst.immI32); break;
+                    case Op::ConcatBegin: vals[inst.result] = CVal::makeStr(""); break;
+                    case Op::ConcatAppend: vals[inst.result] = CVal::makeStr(getStr(opV(0)) + getStr(opV(1))); break;
+                    case Op::ConcatEnd: vals[inst.result] = CVal::makeStr(getStr(opV(0))); break;
                     case Op::Add: {
                         CVal a = opV(0), b = opV(1);
                         bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
                         if (a.kind == CVal::Kind::String || b.kind == CVal::Kind::String) {
-                            std::string sa = (a.kind == CVal::Kind::String) ? a.str : std::to_string(a.i64);
-                            std::string sb = (b.kind == CVal::Kind::String) ? b.str : std::to_string(b.i64);
-                            vals[inst.result] = CVal::makeStr(sa + sb);
-                        } else if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
-                                   std::isfinite(a.num) && std::isfinite(b.num)) {
+                            vals[inst.result] = CVal::makeStr(getStr(a) + getStr(b));
+                        } else if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num)) {
                             vals[inst.result] = CVal::makeI64(a.i64 + b.i64);
                         } else {
                             vals[inst.result] = CVal::makeF64(a.num + b.num);
@@ -375,38 +372,20 @@ struct ConcreteVM {
                     case Op::Sub: {
                         CVal a = opV(0), b = opV(1);
                         bool hasNegZero = (a.num == 0.0 && std::signbit(a.num)) || (b.num == 0.0 && std::signbit(b.num));
-                        if (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
-                            std::isfinite(a.num) && std::isfinite(b.num)) {
-                            vals[inst.result] = CVal::makeI64(a.i64 - b.i64);
-                        } else {
-                            vals[inst.result] = CVal::makeF64(a.num - b.num);
-                        }
+                        vals[inst.result] = (!hasNegZero && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num))
+                                                ? CVal::makeI64(a.i64 - b.i64) : CVal::makeF64(a.num - b.num);
                         break;
                     }
                     case Op::Mul: {
                         CVal a = opV(0), b = opV(1);
-                        if (a.num != 0.0 && b.num != 0.0 && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num &&
-                            std::isfinite(a.num) && std::isfinite(b.num)) {
-                            vals[inst.result] = CVal::makeI64(a.i64 * b.i64);
-                        } else {
-                            vals[inst.result] = CVal::makeF64(a.num * b.num);
-                        }
+                        vals[inst.result] = (a.num != 0.0 && b.num != 0.0 && std::trunc(a.num) == a.num && std::trunc(b.num) == b.num && std::isfinite(a.num) && std::isfinite(b.num))
+                                                ? CVal::makeI64(a.i64 * b.i64) : CVal::makeF64(a.num * b.num);
                         break;
                     }
-                    case Op::Div:
-                        vals[inst.result] = CVal::makeF64(opV(0).num / opV(1).num);
-                        break;
-                    case Op::Mod:
-                        vals[inst.result] = CVal::makeF64(std::fmod(opV(0).num, opV(1).num));
-                        break;
-                    case Op::Pow:
-                        vals[inst.result] = CVal::makeF64(std::pow(opV(0).num, opV(1).num));
-                        break;
-                    case Op::Neg: {
-                        CVal a = opV(0);
-                        vals[inst.result] = CVal::makeF64(-a.num);
-                        break;
-                    }
+                    case Op::Div: vals[inst.result] = CVal::makeF64(opV(0).num / opV(1).num); break;
+                    case Op::Mod: vals[inst.result] = CVal::makeF64(std::fmod(opV(0).num, opV(1).num)); break;
+                    case Op::Pow: vals[inst.result] = CVal::makeF64(std::pow(opV(0).num, opV(1).num)); break;
+                    case Op::Neg: vals[inst.result] = CVal::makeF64(-opV(0).num); break;
                     case Op::MathImul: {
                         int32_t a = jsToInt32(opV(0).num), b = jsToInt32(opV(1).num);
                         vals[inst.result] = CVal::makeI64(static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b)));
@@ -416,24 +395,9 @@ struct ConcreteVM {
                     case Op::BitOr:  vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) | jsToInt32(opV(1).num)); break;
                     case Op::BitXor: vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) ^ jsToInt32(opV(1).num)); break;
                     case Op::BitNot: vals[inst.result] = CVal::makeI64(~jsToInt32(opV(0).num)); break;
-                    case Op::Shl: {
-                        int32_t a = jsToInt32(opV(0).num);
-                        uint32_t s = static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u;
-                        vals[inst.result] = CVal::makeI64(static_cast<int32_t>(static_cast<uint32_t>(a) << s));
-                        break;
-                    }
-                    case Op::Shr: {
-                        int32_t a = jsToInt32(opV(0).num);
-                        uint32_t s = static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u;
-                        vals[inst.result] = CVal::makeI64(a >> s);
-                        break;
-                    }
-                    case Op::UShr: {
-                        uint32_t a = static_cast<uint32_t>(jsToInt32(opV(0).num));
-                        uint32_t s = static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u;
-                        vals[inst.result] = CVal::makeI64(static_cast<int64_t>(a >> s));
-                        break;
-                    }
+                    case Op::Shl: vals[inst.result] = CVal::makeI64(static_cast<int32_t>(static_cast<uint32_t>(jsToInt32(opV(0).num)) << (static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u))); break;
+                    case Op::Shr: vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) >> (static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u)); break;
+                    case Op::UShr: vals[inst.result] = CVal::makeI64(static_cast<int64_t>(static_cast<uint32_t>(jsToInt32(opV(0).num)) >> (static_cast<uint32_t>(jsToInt32(opV(1).num)) & 31u))); break;
                     case Op::CmpEq:
                     case Op::StrictEq:
                     case Op::LooseEq:
@@ -594,20 +558,65 @@ struct ConcreteVM {
                             if (m == "isInteger") { vals[inst.result] = CVal::makeBool(std::isfinite(a) && std::trunc(a) == a); break; }
                         }
                         if (recv.globalName == "String" && (m == "fromCharCode" || m == "fromCodePoint")) {
-                            char c = static_cast<char>(jsToInt32(opV(1).num) & 0xFF);
-                            CVal sv = CVal::makeStr(std::string(1, c));
-                            sv.i64 = jsToInt32(opV(1).num) & 0xFFFF;
-                            sv.num = static_cast<double>(sv.i64);
-                            vals[inst.result] = sv;
+                            std::string s;
+                            for (size_t k = 1; k < inst.operands.size(); ++k) {
+                                s.push_back(static_cast<char>(jsToInt32(opV(k).num) & 0x7F));
+                            }
+                            vals[inst.result] = CVal::makeStr(s);
                             break;
                         }
                         if ((m == "charCodeAt" || m == "codePointAt") && inst.operands.size() >= 2) {
                             int64_t idx = opV(1).i64;
-                            if (recv.kind == CVal::Kind::String && idx >= 0 && static_cast<size_t>(idx) < recv.str.size()) {
-                                vals[inst.result] = CVal::makeI64(static_cast<unsigned char>(recv.str[static_cast<size_t>(idx)]));
-                                break;
+                            std::string s = getStr(recv);
+                            if (idx >= 0 && static_cast<size_t>(idx) < s.size()) {
+                                vals[inst.result] = CVal::makeI64(static_cast<unsigned char>(s[static_cast<size_t>(idx)]));
+                            } else {
+                                vals[inst.result] = CVal::makeI64(getProp(recv, std::to_string(idx)).i64 & 0xFFFF);
                             }
-                            vals[inst.result] = CVal::makeI64(getProp(recv, std::to_string(idx)).i64 & 0xFFFF);
+                            break;
+                        }
+                        if (m == "charAt" && inst.operands.size() >= 2) {
+                            int64_t idx = opV(1).i64;
+                            std::string s = getStr(recv);
+                            vals[inst.result] = CVal::makeStr((idx >= 0 && static_cast<size_t>(idx) < s.size())
+                                                                  ? std::string(1, s[static_cast<size_t>(idx)]) : "");
+                            break;
+                        }
+                        if (m == "toLowerCase" || m == "toUpperCase") {
+                            std::string s = getStr(recv);
+                            for (char& ch : s) {
+                                if (m == "toLowerCase" && ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + 32);
+                                if (m == "toUpperCase" && ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 32);
+                            }
+                            vals[inst.result] = CVal::makeStr(s);
+                            break;
+                        }
+                        if (m == "substring" && inst.operands.size() >= 2) {
+                            std::string s = getStr(recv);
+                            int64_t len = static_cast<int64_t>(s.size());
+                            int64_t a = std::clamp<int64_t>(opV(1).i64, 0, len);
+                            int64_t b = (inst.operands.size() >= 3) ? std::clamp<int64_t>(opV(2).i64, 0, len) : len;
+                            if (a > b) std::swap(a, b);
+                            vals[inst.result] = CVal::makeStr(s.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
+                            break;
+                        }
+                        if (m == "indexOf" && inst.operands.size() >= 2) {
+                            CVal needle = opV(1);
+                            if (recv.kind == CVal::Kind::String || needle.kind == CVal::Kind::String) {
+                                std::string h = getStr(recv), nd = getStr(needle);
+                                auto pos = h.find(nd);
+                                vals[inst.result] = CVal::makeI64(pos == std::string::npos ? -1 : static_cast<int64_t>(pos));
+                            } else {
+                                int64_t len = getProp(recv, "length").i64, found = -1;
+                                for (int64_t i = 0; i < len; ++i) {
+                                    if (getProp(recv, std::to_string(i)).i64 == needle.i64) { found = i; break; }
+                                }
+                                vals[inst.result] = CVal::makeI64(found);
+                            }
+                            break;
+                        }
+                        if (m == "concat" && inst.operands.size() >= 2) {
+                            vals[inst.result] = CVal::makeStr(getStr(recv) + getStr(opV(1)));
                             break;
                         }
                         if (m == "push" && inst.operands.size() >= 2) {
@@ -619,13 +628,61 @@ struct ConcreteVM {
                         }
                         if (m == "pop") {
                             int64_t len = getProp(recv, "length").i64;
-                            CVal elem = getProp(recv, std::to_string(len - 1));
-                            setProp(recv, "length", CVal::makeI64(len - 1));
+                            CVal elem = (len > 0) ? getProp(recv, std::to_string(len - 1)) : CVal::makeI64(0);
+                            setProp(recv, "length", CVal::makeI64(std::max<int64_t>(0, len - 1)));
                             vals[inst.result] = elem;
                             break;
                         }
+                        if (m == "shift") {
+                            int64_t len = getProp(recv, "length").i64;
+                            CVal first = (len > 0) ? getProp(recv, "0") : CVal::makeI64(0);
+                            for (int64_t i = 0; i + 1 < len; ++i) setProp(recv, std::to_string(i), getProp(recv, std::to_string(i + 1)));
+                            setProp(recv, "length", CVal::makeI64(std::max<int64_t>(0, len - 1)));
+                            vals[inst.result] = first;
+                            break;
+                        }
+                        if (m == "unshift" && inst.operands.size() >= 2) {
+                            int64_t len = getProp(recv, "length").i64;
+                            for (int64_t i = len; i >= 1; --i) setProp(recv, std::to_string(i), getProp(recv, std::to_string(i - 1)));
+                            setProp(recv, "0", opV(1));
+                            setProp(recv, "length", CVal::makeI64(len + 1));
+                            vals[inst.result] = CVal::makeI64(len + 1);
+                            break;
+                        }
+                        if (m == "join") {
+                            int64_t len = std::clamp<int64_t>(getProp(recv, "length").i64, 0, 8);
+                            int64_t sep = (inst.operands.size() >= 2 && !opV(1).str.empty())
+                                              ? static_cast<unsigned char>(opV(1).str[0]) : 44;
+                            uint64_t acc = static_cast<uint64_t>(len) & 0xFULL;
+                            for (int64_t i = 0; i < len; ++i) {
+                                acc = (acc * 131ULL) + static_cast<uint64_t>(getProp(recv, std::to_string(i)).i64) +
+                                      (i > 0 ? static_cast<uint64_t>(sep) : 0ULL);
+                            }
+                            vals[inst.result] = CVal::makeI64(static_cast<int64_t>(acc));
+                            break;
+                        }
                         if (m == "slice" || m == "subarray") {
-                            vals[inst.result] = recv;
+                            if (recv.kind == CVal::Kind::String) {
+                                std::string s = getStr(recv);
+                                int64_t len = static_cast<int64_t>(s.size());
+                                int64_t st = (inst.operands.size() >= 2) ? opV(1).i64 : 0;
+                                int64_t en = (inst.operands.size() >= 3) ? opV(2).i64 : len;
+                                if (st < 0) st = std::max<int64_t>(0, len + st); else st = std::min(st, len);
+                                if (en < 0) en = std::max<int64_t>(0, len + en); else en = std::min(en, len);
+                                vals[inst.result] = CVal::makeStr(en > st ? s.substr(static_cast<size_t>(st), static_cast<size_t>(en - st)) : "");
+                                break;
+                            }
+                            int64_t len = getProp(recv, "length").i64;
+                            int64_t st = (inst.operands.size() >= 2) ? opV(1).i64 : 0;
+                            int64_t en = (inst.operands.size() >= 3) ? opV(2).i64 : len;
+                            if (st < 0) st = std::max<int64_t>(0, len + st); else st = std::min(st, len);
+                            if (en < 0) en = std::max<int64_t>(0, len + en); else en = std::min(en, len);
+                            int64_t nl = std::max<int64_t>(0, en - st);
+                            uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
+                            CVal nv = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));
+                            setProp(nv, "length", CVal::makeI64(nl));
+                            for (int64_t i = 0; i < nl; ++i) setProp(nv, std::to_string(i), getProp(recv, std::to_string(st + i)));
+                            vals[inst.result] = nv;
                             break;
                         }
                         const il::Function* callee = nullptr;
@@ -752,6 +809,9 @@ struct ConcreteVM {
                         res.returnNum = r.num;
                         res.returnI64 = r.i64;
                         res.finalHeapWrites = recordedWrites;
+                        if (r.objId > 0 && r.objId < heap.size() && heap[r.objId].rootPath.rfind("__local_", 0) == 0) {
+                            for (const auto& [k, pv] : heap[r.objId].props) res.finalHeapWrites["__ret." + k] = pv.i64;
+                        }
                         return res;
                     }
                     default:
@@ -760,10 +820,7 @@ struct ConcreteVM {
                 }
                 if (jumped) break;
             }
-            if (!jumped) {
-                res.failReason = "block fell through";
-                return res;
-            }
+            if (!jumped) { res.failReason = "block fell through"; return res; }
         }
         res.failReason = "step limit exceeded";
         return res;
@@ -792,7 +849,6 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
 
     uint32_t thisObjId = vm.allocObj("this");
     CVal thisVal = CVal::makeObj(thisObjId, static_cast<int64_t>(0x00B1000000000001ULL));
-
     auto decodeArgVal = [&](int64_t raw) -> CVal {
         if (floatBitArgs) {
             double d = 0.0;
@@ -810,8 +866,7 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
         std::string rName = "arg_" + std::to_string(i);
         uint32_t oid = vm.allocObj(rName);
         rootObjs[rName] = oid;
-        int64_t scalar = (i < argValues.size()) ? argValues[i] : 0;
-        callArgs[i] = decodeArgVal(scalar);
+        callArgs[i] = decodeArgVal((i < argValues.size()) ? argValues[i] : 0);
         callArgs[i].objId = oid;
     }
 
@@ -819,10 +874,9 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
         const std::string& path = paramNames[i];
         auto dot = path.find('.');
         if (dot == std::string::npos) continue;
-        std::string root = path.substr(0, dot);
-        std::string rest = path.substr(dot + 1);
-        auto it = rootObjs.find(root);
+        auto it = rootObjs.find(path.substr(0, dot));
         if (it == rootObjs.end()) continue;
+        std::string rest = path.substr(dot + 1);
         uint32_t curObj = it->second;
         while (true) {
             auto nextDot = rest.find('.');
@@ -842,7 +896,15 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
             }
         }
     }
-
+    if (functionUsesStringOps(mod, fn)) {
+        for (uint32_t i = 0; i < srcCount; ++i) {
+            if (vm.heap[callArgs[i].objId].props.count("length")) {
+                uint32_t oid = callArgs[i].objId;
+                callArgs[i] = CVal::makeStr(vm.getStr(callArgs[i]));
+                callArgs[i].objId = oid;
+            }
+        }
+    }
     return vm.evalFn(fn, callArgs, thisVal, 0, 0);
 }
 

@@ -501,4 +501,206 @@ TEST_CASE("IEEE-754 double semantics: NaN, Infinity, -0, division, and Math buil
         REQUIRE(repPow.functions.size() == 1);
         CHECK(repPow.functions[0].status == EquivStatus::Equivalent);
     }
+
+    SUBCASE("Symbolic bounded strings (length <= 8): charCodeAt, fromCharCode, concat, slice, substring, indexOf, ASCII case") {
+        // 1. String concatenation asociativity: (a + "x") === a.concat("x")
+        const char* concatA = R"(
+            export function f(s) {
+                return s + "x";
+            }
+        )";
+        const char* concatB = R"(
+            export function f(s) {
+                return s.concat("x");
+            }
+        )";
+        ProveEquivReport repConcat = proveSourceEquiv(concatA, concatB, "f");
+        REQUIRE(repConcat.functions.size() == 1);
+        CHECK(repConcat.functions[0].status == EquivStatus::Bounded);
+        CHECK(repConcat.functions[0].bounds.maxStringLength == 8);
+
+        // 2. slice(1, 3) vs substring(1, 3) on bounded strings
+        const char* sliceSubA = R"(
+            export function sub(s) {
+                return s.slice(1, 3);
+            }
+        )";
+        const char* sliceSubB = R"(
+            export function sub(s) {
+                return s.substring(1, 3);
+            }
+        )";
+        ProveEquivReport repSliceSub = proveSourceEquiv(sliceSubA, sliceSubB, "sub");
+        REQUIRE(repSliceSub.functions.size() == 1);
+        CHECK(repSliceSub.functions[0].status == EquivStatus::Bounded);
+        CHECK(repSliceSub.functions[0].bounds.maxStringLength == 8);
+
+        // 3. slice(-1) vs substring(-1) diverges for non-empty strings
+        const char* negSliceA = R"(
+            export function tail(s) {
+                return s.slice(-1);
+            }
+        )";
+        const char* negSliceB = R"(
+            export function tail(s) {
+                return s.substring(-1);
+            }
+        )";
+        ProveEquivReport repNegSlice = proveSourceEquiv(negSliceA, negSliceB, "tail");
+        REQUIRE(repNegSlice.functions.size() == 1);
+        CHECK(repNegSlice.functions[0].status == EquivStatus::Counterexample);
+
+        // 4. ASCII toLowerCase idempotence: s.toLowerCase().toLowerCase() === s.toLowerCase()
+        const char* lowerA = R"(
+            export function low(s) {
+                return s.toLowerCase().toLowerCase();
+            }
+        )";
+        const char* lowerB = R"(
+            export function low(s) {
+                return s.toLowerCase();
+            }
+        )";
+        ProveEquivReport repLower = proveSourceEquiv(lowerA, lowerB, "low");
+        REQUIRE(repLower.functions.size() == 1);
+        CHECK(repLower.functions[0].status == EquivStatus::Bounded);
+
+        // 5. fromCharCode(s.charCodeAt(0)) === s.slice(0, 1) when s.length >= 1
+        const char* charRtA = R"(
+            export function firstChar(s) {
+                if (s.length < 1) return "";
+                return String.fromCharCode(s.charCodeAt(0));
+            }
+        )";
+        const char* charRtB = R"(
+            export function firstChar(s) {
+                if (s.length < 1) return "";
+                return s.slice(0, 1);
+            }
+        )";
+        ProveEquivReport repCharRt = proveSourceEquiv(charRtA, charRtB, "firstChar");
+        REQUIRE(repCharRt.functions.size() == 1);
+        CHECK(repCharRt.functions[0].status == EquivStatus::Bounded);
+
+        // 6. indexOf after prefixing 'A' at index 0 returns 0
+        const char* idxA = R"(
+            export function findA(s) {
+                var t = "A" + s;
+                return t.indexOf("A");
+            }
+        )";
+        const char* idxB = R"(
+            export function findA(s) {
+                return 0;
+            }
+        )";
+        ProveEquivReport repIdx = proveSourceEquiv(idxA, idxB, "findA");
+        REQUIRE(repIdx.functions.size() == 1);
+        CHECK(repIdx.functions[0].status == EquivStatus::Bounded);
+    }
+
+    SUBCASE("Symbolic bounded arrays (length <= 8): push, pop, shift, unshift, slice, join, and .length truncation") {
+        // 1. push(x) then pop() returns x and restores length (when length < 8)
+        const char* pushPopA = R"(
+            export function pp(a, x) {
+                if (a.length >= 8) return x;
+                a.push(x);
+                return a.pop();
+            }
+        )";
+        const char* pushPopB = R"(
+            export function pp(a, x) {
+                return x;
+            }
+        )";
+        ProveEquivReport repPP = proveSourceEquiv(pushPopA, pushPopB, "pp");
+        REQUIRE(repPP.functions.size() == 1);
+        CHECK(repPP.functions[0].status == EquivStatus::Bounded);
+        CHECK(repPP.functions[0].bounds.maxArrayLength == 8);
+
+        // 2. unshift(x) then shift() returns x and restores elements (when length < 8)
+        const char* unshiftShiftA = R"(
+            export function us(a, x) {
+                if (a.length >= 8) return x;
+                a.unshift(x);
+                return a.shift();
+            }
+        )";
+        const char* unshiftShiftB = R"(
+            export function us(a, x) {
+                return x;
+            }
+        )";
+        ProveEquivReport repUS = proveSourceEquiv(unshiftShiftA, unshiftShiftB, "us");
+        REQUIRE(repUS.functions.size() == 1);
+        CHECK(repUS.functions[0].status == EquivStatus::Bounded);
+
+        // 3. Writing a.length = 0 truncates elements
+        const char* truncLenA = R"(
+            export function clearFirst(a, x) {
+                a.push(x);
+                a.length = 0;
+                return a[0];
+            }
+        )";
+        const char* truncLenB = R"(
+            export function clearFirst(a, x) {
+                a.length = 0;
+                return 0;
+            }
+        )";
+        ProveEquivReport repTrunc = proveSourceEquiv(truncLenA, truncLenB, "clearFirst");
+        REQUIRE(repTrunc.functions.size() == 1);
+        CHECK(repTrunc.functions[0].status == EquivStatus::Bounded);
+
+        // 4. Buggy pop vs shift on 2-element array
+        const char* bugArrA = R"(
+            export function take(a) {
+                return a.pop();
+            }
+        )";
+        const char* bugArrB = R"(
+            export function take(a) {
+                return a.shift();
+            }
+        )";
+        ProveEquivReport repBugArr = proveSourceEquiv(bugArrA, bugArrB, "take");
+        REQUIRE(repBugArr.functions.size() == 1);
+        CHECK(repBugArr.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("Nested heap object properties: arg.a.b and this.a.b reads and writes") {
+        const char* nestedEqA = R"(
+            export function move(o, dx) {
+                o.pos.x = o.pos.x + dx;
+                return o.pos.x;
+            }
+        )";
+        const char* nestedEqB = R"(
+            export function move(o, dx) {
+                var nx = dx + o.pos.x;
+                o.pos.x = nx;
+                return nx;
+            }
+        )";
+        ProveEquivReport repNestedEq = proveSourceEquiv(nestedEqA, nestedEqB, "move");
+        REQUIRE(repNestedEq.functions.size() == 1);
+        CHECK(repNestedEq.functions[0].status == EquivStatus::Equivalent);
+
+        const char* nestedBugA = R"(
+            export function moveBug(o, dx) {
+                o.pos.x = o.pos.x + dx;
+                return o.pos.x;
+            }
+        )";
+        const char* nestedBugB = R"(
+            export function moveBug(o, dx) {
+                o.pos.x = o.pos.x - dx;
+                return o.pos.x;
+            }
+        )";
+        ProveEquivReport repNestedBug = proveSourceEquiv(nestedBugA, nestedBugB, "moveBug");
+        REQUIRE(repNestedBug.functions.size() == 1);
+        CHECK(repNestedBug.functions[0].status == EquivStatus::Counterexample);
+    }
 }
