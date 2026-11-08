@@ -84,10 +84,12 @@ jobs:
       - name: vcpkg (pinned)
         shell: bash
         run: |
-          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git clone --reference-if-able "${VCPKG_INSTALLATION_ROOT:-}" https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout "$VCPKG_COMMIT"
           if [ "$RUNNER_OS" = "Windows" ]; then
             "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics -musl || "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           else
             "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           fi
