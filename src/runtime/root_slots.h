@@ -102,6 +102,36 @@ public:
         popOutOfOrder(slot);
     }
 
+    // A block of `n` consecutive slots at `base`, pushed in order: what
+    // pushing them one at a time does, with one capacity test and one count
+    // update instead of one per slot (a native builtin's prologue roots every
+    // argument this way).
+    void pushBlock(Value* base, uint32_t n) {
+        if (n > capacity_ - count_) {
+            for (uint32_t i = 0; i < n; ++i) push(base + i);
+            return;
+        }
+        Value** dst = slots_ + count_;
+        for (uint32_t i = 0; i < n; ++i) dst[i] = base + i;
+        count_ += n;
+    }
+
+    // The block pushBlock pushed, popped: one count update when its slots are
+    // still the top `n` entries in push order (nothing pushed since was left
+    // behind), else what popping each from the last does.
+    void popBlock(Value* base, uint32_t n) noexcept {
+        if (n <= count_) {
+            Value* const* top = slots_ + (count_ - n);
+            uint32_t i = 0;
+            while (i < n && top[i] == base + i) ++i;
+            if (i == n) {
+                count_ -= n;
+                return;
+            }
+        }
+        for (uint32_t i = n; i-- > 0;) pop(base + i);
+    }
+
 private:
     void growAndPush(Value* slot);
     void popOutOfOrder(Value* slot) noexcept;

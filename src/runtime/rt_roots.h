@@ -41,17 +41,17 @@ public:
         // Rooted<>'s rule, for the same reason (gc.h): a block that roots
         // nothing is worse than no block at all, because it reads as safe.
         frame_ = requireFrameForRoot();
-        for (uint32_t i = 0; i < argc; ++i) frame_->push(&slots[i]);
+        frame_->pushBlock(slots, argc);
     }
 
     ~RootedArgs() {
         if (!frame_) return;
-        // Backwards, so every pop is the frame's top and none of them searches.
-        // Forwards, a three-argument builtin popped slot 0 while slot 2 was on
-        // top and paid a scan for each — an O(argc^2) shape hiding inside a
-        // destructor that reads as symmetric with the constructor.
-        Value* slots = block_.data();
-        for (uint32_t i = block_.count(); i-- > 0;) frame_->pop(&slots[i]);
+        // As a block: the slots are the frame's top entries in push order, so
+        // none of them searches. (Popped forwards one at a time, a
+        // three-argument builtin popped slot 0 while slot 2 was on top and paid
+        // a scan for each — an O(argc^2) shape hiding inside a destructor that
+        // reads as symmetric with the constructor.)
+        frame_->popBlock(block_.data(), block_.count());
     }
 
     RootedArgs(const RootedArgs&) = delete;
@@ -105,13 +105,12 @@ public:
         Value* slots = block_.data();
         for (uint32_t i = 0; i < count; ++i) slots[i] = Value::fromUndefined();
         frame_ = requireFrameForRoot();
-        for (uint32_t i = 0; i < count; ++i) frame_->push(&slots[i]);
+        frame_->pushBlock(slots, count);
     }
 
     ~RootedBlock() {
         if (!frame_) return;
-        Value* slots = block_.data();
-        for (uint32_t i = block_.count(); i-- > 0;) frame_->pop(&slots[i]);
+        frame_->popBlock(block_.data(), block_.count());
     }
 
     RootedBlock(const RootedBlock&) = delete;

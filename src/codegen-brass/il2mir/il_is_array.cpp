@@ -35,7 +35,7 @@ namespace {
 constexpr int32_t kWord = 8;
 // FunctionHeader::statics_materialized (pinned by a static_assert in
 // runtime/fn.h).
-constexpr int32_t kStaticsMaterializedOffset = 68;
+constexpr int32_t kStaticsMaterializedOffset = BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 4;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr int32_t kHeaderLow(uint32_t kind) { return static_cast<int32_t>((kind << 16) | BRONZE_ABI_TAG_OBJECT); }

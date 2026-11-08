@@ -1,7 +1,10 @@
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "runtime/builtin_array_internal.h"
+#include "runtime/fatal.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -114,15 +117,49 @@ namespace {
 // copied straight out of its StringHeader (or a number's digits out of a stack
 // buffer), so a join allocates its result and nothing else per element —
 // `getTextureCacheKey` and `getProgramCacheKey` join a dozen numbers, booleans
-// and strings per draw.
+// and strings per draw. The Latin-1 text starts in an inline buffer, so a join
+// that short mallocs nothing; it is plain C++ memory, so appending never
+// collects and an element read just before an append stays valid.
 class JoinBuffer {
 public:
+    JoinBuffer() = default;
+    JoinBuffer(const JoinBuffer&) = delete;
+    JoinBuffer& operator=(const JoinBuffer&) = delete;
+    ~JoinBuffer() {
+        if (lat_ != inline_) std::free(lat_);
+    }
+
     void appendAscii(const char* s, size_t n) {
         if (wide_) {
             for (size_t i = 0; i < n; ++i) u16_.push_back(static_cast<unsigned char>(s[i]));
-        } else {
-            lat_.append(s, n);
+            return;
         }
+        if (n > latCap_ - latLen_) grow(n);
+        std::memcpy(lat_ + latLen_, s, n);
+        latLen_ += n;
+    }
+    void appendComma() {
+        if (wide_) {
+            u16_.push_back(u',');
+            return;
+        }
+        if (latLen_ == latCap_) grow(1);
+        lat_[latLen_++] = ',';
+    }
+    // ToString of an integral Number whose magnitude is below 2^53: its
+    // decimal digits, with a sign for a negative one (no -0 reaches here: the
+    // caller sends 0 for both zeros).
+    void appendInteger(int64_t v) {
+        char buf[24];
+        char* end = buf + sizeof(buf);
+        char* p = end;
+        uint64_t u = v < 0 ? 0 - static_cast<uint64_t>(v) : static_cast<uint64_t>(v);
+        do {
+            *--p = static_cast<char>('0' + u % 10);
+            u /= 10;
+        } while (u != 0);
+        if (v < 0) *--p = '-';
+        appendAscii(p, static_cast<size_t>(end - p));
     }
     void append(const StringHeader* s) {
         const uint32_t n = s->getLength();
@@ -135,7 +172,8 @@ public:
             uint32_t i = 0;
             while (i < n && d[i] <= 0xFF) ++i;
             if (i == n) {
-                for (uint32_t k = 0; k < n; ++k) lat_.push_back(static_cast<char>(d[k]));
+                if (n > latCap_ - latLen_) grow(n);
+                for (uint32_t k = 0; k < n; ++k) lat_[latLen_++] = static_cast<char>(d[k]);
                 return;
             }
             widen();
@@ -148,36 +186,63 @@ public:
                 rtHeap(), u16_.data(), static_cast<uint32_t>(u16_.size())));
         }
         return Value::fromString(
-            StringHeader::createLatin1(rtHeap(), lat_.data(), static_cast<uint32_t>(lat_.size())));
+            StringHeader::createLatin1(rtHeap(), lat_, static_cast<uint32_t>(latLen_)));
     }
 
 private:
+    void grow(size_t need) {
+        size_t cap = latCap_ * 2;
+        if (cap < latLen_ + need) cap = latLen_ + need;
+        char* next = static_cast<char*>(std::malloc(cap));
+        if (!next) fatal("out of memory in Array.prototype.join");
+        std::memcpy(next, lat_, latLen_);
+        if (lat_ != inline_) std::free(lat_);
+        lat_ = next;
+        latCap_ = cap;
+    }
     void widen() {
         wide_ = true;
-        u16_.reserve(lat_.size() * 2 + 16);
-        for (char c : lat_) u16_.push_back(static_cast<unsigned char>(c));
-        lat_.clear();
+        u16_.reserve(latLen_ * 2 + 16);
+        for (size_t i = 0; i < latLen_; ++i) u16_.push_back(static_cast<unsigned char>(lat_[i]));
+        latLen_ = 0;
     }
     bool wide_ = false;
-    std::string lat_;
+    char inline_[256];
+    char* lat_ = inline_;
+    size_t latLen_ = 0;
+    size_t latCap_ = sizeof(inline_);
     std::vector<uint16_t> u16_;
 };
 
+// Below 2^53 every integral double is exact, and its ToString is its decimal
+// digits (number_format.cpp says why): the join writes those itself.
+constexpr double kExactIntegerBound = 9007199254740992.0;
+
 // One element's text, for the primitives without a heap string of their own
 // to make: a number formats into a stack buffer, a boolean is its literal.
-// Answers false for anything else, which takes ToString.
+// Answers false for anything else, which takes ToString. Never allocates on
+// the JS heap, so `v` may be an unrooted read.
 bool appendPrimitive(JoinBuffer& out, Value v) {
     if (v.isString()) {
         out.append(v.asString<StringHeader>());
         return true;
     }
-    char buf[64];
-    if (v.isNumber()) {
-        out.appendAscii(buf, formatJsNumber(v.asNumber(), buf));
+    if (v.isInt32()) {
+        out.appendInteger(static_cast<int32_t>(v.payload()));
         return true;
     }
-    if (v.isInt32()) {
-        out.appendAscii(buf, formatJsNumber(static_cast<double>(static_cast<int32_t>(v.payload())), buf));
+    if (v.isNumber()) {
+        const double d = v.asNumber();
+        // -0 is integral and compares equal to 0, so it joins as "0".
+        if (d > -kExactIntegerBound && d < kExactIntegerBound) {
+            const auto whole = static_cast<int64_t>(d);
+            if (static_cast<double>(whole) == d) {
+                out.appendInteger(whole);
+                return true;
+            }
+        }
+        char buf[64];
+        out.appendAscii(buf, formatJsNumber(d, buf));
         return true;
     }
     if (v.isBool()) {
@@ -202,26 +267,34 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> sep{Value::fromUndefined()};
     if (!comma) sep.set(rtValueToString(args[0]));
 
+    // An array's own elements are read straight out of it while no prototype
+    // holds an index (a hole then reads as undefined, which joins as ""). Only
+    // script can change that answer — an element's toString or join, a getter
+    // on the generic path — so it is asked again after each element that ran
+    // one, and a primitive element costs no question and no root.
+    const bool selfIsArray = isArray(self.get());
+    bool direct = selfIsArray && !rtArrayChainHoldsIndex(self.get());
     JoinBuffer result;
     for (uint32_t i = 0; i < len; ++i) {
         if (i > 0) {
-            if (comma) result.appendAscii(",", 1);
+            if (comma) result.appendComma();
             else result.append(sep.get().asString<StringHeader>());
         }
-        // An array's own element, read straight out of it when no prototype
-        // holds an index (a hole then reads as one); otherwise the generic
-        // read, which may run a getter. Asked per element because an
-        // element's toString below can change the array under the loop.
+        if (direct) {
+            // getElem answers undefined past a length script has shortened.
+            const Value raw = self.get().asObject<ArrayHeader>()->getElem(i);
+            if (raw.isNull() || raw.isUndefined()) continue;
+            if (appendPrimitive(result, raw)) continue;
+        }
         Rooted<Value> elem{Value::fromUndefined()};
-        if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
-            if (!hasIndex(self.get(), i)) continue;
+        if (direct) {
             elem.set(elemOf(self.get(), i));
         } else {
             if (!rtArrayLikeHasElement(self, i)) continue;
             elem.set(rtArrayLikeGetElement(self, i));
+            if (elem.get().isNull() || elem.get().isUndefined()) continue;
+            if (appendPrimitive(result, elem.get())) continue;
         }
-        if (elem.get().isNull() || elem.get().isUndefined()) continue;
-        if (appendPrimitive(result, elem.get())) continue;
         if (isArray(elem.get())) {
             Rooted<Value> joinKey{rtMakeString("join")};
             Rooted<Value> joinMethod{Value(bronze_elem_get(elem.get().rawBits(), joinKey.get().rawBits()))};
@@ -229,11 +302,13 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
                 uint64_t res = bronze_dynamic_call(joinMethod.get().rawBits(), elem.get().rawBits(), 0, nullptr);
                 Rooted<Value> resStr{rtValueToString(Value(res))};
                 result.append(resStr.get().asString<StringHeader>());
+                direct = selfIsArray && !rtArrayChainHoldsIndex(self.get());
                 continue;
             }
         }
         Rooted<Value> s{rtValueToString(elem.get())};
         result.append(s.get().asString<StringHeader>());
+        direct = selfIsArray && !rtArrayChainHoldsIndex(self.get());
     }
     return result.finish().rawBits();
 }

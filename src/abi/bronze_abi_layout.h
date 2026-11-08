@@ -770,17 +770,19 @@
  * write (rt_prop_write.cpp) and never nulls it, so the vetted fast path
  * reads whatever is current. Pinned in runtime/fn.h. */
 #define BRONZE_ABI_FN_ENV_OFFSET            16
-#define BRONZE_ABI_FN_PROTOTYPE_OFFSET      24
-#define BRONZE_ABI_FN_PROPERTIES_OFFSET     32
-#define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 40
-#define BRONZE_ABI_FN_ARITY_OFFSET          56
-#define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    65
+#define BRONZE_ABI_FN_PROTOTYPE_OFFSET      32
+#define BRONZE_ABI_FN_PROPERTIES_OFFSET     40
+#define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 48
+#define BRONZE_ABI_FN_ARITY_OFFSET          64
+#define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    25
 /* The u64 that holds `function_flags` in its low byte, `construct_vetted` in
  * the next, and the function's realm slot in its top three bytes: one load
  * answers a direct entry's whole test — the BRONZE_ABI_FN_FLAG_DIRECT_CALL
  * and CLASS_CTOR bits and the realm compare against the TLS block's
- * realm_slot. Pinned in runtime/fn.h. */
-#define BRONZE_ABI_FN_FLAGS_WORD_OFFSET     64
+ * realm_slot. Right after the code and env words, so a direct entry's three
+ * loads share the header's cache line as often as 8-byte alignment allows.
+ * Pinned in runtime/fn.h. */
+#define BRONZE_ABI_FN_FLAGS_WORD_OFFSET     24
 #define BRONZE_ABI_FN_REALM_SHIFT           40
 
 /* Total bytes of a plain object with no internal slots and the default

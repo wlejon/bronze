@@ -40,6 +40,8 @@ public:
 
     void push(Value* slot) { roots_.push(slot); }
     void pop(Value* slot) noexcept { roots_.pop(slot); }
+    void pushBlock(Value* base, uint32_t n) { roots_.pushBlock(base, n); }
+    void popBlock(Value* base, uint32_t n) noexcept { roots_.popBlock(base, n); }
 
     // One contiguous block of Values rooted for the frame's whole life, beside
     // the pushed slots. A host call is the shape: the trampoline

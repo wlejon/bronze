@@ -41,12 +41,6 @@ namespace {
 constexpr uint32_t kPatternArray = 0;
 constexpr uint32_t kPatternObject = 1;
 
-Value newArray() {
-    ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->length = 0;
-    return Value::fromObject(arr);
-}
-
 // Append through the root: growth reallocates the element block and can move
 // the array itself, so neither pointer survives the write.
 void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
@@ -334,23 +328,27 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
 // the caller's real argument count.
 uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     recordHelperCall("bronze_rest_args");
-    // The copy comes FIRST, before `newArray` — this is RootedArgs' contract
+    // The copy comes FIRST, before the array is made — this is RootedArgs' contract
     // ("read arguments from HERE and never from `argv` again"), and allocating
     // ahead of it broke exactly the case that contract is written for. `argv`
     // is only self-protecting when the caller is GENERATED code, whose block
     // lives in its GC root frame; the blocks builtins build for callbacks
     // (`builtin_array.cpp`'s `Value block[3]`, the JSON replacer's, the regexp
     // replacer's) are plain stack memory nothing scans. So
-    // `items.map(function (...a) { ... })` collected inside `newArray`, moved
+    // `items.map(function (...a) { ... })` collected while the array was made, moved
     // the elements the caller had already written into that block, and every
     // later iteration read a forwarded header — which still reports its old
     // tag, so it answered wrongly and silently rather than crashing.
+    //
+    // The array is made with room for every element (at least the floor every
+    // array literal gets), so each store below is in place: no growth, no
+    // allocation, and so no root per element.
     RootedArgs args(argc, argv);
-    Rooted<Value> out{newArray()};
-    for (uint32_t i = first; i < argc; ++i) {
-        Rooted<Value> elem{args[i]};
-        appendTo(out, elem);
-    }
+    const uint32_t count = argc > first ? argc - first : 0;
+    const uint32_t cap = count < BRONZE_ABI_ARRAY_MIN_CAPACITY ? BRONZE_ABI_ARRAY_MIN_CAPACITY : count;
+    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), cap))};
+    ArrayHeader* arr = out.get().asObject<ArrayHeader>();
+    for (uint32_t i = 0; i < count; ++i) arr->setElem(rtHeap(), i, args[first + i]);
     return out.get().rawBits();
 }
 

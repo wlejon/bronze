@@ -227,3 +227,45 @@ TEST_CASE("a frame that outgrew its buffer is still the frame the collector walk
         CHECK(tagOf(roots[i].get()) == static_cast<double>(i) + 1000.0);
     }
 }
+
+TEST_CASE("a block pushed whole pops whole from the top, and slot by slot when it is not") {
+    // pushBlock is n pushes in order and popBlock n pops from the last: the
+    // list after each must be what the one-at-a-time calls leave.
+    RootSlotList list;
+    std::vector<Value> before(3, Value::fromDouble(0.0));
+    for (auto& v : before) list.push(&v);
+
+    // In order on top: one count update, the earlier entries untouched.
+    std::vector<Value> block(5, Value::fromDouble(1.0));
+    list.pushBlock(block.data(), 5);
+    REQUIRE(list.size() == 8);
+    for (uint32_t i = 0; i < 5; ++i) CHECK(list.data()[3 + i] == &block[i]);
+    list.popBlock(block.data(), 5);
+    REQUIRE(list.size() == 3);
+    for (uint32_t i = 0; i < 3; ++i) CHECK(list.data()[i] == &before[i]);
+
+    // A slot pushed after the block and left behind (Rooted<>'s move can do
+    // that): the block's slots are not the top run, so each pops by identity
+    // and the late slot stays.
+    list.pushBlock(block.data(), 5);
+    Value late = Value::fromDouble(2.0);
+    list.push(&late);
+    list.popBlock(block.data(), 5);
+    REQUIRE(list.size() == 4);
+    CHECK(list.data()[3] == &late);
+    list.pop(&late);
+
+    // A block wider than the room left grows the list like single pushes do.
+    std::vector<Value> wide(kRootSlotsInline + 9, Value::fromDouble(3.0));
+    list.pushBlock(wide.data(), static_cast<uint32_t>(wide.size()));
+    CHECK_FALSE(list.usesInlineStorage());
+    REQUIRE(list.size() == 3 + wide.size());
+    for (uint32_t i = 0; i < wide.size(); ++i) CHECK(list.data()[3 + i] == &wide[i]);
+    list.popBlock(wide.data(), static_cast<uint32_t>(wide.size()));
+    CHECK(list.size() == 3);
+
+    // An empty block is a no-op both ways.
+    list.pushBlock(block.data(), 0);
+    list.popBlock(block.data(), 0);
+    CHECK(list.size() == 3);
+}

@@ -23,44 +23,14 @@ struct FunctionHeader {
     // pointer, so the generic GC payload scan forwards it — as a `void*` it was
     // invisible to the collector.
     HeapValue env_record;
-    // This function's `.prototype` object, or undefined until something asks
-    // for it — a function that is never a constructor and whose prototype is
-    // never decorated should not pay for the object, and closures are created
-    // in loops.
-    HeapValue prototype;
-    // This function's OWN properties - what `C.staticMethod =...` and a class's
-    // `static` members are stored in - or undefined until one is written. An
-    // ordinary object, so it costs nothing until used and inherits through the
-    // shape's prototype, which is what makes a static member of a base class
-    // visible on a derived one.
-    HeapValue properties;
-    // Root shape for objects `new`ed from this function; its prototype is
-    // the object above. Non-moving, created with it, and reset if
-    // `.prototype` is reassigned.
-    class Shape* instance_shape{nullptr};
-    // 10.2.9 SetFunctionName's answer: this function's own `name` property,
-    // ARENA-interned so it is immortal and non-moving — the same bargain a
-    // shape key makes, and the reason a raw pointer here is invisible to the
-    // collector's payload scan (which follows only Values that point INTO the
-    // heap) exactly as `instance_shape` above already is.
+    // The flags word sits beside `code` and `env_record` on purpose: a direct
+    // entry reads the three together (the word for its test, then the code and
+    // the environment), and an object of this header starts 8-aligned, so the
+    // first 32 bytes share the header's cache line five times in eight. At
+    // offset 64, after the other fields, it was always a second line, which a
+    // call of a cold closure (one closure per object, as a per-instance
+    // callback is) paid for on every call.
     //
-    // NULL means the name was never recorded, which is not the same as the
-    // empty string: an anonymous function expression really has `name === ""`
-    // (10.2.9 via NamedEvaluation), while a native builtin has no key index to
-    // name it with and so answers neither. `length` below shares that one flag,
-    // because the two properties are created together by OrdinaryFunctionCreate
-    // and a function that has one always has the other.
-    struct StringHeader* name{nullptr};
-    // The arity a short call is PADDED to, which is a fact about the calling
-    // convention and NOT the `length` property: it counts every formal
-    // parameter but the rest one, and is zero for a function that owns an
-    // `arguments` object.
-    uint32_t arity{0};
-    // 10.2.10 SetFunctionLength's answer: the number of formal parameters
-    // BEFORE the first one with a default or the rest one, which is a different
-    // count from `arity` above and is why it is a second field rather than a
-    // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
-    uint32_t length{0};
     // The BRONZE_ABI_FN_FLAG_* byte the compiler handed `create` — what the
     // SOURCE FORM decided about this object, which the header could not
     // otherwise know: an arrow, a method and a plain function expression are
@@ -138,6 +108,44 @@ struct FunctionHeader {
     // in its [[Realm]]. 0 is "every realm's" — the intrinsics made before any
     // realm, and the natives, which are the thread's and shared.
     uint8_t realm_slot_bytes[3]{};
+    // This function's `.prototype` object, or undefined until something asks
+    // for it — a function that is never a constructor and whose prototype is
+    // never decorated should not pay for the object, and closures are created
+    // in loops.
+    HeapValue prototype;
+    // This function's OWN properties - what `C.staticMethod =...` and a class's
+    // `static` members are stored in - or undefined until one is written. An
+    // ordinary object, so it costs nothing until used and inherits through the
+    // shape's prototype, which is what makes a static member of a base class
+    // visible on a derived one.
+    HeapValue properties;
+    // Root shape for objects `new`ed from this function; its prototype is
+    // the object above. Non-moving, created with it, and reset if
+    // `.prototype` is reassigned.
+    class Shape* instance_shape{nullptr};
+    // 10.2.9 SetFunctionName's answer: this function's own `name` property,
+    // ARENA-interned so it is immortal and non-moving — the same bargain a
+    // shape key makes, and the reason a raw pointer here is invisible to the
+    // collector's payload scan (which follows only Values that point INTO the
+    // heap) exactly as `instance_shape` above already is.
+    //
+    // NULL means the name was never recorded, which is not the same as the
+    // empty string: an anonymous function expression really has `name === ""`
+    // (10.2.9 via NamedEvaluation), while a native builtin has no key index to
+    // name it with and so answers neither. `length` below shares that one flag,
+    // because the two properties are created together by OrdinaryFunctionCreate
+    // and a function that has one always has the other.
+    struct StringHeader* name{nullptr};
+    // The arity a short call is PADDED to, which is a fact about the calling
+    // convention and NOT the `length` property: it counts every formal
+    // parameter but the rest one, and is zero for a function that owns an
+    // `arguments` object.
+    uint32_t arity{0};
+    // 10.2.10 SetFunctionLength's answer: the number of formal parameters
+    // BEFORE the first one with a default or the rest one, which is a different
+    // count from `arity` above and is why it is a second field rather than a
+    // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
+    uint32_t length{0};
 
     uint32_t realmSlot() const noexcept {
         return static_cast<uint32_t>(realm_slot_bytes[0]) |
@@ -224,11 +232,15 @@ static_assert(offsetof(FunctionHeader, function_flags) == BRONZE_ABI_FN_FLAGS_WO
 static_assert(offsetof(FunctionHeader, realm_slot_bytes) ==
               BRONZE_ABI_FN_FLAGS_WORD_OFFSET + BRONZE_ABI_FN_REALM_SHIFT / 8);
 static_assert(sizeof(FunctionHeader::realm_slot_bytes) * 8 == 64 - BRONZE_ABI_FN_REALM_SHIFT);
+// A direct entry's loads (the flags word, `code`, `env_record`) stay inside the
+// first 32 bytes, so with 8-byte alignment they share the header's cache line
+// five times in eight; past 64 they never did.
+static_assert(BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 8 <= 32 && BRONZE_ABI_FN_ENV_OFFSET + 8 <= 32);
 // The inline `Array.isArray` site reads this byte (codegen-brass
 // il2mir/il_is_array.cpp, kStaticsMaterializedOffset): a constructor-static
 // method-cache entry latched before the statics moved to the box carries no
 // epoch and answers only while it is still zero, as methodIcHit's does.
-static_assert(offsetof(FunctionHeader, statics_materialized) == 68);
+static_assert(offsetof(FunctionHeader, statics_materialized) == BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 4);
 
 // Whether compiled code may call `fn`'s code without the runtime: the
 // predicate the method-call latch records in BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT.

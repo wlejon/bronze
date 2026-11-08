@@ -32,6 +32,7 @@
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
@@ -227,8 +228,18 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
         return Value::fromUndefined().rawBits();
     }
     RootedBlock block(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        block.set(i, rtArrayLikeElement(list, i));
+    // An array whose chain holds no index (the common list: an array literal,
+    // a rest array, an `arguments` object) has its elements read straight out
+    // of it, a hole as undefined: that is Get for every index, and no read
+    // can run script, so the answer cannot change under the loop.
+    if (list.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+        !rtArrayChainHoldsIndex(list.get())) {
+        const ArrayHeader* arr = list.get().asObject<ArrayHeader>();
+        for (uint32_t i = 0; i < count; ++i) block.set(i, arr->getElem(i));
+    } else {
+        for (uint32_t i = 0; i < count; ++i) {
+            block.set(i, rtArrayLikeElement(list, i));
+        }
     }
     return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), count, block.data());
 }

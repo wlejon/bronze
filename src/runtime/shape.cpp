@@ -239,7 +239,12 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // Every add to a shape-mode object passes here, so this is where an index
     // key reaching a prototype is seen (dictionary adds: dictDefine).
     noteKeyAddedToPrototype(used_as_prototype, stored);
-    ++g_shapeTransitions;
+    // A telemetry count (embed's HostTelemetry), bumped without a locked
+    // read-modify-write: every runtime property add passes here, and the lock
+    // was most of a cached transition's cost. Two threads adding at once may
+    // lose an increment, which a count read for reporting can afford.
+    g_shapeTransitions.store(g_shapeTransitions.load(std::memory_order_relaxed) + 1,
+                             std::memory_order_relaxed);
     return next_shape;
 }
 
