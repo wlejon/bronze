@@ -5,8 +5,11 @@ bronze_add_module(check
         static_checker_domain.cpp
         prove_equiv.cpp
         prove_equiv_heap.cpp
+        prove_equiv_builtins.cpp
         prove_equiv_bitwise.cpp
+        prove_equiv_calls.cpp
         prove_loop_induction.cpp
+        prove_loop_relational.cpp
         loop_recurrence_synth.cpp
         deterministic_check.cpp
         synth_tests.cpp
