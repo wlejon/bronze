@@ -513,54 +513,59 @@ TEST_CASE("a job runs in the embedder's context where it was subscribed") {
 }
 
 TEST_CASE("promise settlement after GC pressure") {
-    // Made in a frame of its own, the addresses kept hidden: a stack word
-    // naming the promise or the payload would pin it in place
-    // (stack_scrub.h).
-    embed::Persistent p;
-    embed::Persistent payload;
-    embed::Persistent fn;
-    std::string received;
-    auto& heap = runtime::rtHeap();
-    struct Before {
-        uint64_t promise, payload;
-        bool promiseYoung, payloadYoung;
-    };
-    const Before before = test::fromOwnFrame([&] {
-        p.set(embed::createPromise());
-        payload.set(embed::fromUtf8("survived_gc_data"));
-        fn.set(embed::makeFunction(
-            [&received](embed::Value, std::span<const embed::Value> args) -> embed::Value {
-                received = args.empty() ? "" : embed::toUtf8(args[0]);
-                return embed::undefined();
-            },
-            1));
-        embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
-        embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn.get()});
-        return Before{test::hideBits(p.get().rawBits()), test::hideBits(payload.get().rawBits()),
-                      heap.is_movable(p.get().asObject()), heap.is_movable(payload.get().asString())};
-    });
-
-    // Force GC collection before settling.
+    // Scrub any words left at the TEST_CASE frame depth by the preceding test
+    // before entering our own frame, and make the values in a nested frame
+    // with their addresses kept hidden: a stack word naming the promise or the
+    // payload (including an unwritten slot inherited from the prior test's
+    // frame) would pin it in place (stack_scrub.h).
     test::scrubStack();
-    heap.collect();
+    test::inOwnFrame([] {
+        embed::Persistent p;
+        embed::Persistent payload;
+        embed::Persistent fn;
+        std::string received;
+        auto& heap = runtime::rtHeap();
+        struct Before {
+            uint64_t promise, payload;
+            bool promiseYoung, payloadYoung;
+        };
+        const Before before = test::fromOwnFrame([&] {
+            p.set(embed::createPromise());
+            payload.set(embed::fromUtf8("survived_gc_data"));
+            fn.set(embed::makeFunction(
+                [&received](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+                    received = args.empty() ? "" : embed::toUtf8(args[0]);
+                    return embed::undefined();
+                },
+                1));
+            embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
+            embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn.get()});
+            return Before{test::hideBits(p.get().rawBits()), test::hideBits(payload.get().rawBits()),
+                          heap.is_movable(p.get().asObject()), heap.is_movable(payload.get().asString())};
+        });
 
-    // The collection relocates young objects and leaves old ones in place.
-    auto hidden = [](const embed::Persistent& h) { return test::fromOwnFrame([&] { return test::hideBits(h.get().rawBits()); }); };
-    CHECK((hidden(p) != before.promise) == before.promiseYoung);
-    CHECK((hidden(payload) != before.payload) == before.payloadYoung);
-    CHECK(embed::isPromise(p.get()));
+        // Force GC collection before settling.
+        test::scrubStack();
+        heap.collect();
 
-    // Force another collection.
-    runtime::rtHeap().collect();
+        // The collection relocates young objects and leaves old ones in place.
+        auto hidden = [](const embed::Persistent& h) { return test::fromOwnFrame([&] { return test::hideBits(h.get().rawBits()); }); };
+        CHECK((hidden(p) != before.promise) == before.promiseYoung);
+        CHECK((hidden(payload) != before.payload) == before.payloadYoung);
+        CHECK(embed::isPromise(p.get()));
 
-    // Settle with relocated values.
-    embed::resolvePromise(p.get(), payload.get());
+        // Force another collection.
+        runtime::rtHeap().collect();
 
-    // Force another collection while reaction is in the microtask queue.
-    runtime::rtHeap().collect();
+        // Settle with relocated values.
+        embed::resolvePromise(p.get(), payload.get());
 
-    embed::drainMicrotasks();
-    CHECK(received == "survived_gc_data");
+        // Force another collection while reaction is in the microtask queue.
+        runtime::rtHeap().collect();
+
+        embed::drainMicrotasks();
+        CHECK(received == "survived_gc_data");
+    });
 }
 
 TEST_CASE("createArrayBuffer and info helpers") {
