@@ -9,6 +9,7 @@
 #include <verify/bv_solver.hpp>
 
 #include "check/prove_equiv.h"
+#include "check/prove_equiv_heap.h"
 
 namespace bronze::check {
 namespace {
@@ -132,9 +133,33 @@ bool prepareSolverContext(std::string_view fnSource,
         prep.argNodes.push_back(prep.ctx.make_sext(raw32, 32));
     }
 
+    SymbolicHeapTable heapTable(prep.ctx);
+    int64_t effMin = opts.domainMin;
+    int64_t effMax = opts.domainMax;
+    if (!opts.varBounds.empty()) {
+        int64_t bMin = INT32_MAX;
+        int64_t bMax = INT32_MIN;
+        bool allBounded = (prep.numParams > 0);
+        for (uint32_t i = 0; i < prep.numParams; ++i) {
+            auto it = opts.varBounds.find(prep.paramNames[i]);
+            if (it != opts.varBounds.end()) {
+                bMin = std::min<int64_t>(bMin, std::max(opts.domainMin, it->second.first));
+                bMax = std::max<int64_t>(bMax, std::min(opts.domainMax, it->second.second));
+            } else {
+                allBounded = false;
+            }
+        }
+        if (allBounded && bMin <= bMax) {
+            effMin = bMin;
+            effMax = bMax;
+        }
+    }
+    heapTable.setDomainBounds(effMin, effMax);
+
     std::string reason;
     if (!evalIlFunctionSymbolic(prep.ctx, prep.mod, *prep.fn, prep.argNodes,
-                                /*strictJs32Bitwise=*/true, &prep.retNode, &reason)) {
+                                /*strictJs32Bitwise=*/true, &prep.retNode, &reason,
+                                &heapTable)) {
         errOut = "function not symbolically decidable: " + reason;
         return false;
     }

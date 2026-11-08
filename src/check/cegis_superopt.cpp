@@ -15,6 +15,7 @@
 
 #include "check/cegis_dag_enum.h"
 #include "check/prove_equiv.h"
+#include "check/prove_equiv_heap.h"
 #include "check/solve_fn.h"
 
 namespace bronze::check {
@@ -479,9 +480,11 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
         refArgNodes.push_back(refCtx.make_sext(raw32, 32));
     }
 
+    SymbolicHeapTable refHeap(refCtx);
+    refHeap.setDomainBounds(opts.domainMin, opts.domainMax);
     BVNodeId refRetNode = 0;
     std::string symReason;
-    if (!evalIlFunctionSymbolic(refCtx, refMod, *refFn, refArgNodes, true, &refRetNode, &symReason)) {
+    if (!evalIlFunctionSymbolic(refCtx, refMod, *refFn, refArgNodes, true, &refRetNode, &symReason, &refHeap)) {
         res.error = "reference function not symbolically decidable: " + symReason;
         res.summary = res.error;
         return res;

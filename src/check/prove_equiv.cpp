@@ -817,15 +817,17 @@ EquivReport proveRoundTripSource(std::string_view source, std::string_view encod
     BVContext ctx;
     BVNodeId raw32 = ctx.make_var("x", 32);
     BVNodeId xNode = ctx.make_sext(raw32, 32);
+    SymbolicHeapTable heapTable(ctx);
+    heapTable.setDomainBounds(domainMin, domainMax);
     BVNodeId encRet = 0, decRet = 0;
     BVNodeId encThrew = 0, decThrew = 0;
     std::string reason;
-    if (!evalIlFunctionSymbolic(ctx, mod, *encFn, {xNode}, true, &encRet, &reason, nullptr, nullptr, nullptr, &encThrew)) {
+    if (!evalIlFunctionSymbolic(ctx, mod, *encFn, {xNode}, true, &encRet, &reason, &heapTable, nullptr, nullptr, &encThrew)) {
         rep.status = EquivStatus::Unknown;
         rep.detail = "encode function not symbolically decidable: " + reason;
         return rep;
     }
-    if (!evalIlFunctionSymbolic(ctx, mod, *decFn, {encRet}, true, &decRet, &reason, nullptr, nullptr, nullptr, &decThrew)) {
+    if (!evalIlFunctionSymbolic(ctx, mod, *decFn, {encRet}, true, &decRet, &reason, &heapTable, nullptr, nullptr, &decThrew)) {
         rep.status = EquivStatus::Unknown;
         rep.detail = "decode function not symbolically decidable: " + reason;
         return rep;

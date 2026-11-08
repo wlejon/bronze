@@ -10,6 +10,7 @@
 #include <verify/bv_solver.hpp>
 
 #include "check/prove_equiv.h"
+#include "check/prove_equiv_heap.h"
 
 namespace bronze::check {
 namespace {
@@ -383,7 +384,11 @@ LayoutSolution solveLayoutSpec(const LayoutSpec& spec) {
         return s64;
     };
 
+    int64_t minCoord = INT32_MAX;
+    int64_t maxCoord = INT32_MIN;
     auto addBound = [&](BVNodeId node, int32_t lo, int32_t hi) {
+        minCoord = std::min<int64_t>(minCoord, lo);
+        maxCoord = std::max<int64_t>(maxCoord, hi);
         BVNodeId loNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(lo)), 64);
         BVNodeId hiNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(hi)), 64);
         cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sge, node, loNode));
@@ -544,9 +549,11 @@ LayoutSolution solveLayoutSpec(const LayoutSpec& spec) {
             sol.error = "predicate function not found";
             return sol;
         }
+        SymbolicHeapTable heapTable(ctx);
+        if (minCoord <= maxCoord) heapTable.setDomainBounds(minCoord, maxCoord);
         BVNodeId predRet = 0;
         std::string reason;
-        if (!evalIlFunctionSymbolic(ctx, predMod, *predFn, allVarNodes, true, &predRet, &reason)) {
+        if (!evalIlFunctionSymbolic(ctx, predMod, *predFn, allVarNodes, true, &predRet, &reason, &heapTable)) {
             sol.status = SolveStatus::Error;
             sol.error = "predicate function not symbolically decidable: " + reason;
             return sol;

@@ -209,7 +209,18 @@ brass::verify::BVInterval getSignedInterval64(const BVContext& ctx,
             memo[cur] = iv;
             return iv;
         }
-        if (n.width != 64) {
+        if (n.op == BVOp::Extract) {
+            if (n.width == 32 && n.b == 0) {
+                auto a = self(self, n.a);
+                if (a.smin >= INT32_MIN && a.smax <= INT32_MAX) {
+                    iv.smin = a.smin;
+                    iv.smax = a.smax;
+                }
+            }
+            memo[cur] = iv;
+            return iv;
+        }
+        if (n.width != 64 && n.width != 32) {
             memo[cur] = iv;
             return iv;
         }
@@ -320,6 +331,10 @@ brass::verify::BVInterval getSignedInterval64(const BVContext& ctx,
             auto f = self(self, n.c);
             iv.smin = std::min(t.smin, f.smin);
             iv.smax = std::max(t.smax, f.smax);
+        }
+        if (n.width == 32 && (iv.smin < INT32_MIN || iv.smax > INT32_MAX)) {
+            iv.smin = INT32_MIN;
+            iv.smax = INT32_MAX;
         }
         memo[cur] = iv;
         return iv;
