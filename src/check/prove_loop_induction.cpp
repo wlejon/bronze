@@ -485,7 +485,24 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
             case Op::Sub:
             case Op::Mul: {
                 BVOp bvOp = (inst.op == Op::Add) ? BVOp::Add : (inst.op == Op::Sub ? BVOp::Sub : BVOp::Mul);
-                state.values[inst.result] = ctx_.make_binary(bvOp, op64(0), op64(1));
+                BVNodeId lhs = op64(0), rhs = op64(1);
+                if (bvOp == BVOp::Mul) {
+                    const auto& ln = ctx_.nodes()[lhs];
+                    const auto& rn = ctx_.nodes()[rhs];
+                    if (rn.op == BVOp::Add && (ctx_.nodes()[rn.a].op == BVOp::Const || ctx_.nodes()[rn.b].op == BVOp::Const)) {
+                        BVNodeId ra = rn.a, rb = rn.b;
+                        state.values[inst.result] = ctx_.make_binary(
+                            BVOp::Add, ctx_.make_binary(BVOp::Mul, lhs, ra), ctx_.make_binary(BVOp::Mul, lhs, rb));
+                        break;
+                    }
+                    if (ln.op == BVOp::Add && (ctx_.nodes()[ln.a].op == BVOp::Const || ctx_.nodes()[ln.b].op == BVOp::Const)) {
+                        BVNodeId la = ln.a, lb = ln.b;
+                        state.values[inst.result] = ctx_.make_binary(
+                            BVOp::Add, ctx_.make_binary(BVOp::Mul, la, rhs), ctx_.make_binary(BVOp::Mul, lb, rhs));
+                        break;
+                    }
+                }
+                state.values[inst.result] = ctx_.make_binary(bvOp, lhs, rhs);
                 break;
             }
             case Op::Div:

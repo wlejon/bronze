@@ -2,12 +2,70 @@
 
 #include <algorithm>
 #include <cmath>
+#include <queue>
 
 namespace bronze::check {
 
 using brass::verify::BVContext;
 using brass::verify::BVNodeId;
 using brass::verify::BVOp;
+
+namespace {
+
+bool canReachNonEmpty(const il::Function& fn, il::BlockId start, il::BlockId goal, il::BlockId minBlock) {
+    if (start >= fn.blocks.size() || goal >= fn.blocks.size()) return false;
+    std::queue<il::BlockId> q;
+    std::vector<uint8_t> vis(fn.blocks.size(), 0);
+    auto pushEdge = [&](il::BlockId dst) {
+        if (dst >= fn.blocks.size() || dst < minBlock) return false;
+        if (dst == goal) return true;
+        if (!vis[dst]) {
+            vis[dst] = 1;
+            q.push(dst);
+        }
+        return false;
+    };
+    const auto& sBlk = fn.blocks[start];
+    if (!sBlk.instructions.empty()) {
+        const auto& term = sBlk.instructions.back();
+        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
+        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
+    }
+    while (!q.empty()) {
+        il::BlockId cur = q.front();
+        q.pop();
+        const auto& blk = fn.blocks[cur];
+        if (blk.instructions.empty()) continue;
+        const auto& term = blk.instructions.back();
+        if (term.op == il::Op::Jump && pushEdge(term.target.block)) return true;
+        if (term.op == il::Op::Branch && (pushEdge(term.target.block) || pushEdge(term.elseTarget.block))) return true;
+    }
+    return false;
+}
+
+uint32_t computeFunctionSymbolicLoopBound(const il::Function& fn, std::vector<uint8_t>& outInCycle) {
+    outInCycle.assign(fn.blocks.size(), 0);
+    std::vector<il::BlockId> headers;
+    for (il::BlockId b = 0; b < fn.blocks.size(); ++b) {
+        if (canReachNonEmpty(fn, b, b, 0)) outInCycle[b] = 1;
+        if (canReachNonEmpty(fn, b, b, b)) headers.push_back(b);
+    }
+    bool nested = false;
+    for (size_t i = 0; i < headers.size() && !nested; ++i) {
+        for (size_t j = i + 1; j < headers.size(); ++j) {
+            if (canReachNonEmpty(fn, headers[i], headers[j], headers[i]) &&
+                canReachNonEmpty(fn, headers[j], headers[i], headers[i])) {
+                nested = true;
+                break;
+            }
+        }
+    }
+    if (nested) return 3u;
+    if (headers.size() >= 2) return 5u;
+    return 8u;
+}
+
+}  // namespace
 
 SymbolicIlBuilder::SymbolicIlBuilder(BVContext& ctx,
                                      const il::Module& mod,
@@ -76,8 +134,10 @@ void SymbolicIlBuilder::initModuleState() {
     inModuleInit_ = true;
     uint32_t savedVisits = totalVisits_;
     bool savedHit = hitLoopUnrollBound_;
+    uint32_t savedLoopBound = maxLoopBoundUsed_;
     SymState initSt;
     initSt.threwCond = zero1_;
+    initSt.exceededCond = zero1_;
     uint32_t firstSrc = static_cast<uint32_t>(entryFn->firstSourceParam());
     for (uint32_t i = 0; i < firstSrc; ++i) initSt.values[i] = zero64_;
     initSt.heap.initFunctionHeap(heapTable_, *entryFn, initSt.values, "this", nullptr);
@@ -90,6 +150,7 @@ void SymbolicIlBuilder::initModuleState() {
     inModuleInit_ = false;
     totalVisits_ = savedVisits;
     hitLoopUnrollBound_ = savedHit;
+    maxLoopBoundUsed_ = savedLoopBound;
 }
 
 uint64_t SymbolicIlBuilder::resolveEnvSlotKey(const SymState& st,
@@ -174,21 +235,39 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                                                 uint32_t inlineDepth) {
     const uint32_t maxSteps = inModuleInit_ ? kMaxModuleInitSteps : kMaxBlockSteps;
     const uint32_t maxVisits = inModuleInit_ ? kMaxModuleInitVisits : kMaxTotalBlockVisits;
+    std::vector<uint8_t> blockInCycle;
+    const uint32_t symLoopBound = inModuleInit_ ? 64u : computeFunctionSymbolicLoopBound(fn, blockInCycle);
+    auto checkBackedgeLimit = [&](il::BlockId srcBlk, il::BlockId dstBlk, SymState& st) -> bool {
+        if (dstBlk > srcBlk) return true;
+        for (auto& [bId, cnt] : st.loopHeaderVisits) {
+            if (bId > dstBlk) cnt = 0;
+        }
+        uint32_t visits = ++st.loopHeaderVisits[dstBlk];
+        if (inModuleInit_) return true;
+        uint32_t limit = st.symbolicLoopActive ? symLoopBound : 64u;
+        if (visits > limit) {
+            hitLoopUnrollBound_ = true;
+            if (maxLoopBoundUsed_ == 0 || limit < maxLoopBoundUsed_) maxLoopBoundUsed_ = limit;
+            return false;
+        }
+        return true;
+    };
     while (true) {
         if (++totalVisits_ > maxVisits) {
             if (inModuleInit_) {
                 saveModuleInitSnapshot(state);
-                return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_};
+                return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_, zero1_};
             }
-            return {false, "symbolic path limit exceeded", false, zero64_, {}, {}, zero1_};
+            return {false, "symbolic path limit exceeded", false, zero64_, {}, {}, zero1_, zero1_};
         }
         if (steps > maxSteps) {
             if (inModuleInit_) {
                 saveModuleInitSnapshot(state);
-                return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_};
+                return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_, zero1_};
             }
             hitLoopUnrollBound_ = true;
-            return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_};
+            if (maxLoopBoundUsed_ == 0 || symLoopBound < maxLoopBoundUsed_) maxLoopBoundUsed_ = symLoopBound;
+            return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
         }
         if (blockId >= fn.blocks.size()) {
             return {false, "invalid block target", false, zero64_, {}, {}, zero1_};
@@ -691,8 +770,11 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     break;
                 }
                 case Op::Throw:
-                    return {true, {}, true, zero64_, std::move(state.heap), {}, one1_};
+                    return {true, {}, true, zero64_, std::move(state.heap), {}, one1_, zero1_};
                 case Op::Jump:
+                    if (!checkBackedgeLimit(blockId, inst.target.block, state)) {
+                        return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
+                    }
                     applyEdgeArgsInPlace(fn, inst.target, state);
                     blockId = inst.target.block;
                     ++steps;
@@ -703,37 +785,62 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     const auto& cNode = ctx_.nodes()[condNode];
                     if (cNode.op == BVOp::Const) {
                         const il::BlockTarget& edge = (cNode.imm != 0) ? inst.target : inst.elseTarget;
+                        if (!checkBackedgeLimit(blockId, edge.block, state)) {
+                            return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
+                        }
                         applyEdgeArgsInPlace(fn, edge, state);
                         blockId = edge.block;
                         ++steps;
                         jumpedInPlace = true;
                         break;
                     }
+                    if (blockId < blockInCycle.size() && blockInCycle[blockId]) {
+                        state.symbolicLoopActive = true;
+                    }
                     SymState trueState = state;
                     trueState.heap.unifyBranchAlias(heapTable_, inst.operands[0], condNode, true);
                     applyEdgeArgsInPlace(fn, inst.target, trueState);
-                    auto trueOut = evalBlockPath(fn, inst.target.block, std::move(trueState), steps + 1, inlineDepth);
+                    SymEvalOutcome trueOut;
+                    if (!checkBackedgeLimit(blockId, inst.target.block, trueState)) {
+                        trueOut = {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
+                    } else {
+                        trueOut = evalBlockPath(fn, inst.target.block, std::move(trueState), steps + 1, inlineDepth);
+                    }
                     if (!trueOut.supported) return trueOut;
 
                     state.heap.unifyBranchAlias(heapTable_, inst.operands[0], condNode, false);
                     applyEdgeArgsInPlace(fn, inst.elseTarget, state);
-                    auto falseOut = evalBlockPath(fn, inst.elseTarget.block, std::move(state), steps + 1, inlineDepth);
+                    SymEvalOutcome falseOut;
+                    if (!checkBackedgeLimit(blockId, inst.elseTarget.block, state)) {
+                        falseOut = {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
+                    } else {
+                        falseOut = evalBlockPath(fn, inst.elseTarget.block, std::move(state), steps + 1, inlineDepth);
+                    }
                     if (!falseOut.supported) return falseOut;
 
+                    BVNodeId tExc = (trueOut.exceededBoundNode != 0) ? trueOut.exceededBoundNode : zero1_;
+                    BVNodeId fExc = (falseOut.exceededBoundNode != 0) ? falseOut.exceededBoundNode : zero1_;
                     if (trueOut.hasReturn && falseOut.hasReturn) {
                         BVNodeId merged = ctx_.make_ite(condNode, trueOut.returnVal, falseOut.returnVal);
                         BVNodeId tThrew = (trueOut.threwNode != 0) ? trueOut.threwNode : zero1_;
                         BVNodeId fThrew = (falseOut.threwNode != 0) ? falseOut.threwNode : zero1_;
                         BVNodeId mergedThrew = (tThrew == fThrew) ? tThrew : ctx_.make_ite(condNode, tThrew, fThrew);
+                        BVNodeId mergedExc = (tExc == fExc) ? tExc : ctx_.make_ite(condNode, tExc, fExc);
                         SymbolicHeapState mergedHeap = SymbolicHeapState::mergeBranches(
                             heapTable_, condNode, trueOut.finalHeap, falseOut.finalHeap);
                         std::string retObj = (trueOut.returnObjPath == falseOut.returnObjPath)
                                                  ? trueOut.returnObjPath : std::string{};
-                        return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew};
+                        return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew, mergedExc};
                     }
-                    if (trueOut.hasReturn) return trueOut;
-                    if (falseOut.hasReturn) return falseOut;
-                    return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_};
+                    if (trueOut.hasReturn) {
+                        trueOut.exceededBoundNode = ctx_.make_binary(BVOp::Or, ctx_.make_unary(BVOp::Not, condNode), tExc);
+                        return trueOut;
+                    }
+                    if (falseOut.hasReturn) {
+                        falseOut.exceededBoundNode = ctx_.make_binary(BVOp::Or, condNode, fExc);
+                        return falseOut;
+                    }
+                    return {true, "loop unroll bound reached", false, zero64_, {}, {}, zero1_, one1_};
                 }
                 case Op::Ret: {
                     if (inModuleInit_) saveModuleInitSnapshot(state);
@@ -750,19 +857,20 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         ret = heapTable_.getObjectToken("__ret");
                     }
                     BVNodeId pathThrew = (state.threwCond != 0) ? state.threwCond : zero1_;
-                    return {true, {}, true, ret, std::move(state.heap), std::move(retPath), pathThrew};
+                    BVNodeId pathExc = (state.exceededCond != 0) ? state.exceededCond : zero1_;
+                    return {true, {}, true, ret, std::move(state.heap), std::move(retPath), pathThrew, pathExc};
                 }
                 default:
                     if (inModuleInit_) {
                         saveModuleInitSnapshot(state);
-                        return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_};
+                        return {true, {}, true, zero64_, std::move(state.heap), {}, zero1_, zero1_};
                     }
-                    return {false, std::string("unsupported IL operation: ") + il::opName(inst.op), false, zero64_, {}, {}, zero1_};
+                    return {false, std::string("unsupported IL operation: ") + il::opName(inst.op), false, zero64_, {}, {}, zero1_, zero1_};
             }
             if (jumpedInPlace) break;
         }
         if (!jumpedInPlace) {
-            return {false, "block terminated without Ret/Jump/Branch", false, zero64_, {}, {}, zero1_};
+            return {false, "block terminated without Ret/Jump/Branch", false, zero64_, {}, {}, zero1_, zero1_};
         }
     }
 }
@@ -777,10 +885,13 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             SymbolicHeapTable* sharedHeapTable,
                             SymbolicHeapState* outFinalHeap,
                             bool* outHitLoopUnrollBound,
-                            brass::verify::BVNodeId* outThrewNode) {
+                            brass::verify::BVNodeId* outThrewNode,
+                            brass::verify::BVNodeId* outExceededBoundNode,
+                            ProofBounds* outBounds) {
     SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise, sharedHeapTable);
     auto out = builder.evalFunction(fn, argNodes);
     if (outHitLoopUnrollBound) *outHitLoopUnrollBound = builder.hitLoopUnrollBound();
+    if (outBounds) *outBounds = builder.boundsUsed();
     if (!out.supported || !out.hasReturn) {
         if (outReason) *outReason = out.unsupportedReason;
         return false;
@@ -788,6 +899,7 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
     if (outRetNode) *outRetNode = out.returnVal;
     if (outFinalHeap) *outFinalHeap = std::move(out.finalHeap);
     if (outThrewNode) *outThrewNode = (out.threwNode != 0) ? out.threwNode : ctx.make_const(0, 1);
+    if (outExceededBoundNode) *outExceededBoundNode = (out.exceededBoundNode != 0) ? out.exceededBoundNode : ctx.make_const(0, 1);
     return true;
 }
 

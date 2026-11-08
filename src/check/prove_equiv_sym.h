@@ -13,8 +13,8 @@
 
 namespace bronze::check {
 
-inline constexpr uint32_t kMaxBlockSteps = 120;
-inline constexpr uint32_t kMaxTotalBlockVisits = 1536;
+inline constexpr uint32_t kMaxBlockSteps = 240;
+inline constexpr uint32_t kMaxTotalBlockVisits = 16384;
 inline constexpr uint32_t kMaxInlineDepth = 6;
 inline constexpr uint32_t kMaxModuleInitSteps = 12000;
 inline constexpr uint32_t kMaxModuleInitVisits = 24000;
@@ -35,9 +35,12 @@ struct SymState {
     std::unordered_map<il::ValueId, uint32_t> ctorOf;
     std::unordered_set<il::ValueId> undefValues;
     std::unordered_set<uint64_t> envUndef;
+    std::unordered_map<il::BlockId, uint32_t> loopHeaderVisits;
+    bool symbolicLoopActive = false;
     uint32_t nextEnvId = 1;
     bool isConstructCall = false;
     brass::verify::BVNodeId threwCond = 0;
+    brass::verify::BVNodeId exceededCond = 0;
     SymbolicHeapState heap;
 };
 
@@ -49,6 +52,7 @@ struct SymEvalOutcome {
     SymbolicHeapState finalHeap;
     std::string returnObjPath;
     brass::verify::BVNodeId threwNode = 0;
+    brass::verify::BVNodeId exceededBoundNode = 0;
 };
 
 class SymbolicIlBuilder {
@@ -69,6 +73,7 @@ public:
                                 bool isConstructCall = false);
 
     bool hitLoopUnrollBound() const { return hitLoopUnrollBound_; }
+    ProofBounds boundsUsed() const { return {maxLoopBoundUsed_, maxArrayBoundUsed_, maxStringBoundUsed_}; }
 
 private:
     brass::verify::BVContext& ctx_;
@@ -83,6 +88,9 @@ private:
     brass::verify::BVNodeId allOnes64_ = 0;
     uint32_t totalVisits_ = 0;
     bool hitLoopUnrollBound_ = false;
+    uint32_t maxLoopBoundUsed_ = 0;
+    uint32_t maxArrayBoundUsed_ = 0;
+    uint32_t maxStringBoundUsed_ = 0;
     bool inModuleInit_ = false;
     SymState moduleState_;
 

@@ -16,39 +16,16 @@ namespace {
 SolveOutcome solveObligation(const BVContext& ctx, BVNodeId badCond, int32_t domMin, int32_t domMax) {
     uint32_t mulCount = 0;
     for (const auto& n : ctx.nodes()) if (n.op == BVOp::Mul) ++mulCount;
-    SolveOutcome out = brass::verify::solve_nonzero(ctx, badCond, (mulCount >= 2) ? 2500u : 12000u);
+    SolveOutcome out = brass::verify::solve_nonzero(ctx, badCond, (mulCount >= 2) ? 4000u : 12000u);
     if (out.status != SolveOutcome::Unknown) return out;
     const size_t numVars = ctx.vars().size();
-    if (numVars == 1) {
-        auto checkRange = [&](int32_t a, int32_t b) {
-            for (int32_t v = a; v <= b; ++v) {
-                std::vector<uint64_t> model{static_cast<uint64_t>(static_cast<uint32_t>(v))};
-                if (ctx.eval_concrete(badCond, model) != 0) {
-                    out.status = SolveOutcome::Sat;
-                    out.model = std::move(model);
-                    return true;
-                }
-            }
-            return false;
-        };
-        int32_t lo = std::max<int32_t>(domMin, -64), hi = std::min<int32_t>(domMax, 256);
-        if (checkRange(lo, hi) || checkRange(std::max<int32_t>(lo, domMax - 32), domMax)) return out;
-        out.status = SolveOutcome::Unsat;
-        return out;
-    }
-    if (numVars == 2) {
-        static constexpr int32_t kSamples[] = {-8, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 16, 31, 32, 64, 100};
-        for (int32_t v0 : kSamples) {
-            if (v0 < domMin || v0 > domMax) continue;
-            for (int32_t v1 : kSamples) {
-                if (v1 < domMin || v1 > domMax) continue;
-                std::vector<uint64_t> model{static_cast<uint64_t>(static_cast<uint32_t>(v0)),
-                                            static_cast<uint64_t>(static_cast<uint32_t>(v1))};
-                if (ctx.eval_concrete(badCond, model) != 0) {
-                    out.status = SolveOutcome::Sat;
-                    out.model = std::move(model);
-                    return out;
-                }
+    if (numVars == 1 && domMax >= domMin && (static_cast<int64_t>(domMax) - static_cast<int64_t>(domMin)) <= 10000) {
+        for (int32_t v = domMin; v <= domMax; ++v) {
+            std::vector<uint64_t> model{static_cast<uint64_t>(static_cast<uint32_t>(v))};
+            if (ctx.eval_concrete(badCond, model) != 0) {
+                out.status = SolveOutcome::Sat;
+                out.model = std::move(model);
+                return out;
             }
         }
         out.status = SolveOutcome::Unsat;

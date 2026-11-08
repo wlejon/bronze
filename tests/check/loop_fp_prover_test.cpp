@@ -217,3 +217,152 @@ TEST_CASE("Symbolic FP and safe-integer predicates in proveSourceEquivalent") {
     auto rep = proveSourceEquivalent(fnA, fnB, "normInt", -1000, 1000);
     CHECK(rep.status == EquivStatus::Equivalent);
 }
+
+TEST_CASE("Bounded loop unrolling: BOUNDED verdict for multi-loop, nested loops, and complex while loops") {
+    SUBCASE("multi-loop (setup loop then main loop): BOUNDED equivalence and counterexample") {
+        const char* multiA = R"(
+            export function twoPhase(n, m, x) {
+                let s = 0;
+                for (let i = 0; i < (n | 0); i = (i + 1) | 0) {
+                    s = (s + ((x | 0) * 2)) | 0;
+                }
+                for (let j = 0; j < (m | 0); j = (j + 1) | 0) {
+                    s = (s + (j ^ 3)) | 0;
+                }
+                return s;
+            }
+        )";
+        const char* multiB = R"(
+            export function twoPhase(n, m, x) {
+                let s = 0;
+                for (let i = 0; i < (n | 0); i = (i + 1) | 0) {
+                    s = (s + ((x | 0) << 1)) | 0;
+                }
+                for (let j = 0; j < (m | 0); j = (j + 1) | 0) {
+                    s = (s + (j ^ 3)) | 0;
+                }
+                return s;
+            }
+        )";
+        const char* multiBuggy = R"(
+            export function twoPhase(n, m, x) {
+                let s = 0;
+                for (let i = 0; i < (n | 0); i = (i + 1) | 0) {
+                    s = (s + ((x | 0) << 1)) | 0;
+                }
+                for (let j = 0; j <= (m | 0); j = (j + 1) | 0) {
+                    s = (s + (j ^ 3)) | 0;
+                }
+                return s;
+            }
+        )";
+
+        ProveEquivReport rep = proveSourceEquiv(multiA, multiB, "twoPhase");
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Bounded);
+        CHECK(rep.functions[0].bounds.maxLoopIterations > 0);
+        CHECK(rep.renderText().find("BOUNDED (loop <= ") != std::string::npos);
+        CHECK(rep.renderJson().find("\"status\":\"BOUNDED\"") != std::string::npos);
+        CHECK(rep.renderJson().find("\"loopTripCount\":") != std::string::npos);
+
+        ProveEquivReport repBug = proveSourceEquiv(multiA, multiBuggy, "twoPhase");
+        REQUIRE(repBug.functions.size() == 1);
+        CHECK(repBug.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("nested loops (depth 2): BOUNDED equivalence and counterexample") {
+        const char* nestedA = R"(
+            export function gridSum(rows, cols, k) {
+                let total = 0;
+                for (let r = 0; r < (rows | 0); r = (r + 1) | 0) {
+                    for (let c = 0; c < (cols | 0); c = (c + 1) | 0) {
+                        total = (total + ((r + c) * 2) + (k | 0)) | 0;
+                    }
+                }
+                return total;
+            }
+        )";
+        const char* nestedB = R"(
+            export function gridSum(rows, cols, k) {
+                let total = 0;
+                for (let r = 0; r < (rows | 0); r = (r + 1) | 0) {
+                    for (let c = 0; c < (cols | 0); c = (c + 1) | 0) {
+                        total = (total + ((r + c) << 1) + (k | 0)) | 0;
+                    }
+                }
+                return total;
+            }
+        )";
+        const char* nestedBuggy = R"(
+            export function gridSum(rows, cols, k) {
+                let total = 0;
+                for (let r = 0; r < (rows | 0); r = (r + 1) | 0) {
+                    for (let c = 0; c < (cols | 0); c = (c + 1) | 0) {
+                        total = (total + ((r - c) << 1) + (k | 0)) | 0;
+                    }
+                }
+                return total;
+            }
+        )";
+
+        ProveEquivReport rep = proveSourceEquiv(nestedA, nestedB, "gridSum");
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Bounded);
+        CHECK(rep.functions[0].bounds.maxLoopIterations > 0);
+
+        ProveEquivReport repBug = proveSourceEquiv(nestedA, nestedBuggy, "gridSum");
+        REQUIRE(repBug.functions.size() == 1);
+        CHECK(repBug.functions[0].status == EquivStatus::Counterexample);
+    }
+
+    SUBCASE("while loop with complex exit conditions and break: BOUNDED equivalence and counterexample") {
+        const char* whileA = R"(
+            export function scanSteps(x, limit) {
+                let v = x | 0;
+                let steps = 0;
+                const lim = limit | 0;
+                while (v > 0 && steps < lim) {
+                    if ((v & 3) === 2) break;
+                    v = (v - 1) | 0;
+                    steps = (steps + 1) | 0;
+                }
+                return ((steps * 2) + v) | 0;
+            }
+        )";
+        const char* whileB = R"(
+            export function scanSteps(x, limit) {
+                let v = x | 0;
+                let steps = 0;
+                const lim = limit | 0;
+                while (steps < lim && v > 0) {
+                    if ((v & 3) === 2) return ((steps << 1) + v) | 0;
+                    v = (v + -1) | 0;
+                    steps = (steps + 1) | 0;
+                }
+                return (v + (steps << 1)) | 0;
+            }
+        )";
+        const char* whileBuggy = R"(
+            export function scanSteps(x, limit) {
+                let v = x | 0;
+                let steps = 0;
+                const lim = limit | 0;
+                while (v > 0 && steps < lim) {
+                    if ((v & 3) === 3) break;
+                    v = (v - 1) | 0;
+                    steps = (steps + 1) | 0;
+                }
+                return ((steps * 2) + v) | 0;
+            }
+        )";
+
+        ProveEquivReport rep = proveSourceEquiv(whileA, whileB, "scanSteps");
+        REQUIRE(rep.functions.size() == 1);
+        CHECK(rep.functions[0].status == EquivStatus::Bounded);
+        CHECK(rep.functions[0].bounds.maxLoopIterations == 8);
+
+        ProveEquivReport repBug = proveSourceEquiv(whileA, whileBuggy, "scanSteps");
+        REQUIRE(repBug.functions.size() == 1);
+        CHECK(repBug.functions[0].status == EquivStatus::Counterexample);
+    }
+}

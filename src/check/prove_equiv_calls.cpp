@@ -44,6 +44,11 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
     } else {
         state.heap.writes = std::move(sub.finalHeap.writes);
     }
+    if (sub.exceededBoundNode != 0 && sub.exceededBoundNode != zero1_) {
+        state.exceededCond = (state.exceededCond == 0 || state.exceededCond == zero1_)
+                                 ? sub.exceededBoundNode
+                                 : ctx_.make_binary(BVOp::Or, state.exceededCond, sub.exceededBoundNode);
+    }
     state.heap.propFuncRefs = std::move(sub.finalHeap.propFuncRefs);
     state.heap.localObjCounter = sub.finalHeap.localObjCounter;
     if (writeScalarRet) state.values[inst.result] = sub.returnVal;

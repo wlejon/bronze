@@ -146,6 +146,7 @@ bool lowerSingleSourceForEquiv(std::string_view src,
 const char* equivStatusTag(EquivStatus status) {
     switch (status) {
         case EquivStatus::Equivalent: return "EQUIVALENT";
+        case EquivStatus::Bounded: return "BOUNDED";
         case EquivStatus::Counterexample: return "COUNTEREXAMPLE";
         case EquivStatus::Unknown: return "UNKNOWN";
     }
@@ -171,7 +172,29 @@ std::string ProveEquivReport::renderText() const {
     std::ostringstream os;
     for (const auto& f : functions) {
         os << f.name << ": " << equivStatusTag(f.status);
-        if (f.status == EquivStatus::Counterexample) {
+        if (f.status == EquivStatus::Bounded) {
+            os << " (";
+            bool first = true;
+            if (f.bounds.maxLoopIterations > 0) {
+                os << "loop <= " << f.bounds.maxLoopIterations;
+                first = false;
+            }
+            if (f.bounds.maxArrayLength > 0) {
+                if (!first) os << ", ";
+                os << "arrayLen <= " << f.bounds.maxArrayLength;
+                first = false;
+            }
+            if (f.bounds.maxStringLength > 0) {
+                if (!first) os << ", ";
+                os << "stringLen <= " << f.bounds.maxStringLength;
+                first = false;
+            }
+            if (!f.detail.empty()) {
+                if (!first) os << "; ";
+                os << f.detail;
+            }
+            os << ")";
+        } else if (f.status == EquivStatus::Counterexample) {
             os << " (";
             for (size_t i = 0; i < f.counterexampleArgs.size(); ++i) {
                 if (i > 0) os << ", ";
@@ -197,6 +220,12 @@ std::string ProveEquivReport::renderJson() const {
         os << "{\"name\":\"" << jsonEscape(f.name) << "\","
            << "\"status\":\"" << equivStatusTag(f.status) << "\","
            << "\"detail\":\"" << jsonEscape(f.detail) << "\"";
+        if (f.status == EquivStatus::Bounded || f.bounds.hasBounds()) {
+            os << ",\"bounds\":{"
+               << "\"loopTripCount\":" << f.bounds.maxLoopIterations << ","
+               << "\"arrayLength\":" << f.bounds.maxArrayLength << ","
+               << "\"stringLength\":" << f.bounds.maxStringLength << "}";
+        }
         if (f.status == EquivStatus::Counterexample) {
             os << ",\"counterexample\":{\"params\":[";
             for (size_t j = 0; j < f.paramNames.size(); ++j) {
@@ -262,6 +291,10 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     BVNodeId newRetNode = 0;
     BVNodeId oldThrewNode = 0;
     BVNodeId newThrewNode = 0;
+    BVNodeId oldExceededNode = 0;
+    BVNodeId newExceededNode = 0;
+    ProofBounds oldBounds;
+    ProofBounds newBounds;
     std::string oldReason;
     std::string newReason;
     SymbolicHeapState oldFinalHeap;
@@ -271,10 +304,10 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
 
     bool oldOk = evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise,
                                         &oldRetNode, &oldReason, &heapTable, &oldFinalHeap,
-                                        &oldHitUnroll, &oldThrewNode);
+                                        &oldHitUnroll, &oldThrewNode, &oldExceededNode, &oldBounds);
     bool newOk = evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise,
                                         &newRetNode, &newReason, &heapTable, &newFinalHeap,
-                                        &newHitUnroll, &newThrewNode);
+                                        &newHitUnroll, &newThrewNode, &newExceededNode, &newBounds);
 
     if (!oldOk || !newOk || oldHitUnroll || newHitUnroll) {
         auto indRes = compareIlLoopFunctionPairInductive(
@@ -282,29 +315,110 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         if (indRes.status != EquivStatus::Unknown) {
             return indRes;
         }
-        if (!oldOk && !oldHitUnroll) {
+        if (!oldOk) {
             res.status = EquivStatus::Unknown;
             res.detail = "old function not symbolically decidable: " + oldReason;
             return res;
         }
-        if (!newOk && !newHitUnroll) {
+        if (!newOk) {
             res.status = EquivStatus::Unknown;
             res.detail = "new function not symbolically decidable: " + newReason;
             return res;
         }
-        if (!oldOk || !newOk || domainMax > 45 || oldHitUnroll != newHitUnroll) {
-            return indRes;
-        }
     }
+
+    ProofBounds combinedBounds;
+    combinedBounds.maxLoopIterations = std::max(oldBounds.maxLoopIterations, newBounds.maxLoopIterations);
+    if (oldBounds.maxLoopIterations > 0 && newBounds.maxLoopIterations > 0) {
+        combinedBounds.maxLoopIterations = std::min(oldBounds.maxLoopIterations, newBounds.maxLoopIterations);
+    }
+    combinedBounds.maxArrayLength = std::max(oldBounds.maxArrayLength, newBounds.maxArrayLength);
+    combinedBounds.maxStringLength = std::max(oldBounds.maxStringLength, newBounds.maxStringLength);
+    if ((oldHitUnroll || newHitUnroll) && combinedBounds.maxLoopIterations == 0) {
+        combinedBounds.maxLoopIterations = 8;
+    }
+    const bool isBounded = oldHitUnroll || newHitUnroll || combinedBounds.hasBounds();
+
+    BVNodeId zero1 = ctx.make_const(0, 1);
+    BVNodeId oExc = (oldExceededNode != 0) ? oldExceededNode : zero1;
+    BVNodeId nExc = (newExceededNode != 0) ? newExceededNode : zero1;
+    BVNodeId neitherExceeded = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Or, oExc, nExc));
+
+    auto applyDomainConstraints = [&](BVNodeId cond) {
+        if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
+            BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
+            BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
+            auto constrainNode = [&](BVNodeId n) {
+                if (domainMin > INT32_MIN) {
+                    cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sge, n, minNode));
+                }
+                if (domainMax < INT32_MAX) {
+                    cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Sle, n, maxNode));
+                }
+            };
+            for (BVNodeId arg : argNodes) constrainNode(arg);
+            for (BVNodeId hv : heapTable.varNodes()) constrainNode(hv);
+        }
+        return cond;
+    };
+
+    auto finalizeNoCounterexample = [&](std::string unbDetail) -> FunctionEquivResult {
+        if (!isBounded) {
+            res.status = EquivStatus::Equivalent;
+            res.detail = std::move(unbDetail);
+            return res;
+        }
+        if (oExc != nExc) {
+            BVNodeId excDiff = applyDomainConstraints(ctx.make_binary(BVOp::Ne, oExc, nExc));
+            SolveOutcome excSat = brass::verify::solve_nonzero(ctx, excDiff);
+            if (excSat.status == SolveOutcome::Sat) {
+                const size_t totalVars = numParams + heapTable.varNodes().size();
+                std::vector<uint64_t> candModel = excSat.model;
+                if (candModel.size() < totalVars) candModel.resize(totalVars, 0);
+                minimizeCounterexampleModel(ctx, excDiff, totalVars, domainMin, domainMax, candModel);
+                std::vector<std::string> candNames = res.paramNames;
+                std::vector<int64_t> candArgs(numParams, 0);
+                for (uint32_t i = 0; i < numParams; ++i) {
+                    candArgs[i] = static_cast<int64_t>(static_cast<int32_t>(candModel[i]));
+                }
+                for (size_t i = 0; i < heapTable.varNodes().size(); ++i) {
+                    candNames.push_back(heapTable.varPaths()[i]);
+                    candArgs.push_back(static_cast<int64_t>(static_cast<int32_t>(candModel[numParams + i])));
+                }
+                InterpResult oRun = runIlFunctionConcrete(oldMod, oldFn, candNames, candArgs);
+                InterpResult nRun = runIlFunctionConcrete(newMod, newFn, candNames, candArgs);
+                int64_t oVal = 0, nVal = 0;
+                if (oRun.completed && nRun.completed && concreteResultsDiverge(oRun, nRun, &oVal, &nVal)) {
+                    res.status = EquivStatus::Counterexample;
+                    res.paramNames = std::move(candNames);
+                    res.counterexampleArgs = std::move(candArgs);
+                    res.oldReturnValue = oVal;
+                    res.newReturnValue = nVal;
+                    res.oldThrows = oRun.threw;
+                    res.newThrows = nRun.threw;
+                    res.detail = "counterexample found where loop trip count or return value diverges";
+                    return res;
+                }
+            }
+        }
+        BVNodeId inBoundsCond = applyDomainConstraints(neitherExceeded);
+        if (brass::verify::solve_nonzero(ctx, inBoundsCond).status != SolveOutcome::Sat) {
+            res.status = EquivStatus::Unknown;
+            res.detail = "loop minimum trip count exceeds bounded unroll limit";
+            return res;
+        }
+        res.status = EquivStatus::Bounded;
+        res.bounds = combinedBounds;
+        res.detail = "proven equivalent for all inputs up to stated bounds";
+        return res;
+    };
 
     std::vector<std::string> checkedHeapPaths;
     BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(
         heapTable, oldFinalHeap, newFinalHeap, &checkedHeapPaths);
 
     if (oldRetNode == newRetNode && heapMismatch == 0 && oldThrewNode == newThrewNode) {
-        res.status = EquivStatus::Equivalent;
-        res.detail = "proven equivalent by structural BV hash-consing";
-        return res;
+        return finalizeNoCounterexample("proven equivalent by structural BV hash-consing");
     }
 
     BVNodeId valMismatch = 0;
@@ -322,33 +436,21 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     if (threwDiff != 0) {
         badCond = (badCond == 0) ? threwDiff : ctx.make_binary(BVOp::Or, threwDiff, badCond);
     }
+    if (isBounded) {
+        badCond = ctx.make_binary(BVOp::And, badCond, neitherExceeded);
+    }
 
     BVNodeId aliasCongruence = heapTable.buildAliasCongruenceCond();
     if (aliasCongruence != 0) {
         badCond = ctx.make_binary(BVOp::And, badCond, aliasCongruence);
     }
-
-    if (domainMin > INT32_MIN || domainMax < INT32_MAX) {
-        BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
-        BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
-        auto constrainNode = [&](BVNodeId n) {
-            if (domainMin > INT32_MIN) {
-                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, n, minNode));
-            }
-            if (domainMax < INT32_MAX) {
-                badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, n, maxNode));
-            }
-        };
-        for (BVNodeId arg : argNodes) constrainNode(arg);
-        for (BVNodeId hv : heapTable.varNodes()) constrainNode(hv);
-    }
+    badCond = applyDomainConstraints(badCond);
 
     SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
 
     if (satRes.status == SolveOutcome::Unsat) {
-        res.status = EquivStatus::Equivalent;
-        res.detail = "proven equivalent across all symbolic inputs and post-states via CDCL bit-blasting";
-        return res;
+        return finalizeNoCounterexample(
+            "proven equivalent across all symbolic inputs and post-states via CDCL bit-blasting");
     }
 
     if (satRes.status == SolveOutcome::Sat) {
@@ -506,6 +608,7 @@ EquivReport proveSourceEquivalent(std::string_view oldSrc, std::string_view newS
         rep.status = fnRes.status;
         rep.fnName = fnRes.name;
         rep.detail = fnRes.detail;
+        rep.bounds = fnRes.bounds;
         if (!fnRes.counterexampleArgs.empty()) {
             rep.counterexampleInput = fnRes.counterexampleArgs[0];
             rep.counterexampleArgs = fnRes.counterexampleArgs;

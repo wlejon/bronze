@@ -19,6 +19,7 @@ namespace bronze::check {
 
 enum class EquivStatus : uint8_t {
     Equivalent,      // Mathematically proven equivalent over all symbolic inputs
+    Bounded,         // Proven equivalent for all inputs up to stated bounds
     Counterexample,  // Concrete input assignment found where return values diverge
     Unknown,         // Unbounded loop, external side effect, or solver resource limit
 
@@ -27,6 +28,16 @@ enum class EquivStatus : uint8_t {
 };
 
 const char* equivStatusTag(EquivStatus status);
+
+struct ProofBounds {
+    uint32_t maxLoopIterations = 0;
+    uint32_t maxArrayLength = 0;
+    uint32_t maxStringLength = 0;
+
+    bool hasBounds() const {
+        return maxLoopIterations > 0 || maxArrayLength > 0 || maxStringLength > 0;
+    }
+};
 
 struct FunctionEquivResult {
     std::string name;
@@ -38,6 +49,7 @@ struct FunctionEquivResult {
     std::string detail;
     bool oldThrows = false;
     bool newThrows = false;
+    ProofBounds bounds;
 };
 
 struct ProveEquivReport {
@@ -62,9 +74,11 @@ struct EquivReport {
     int64_t actualOutput = 0;
     int64_t encodedIntermediate = 0;
     std::string detail;
+    ProofBounds bounds;
     std::vector<FunctionEquivResult> functions;
 
     bool isEquivalent() const { return status == EquivStatus::Equivalent; }
+    bool isBounded() const { return status == EquivStatus::Bounded; }
     bool allEquivalent() const { return status == EquivStatus::Equivalent; }
     bool hasCounterexample() const { return status == EquivStatus::Counterexample; }
 };
@@ -90,7 +104,9 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             SymbolicHeapTable* sharedHeapTable = nullptr,
                             SymbolicHeapState* outFinalHeap = nullptr,
                             bool* outHitLoopUnrollBound = nullptr,
-                            brass::verify::BVNodeId* outThrewNode = nullptr);
+                            brass::verify::BVNodeId* outThrewNode = nullptr,
+                            brass::verify::BVNodeId* outExceededBoundNode = nullptr,
+                            ProofBounds* outBounds = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
