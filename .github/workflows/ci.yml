@@ -71,8 +71,7 @@ jobs:
           fi
           DEST="$RUNNER_TOOL_CACHE/sccache/0.19.0/$ARCH"
           mkdir -p "$DEST"
-          if gh release download v0.19.0 -R mozilla/sccache -p "$ASSET" -O "$RUNNER_TEMP/$ASSET"; then
-            tar -xzf "$RUNNER_TEMP/$ASSET" --strip-components=1 -C "$DEST"
+          if (cd "$DEST" && gh release download v0.19.0 -R mozilla/sccache -p "$ASSET" -O "$ASSET" && tar -xzf "$ASSET" --strip-components=1 && rm -f "$ASSET"); then
             touch "${DEST}.complete"
           fi
 
