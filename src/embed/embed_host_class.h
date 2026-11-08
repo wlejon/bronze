@@ -61,6 +61,10 @@ public:
                Finalize when = Finalize::InSweep) const;
 
     void setStatic(const char* name, Value v) const;
+    // setStatic with the attributes spelled (embed.h defineProperty), and a
+    // WebIDL constant on the interface object (kConstantAttributes).
+    void defineStatic(const char* name, Value v, PropertyAttributes attrs) const;
+    void defineStaticConstant(const char* name, Value v) const { defineStatic(name, v, kConstantAttributes); }
 
     // The payload of a handle THIS class (or a subclass that inherit()ed from
     // it) made; nullptr for anything else, including another class's handle.

@@ -59,7 +59,40 @@ Value makeArray(uint32_t length) {
     return Value(bronze_create_array(length));
 }
 
+namespace {
+
+// The define every receiver kind below ends in: a NEW key takes `attrs`, and
+// an existing one is overwritten as setProp overwrites (its attributes kept,
+// a non-writable one left alone). Only the all-true default may meet an
+// existing key: a host asking for other attributes over a property already
+// there is asking for a redefinition setProp does not make, and getting the
+// old attributes silently is the lie the refusal prevents.
+ObjectHeader* defineOn(Rooted<Value>& target, Rooted<Value>& keyRoot, Rooted<Value>& val,
+                       const PropertyAttributes& attrs, std::string_view key) {
+    auto* obj = target.get().asObject<ObjectHeader>();
+    const bool plainAttrs = attrs.writable && attrs.enumerable && attrs.configurable;
+    if (!plainAttrs) {
+        PropertyInfo existing;
+        if (obj->shape && obj->shape->lookupProperty(PropertyKey::fromValue(keyRoot.get()), existing)) {
+            fatal((std::string("embed: defineProperty with attributes over the existing property `") +
+                   std::string(key) + "`")
+                      .c_str());
+        }
+    }
+    // defineOwn: a definition, not an assignment — a host building an object
+    // must never run an inherited setter, exactly as rtDefineMethods must not.
+    return obj->setProp(runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr, attrs.enumerable,
+                        /*defineOwn=*/true, /*receiver=*/nullptr, /*refused=*/nullptr, attrs.writable,
+                        attrs.configurable);
+}
+
+}  // namespace
+
 Value setProperty(Value obj, std::string_view key, Value v) {
+    return defineProperty(obj, key, v, PropertyAttributes{});
+}
+
+Value defineProperty(Value obj, std::string_view key, Value v, PropertyAttributes attrs) {
     ShadowStackFrame frame;
     Rooted<Value> self{obj};
     Rooted<Value> val{v};
@@ -83,9 +116,7 @@ Value setProperty(Value obj, std::string_view key, Value v) {
         }
         runtime::rtEnsureFunctionProperties(self);
         Rooted<Value> propsRoot{self.get().asObject<FunctionHeader>()->properties};
-        propsRoot.get().asObject<ObjectHeader>()->setProp(
-            runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr,
-            /*enumerable=*/true, /*defineOwn=*/true);
+        defineOn(propsRoot, keyRoot, val, attrs, key);
         return self.get();
     }
 
@@ -96,9 +127,7 @@ Value setProperty(Value obj, std::string_view key, Value v) {
         }
         ArrayHeader::ensureProperties(runtime::rtHeap(), runtime::rtArena(), self);
         Rooted<Value> propsRoot{self.get().asObject<ArrayHeader>()->properties};
-        propsRoot.get().asObject<ObjectHeader>()->setProp(
-            runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr,
-            /*enumerable=*/true, /*defineOwn=*/true);
+        defineOn(propsRoot, keyRoot, val, attrs, key);
         return self.get();
     }
 
@@ -115,12 +144,7 @@ Value setProperty(Value obj, std::string_view key, Value v) {
     }
 
     requirePlainObject(self.get(), "setProperty");
-    // defineOwn: a definition, not an assignment — a host building an object
-    // must never run an inherited setter, exactly as rtDefineMethods must not.
-    ObjectHeader* live = self.get().asObject<ObjectHeader>()->setProp(
-        runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr,
-        /*enumerable=*/true, /*defineOwn=*/true);
-    return Value::fromObject(live);
+    return Value::fromObject(defineOn(self, keyRoot, val, attrs, key));
 }
 
 bool deleteProperty(Value obj, std::string_view key) {

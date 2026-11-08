@@ -34,6 +34,7 @@ bronze_add_module(embed
         ../../tests/embed/embed_host_class_test.cpp
         ../../tests/embed/embed_raw_value_test.cpp
         ../../tests/embed/embed_fast_function_test.cpp
+        ../../tests/embed/embed_define_property_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on —

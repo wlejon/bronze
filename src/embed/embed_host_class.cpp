@@ -192,10 +192,14 @@ Value HostClass::make(void* data, HandleDestructor dtor, Finalize when) const {
 }
 
 void HostClass::setStatic(const char* name, Value v) const {
+    defineStatic(name, v, PropertyAttributes{});
+}
+
+void HostClass::defineStatic(const char* name, Value v, PropertyAttributes attrs) const {
     const Slots* s = slotsIfAny();
     if (!s || !s->ctor) return;
     Persistent vP(v);
-    s->ctor->set(setProperty(s->ctor->get(), name, vP.get()));
+    s->ctor->set(defineProperty(s->ctor->get(), name, vP.get(), attrs));
     for (const auto& a : s->aliases) {
         publishGlobal(a.c_str(), s->ctor->get());
     }

@@ -656,6 +656,27 @@ BRONZE_EMBED_API Value makeArray(uint32_t length = 0);
 // over a property the reads would then lie about. ALLOCATES; returns `obj`.
 BRONZE_EMBED_API Value setProperty(Value obj, std::string_view key, Value v);
 
+// The three attributes of a data property (ECMA-262 6.1.7.1). The default is
+// an assignment's: writable, enumerable, configurable.
+struct PropertyAttributes {
+    bool writable = true;
+    bool enumerable = true;
+    bool configurable = true;
+};
+
+// A WebIDL constant's (WebIDL 3.7.3, "Constants"): read-only, enumerable and
+// permanent, on the interface object and its prototype alike. A program's
+// assignment to one is discarded (a TypeError in strict code), and a read of
+// one through the prototype chain is cached as its value (bronze_abi_layout.h,
+// "the CONSTANT entry").
+inline constexpr PropertyAttributes kConstantAttributes{false, true, false};
+
+// setProperty with the attributes spelled: the same receivers, the same
+// refusals. The attributes apply to a NEW property; asking for anything but
+// the default over an own property that already exists is a hard error (the
+// redefinition is not what this makes). ALLOCATES; returns `obj`.
+BRONZE_EMBED_API Value defineProperty(Value obj, std::string_view key, Value v, PropertyAttributes attrs);
+
 // Delete an own property from `obj`. Returns true if deletion succeeded or property was absent.
 BRONZE_EMBED_API bool deleteProperty(Value obj, std::string_view key);
 

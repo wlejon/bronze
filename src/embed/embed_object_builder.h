@@ -67,6 +67,21 @@ struct ObjectBuilder {
         set(name, fromUtf8(s));
     }
 
+    // A data property with the attributes spelled (embed.h defineProperty).
+    void define(std::string_view name, Value v, PropertyAttributes attrs) {
+        Persistent valP(v);
+        obj.set(defineProperty(obj.get(), name, valP.get(), attrs));
+    }
+
+    // A WebIDL constant: read-only, enumerable, permanent.
+    void defineConstant(std::string_view name, Value v) {
+        define(name, v, kConstantAttributes);
+    }
+
+    void defineConstant(std::string_view name, double d) {
+        defineConstant(name, fromDouble(d));
+    }
+
     void setNull(std::string_view name) {
         set(name, null());
     }
