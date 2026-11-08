@@ -85,6 +85,7 @@ SymEvalOutcome SymbolicIlBuilder::evalFunction(const il::Function& fn,
     initState.threwCond = zero1_;
     if (callerHeap) {
         initState.heap.writes = callerHeap->writes;
+        initState.heap.propObjAliases = callerHeap->propObjAliases;
         initState.heap.propFuncRefs = callerHeap->propFuncRefs;
         initState.heap.propFuncEnvs = callerHeap->propFuncEnvs;
         initState.heap.propGlobalRefs = callerHeap->propGlobalRefs;
@@ -213,7 +214,7 @@ void SymbolicIlBuilder::initModuleState() {
     initSt.exceededCond = zero1_;
     uint32_t firstSrc = static_cast<uint32_t>(entryFn->firstSourceParam());
     for (uint32_t i = 0; i < firstSrc; ++i) initSt.values[i] = zero64_;
-    initSt.heap.initFunctionHeap(heapTable_, *entryFn, initSt.values, "this", nullptr);
+    initSt.heap.initFunctionHeap(heapTable_, *entryFn, initSt.values, "__module_this", nullptr);
     auto out = evalBlockPath(*entryFn, 0, std::move(initSt), 0, 0);
     if (out.supported) {
         moduleState_.heap.writes = std::move(out.finalHeap.writes);
@@ -693,6 +694,7 @@ SymEvalOutcome SymbolicIlBuilder::invokeCallee(const il::Function& callee,
                                  ? sub.exceededBoundNode
                                  : ctx_.make_binary(BVOp::Or, state.exceededCond, sub.exceededBoundNode);
     }
+    state.heap.propObjAliases = std::move(sub.finalHeap.propObjAliases);
     state.heap.propFuncRefs = std::move(sub.finalHeap.propFuncRefs);
     state.heap.propFuncEnvs = std::move(sub.finalHeap.propFuncEnvs);
     state.heap.propGlobalRefs = std::move(sub.finalHeap.propGlobalRefs);

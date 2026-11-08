@@ -15,7 +15,7 @@ using brass::verify::BVOp;
 namespace {
 
 bool isLocalRootPath(const std::string& path) {
-    return path.rfind("__local_", 0) == 0 || path.rfind("__fn_", 0) == 0;
+    return path.rfind("__local_", 0) == 0 || path.rfind("__fn_", 0) == 0 || path.rfind("__module_this", 0) == 0;
 }
 
 bool isSyntheticNoInitialVarPath(const std::string& path) {
@@ -491,21 +491,23 @@ bool SymbolicHeapState::evalPropSet(SymbolicHeapTable& table,
             }
         }
     }
-    if (valId != il::kNoValue) {
+    if (valId != il::kNoValue && key != "constructor") {
         auto vObj = objPaths.find(valId);
         if (vObj != objPaths.end()) {
             std::string srcBase = resolveObjPath(vObj->second);
-            propObjAliases[path] = srcBase;
-            if (stringPaths.count(srcBase)) stringPaths.insert(path);
-            if (arrayPaths.count(srcBase)) arrayPaths.insert(path);
-            std::vector<std::pair<std::string, BVNodeId>> copied;
-            std::string pref = srcBase + ".";
-            for (const auto& [k, v] : writes) {
-                if (k.rfind(pref, 0) == 0) {
-                    copied.emplace_back(path + k.substr(srcBase.size()), v);
+            if (srcBase.rfind("__fn_", 0) != 0) {
+                propObjAliases[path] = srcBase;
+                if (stringPaths.count(srcBase)) stringPaths.insert(path);
+                if (arrayPaths.count(srcBase)) arrayPaths.insert(path);
+                std::vector<std::pair<std::string, BVNodeId>> copied;
+                std::string pref = srcBase + ".";
+                for (const auto& [k, v] : writes) {
+                    if (k.rfind(pref, 0) == 0) {
+                        copied.emplace_back(path + k.substr(srcBase.size()), v);
+                    }
                 }
+                for (const auto& [ck, cv] : copied) writes[ck] = cv;
             }
-            for (const auto& [ck, cv] : copied) writes[ck] = cv;
         }
     }
     return true;

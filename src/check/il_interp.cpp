@@ -511,8 +511,21 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     res.returnNum = r.num;
                     res.returnI64 = r.i64;
                     res.finalHeapWrites = recordedWrites;
-                    if (r.objId > 0 && r.objId < heap.size() && heap[r.objId].rootPath.rfind("__local_", 0) == 0) {
-                        for (const auto& [k, pv] : heap[r.objId].props) res.finalHeapWrites["__ret." + k] = pv.i64;
+                    if (!outRetVal && r.objId > 0 && r.objId < heap.size() &&
+                        heap[r.objId].rootPath.rfind("__local_", 0) == 0) {
+                        for (const auto& [k, pv] : heap[r.objId].props) {
+                            if (pv.objId > 0 && pv.objId < heap.size() &&
+                                heap[pv.objId].rootPath.rfind("__local_", 0) == 0) {
+                                for (const auto& [sk, spv] : heap[pv.objId].props) {
+                                    res.finalHeapWrites["__ret." + k + "." + sk] = spv.i64;
+                                }
+                                res.finalHeapWrites["__ret." + k] = static_cast<int64_t>(0x00B100000000FFFEULL);
+                            } else if (pv.kind == CVal::Kind::Function) {
+                                res.finalHeapWrites["__ret." + k] = static_cast<int64_t>(0x00B100000000FFFDULL);
+                            } else {
+                                res.finalHeapWrites["__ret." + k] = pv.i64;
+                            }
+                        }
                         res.returnI64 = static_cast<int64_t>(0x00B100000000FFFFULL);
                         res.returnNum = static_cast<double>(res.returnI64);
                     }
@@ -598,7 +611,9 @@ InterpResult runIlFunctionConcrete(const il::Module& mod,
         while (true) {
             auto nextDot = rest.find('.');
             if (nextDot == std::string::npos) {
-                vm.heap[curObj].props[rest] = decodeArgVal(argValues[i]);
+                if (!vm.heap[curObj].props.count(rest) || vm.heap[curObj].props[rest].objId == 0) {
+                    vm.heap[curObj].props[rest] = decodeArgVal(argValues[i]);
+                }
                 break;
             }
             std::string seg = rest.substr(0, nextDot);
@@ -667,13 +682,25 @@ bool verifyCounterexampleWithReplay(const il::Module& oldMod,
     InterpResult oldRun = runIlFunctionConcrete(oldMod, oldFn, res.paramNames, res.counterexampleArgs, 50000, floatBitArgs);
     InterpResult newRun = runIlFunctionConcrete(newMod, newFn, res.paramNames, res.counterexampleArgs, 50000, floatBitArgs);
     if (!oldRun.completed || !newRun.completed) {
-        return true;
-    }
-    if (!concreteResultsDiverge(oldRun, newRun)) {
+        if (oldRun.failReason == "step limit exceeded" || newRun.failReason == "step limit exceeded") {
+            return true;
+        }
         res.status = EquivStatus::Unknown;
         res.detail = "prover/replay mismatch";
         res.counterexampleArgs.clear();
         return false;
+    }
+    int64_t replayOld = res.oldReturnValue;
+    int64_t replayNew = res.newReturnValue;
+    if (!concreteResultsDiverge(oldRun, newRun, &replayOld, &replayNew)) {
+        res.status = EquivStatus::Unknown;
+        res.detail = "prover/replay mismatch";
+        res.counterexampleArgs.clear();
+        return false;
+    }
+    if (res.oldReturnValue == res.newReturnValue) {
+        res.oldReturnValue = replayOld;
+        res.newReturnValue = replayNew;
     }
     res.oldThrows = oldRun.threw;
     res.newThrows = newRun.threw;

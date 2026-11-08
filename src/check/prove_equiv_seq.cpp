@@ -806,6 +806,46 @@ void SymbolicIlBuilder::canonicalizeSeqReturn(il::ValueId retOpId,
         }
         retPath = "__ret";
         ret = heapTable_.getObjectToken("__ret");
+        return;
+    }
+    if (resolved.rfind("__local_", 0) == 0) {
+        auto isObjTokenExpr = [&](auto& self, BVNodeId nid) -> bool {
+            if (nid >= ctx_.nodes().size()) return false;
+            const auto& nd = ctx_.nodes()[nid];
+            if (nd.op == BVOp::Const) return (nd.imm >> 32) == 0x00B10000ULL || (nd.imm >> 48) == 0x00F0ULL;
+            if (nd.op == BVOp::Ite) return self(self, nd.b) || self(self, nd.c);
+            return false;
+        };
+        std::map<std::string, BVNodeId> extraWrites;
+        std::string prefix = resolved + ".";
+        for (const auto& [wPath, wVal] : state.heap.writes) {
+            if (wPath.rfind(prefix, 0) != 0) continue;
+            std::string suffix = wPath.substr(prefix.size());
+            std::string subPath = state.heap.resolveObjPath(wPath);
+            bool hasSubWrites = false;
+            std::string childPref = wPath + ".";
+            for (const auto& [ck, _] : state.heap.writes) {
+                if (ck.rfind(childPref, 0) == 0) { hasSubWrites = true; break; }
+            }
+            if (subPath != wPath && subPath.rfind("__local_", 0) == 0) {
+                std::string subPrefix = subPath + ".";
+                for (const auto& [swPath, swVal] : state.heap.writes) {
+                    if (swPath.rfind(subPrefix, 0) == 0) {
+                        extraWrites["__ret." + suffix + "." + swPath.substr(subPrefix.size())] = swVal;
+                    }
+                }
+                extraWrites["__ret." + suffix] = heapTable_.getObjectToken("__ret." + suffix);
+            } else if (hasSubWrites || isObjTokenExpr(isObjTokenExpr, wVal)) {
+                extraWrites.try_emplace("__ret." + suffix, heapTable_.getObjectToken("__ret." + suffix));
+            } else {
+                extraWrites.try_emplace("__ret." + suffix, wVal);
+            }
+        }
+        for (const auto& [k, v] : extraWrites) {
+            state.heap.writes[k] = v;
+        }
+        retPath = "__ret";
+        ret = heapTable_.getObjectToken("__ret");
     }
 }
 

@@ -163,7 +163,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                                 break;
                             }
                             if (state.arrayValues.count(lhsId) || state.heap.isStringValue(lhsId) ||
-                                state.undefValues.count(lhsId) || state.isConstructCall) {
+                                state.undefValues.count(lhsId) ||
+                                (state.isConstructCall && state.heap.lookupObjPath(lhsId).rfind("__local_", 0) != 0)) {
                                 state.values[inst.result] = zero64_;
                                 break;
                             }
@@ -864,6 +865,14 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     if (state.envFuncEnvs.count(key)) state.funcEnvs[inst.result] = state.envFuncEnvs[key];
                     if (state.envGlobalRefs.count(key)) state.globalRefs[inst.result] = state.envGlobalRefs[key];
                     if (state.envUndef.count(key)) state.undefValues.insert(inst.result);
+                    if (std::string gotPath = state.heap.lookupObjPath(inst.result); !gotPath.empty()) {
+                        for (const auto& [cv, cIdx] : state.ctorOf) {
+                            if (state.heap.lookupObjPath(cv) == gotPath) {
+                                state.ctorOf[inst.result] = cIdx;
+                                break;
+                            }
+                        }
+                    }
                     if (ev < ctx_.nodes().size() && ctx_.nodes()[ev].op == BVOp::Const &&
                         (ctx_.nodes()[ev].imm >> 48) == 0x00F0u) {
                         state.funcRefs[inst.result] = static_cast<uint32_t>(ctx_.nodes()[ev].imm & 0xFFFFFFFFu);
@@ -924,17 +933,24 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     BVNodeId tExc = (trueOut.exceededBoundNode != 0) ? trueOut.exceededBoundNode : zero1_;
                     BVNodeId fExc = (falseOut.exceededBoundNode != 0) ? falseOut.exceededBoundNode : zero1_;
                     if (trueOut.hasReturn && falseOut.hasReturn) {
-                        BVNodeId merged = ctx_.make_ite(condNode, trueOut.returnVal, falseOut.returnVal);
                         BVNodeId tThrew = (trueOut.threwNode != 0) ? trueOut.threwNode : zero1_;
                         BVNodeId fThrew = (falseOut.threwNode != 0) ? falseOut.threwNode : zero1_;
+                        BVNodeId merged = (tThrew == one1_ && fThrew != one1_) ? falseOut.returnVal
+                                        : (fThrew == one1_ && tThrew != one1_) ? trueOut.returnVal
+                                        : ctx_.make_ite(condNode, trueOut.returnVal, falseOut.returnVal);
                         BVNodeId mergedThrew = (tThrew == fThrew) ? tThrew : ctx_.make_ite(condNode, tThrew, fThrew);
                         BVNodeId mergedExc = (tExc == fExc) ? tExc : ctx_.make_ite(condNode, tExc, fExc);
                         SymbolicHeapState mergedHeap = SymbolicHeapState::mergeBranches(
                             heapTable_, condNode, trueOut.finalHeap, falseOut.finalHeap,
                             trueOut.returnVal, tThrew, falseOut.returnVal, fThrew, merged);
-                        std::string retObj = (trueOut.returnObjPath == falseOut.returnObjPath)
-                                                 ? trueOut.returnObjPath : std::string{};
-                        return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew, mergedExc};
+                        std::string retObj = (trueOut.returnObjPath == falseOut.returnObjPath) ? trueOut.returnObjPath
+                                           : (tThrew == one1_ && fThrew != one1_) ? falseOut.returnObjPath
+                                           : (fThrew == one1_ && tThrew != one1_) ? trueOut.returnObjPath : std::string{};
+                        uint32_t retCtor = (trueOut.returnCtorOf == falseOut.returnCtorOf) ? trueOut.returnCtorOf
+                                         : (tThrew == one1_ && fThrew != one1_) ? falseOut.returnCtorOf
+                                         : (fThrew == one1_ && tThrew != one1_) ? trueOut.returnCtorOf : UINT32_MAX;
+                        return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew, mergedExc,
+                                UINT32_MAX, 0, retCtor};
                     }
                     if (trueOut.hasReturn) {
                         trueOut.exceededBoundNode = ctx_.make_binary(BVOp::Or, ctx_.make_unary(BVOp::Not, condNode), tExc);
@@ -962,16 +978,6 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                                                        ? state.arrayValues[inst.operands[0]] : std::vector<BVNodeId>{};
                     if (inlineDepth == 0 && !inModuleInit_ && !inst.operands.empty()) {
                         canonicalizeSeqReturn(inst.operands[0], state, retPath, ret);
-                    }
-                    if (inlineDepth == 0 && !inModuleInit_ && !retPath.empty() && retPath.rfind("__local_", 0) == 0) {
-                        std::string pref = retPath + ".";
-                        std::vector<std::pair<std::string, BVNodeId>> retProps;
-                        for (const auto& [k, v] : state.heap.writes) {
-                            if (k.rfind(pref, 0) == 0) retProps.emplace_back("__ret." + k.substr(pref.size()), v);
-                        }
-                        for (const auto& [rk, rv] : retProps) state.heap.writes[rk] = rv;
-                        retPath = "__ret";
-                        ret = heapTable_.getObjectToken("__ret");
                     }
                     BVNodeId pathThrew = (state.threwCond != 0) ? state.threwCond : zero1_;
                     BVNodeId pathExc = (state.exceededCond != 0) ? state.exceededCond : zero1_;
