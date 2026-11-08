@@ -152,8 +152,6 @@ struct ConcreteVM {
             if (obj.rootPath.rfind("__local_", 0) != 0) return CVal::makeI64(1);
             return CVal::makeI64(0);
         }
-        if (key == "_isBigNumber" || key == "isBigNumber" || key == "isDecimal") return CVal::makeI64(1);
-        if (key == "sigBytes") return CVal::makeI64(4);
         if (obj.rootPath.rfind("__local_", 0) == 0) return CVal::makeUndef();
         CVal def = CVal::makeI64(0);
         if (!obj.rootPath.empty() && obj.rootPath.rfind("__fn_", 0) != 0) {

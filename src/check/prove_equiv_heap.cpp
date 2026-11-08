@@ -353,14 +353,6 @@ bool SymbolicHeapState::evalPropGet(SymbolicHeapTable& table,
         outVal = ctx.make_const(0, 64);
         return true;
     }
-    if (key == "_isBigNumber" || key == "isBigNumber" || key == "isDecimal") {
-        outVal = ctx.make_const(1, 64);
-        return true;
-    }
-    if (key == "sigBytes") {
-        outVal = ctx.make_const(4, 64);
-        return true;
-    }
     if (key == "length") {
         bool asStr = isStringPath(recvBase) || table.isStringRoot(recvBase) || table.preferStringSeq();
         outVal = table.getBoundedLenVal(path, asStr);
