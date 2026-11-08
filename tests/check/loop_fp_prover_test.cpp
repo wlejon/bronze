@@ -1,7 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <filesystem>
+#include <fstream>
+
 #include "check/js_source_rewriter.h"
 #include "check/loop_recurrence_synth.h"
+#include "check/package_audit.h"
 #include "check/prove_equiv.h"
 #include "check/prove_loop_induction.h"
 
@@ -703,4 +707,84 @@ TEST_CASE("IEEE-754 double semantics: NaN, Infinity, -0, division, and Math buil
         REQUIRE(repNestedBug.functions.size() == 1);
         CHECK(repNestedBug.functions[0].status == EquivStatus::Counterexample);
     }
+}
+
+TEST_CASE("package_audit: mechanical domain extraction, property catalogue, and --diff") {
+    namespace fs = std::filesystem;
+    fs::path tmpRoot = fs::temp_directory_path() / "bronze_audit_unit_test";
+    std::error_code ec;
+    fs::remove_all(tmpRoot, ec);
+    fs::path pkgOld = tmpRoot / "pkg_v1";
+    fs::path pkgNew = tmpRoot / "pkg_v2";
+    fs::create_directories(pkgOld);
+    fs::create_directories(pkgNew);
+
+    {
+        std::ofstream(pkgOld / "package.json") << R"({"name":"demo-codec","version":"1.0.0","main":"index.js","types":"index.d.ts"})";
+        std::ofstream(pkgOld / "index.d.ts") << R"(
+            /** @param x non-negative byte 0..255 */
+            export function encodeByte(x: number): number;
+            /** @param y non-negative byte 0..255 */
+            export function decodeByte(y: number): number;
+            export function addSym(a: number, b: number): number;
+            export function compare(a: number, b: number): number;
+        )";
+        std::ofstream(pkgOld / "index.js") << R"(
+            export function encodeByte(x) {
+                return (x ^ 0x5A) & 0xFF;
+            }
+            export function decodeByte(y) {
+                return (y ^ 0x5A) & 0x7F; // Bug: masks with 0x7F instead of 0xFF!
+            }
+            export function addSym(a, b) {
+                return (a + b) | 0;
+            }
+            export function compare(a, b) {
+                return (a - b) | 0; // Bug on INT32_MIN: compare(a, b) !== -compare(b, a)
+            }
+        )";
+    }
+    {
+        std::ofstream(pkgNew / "package.json") << R"({"name":"demo-codec","version":"1.0.1","main":"index.js","types":"index.d.ts"})";
+        std::ofstream(pkgNew / "index.d.ts") << R"(
+            /** @param x non-negative byte 0..255 */
+            export function encodeByte(x: number): number;
+            /** @param y non-negative byte 0..255 */
+            export function decodeByte(y: number): number;
+            export function addSym(a: number, b: number): number;
+            export function compare(a: number, b: number): number;
+        )";
+        std::ofstream(pkgNew / "index.js") << R"(
+            export function encodeByte(x) {
+                return (x ^ 0x5A) & 0xFF;
+            }
+            export function decodeByte(y) {
+                return (y ^ 0x5A) & 0xFF; // Fixed!
+            }
+            export function addSym(a, b) {
+                return (b + a) | 0;
+            }
+            export function compare(a, b) {
+                if (a === b) return 0;
+                return a < b ? -1 : 1; // Fixed!
+            }
+        )";
+    }
+
+    PackageAuditReport repOld = auditPackage(pkgOld.generic_string());
+    CHECK(repOld.totalPublicFunctions == 4);
+    CHECK(repOld.analyzedFunctions == 4);
+    CHECK(repOld.counterexampleCount >= 2);
+
+    PackageAuditReport repNew = auditPackage(pkgNew.generic_string());
+    CHECK(repNew.totalPublicFunctions == 4);
+    CHECK(repNew.analyzedFunctions == 4);
+    CHECK(repNew.counterexampleCount == 0);
+
+    PackageAuditReport repDiff = auditPackageDiff(pkgOld.generic_string(), pkgNew.generic_string());
+    CHECK(repDiff.totalPublicFunctions == 4);
+    CHECK(repDiff.counterexampleCount == 2);
+    CHECK(repDiff.equivalentCount == 2);
+
+    fs::remove_all(tmpRoot, ec);
 }

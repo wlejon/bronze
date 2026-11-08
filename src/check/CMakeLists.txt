@@ -26,6 +26,8 @@ bronze_add_module(check
         fuzz_fn.cpp
         prove_fn.cpp
         layout_solver.cpp
+        package_audit.cpp
+        package_audit_meta.cpp
     DEPS ast il lower modules support types
     TEST_SOURCES
         ../../tests/check/static_checker_test.cpp

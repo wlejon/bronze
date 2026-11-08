@@ -16,6 +16,7 @@
 #include "ast/dump.h"
 #include "check/deterministic_check.h"
 #include "check/js_source_rewriter.h"
+#include "check/package_audit.h"
 #include "check/prove_equiv.h"
 #include "check/static_checker.h"
 #include "check/synth_tests.h"
@@ -684,6 +685,7 @@ int runDriver(int argc, char** argv) {
     if (command == "prove-equiv") return dispatchProveEquivArgs(argc, argv);
     if (command == "synth-tests") return dispatchSynthTestsArgs(argc, argv);
     if (command == "optimize") return check::runOptimizeCli(argc, argv);
+    if (command == "audit") return check::runAuditCli(argc, argv);
 
     if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
