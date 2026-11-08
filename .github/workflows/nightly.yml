@@ -33,6 +33,7 @@ permissions:
 env:
   # Same pins as ci.yml — see the comments there.
   VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
+  VCPKG_FORCE_SYSTEM_BINARIES: "1"
   SCCACHE_GHA_ENABLED: "true"
   SCCACHE_IDLE_TIMEOUT: "0"
 

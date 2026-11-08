@@ -28,6 +28,7 @@ env:
   # this pins the vcpkg tool + scripts to the same commit (the runner's
   # preinstalled vcpkg drifts with every image update).
   VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
+  VCPKG_FORCE_SYSTEM_BINARIES: "1"
   # Persist the sccache object cache in the GitHub Actions cache across runs.
   # Without this sccache silently falls back to per-runner LOCAL DISK, which is
   # wiped between runs — 0% hits, every object recompiled.
