@@ -1,4 +1,4 @@
-add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp)
+add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp oracle_stack_depth_test.cpp)
 target_include_directories(bronze_oracle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases"
