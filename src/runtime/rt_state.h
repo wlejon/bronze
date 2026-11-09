@@ -126,6 +126,12 @@ uint64_t rtBeginModuleEpoch();
 void rtEndModuleEpoch(uint64_t epoch);
 void rtDropModuleEpoch(uint64_t epoch);
 uint64_t rtCurrentModuleEpoch() noexcept;
+// Spans registered between these two are permanent (epoch 0) whatever bracket
+// is open around them: the host's lazily-entered wrapper modules
+// (rtRunAsLazyInit) belong to the host, not to whichever program's first read
+// happened to force them, and must not die when that program is unloaded.
+void rtEnterPermanentModuleScope();
+void rtLeavePermanentModuleScope();
 
 // Dynamic modules (eval / Function / evalScript) whose functions or coroutines
 // may escape to the heap: kept alive only while at least one FunctionHeader or

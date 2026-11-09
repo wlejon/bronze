@@ -417,6 +417,10 @@ void rtEndModuleEpoch(uint64_t epoch) {
 
 uint64_t rtCurrentModuleEpoch() noexcept { return stackModuleEpoch(); }
 
+void rtEnterPermanentModuleScope() { t_stackModuleEpochs.push_back(0); }
+
+void rtLeavePermanentModuleScope() { eraseLastEpoch(t_stackModuleEpochs, 0); }
+
 static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
     for (const auto& span : s.moduleFnSlots) {
         if (span.epoch != epoch) continue;

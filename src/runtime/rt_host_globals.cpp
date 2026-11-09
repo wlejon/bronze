@@ -183,8 +183,16 @@ void rtForceLazyHostGlobal(const std::string& name) {
 
 void rtRunAsLazyInit(const std::function<void()>& init) {
     ++g_lazyInitDepth;
+    // What the init's module entries register is the host's for good: the
+    // program whose read forced it may be a module the host unloads later (a
+    // page reloaded, a test script), and its bracket must not take these roots
+    // with it while the wrapper's functions stay mounted for the next page.
+    rtEnterPermanentModuleScope();
     struct Leave {
-        ~Leave() { --g_lazyInitDepth; }
+        ~Leave() {
+            rtLeavePermanentModuleScope();
+            --g_lazyInitDepth;
+        }
     } leave;
     init();
 }

@@ -253,3 +253,19 @@ TEST_CASE("a lazy host global is forced in the realm it was registered in") {
     CHECK(embed::globalValue("lazyHostEmpty").found);
     CHECK(embed::isUndefined(embed::globalValue("lazyHostEmpty").value));
 }
+
+// A host wrapper module entered lazily registers its roots for good, even when
+// the read that forced it ran inside another module's load bracket: unloading
+// that module (a reloaded page, a test script) used to unroot the wrapper's
+// tables while its functions stayed mounted, and the next page's call read
+// freed objects (bro: bro.vision.wildlife after reloading Images).
+TEST_CASE("a lazy init registers permanently inside an open module bracket") {
+    const embed::ModuleHandle h = embed::beginModuleLoad();
+    uint64_t inside = 99;
+    embed::runAsLazyInit([&] { inside = runtime::rtCurrentModuleEpoch(); });
+    const uint64_t after = runtime::rtCurrentModuleEpoch();
+    embed::endModuleLoad(h);
+    CHECK(inside == 0);
+    CHECK(after == h);
+    CHECK(runtime::rtCurrentModuleEpoch() == 0);
+}
