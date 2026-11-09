@@ -207,27 +207,63 @@ bool prepareSolverContext(std::string_view fnSource,
     return true;
 }
 
-void refineModelIfRequested(const PreparedSolverContext& prep,
+// opts.minimize: the smallest |value| of each parameter in turn, the earlier
+// ones held at theirs. The usual small answers are tried first, one concrete
+// evaluation each; then a binary search on |x| <= B asks the solver whether a
+// smaller value exists, so the answer is the least one and not only the least
+// in a list. A query that comes back unknown ends that parameter's search
+// with the value it has, which still satisfies the goal.
+void refineModelIfRequested(PreparedSolverContext& prep,
                             BVNodeId activeCond,
-                            bool minimize,
+                            const SolveOptions& opts,
                             std::vector<uint64_t>& model) {
-    if (!minimize || prep.numParams == 0) return;
+    if (!opts.minimizeResult || prep.numParams == 0) return;
     static constexpr int32_t kSmallCandidates[] = {
         0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 6, 7, 8, 9, 10, 12, 16, 20, 24, 32, 42, 50, 64, 100
     };
+    auto s32Of = [](uint64_t v) { return static_cast<int32_t>(static_cast<uint32_t>(v)); };
+    auto const64 = [&](int64_t v) { return prep.ctx.make_const(static_cast<uint64_t>(v), 64); };
+    BVNodeId held = activeCond;
     for (uint32_t p = 0; p < prep.numParams; ++p) {
         uint64_t orig = model[p];
-        int32_t origS32 = static_cast<int32_t>(static_cast<uint32_t>(orig));
+        int64_t origAbs = std::abs(static_cast<int64_t>(s32Of(orig)));
         for (int32_t c : kSmallCandidates) {
-            if (std::abs(static_cast<int64_t>(c)) >= std::abs(static_cast<int64_t>(origS32))) continue;
+            if (std::abs(static_cast<int64_t>(c)) >= origAbs) continue;
             model[p] = static_cast<uint64_t>(static_cast<uint32_t>(c));
-            if (prep.ctx.eval_concrete(activeCond, model) != 0) {
+            if (prep.ctx.eval_concrete(held, model) != 0) {
                 orig = model[p];
-                origS32 = c;
+                origAbs = std::abs(static_cast<int64_t>(c));
                 break;
             }
             model[p] = orig;
         }
+        // The model satisfies `held` with |x_p| == origAbs; find the least bound
+        // that still has a solution.
+        int64_t lo = 0;
+        int64_t hi = origAbs;
+        while (lo < hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            BVNodeId x = prep.argNodes[p];
+            BVNodeId within = prep.ctx.make_binary(
+                BVOp::And, prep.ctx.make_binary(BVOp::Sge, x, const64(-mid)),
+                prep.ctx.make_binary(BVOp::Sle, x, const64(mid)));
+            SolveOutcome r = brass::verify::solve_nonzero(
+                prep.ctx, prep.ctx.make_binary(BVOp::And, held, within), opts.maxConflicts);
+            if (r.status == SolveOutcome::Sat) {
+                std::vector<uint64_t> m = r.model;
+                if (m.size() < prep.numParams) m.resize(prep.numParams, 0);
+                if (prep.ctx.eval_concrete(held, m) == 0) break;  // never trust a model that fails
+                model = std::move(m);
+                hi = std::abs(static_cast<int64_t>(s32Of(model[p])));
+            } else if (r.status == SolveOutcome::Unsat) {
+                lo = mid + 1;
+            } else {
+                break;
+            }
+        }
+        held = prep.ctx.make_binary(
+            BVOp::And, held,
+            prep.ctx.make_binary(BVOp::Eq, prep.argNodes[p], const64(s32Of(model[p]))));
     }
 }
 
@@ -363,7 +399,7 @@ SolveResult solveJsFunction(std::string_view fnSource, const SolveOptions& opts)
     }
 
     result.paramNames = prep.paramNames;
-    SolveOutcome satRes = brass::verify::solve_nonzero(prep.ctx, prep.goalCond);
+    SolveOutcome satRes = brass::verify::solve_nonzero(prep.ctx, prep.goalCond, opts.maxConflicts);
     auto t1 = std::chrono::steady_clock::now();
     result.solveTimeMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -380,7 +416,7 @@ SolveResult solveJsFunction(std::string_view fnSource, const SolveOptions& opts)
     result.status = SolveStatus::Sat;
     std::vector<uint64_t> model = satRes.model;
     if (model.size() < prep.numParams) model.resize(prep.numParams, 0);
-    refineModelIfRequested(prep, prep.goalCond, opts.minimizeResult, model);
+    refineModelIfRequested(prep, prep.goalCond, opts, model);
 
     result.args.resize(prep.numParams, 0);
     for (uint32_t i = 0; i < prep.numParams; ++i) {
@@ -393,26 +429,36 @@ SolveResult solveJsFunction(std::string_view fnSource, const SolveOptions& opts)
     return result;
 }
 
-std::vector<std::vector<int64_t>> solveAllJsFunction(std::string_view fnSource,
-                                                     size_t maxSolutions,
-                                                     const SolveOptions& opts) {
-    std::vector<std::vector<int64_t>> solutions;
-    if (maxSolutions == 0) return solutions;
-
+SolveAllResult solveAllJsFunction(std::string_view fnSource,
+                                  size_t maxSolutions,
+                                  const SolveOptions& opts) {
+    SolveAllResult result;
     PreparedSolverContext prep;
     std::string errMsg;
     if (!prepareSolverContext(fnSource, opts, prep, errMsg)) {
-        return solutions;
+        result.stop = SolveStatus::Error;
+        result.error = std::move(errMsg);
+        return result;
     }
+    result.paramNames = prep.paramNames;
+    result.stop = SolveStatus::Sat;  // the limit, unless a query says otherwise
+    if (maxSolutions == 0) return result;
 
     BVNodeId activeCond = prep.goalCond;
     for (size_t k = 0; k < maxSolutions; ++k) {
-        SolveOutcome satRes = brass::verify::solve_nonzero(prep.ctx, activeCond);
-        if (satRes.status != SolveOutcome::Sat) break;
+        SolveOutcome satRes = brass::verify::solve_nonzero(prep.ctx, activeCond, opts.maxConflicts);
+        if (satRes.status == SolveOutcome::Unsat) {
+            result.stop = SolveStatus::Unsat;
+            break;
+        }
+        if (satRes.status != SolveOutcome::Sat) {
+            result.stop = SolveStatus::Unknown;
+            break;
+        }
 
         std::vector<uint64_t> model = satRes.model;
         if (model.size() < prep.numParams) model.resize(prep.numParams, 0);
-        refineModelIfRequested(prep, activeCond, opts.minimizeResult, model);
+        refineModelIfRequested(prep, activeCond, opts, model);
 
         std::vector<int64_t> tuple(prep.numParams, 0);
         BVNodeId diffClause = 0;
@@ -423,12 +469,14 @@ std::vector<std::vector<int64_t>> solveAllJsFunction(std::string_view fnSource,
             BVNodeId neNode = prep.ctx.make_binary(BVOp::Ne, prep.argNodes[i], valNode);
             diffClause = (i == 0) ? neNode : prep.ctx.make_binary(BVOp::Or, diffClause, neNode);
         }
-        solutions.push_back(std::move(tuple));
-        if (prep.numParams == 0) break;
+        result.solutions.push_back(std::move(tuple));
+        if (prep.numParams == 0) {
+            result.stop = SolveStatus::Unsat;  // the one empty tuple is every solution
+            break;
+        }
         activeCond = prep.ctx.make_binary(BVOp::And, activeCond, diffClause);
     }
-
-    return solutions;
+    return result;
 }
 
 bool evalConcreteJsFunction(std::string_view fnSource,

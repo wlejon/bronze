@@ -76,8 +76,10 @@ TEST_CASE("solve_fn (#128): run JS functions backwards via Brass bitvector SMT")
         SolveOptions opts;
         opts.domainMin = 1;
         opts.domainMax = 20;
-        auto solutions = bronze::check::solveAllJsFunction(
+        auto all = bronze::check::solveAllJsFunction(
             "(a, b) => a + b === 10 && a < b", 4, opts);
+        CHECK(all.stop == SolveStatus::Sat);
+        const auto& solutions = all.solutions;
         REQUIRE(solutions.size() == 4);
         std::unordered_set<int64_t> seenA;
         for (const auto& sol : solutions) {
@@ -86,6 +88,35 @@ TEST_CASE("solve_fn (#128): run JS functions backwards via Brass bitvector SMT")
             CHECK(sol[0] < sol[1]);
             CHECK(seenA.insert(sol[0]).second);
         }
+    }
+
+    SUBCASE("solveAllJsFunction says when the solutions are all there are") {
+        SolveOptions opts;
+        opts.domainMin = 1;
+        opts.domainMax = 4;
+        auto all = bronze::check::solveAllJsFunction("x => (x & 1) === 1", 10, opts);
+        CHECK(all.stop == SolveStatus::Unsat);
+        CHECK(all.solutions.size() == 2);
+        auto bad = bronze::check::solveAllJsFunction("x => String(x).length === 2", 10);
+        CHECK(bad.stop == SolveStatus::Error);
+        CHECK(!bad.error.empty());
+        CHECK(bad.solutions.empty());
+    }
+
+    SUBCASE("minimize answers the least magnitude, not the least of a candidate list") {
+        SolveOptions opts;
+        opts.minimizeResult = true;
+        auto up = bronze::check::solveJsFunction("x => x > 1000 && (x & 7) === 3", opts);
+        REQUIRE(up.sat());
+        CHECK(up.args[0] == 1003);
+        auto down = bronze::check::solveJsFunction("x => x < -500", opts);
+        REQUIRE(down.sat());
+        CHECK(down.args[0] == -501);
+        // Lexicographic: the first parameter least, then the second given it.
+        auto two = bronze::check::solveJsFunction("(a, b) => a + b === 777 && a >= 300", opts);
+        REQUIRE(two.sat());
+        CHECK(two.args[0] == 300);
+        CHECK(two.args[1] == 477);
     }
 }
 

@@ -30,6 +30,9 @@ struct SolveOptions {
     std::unordered_map<std::string, std::pair<int32_t, int32_t>> varBounds;
     bool minimizeResult = false;
     std::string fnName;
+    // The CDCL conflict budget of each solver query; a query that exhausts it
+    // answers Unknown.
+    uint32_t maxConflicts = 10000;
 };
 
 struct SolveResult {
@@ -59,12 +62,23 @@ std::string normalizeJsFunctionSource(std::string_view raw,
 SolveResult solveJsFunction(std::string_view fnSource,
                             const SolveOptions& opts = {});
 
+// Why solveAllJsFunction stopped: `stop` is Unsat when the solutions are all
+// there are, Sat when it reached maxSolutions (more may exist), Unknown when a
+// query exhausted its budget (more may exist), Error when the function could
+// not be modelled (`error` says why, `solutions` is empty).
+struct SolveAllResult {
+    std::vector<std::vector<int64_t>> solutions;
+    std::vector<std::string> paramNames;
+    SolveStatus stop = SolveStatus::Unknown;
+    std::string error;
+};
+
 // Iteratively solves for up to `maxSolutions` distinct concrete argument tuples
 // satisfying `fnSource` by adding blocking clauses `!(arg_0 == m_0 && ...)`
 // after each satisfying assignment.
-std::vector<std::vector<int64_t>> solveAllJsFunction(std::string_view fnSource,
-                                                     size_t maxSolutions = 10,
-                                                     const SolveOptions& opts = {});
+SolveAllResult solveAllJsFunction(std::string_view fnSource,
+                                  size_t maxSolutions = 10,
+                                  const SolveOptions& opts = {});
 
 // Where every parameter is a 32-bit integer (solve, layout predicates): ""
 // when the evaluation read no parameter as a string, array or object, else
