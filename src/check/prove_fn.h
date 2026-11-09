@@ -32,13 +32,17 @@ struct ProofCertificateReport {
     bool equivalent = true;
     bool hasRoundTripCheck = false;
     bool roundTripProven = true;
+    // Why the equivalence / round-trip proof came out as it did (the
+    // prover's own sentence), so an undecided proof says what stopped it.
+    std::string equivalenceDetail;
+    std::string roundTripDetail;
     std::vector<int64_t> counterexampleArgs;
     int64_t expectedOutput = 0;
     int64_t actualOutput = 0;
     std::vector<std::string> hazards;
     std::vector<std::string> lockstepHazards;
     std::vector<SynthesizedTestCase> synthesizedTests;
-    std::string sha256;
+    std::string sha256;  // SHA-256 of the normalized source, hex
     std::string certificateJson;
     std::string error;
 };

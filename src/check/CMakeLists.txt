@@ -8,6 +8,7 @@ bronze_add_module(check
         prove_equiv_builtins.cpp
         prove_equiv_bitwise.cpp
         prove_equiv_calls.cpp
+        prove_equiv_globals.cpp
         prove_equiv_seq.cpp
         prove_loop_induction.cpp
         prove_loop_relational.cpp
@@ -38,6 +39,7 @@ bronze_add_module(check
         ../../tests/check/loop_fp_prover_test.cpp
         ../../tests/check/threejs_math_prover_test.cpp
         ../../tests/check/prover_fuzzer_test.cpp
+        ../../tests/check/verifier_soundness_test.cpp
     TEST_DEPS lex parse
 )
 

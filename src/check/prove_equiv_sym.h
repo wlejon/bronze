@@ -13,13 +13,32 @@
 
 namespace bronze::check {
 
+// The refusals of SymbolicHeapTable::numericParams() mode.
+inline constexpr const char* kNumberToStringReason =
+    "string conversion of a number (String(x), a template literal) is not modelled";
+inline constexpr const char* kNumberConcatReason =
+    "string concatenation with a number is not modelled";
+
 inline constexpr uint32_t kMaxBlockSteps = 240;
 inline constexpr uint32_t kMaxTotalBlockVisits = 16384;
 inline constexpr uint32_t kMaxInlineDepth = 6;
 inline constexpr uint32_t kMaxModuleInitSteps = 12000;
 inline constexpr uint32_t kMaxModuleInitVisits = 24000;
 
+// A value's JS kind where the bit-vector alone cannot tell: `true`, `1` and
+// (for `undefined` / `null`) `0` share one bit-vector each, yet differ under
+// `===`. A kind is a 2-bit node over these constants; a value with no kind
+// recorded is a number, and kNoKind marks an outcome that set none.
+inline constexpr uint64_t kKindNumber = 0;
+inline constexpr uint64_t kKindBool = 1;
+inline constexpr uint64_t kKindNullish = 2;
+inline constexpr uint32_t kKindWidth = 2;
+inline constexpr brass::verify::BVNodeId kNoKind = UINT32_MAX;
+
 struct SymState {
+    // The kind of each value that is (or, on a merged path, may be) not a
+    // number: what keeps `x > 3` from proving equal to `x > 3 ? 1 : 0`.
+    std::unordered_map<il::ValueId, brass::verify::BVNodeId> valueKind;
     std::unordered_map<il::ValueId, brass::verify::BVNodeId> values;
     std::unordered_map<uint64_t, brass::verify::BVNodeId> envSlots;
     std::unordered_map<uint32_t, std::string> globalRefs;
@@ -63,6 +82,7 @@ struct SymEvalOutcome {
     uint32_t returnCtorOf = UINT32_MAX;
     std::string returnGlobalRef;
     std::vector<brass::verify::BVNodeId> returnArray;
+    brass::verify::BVNodeId returnKind = kNoKind;
 };
 
 class SymbolicIlBuilder {
@@ -115,6 +135,13 @@ private:
     brass::verify::BVNodeId toBool1(brass::verify::BVNodeId node);
     brass::verify::BVNodeId toBV64(brass::verify::BVNodeId node);
     brass::verify::BVNodeId toSInt32In64(brass::verify::BVNodeId node);
+    brass::verify::BVNodeId kindConst(uint64_t kind) const;
+    brass::verify::BVNodeId kindOf(const SymState& st, il::ValueId v) const;
+    void setKind(SymState& st, il::ValueId v, brass::verify::BVNodeId kind) const;
+    brass::verify::BVNodeId returnKindOf(const SymEvalOutcome& out) const;
+    brass::verify::BVNodeId mergeKinds(brass::verify::BVNodeId cond,
+                                       brass::verify::BVNodeId tKind,
+                                       brass::verify::BVNodeId fKind);
     void applyEdgeArgsInPlace(const il::Function& fn, const il::BlockTarget& edge, SymState& state);
     void saveModuleInitSnapshot(const SymState& state);
 
@@ -134,6 +161,7 @@ private:
                            SymState& state,
                            std::string& outErr);
 
+    SymEvalOutcome evalGlobalGetOp(const il::Instruction& inst, SymState& state);
     SymEvalOutcome evalConstructOp(const il::Instruction& inst, uint32_t inlineDepth, SymState& state);
     SymEvalOutcome evalMethodCallOp(const il::Instruction& inst, uint32_t inlineDepth, SymState& state);
     SymEvalOutcome evalDynamicCallOp(const il::Instruction& inst, uint32_t inlineDepth, SymState& state);

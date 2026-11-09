@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "check/prove_equiv.h"
 #include "check/solve_fn.h"
 #include "check/static_checker.h"
 #include "check/synth_tests.h"
@@ -93,6 +94,19 @@ FuzzAuditReport fuzzJsFunction(std::string_view fnSource, const FuzzOptions& opt
     std::string defaultName = opts.fnName.empty() ? "__fuzz_target" : opts.fnName;
     std::string normalized = normalizeJsFunctionSource(fnSource, &detectedName, defaultName);
     report.functionName = !opts.fnName.empty() ? opts.fnName : detectedName;
+
+    {
+        // The outputs reported are the function's under a value of the free
+        // name the recompiled source does not have.
+        il::Module mod;
+        if (lowerSingleSourceForEquiv(normalized, "fuzz_target.js", mod)) {
+            if (std::string freeVar = freeVariableReason(mod); !freeVar.empty()) {
+                report.error = std::move(freeVar);
+                report.safe = false;
+                return report;
+            }
+        }
+    }
 
     std::string synthErr;
     SynthTestsReport synth = synthesizeSourceTests(normalized, &synthErr);

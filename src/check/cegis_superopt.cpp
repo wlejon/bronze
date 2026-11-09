@@ -446,6 +446,11 @@ CegisSuperoptResult superoptimizeJsFunction(std::string_view fnSource,
         res.summary = res.error;
         return res;
     }
+    if (std::string freeVar = freeVariableReason(refMod); !freeVar.empty()) {
+        res.error = "reference function not symbolically decidable: " + freeVar;
+        res.summary = res.error;
+        return res;
+    }
 
     const il::Function* refFn = findTargetIlFn(refMod, refFnName);
     if (!refFn) {

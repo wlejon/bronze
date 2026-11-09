@@ -861,7 +861,8 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             bool* outHitLoopUnrollBound,
                             brass::verify::BVNodeId* outThrewNode,
                             brass::verify::BVNodeId* outExceededBoundNode,
-                            ProofBounds* outBounds) {
+                            ProofBounds* outBounds,
+                            brass::verify::BVNodeId* outRetKind) {
     SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise, sharedHeapTable);
     auto out = builder.evalFunction(fn, argNodes);
     if (outHitLoopUnrollBound) *outHitLoopUnrollBound = builder.hitLoopUnrollBound();
@@ -874,6 +875,9 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
     if (outFinalHeap) *outFinalHeap = std::move(out.finalHeap);
     if (outThrewNode) *outThrewNode = (out.threwNode != 0) ? out.threwNode : ctx.make_const(0, 1);
     if (outExceededBoundNode) *outExceededBoundNode = (out.exceededBoundNode != 0) ? out.exceededBoundNode : ctx.make_const(0, 1);
+    if (outRetKind) {
+        *outRetKind = (out.returnKind != kNoKind) ? out.returnKind : ctx.make_const(kKindNumber, kKindWidth);
+    }
     return true;
 }
 

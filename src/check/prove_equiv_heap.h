@@ -47,6 +47,12 @@ public:
     bool preferStringSeq() const { return preferStringSeq_; }
     void setPreferStringSeq(bool v) { preferStringSeq_ = v; }
 
+    // Every parameter is a 32-bit integer (bro.solve, layout predicates). A
+    // number turned into a string then has digits this model does not have,
+    // so the conversion refuses instead of passing the number through.
+    bool numericParams() const { return numericParams_; }
+    void setNumericParams(bool v) { numericParams_ = v; }
+
     // Returns the canonical 64-bit sign-extended symbolic variable for `path`.
     brass::verify::BVNodeId getInitialVal(const std::string& path);
 
@@ -98,6 +104,7 @@ private:
     int32_t domainMin_ = INT32_MIN;
     int32_t domainMax_ = INT32_MAX;
     bool preferStringSeq_ = false;
+    bool numericParams_ = false;
     bool usedBoundedStringLen_ = false;
     bool usedBoundedArrayLen_ = false;
     std::unordered_map<std::string, brass::verify::BVNodeId> initialVals_;

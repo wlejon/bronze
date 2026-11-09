@@ -103,6 +103,10 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::Unbox:
                 case Op::ToNumeric:
                 case Op::ToStr: {
+                    if (inst.op == Op::ToStr && heapTable_.numericParams() && !inst.operands.empty() &&
+                        !state.heap.isStringValue(inst.operands[0])) {
+                        return {false, kNumberToStringReason, false, zero64_, {}, {}, zero1_};
+                    }
                     if (!inst.operands.empty()) {
                         il::ValueId src = inst.operands[0];
                         state.values[inst.result] = toBV64(getVal(state, src));
@@ -114,6 +118,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         if (state.globalRefs.count(src)) state.globalRefs[inst.result] = state.globalRefs[src];
                         if (state.envIds.count(src)) state.envIds[inst.result] = state.envIds[src];
                         if (state.undefValues.count(src)) state.undefValues.insert(inst.result);
+                        if (inst.op == Op::Box) setKind(state, inst.result, kindOf(state, src));
                     } else if (inst.op == Op::Box && inst.keyIndex < mod_.keyConstants.size()) {
                         evalBoxStringLiteral(mod_.keyConstants[inst.keyIndex], inst.result, state);
                     } else {
@@ -381,17 +386,22 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     break;
                 }
                 case Op::ConcatBegin:
-                    if (inst.operands.empty()) {
+                case Op::ConcatAppend:
+                    if (heapTable_.numericParams() &&
+                        std::any_of(inst.operands.begin(), inst.operands.end(),
+                                    [&](il::ValueId v) { return !state.heap.isStringValue(v); })) {
+                        return {false, kNumberConcatReason, false, zero64_, {}, {}, zero1_};
+                    }
+                    if (inst.op == Op::ConcatAppend) {
+                        if (inst.operands.size() >= 2) {
+                            evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                        }
+                    } else if (inst.operands.empty()) {
                         evalBoxStringLiteral("", inst.result, state);
                     } else if (inst.operands.size() == 1) {
                         state.values[inst.result] = toBV64(getVal(state, inst.operands[0]));
                         state.heap.propagateAlias(inst.operands[0], inst.result);
                     } else {
-                        evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
-                    }
-                    break;
-                case Op::ConcatAppend:
-                    if (inst.operands.size() >= 2) {
                         evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
                     }
                     break;
@@ -413,6 +423,10 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::Mul: {
                     if (inst.op == Op::Add && inst.operands.size() >= 2 &&
                         (state.heap.isStringValue(inst.operands[0]) || state.heap.isStringValue(inst.operands[1]))) {
+                        if (heapTable_.numericParams() && !(state.heap.isStringValue(inst.operands[0]) &&
+                                                            state.heap.isStringValue(inst.operands[1]))) {
+                            return {false, kNumberConcatReason, false, zero64_, {}, {}, zero1_};
+                        }
                         evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
                         break;
                     }
@@ -724,51 +738,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 }
                 case Op::GlobalGet:
                 case Op::ResolveName: {
-                    std::string gName;
-                    if (inst.keyIndex < mod_.keyConstants.size()) {
-                        gName = mod_.keyConstants[inst.keyIndex];
-                        state.globalRefs[inst.result] = gName;
-                    }
-                    if (gName == "undefined") {
-                        state.values[inst.result] = zero64_;
-                        state.undefValues.insert(inst.result);
-                        break;
-                    }
-                    if (gName == "NaN") {
-                        if (floatMode_) {
-                            state.values[inst.result] = makeF64ConstNode(ctx_, std::numeric_limits<double>::quiet_NaN());
-                        } else {
-                            state.values[inst.result] = zero64_;
-                            state.undefValues.insert(inst.result);
-                        }
-                        break;
-                    }
-                    if (gName == "Infinity") {
-                        if (!floatMode_) {
-                            if (inModuleInit_) { state.values[inst.result] = zero64_; break; }
-                            return {false, "Infinity constant requires float mode", false, zero64_, {}, {}, zero1_};
-                        }
-                        state.values[inst.result] = makeF64ConstNode(ctx_, std::numeric_limits<double>::infinity());
-                        break;
-                    }
-                    std::string gPath = "__fn_" + (gName.empty() ? std::string("global") : gName);
-                    BVNodeId gTok = heapTable_.getObjectToken(gPath);
-                    for (size_t fi = 0; fi < mod_.functions.size(); ++fi) {
-                        const auto& cand = mod_.functions[fi];
-                        if (!cand.isExternal && !cand.isEntryPoint &&
-                            (cand.name == gName || cand.displayName == gName)) {
-                            uint32_t fIdx = static_cast<uint32_t>(fi);
-                            uint32_t capEnv = state.funcCapturedEnvs.count(fIdx) ? state.funcCapturedEnvs[fIdx] : 0;
-                            state.funcRefs[inst.result] = fIdx;
-                            state.funcEnvs[inst.result] = capEnv;
-                            gPath = "__fn_" + std::to_string(fi);
-                            gTok = ctx_.make_const(0x00F0000000000000ULL |
-                                                   (static_cast<uint64_t>(capEnv & 0xFFFFu) << 32) | fIdx, 64);
-                            break;
-                        }
-                    }
-                    state.heap.objPaths[inst.result] = gPath;
-                    state.values[inst.result] = gTok;
+                    SymEvalOutcome sub = evalGlobalGetOp(inst, state);
+                    if (!sub.supported) return sub;
                     break;
                 }
                 case Op::Construct: {
@@ -949,8 +920,13 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         uint32_t retCtor = (trueOut.returnCtorOf == falseOut.returnCtorOf) ? trueOut.returnCtorOf
                                          : (tThrew == one1_ && fThrew != one1_) ? falseOut.returnCtorOf
                                          : (fThrew == one1_ && tThrew != one1_) ? trueOut.returnCtorOf : UINT32_MAX;
+                        BVNodeId tKind = returnKindOf(trueOut);
+                        BVNodeId fKind = returnKindOf(falseOut);
+                        BVNodeId mergedKind = (tThrew == one1_ && fThrew != one1_) ? fKind
+                                            : (fThrew == one1_ && tThrew != one1_) ? tKind
+                                            : mergeKinds(condNode, tKind, fKind);
                         return {true, {}, true, merged, std::move(mergedHeap), std::move(retObj), mergedThrew, mergedExc,
-                                UINT32_MAX, 0, retCtor};
+                                UINT32_MAX, 0, retCtor, {}, {}, mergedKind};
                     }
                     if (trueOut.hasReturn) {
                         trueOut.exceededBoundNode = ctx_.make_binary(BVOp::Or, ctx_.make_unary(BVOp::Not, condNode), tExc);
@@ -981,8 +957,10 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     }
                     BVNodeId pathThrew = (state.threwCond != 0) ? state.threwCond : zero1_;
                     BVNodeId pathExc = (state.exceededCond != 0) ? state.exceededCond : zero1_;
+                    BVNodeId retKind = (inst.operands.empty() || state.undefValues.count(inst.operands[0]))
+                                           ? kindConst(kKindNullish) : kindOf(state, inst.operands[0]);
                     return {true, {}, true, ret, std::move(state.heap), std::move(retPath), pathThrew, pathExc,
-                            retFnRef, retFnEnv, retCtor, std::move(retGlob), std::move(retArr)};
+                            retFnRef, retFnEnv, retCtor, std::move(retGlob), std::move(retArr), retKind};
                 }
                 default:
                     if (inModuleInit_) {
@@ -993,6 +971,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     }
                     return {false, std::string("unsupported IL operation: ") + il::opName(inst.op), false, zero64_, {}, {}, zero1_, zero1_};
             }
+            if (inst.result != il::kNoValue && inst.type == il::Type::Bool) setKind(state, inst.result, kindConst(kKindBool));
             if (jumpedInPlace) break;
         }
         if (!jumpedInPlace) {

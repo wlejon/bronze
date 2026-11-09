@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include "support/diagnostics.h"
+#include "support/sha256.h"
 #include "support/source.h"
 
 using namespace bronze;
@@ -44,4 +45,14 @@ TEST_CASE("a span names the buffer it indexes, so a graph renders per file") {
     DiagnosticSink plain;
     plain.error(Span{}, "no location");
     CHECK(plain.render(sources) == "entry.js:1:1: error: no location\n");
+}
+
+TEST_CASE("sha256Hex matches the FIPS 180-4 test vectors") {
+    CHECK(support::sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(support::sha256Hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    // 56 bytes: the length no longer fits the first padding block.
+    CHECK(support::sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+    CHECK(support::sha256Hex(std::string(1000, 'a')) ==
+          "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
 }

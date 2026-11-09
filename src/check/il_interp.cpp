@@ -507,6 +507,7 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     res.completed = true;
                     res.isUndefined = (r.kind == CVal::Kind::Undefined);
                     res.isString = (r.kind == CVal::Kind::String);
+                    res.isBool = (r.kind == CVal::Kind::Bool);
                     res.returnStr = r.str;
                     res.returnNum = r.num;
                     res.returnI64 = r.i64;
@@ -648,6 +649,11 @@ bool concreteResultsDiverge(const InterpResult& oldRun,
     if (oldRun.threw && newRun.threw) return false;
     if (oldRun.isUndefined != newRun.isUndefined) return true;
     if (oldRun.isString != newRun.isString) return true;
+    if (oldRun.isBool != newRun.isBool) {
+        if (outOldScalar) *outOldScalar = oldRun.returnI64;
+        if (outNewScalar) *outNewScalar = newRun.returnI64;
+        return true;
+    }
     if (oldRun.isString && oldRun.returnStr != newRun.returnStr) return true;
 
     bool oldNaN = std::isnan(oldRun.returnNum);

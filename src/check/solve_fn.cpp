@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,7 @@ struct PreparedSolverContext {
     BVContext ctx;
     std::vector<BVNodeId> argNodes;
     BVNodeId retNode = 0;
+    BVNodeId retKind = 0;
     BVNodeId goalCond = 0;
 };
 
@@ -113,6 +115,10 @@ bool prepareSolverContext(std::string_view fnSource,
     prep.fn = findTargetFunction(prep.mod, filter);
     if (!prep.fn) {
         errOut = "no target function found in source";
+        return false;
+    }
+    if (std::string freeVar = freeVariableReason(prep.mod); !freeVar.empty()) {
+        errOut = "function not symbolically decidable: " + freeVar;
         return false;
     }
 
@@ -155,12 +161,18 @@ bool prepareSolverContext(std::string_view fnSource,
         }
     }
     heapTable.setDomainBounds(effMin, effMax);
+    heapTable.setNumericParams(true);
 
     std::string reason;
     if (!evalIlFunctionSymbolic(prep.ctx, prep.mod, *prep.fn, prep.argNodes,
                                 /*strictJs32Bitwise=*/true, &prep.retNode, &reason,
-                                &heapTable)) {
+                                &heapTable, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                &prep.retKind)) {
         errOut = "function not symbolically decidable: " + reason;
+        return false;
+    }
+    if (std::string heapRead = parameterHeapReadReason(heapTable, prep.paramNames); !heapRead.empty()) {
+        errOut = "function not symbolically decidable: " + heapRead;
         return false;
     }
 
@@ -220,6 +232,30 @@ void refineModelIfRequested(const PreparedSolverContext& prep,
 }
 
 }  // namespace
+
+// The heap model gives a parameter read as an object (`x.length`, `x[0]`,
+// `String(x).length`) fresh unknowns of its own. They are not parameters, so
+// the model solve reports would leave out values the answer depends on, and
+// for an int32 parameter such a read does not exist at all.
+std::string parameterHeapReadReason(const SymbolicHeapTable& heapTable,
+                                    const std::vector<std::string>& paramNames) {
+    for (const std::string& path : heapTable.varPaths()) {
+        std::string root = path.substr(0, path.find_first_of(".["));
+        std::string param;
+        if (root.rfind("arg_", 0) == 0) {
+            size_t idx = static_cast<size_t>(std::strtoul(root.c_str() + 4, nullptr, 10));
+            param = idx < paramNames.size() ? paramNames[idx] : root;
+        } else if (root == "this") {
+            param = "this";
+        } else {
+            continue;
+        }
+        std::string shown = param + path.substr(root.size());
+        return "parameter " + param + " is read as a string, array or object (" + shown +
+               "); every parameter is a 32-bit integer here";
+    }
+    return {};
+}
 
 const char* solveStatusTag(SolveStatus status) {
     switch (status) {
@@ -399,7 +435,9 @@ bool evalConcreteJsFunction(std::string_view fnSource,
                             const std::vector<int64_t>& args,
                             int64_t* outReturn,
                             std::string* errorOut,
-                            std::string_view fnFilter) {
+                            std::string_view fnFilter,
+                            ConcreteResultKind* outKind,
+                            size_t* outParamCount) {
     SolveOptions opts;
     opts.fnName = std::string(fnFilter);
     PreparedSolverContext prep;
@@ -415,6 +453,8 @@ bool evalConcreteJsFunction(std::string_view fnSource,
     }
     int64_t retVal = static_cast<int64_t>(prep.ctx.eval_concrete(prep.retNode, model));
     if (outReturn) *outReturn = retVal;
+    if (outKind) *outKind = static_cast<ConcreteResultKind>(prep.ctx.eval_concrete(prep.retKind, model));
+    if (outParamCount) *outParamCount = prep.numParams;
     return true;
 }
 

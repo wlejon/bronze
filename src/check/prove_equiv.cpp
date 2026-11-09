@@ -172,6 +172,23 @@ bool lowerSingleSourceForEquiv(std::string_view src,
     return true;
 }
 
+std::string freeVariableReason(const il::Module& mod) {
+    for (const auto& fn : mod.functions) {
+        if (fn.isExternal) continue;
+        for (const auto& blk : fn.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op != il::Op::ResolveName) continue;
+                std::string name = inst.keyIndex < mod.keyConstants.size()
+                                       ? mod.keyConstants[inst.keyIndex] : std::string("?");
+                return "free variable " + name +
+                       ": the function's source is analysed, not its closure; pass the value "
+                       "as a parameter or inline it";
+            }
+        }
+    }
+    return {};
+}
+
 const char* equivStatusTag(EquivStatus status) {
     switch (status) {
         case EquivStatus::Equivalent: return "EQUIVALENT";
@@ -340,12 +357,16 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     bool oldHitUnroll = false;
     bool newHitUnroll = false;
 
+    BVNodeId oldKind = 0;
+    BVNodeId newKind = 0;
     bool oldOk = evalIlFunctionSymbolic(ctx, oldMod, oldFn, argNodes, strictJs32Bitwise,
                                         &oldRetNode, &oldReason, &heapTable, &oldFinalHeap,
-                                        &oldHitUnroll, &oldThrewNode, &oldExceededNode, &oldBounds);
+                                        &oldHitUnroll, &oldThrewNode, &oldExceededNode, &oldBounds,
+                                        &oldKind);
     bool newOk = evalIlFunctionSymbolic(ctx, newMod, newFn, argNodes, strictJs32Bitwise,
                                         &newRetNode, &newReason, &heapTable, &newFinalHeap,
-                                        &newHitUnroll, &newThrewNode, &newExceededNode, &newBounds);
+                                        &newHitUnroll, &newThrewNode, &newExceededNode, &newBounds,
+                                        &newKind);
 
     if (!oldOk || !newOk || oldHitUnroll || newHitUnroll) {
         auto indRes = compareIlLoopFunctionPairInductive(
@@ -475,7 +496,8 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     BVNodeId heapMismatch = SymbolicHeapState::buildHeapMismatchCond(
         heapTable, oldFinalHeap, newFinalHeap, &checkedHeapPaths);
 
-    if (oldRetNode == newRetNode && heapMismatch == 0 && oldThrewNode == newThrewNode) {
+    if (oldRetNode == newRetNode && oldKind == newKind && heapMismatch == 0 &&
+        oldThrewNode == newThrewNode) {
         return finalizeNoCounterexample("proven equivalent by structural BV hash-consing");
     }
 
@@ -490,6 +512,12 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         } else {
             valMismatch = ctx.make_unary(BVOp::Not, ctx.make_binary(BVOp::Eq, oldRetNode, newRetNode));
         }
+    }
+    // `true`, `1` and `undefined` / `0` share bit-vectors; results of
+    // different kinds differ in JS (`===`, typeof) all the same.
+    if (oldKind != newKind) {
+        BVNodeId kindMismatch = ctx.make_binary(BVOp::Ne, oldKind, newKind, 1);
+        valMismatch = (valMismatch == 0) ? kindMismatch : ctx.make_binary(BVOp::Or, valMismatch, kindMismatch, 1);
     }
     if (heapMismatch != 0) {
         valMismatch = (valMismatch == 0) ? heapMismatch : ctx.make_binary(BVOp::Or, valMismatch, heapMismatch);
@@ -567,6 +595,17 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
         res.newReturnValue = newRet;
         res.oldThrows = (ctx.eval_concrete(oldThrewNode, bestModel) != 0);
         res.newThrows = (ctx.eval_concrete(newThrewNode, bestModel) != 0);
+        if (res.detail.empty() && oldKind != newKind) {
+            uint64_t ok = ctx.eval_concrete(oldKind, bestModel);
+            uint64_t nk = ctx.eval_concrete(newKind, bestModel);
+            auto kindName = [](uint64_t k) {
+                return k == 1 ? "a boolean" : k == 2 ? "undefined or null" : "a number";
+            };
+            if (ok != nk) {
+                res.detail = std::string("counterexample found where the old function returns ") + kindName(ok) +
+                             " and the new one " + kindName(nk);
+            }
+        }
         if (res.detail.empty()) {
             res.detail = "counterexample found where old and new return values diverge";
         }
@@ -674,6 +713,17 @@ EquivReport proveSourceEquivalent(std::string_view oldSrc, std::string_view newS
         rep.status = EquivStatus::Unknown;
         rep.detail = errorOut ? *errorOut : "failed to lower source";
         return rep;
+    }
+    // Two functions from two closures: a free name in either stands for a
+    // value neither proof can see, so an answer about it would be about
+    // some other program.
+    for (const il::Module* m : {&oldMod, &newMod}) {
+        std::string freeVar = freeVariableReason(*m);
+        if (!freeVar.empty()) {
+            rep.status = EquivStatus::Unknown;
+            rep.detail = std::move(freeVar);
+            return rep;
+        }
     }
 
     auto populateReportFromFnResult = [&](FunctionEquivResult fnRes) {
@@ -800,6 +850,11 @@ EquivReport proveRoundTripSource(std::string_view source, std::string_view encod
     if (!lowerSingleSourceForEquiv(source, "roundtrip.js", mod, errorOut)) {
         rep.status = EquivStatus::Unknown;
         rep.detail = errorOut ? *errorOut : "failed to lower source";
+        return rep;
+    }
+    if (std::string freeVar = freeVariableReason(mod); !freeVar.empty()) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = std::move(freeVar);
         return rep;
     }
     const il::Function* encFn = nullptr;

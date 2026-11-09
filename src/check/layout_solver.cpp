@@ -373,14 +373,12 @@ LayoutSolution solveLayoutSpec(const LayoutSpec& spec) {
 
     std::vector<BoxNodes> boxNodes;
     std::unordered_map<std::string, BoxNodes> boxMap;
-    std::vector<BVNodeId> allVarNodes;
     uint32_t nextVarIdx = 0;
 
     auto allocVar = [&](const std::string& name, uint32_t& outIdx) -> BVNodeId {
         outIdx = nextVarIdx++;
         BVNodeId raw32 = ctx.make_var(name, 32);
         BVNodeId s64 = ctx.make_sext(raw32, 32);
-        allVarNodes.push_back(s64);
         return s64;
     };
 
@@ -549,13 +547,64 @@ LayoutSolution solveLayoutSpec(const LayoutSpec& spec) {
             sol.error = "predicate function not found";
             return sol;
         }
+        if (std::string freeVar = freeVariableReason(predMod); !freeVar.empty()) {
+            sol.status = SolveStatus::Error;
+            sol.error = "predicate function not symbolically decidable: " + freeVar;
+            return sol;
+        }
+        // Bound by NAME: a parameter `<box>_<x|y|z|w|h|d>` is that box's
+        // variable, wherever it stands in the list, and a name that is no
+        // box variable is refused rather than handed whichever variable sits
+        // at its position.
+        std::vector<BVNodeId> predArgs;
+        std::vector<std::string> predParamNames;
+        uint32_t firstSrc = static_cast<uint32_t>(predFn->firstSourceParam());
+        for (uint32_t i = 0; i < static_cast<uint32_t>(predFn->callerParamCount()); ++i) {
+            std::string pname = (firstSrc + i) < predFn->params.size() ? predFn->params[firstSrc + i].name
+                                                                        : std::string{};
+            BVNodeId node = 0;
+            bool found = false;
+            size_t sep = pname.rfind('_');
+            if (sep != std::string::npos && sep > 0 && sep + 2 == pname.size()) {
+                auto it = boxMap.find(pname.substr(0, sep));
+                char prop = pname.back();
+                if (it != boxMap.end()) {
+                    const BoxNodes& bn = it->second;
+                    found = true;
+                    if (prop == 'x') node = bn.x;
+                    else if (prop == 'y') node = bn.y;
+                    else if (prop == 'w') node = bn.w;
+                    else if (prop == 'h') node = bn.h;
+                    else if (prop == 'z' && bn.is3D) node = bn.z;
+                    else if (prop == 'd' && bn.is3D) node = bn.d;
+                    else found = false;
+                }
+            }
+            if (!found) {
+                std::string ids;
+                for (const auto& bn : boxNodes) ids += (ids.empty() ? "" : ", ") + bn.id;
+                sol.status = SolveStatus::Error;
+                sol.error = "predicate parameter '" + (pname.empty() ? "arg_" + std::to_string(i) : pname) +
+                            "' names no box variable: name each parameter <box>_<x|y|w|h> (z, d for a 3D "
+                            "box) after a box of the spec (" + (ids.empty() ? std::string("none") : ids) + ")";
+                return sol;
+            }
+            predArgs.push_back(node);
+            predParamNames.push_back(pname);
+        }
         SymbolicHeapTable heapTable(ctx);
         if (minCoord <= maxCoord) heapTable.setDomainBounds(minCoord, maxCoord);
+        heapTable.setNumericParams(true);
         BVNodeId predRet = 0;
         std::string reason;
-        if (!evalIlFunctionSymbolic(ctx, predMod, *predFn, allVarNodes, true, &predRet, &reason, &heapTable)) {
+        if (!evalIlFunctionSymbolic(ctx, predMod, *predFn, predArgs, true, &predRet, &reason, &heapTable)) {
             sol.status = SolveStatus::Error;
             sol.error = "predicate function not symbolically decidable: " + reason;
+            return sol;
+        }
+        if (std::string heapRead = parameterHeapReadReason(heapTable, predParamNames); !heapRead.empty()) {
+            sol.status = SolveStatus::Error;
+            sol.error = "predicate function not symbolically decidable: " + heapRead;
             return sol;
         }
         cond = ctx.make_binary(BVOp::And, cond, ctx.make_binary(BVOp::Ne, predRet, zero64));

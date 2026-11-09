@@ -15,6 +15,7 @@
 #include "lower/lower.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
+#include "support/sha256.h"
 #include "support/source.h"
 #include "types/infer.h"
 
@@ -35,27 +36,6 @@ std::string jsonEscape(std::string_view s) {
         }
     }
     return out;
-}
-
-std::string computeDigest256Hex(std::string_view data) {
-    static constexpr uint64_t kSeeds[4] = {
-        0xcbf29ce484222325ULL,
-        0x9e3779b97f4a7c15ULL,
-        0x6a09e667bb67ae85ULL,
-        0x3c6ef372a54ff53aULL,
-    };
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (int lane = 0; lane < 4; ++lane) {
-        uint64_t h = kSeeds[lane];
-        for (unsigned char b : data) {
-            h ^= static_cast<uint64_t>(b) + static_cast<uint64_t>(lane * 31);
-            h *= 0x100000001b3ULL;
-            h ^= (h >> 33);
-        }
-        oss << std::setw(16) << h;
-    }
-    return oss.str();
 }
 
 }  // namespace
@@ -92,6 +72,23 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
     if (diags.hasErrors() || !ilMod) {
         rep.error = diags.render(buf);
         return rep;
+    }
+
+    // Every answer below would be about the value a free name has, which a
+    // function recompiled from its source alone does not have.
+    if (std::string freeVar = freeVariableReason(*ilMod); !freeVar.empty()) {
+        rep.error = std::move(freeVar);
+        return rep;
+    }
+    for (const auto& [label, src] : {std::pair<const char*, const std::string*>{"equivTo", &opts.equivalentToSource},
+                                     std::pair<const char*, const std::string*>{"roundTripWith", &opts.inverseFnSource}}) {
+        if (src->empty()) continue;
+        il::Module otherMod;
+        if (!lowerSingleSourceForEquiv(normalizeJsFunctionSource(*src), "prove_other.js", otherMod)) continue;
+        if (std::string freeVar = freeVariableReason(otherMod); !freeVar.empty()) {
+            rep.error = std::string(label) + " function: " + freeVar;
+            return rep;
+        }
     }
 
     // 1. Static symbolic hazard check
@@ -185,6 +182,7 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
         EquivReport eq = proveSourceEquivalent(
             normalized, normOther, fnName, opts.domainMin, opts.domainMax, &eqErr);
         rep.equivalent = (eq.status == EquivStatus::Equivalent);
+        rep.equivalenceDetail = eq.detail.empty() ? eqErr : eq.detail;
         if (eq.status == EquivStatus::Counterexample) {
             rep.counterexampleArgs = eq.counterexampleArgs;
             rep.expectedOutput = eq.expectedOutput;
@@ -213,6 +211,7 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
         EquivReport rt = proveRoundTripSource(
             combined, encName, decName, opts.domainMin, opts.domainMax, &rtErr);
         rep.roundTripProven = (rt.status == EquivStatus::Equivalent);
+        rep.roundTripDetail = rt.detail.empty() ? rtErr : rt.detail;
         if (rt.status == EquivStatus::Counterexample) {
             rep.counterexampleArgs = rt.counterexampleArgs;
             rep.expectedOutput = rt.expectedOutput;
@@ -234,7 +233,7 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
 
     rep.verified = rep.hazardFree && rep.deterministic && rep.proofsValid &&
                    rep.equivalent && rep.roundTripProven;
-    rep.sha256 = computeDigest256Hex(normalized);
+    rep.sha256 = support::sha256Hex(normalized);
 
     std::ostringstream cert;
     cert << "{"

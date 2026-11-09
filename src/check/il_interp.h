@@ -15,6 +15,7 @@ struct InterpResult {
     bool threw = false;
     bool isString = false;
     bool isUndefined = false;
+    bool isBool = false;
     double returnNum = 0.0;
     int64_t returnI64 = 0;
     std::string returnStr;

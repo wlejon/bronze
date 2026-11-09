@@ -92,8 +92,16 @@ bool lowerSingleSourceForEquiv(std::string_view src,
                                il::Module& outMod,
                                std::string* errorOut = nullptr);
 
+// The bro-facing checkers analyse a function's SOURCE, recompiled on its own,
+// never its closure: a name the function captures from its enclosing scope
+// arrives here unresolved (`name.resolve`), with no value the proof could
+// use. Returns "" when no function of `mod` reads such a name, otherwise the
+// reason naming the first one, for the caller to refuse with.
+std::string freeVariableReason(const il::Module& mod);
+
 // Symbolically lowers `fn` in `mod` into `ctx` for `argNodes` and returns its
-// symbolic return expression node in `outRetNode`.
+// symbolic return expression node in `outRetNode`; `outRetKind` gets its JS
+// kind, a 2-bit node: 0 number, 1 boolean, 2 undefined or null.
 bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             const il::Module& mod,
                             const il::Function& fn,
@@ -106,7 +114,8 @@ bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
                             bool* outHitLoopUnrollBound = nullptr,
                             brass::verify::BVNodeId* outThrewNode = nullptr,
                             brass::verify::BVNodeId* outExceededBoundNode = nullptr,
-                            ProofBounds* outBounds = nullptr);
+                            ProofBounds* outBounds = nullptr,
+                            brass::verify::BVNodeId* outRetKind = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,

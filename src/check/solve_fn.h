@@ -11,6 +11,8 @@
 
 namespace bronze::check {
 
+class SymbolicHeapTable;
+
 enum class SolveStatus : uint8_t {
     Sat,
     Unsat,
@@ -64,12 +66,25 @@ std::vector<std::vector<int64_t>> solveAllJsFunction(std::string_view fnSource,
                                                      size_t maxSolutions = 10,
                                                      const SolveOptions& opts = {});
 
+// Where every parameter is a 32-bit integer (solve, layout predicates): ""
+// when the evaluation read no parameter as a string, array or object, else
+// the reason naming the parameter and the read.
+std::string parameterHeapReadReason(const SymbolicHeapTable& heapTable,
+                                    const std::vector<std::string>& paramNames);
+
+// The JS kind of a concrete result: `*outReturn` is the number, 1/0 for a
+// boolean, 0 for undefined / null.
+enum class ConcreteResultKind : uint8_t { Number = 0, Boolean = 1, Nullish = 2 };
+
 // Evaluates a symbolically decidable JS function on concrete 32-bit integer
-// arguments via Brass's bitvector DAG concrete evaluator.
+// arguments via Brass's bitvector DAG concrete evaluator. `outParamCount`
+// gets the number of parameters the function declares.
 bool evalConcreteJsFunction(std::string_view fnSource,
                             const std::vector<int64_t>& args,
                             int64_t* outReturn,
                             std::string* errorOut = nullptr,
-                            std::string_view fnFilter = "");
+                            std::string_view fnFilter = "",
+                            ConcreteResultKind* outKind = nullptr,
+                            size_t* outParamCount = nullptr);
 
 }  // namespace bronze::check
