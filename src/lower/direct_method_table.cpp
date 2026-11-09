@@ -1,5 +1,6 @@
 #include "lower/direct_method_table.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 #include <vector>
@@ -191,50 +192,73 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
     }
 }
 
+void DirectMethodTable::recordClassShownName(const std::string& className, const std::string& shownName) {
+    if (className.empty() || shownName.empty()) return;
+    std::vector<std::string>& bindings = shownClasses_[shownName];
+    if (std::find(bindings.begin(), bindings.end(), className) == bindings.end()) bindings.push_back(className);
+}
+
+// An accessor there is the guess, a method there (which a prototype holds in
+// the same place) means there is none to make. As with methods, the overrides
+// below the class are not consulted; the cell's publish is what decides
+// whether the receiver in hand resolves to the guess.
+uint32_t DirectMethodTable::resolveAccessorName(const std::string& className, const std::string& key,
+                                                bool setter) const {
+    std::string cls = className;
+    for (size_t hops = 0; hops < 64 && !cls.empty(); ++hops) {
+        if (ambiguousClasses_.count(cls) != 0) return il::Instruction::kNoDirectTarget;
+        if (const auto it = classAccessors_.find(cls); it != classAccessors_.end()) {
+            if (const auto a = it->second.find(key); a != it->second.end()) {
+                return setter ? a->second.setter : a->second.getter;
+            }
+        }
+        if (const auto it = classMethods_.find(cls); it != classMethods_.end()) {
+            if (it->second.count(key) != 0) return il::Instruction::kNoDirectTarget;
+        }
+        const auto up = classSuper_.find(cls);
+        if (up == classSuper_.end()) break;
+        cls = up->second;
+    }
+    return il::Instruction::kNoDirectTarget;
+}
+
+// What the site's hit does with the target: calls its body with the receiver
+// as `this` (and, for a setter, the value as its one argument) and no function
+// object, environment or argument vector — so the body must need none of
+// them, and take its operands boxed as the site holds them.
+bool DirectMethodTable::accessorCallable(const il::Module& ilModule, uint32_t target, bool setter) {
+    if (target >= ilModule.functions.size()) return false;
+    const il::Function& fn = ilModule.functions[target];
+    if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
+    if (fn.needsEnv || fn.needsArguments || fn.hasRestParam || !fn.needsThis) return false;
+    if (!il::functionEntersDirectly(fn)) return false;
+    if (fn.callerParamCount() != (setter ? 1u : 0u)) return false;
+    for (const auto& p : fn.params) {
+        if (p.type != il::Type::Dynamic) return false;
+    }
+    return fn.returnType == il::Type::Dynamic || fn.returnType == il::Type::Void;
+}
+
+uint32_t DirectMethodTable::accessorOfShownClass(const il::Module& ilModule, const std::string& shownName,
+                                                 const std::string& key, bool setter) const {
+    const auto it = shownClasses_.find(shownName);
+    if (it == shownClasses_.end()) return il::Instruction::kNoDirectTarget;
+    uint32_t found = il::Instruction::kNoDirectTarget;
+    for (const std::string& cls : it->second) {
+        const uint32_t target = resolveAccessorName(cls, key, setter);
+        if (!accessorCallable(ilModule, target, setter)) return il::Instruction::kNoDirectTarget;
+        if (found != il::Instruction::kNoDirectTarget && found != target) return il::Instruction::kNoDirectTarget;
+        found = target;
+    }
+    return found;
+}
+
 void DirectMethodTable::resolveAccessors(il::Module& ilModule) const {
     if (accessorSites_.empty() || classAccessors_.empty()) return;
-
-    // The nearest class at or above `className` that names `key` at all: an
-    // accessor there is the guess, a method there (which a prototype holds
-    // in the same place) means there is none to make. As with methods, the
-    // overrides below the class are not consulted; the cell's publish is what
-    // decides whether the receiver in hand resolves to the guess.
-    auto resolveName = [&](const std::string& className, const std::string& key,
-                           bool setter) -> uint32_t {
-        std::string cls = className;
-        for (size_t hops = 0; hops < 64 && !cls.empty(); ++hops) {
-            if (ambiguousClasses_.count(cls) != 0) return il::Instruction::kNoDirectTarget;
-            if (const auto it = classAccessors_.find(cls); it != classAccessors_.end()) {
-                if (const auto a = it->second.find(key); a != it->second.end()) {
-                    return setter ? a->second.setter : a->second.getter;
-                }
-            }
-            if (const auto it = classMethods_.find(cls); it != classMethods_.end()) {
-                if (it->second.count(key) != 0) return il::Instruction::kNoDirectTarget;
-            }
-            const auto up = classSuper_.find(cls);
-            if (up == classSuper_.end()) break;
-            cls = up->second;
-        }
-        return il::Instruction::kNoDirectTarget;
+    const auto resolveName = [&](const std::string& className, const std::string& key, bool setter) {
+        return resolveAccessorName(className, key, setter);
     };
-    // What the site's hit does with the target: calls its body with the
-    // receiver as `this` (and, for a setter, the value as its one argument)
-    // and no function object, environment or argument vector — so the body
-    // must need none of them, and take its operands boxed as the site holds
-    // them.
-    auto callable = [&](uint32_t target, bool setter) {
-        if (target >= ilModule.functions.size()) return false;
-        const il::Function& fn = ilModule.functions[target];
-        if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
-        if (fn.needsEnv || fn.needsArguments || fn.hasRestParam || !fn.needsThis) return false;
-        if (!il::functionEntersDirectly(fn)) return false;
-        if (fn.callerParamCount() != (setter ? 1u : 0u)) return false;
-        for (const auto& p : fn.params) {
-            if (p.type != il::Type::Dynamic) return false;
-        }
-        return fn.returnType == il::Type::Dynamic || fn.returnType == il::Type::Void;
-    };
+    const auto callable = [&](uint32_t target, bool setter) { return accessorCallable(ilModule, target, setter); };
 
     std::unordered_map<uint32_t, uint32_t> cellOf;
     for (auto& fn : ilModule.functions) {

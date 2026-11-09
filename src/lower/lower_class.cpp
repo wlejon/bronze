@@ -99,6 +99,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // class for a root.
     directMethods_.recordClassSuper(name, hasSuper && superName.empty() ? "<extends expression>"
                                                                         : superName);
+    directMethods_.recordClassShownName(name, shownName);
 
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's

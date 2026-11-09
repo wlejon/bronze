@@ -252,6 +252,26 @@ the plan where each claim has to be made:
   entry: a mega-table answer at a full site goes into way 0, so a site whose
   ways warm-up shapes filled comes to hold the shapes it meets now. A site
   of one shape that A already claimed is left to its claim.
+- **F, accessor targets** (right after lowering's own accessor guess,
+  `resolveAccessors`, before guarded inlining, so the inliner copies the
+  getter or setter in): a `prop.get` / `prop.set` of a named key with no
+  slot claim and no direct target, whose receivers had one dominant shape
+  with a complete key list that lacks the key, gets the accessor half that
+  shape's class resolves the key to as its `directTarget`, with an accessor
+  cell pair of its own (il.h). The class is the one the shape's prototype
+  is named by (its constructor's `name`): every class declared under that
+  name must resolve the key, at or above it, to the same getter (or setter)
+  that an accessor site's hit can call (`accessorOfShownClass`,
+  `direct_method_table.cpp`); a name no class has, a `^Name` prototype, or
+  classes that disagree get nothing. This is what lowering stamps when
+  inference knows the receiver's class, for receivers only the run saw
+  (parameters, array elements, `this` of methods unknown code calls). The
+  guard is the cell's: the runtime publishes (shape, prototype epoch) only
+  after resolving the key on a plain receiver's chain to an accessor whose
+  half has this function's code (`runtime/accessor_cell.cpp`), so a
+  receiver with the key as its own, a subclass that overrides it, an
+  accessor redefined or a prototype replaced (both move the epoch), or a
+  receiver that is no plain object takes the site's ordinary access.
 - **D, profile-guided regions** (after inlining and the own-slot calls,
   before transition runs, define-add cells and the claims;
   `src/lower/guard_region.h`, "PROFILE-GUIDED REGIONS"): the guarded-region

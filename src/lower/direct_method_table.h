@@ -62,6 +62,10 @@ public:
     void recordClassAccessor(const std::string& className, const std::string& key, bool setter,
                              uint32_t fnIndex);
     void recordAccessorSite(uint32_t icIndex, std::string receiverClass, std::string key);
+    // The name a class's `name` property shows (its source spelling, what a
+    // type-feedback profile names a prototype by), for the binding
+    // `className` the table keys it on.
+    void recordClassShownName(const std::string& className, const std::string& shownName);
 
     // Stamps every method-call site whose callee the module as a whole names.
     //
@@ -82,6 +86,16 @@ public:
     // accessor's body in behind the cell's guard: the stamp is a fact only
     // about the finished sites, and nothing before inlining reads it.
     void resolveAccessors(il::Module& ilModule) const;
+
+    // The getter (or setter) every class whose `name` shows `shownName`
+    // resolves `key` to, as `resolveAccessors` would for a receiver of that
+    // class, when they all name the same direct-callable function; else
+    // kNoDirectTarget. What a type-feedback profile's receiver shape (named
+    // by its prototype's constructor) is read against
+    // (opt/spec/feedback_plan.h, applyFeedbackAccessors). A guess like the
+    // other: the accessor cell's publish decides each receiver.
+    uint32_t accessorOfShownClass(const il::Module& ilModule, const std::string& shownName, const std::string& key,
+                                  bool setter) const;
 
     // Marks every method call whose key names an instance method of some
     // class here AND is the key of some named property write in the module
@@ -110,6 +124,11 @@ private:
     // Whether one class is the other or an ancestor of it, by the recorded
     // extends links; an unknown class (empty) is related to every class.
     bool classesRelated(const std::string& a, const std::string& b) const;
+    // The nearest class at or above `className` that names `key` at all: its
+    // accessor half, or kNoDirectTarget (a method there, an ambiguous class).
+    uint32_t resolveAccessorName(const std::string& className, const std::string& key, bool setter) const;
+    // Whether an accessor site's hit can call `target` (resolveAccessors).
+    static bool accessorCallable(const il::Module& ilModule, uint32_t target, bool setter);
 
     struct Site {
         std::string receiverClass;
@@ -130,6 +149,8 @@ private:
     std::unordered_map<std::string, std::string> classSuper_;
     std::unordered_set<std::string> declaredClasses_;
     std::unordered_set<std::string> ambiguousClasses_;
+    // shown name -> the class bindings that show it.
+    std::unordered_map<std::string, std::vector<std::string>> shownClasses_;
 };
 
 }  // namespace bronze::lower

@@ -29,6 +29,7 @@
 // `oracle-feedback` suite builds every case on an adversarial profile).
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <tuple>
@@ -138,6 +139,10 @@ struct FeedbackApplyStats {
     uint32_t ownCallees = 0;       // B: method.call sites split on an own slot's closure
     uint32_t ownSlotSites = 0;     // B: own-slot sites with no one closure, dispatched at the site
     uint32_t nativeTargetsDropped = 0;  // B: predicted direct targets the run saw a native callee at
+    uint32_t accessorGets = 0;     // F: prop.get sites given their getter as direct target
+    uint32_t accessorSets = 0;     // F: prop.set sites given their setter as direct target
+    uint32_t accessorNone = 0;     //    a dominant shape lacking the key whose class names no one accessor
+    uint64_t accessorExecutions = 0;
     // The profiled executions the claims cover, each identity counted once
     // however many copies of it were claimed.
     uint64_t shapeExecutions = 0, methodExecutions = 0, closureExecutions = 0, hintExecutions = 0;
@@ -169,6 +174,20 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 // and E, an inline way chain (`icChain`) on each read that met 1..4 plain
 // shapes.
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats);
+
+// F, accessor targets: (prototype name, key, setter) -> the getter or setter
+// the classes so named resolve the key to, or UINT32_MAX (lowering's class
+// table answers it, lower/direct_method_table.h `accessorOfShownClass`).
+using AccessorResolver = std::function<uint32_t(const std::string& protoName, const std::string& key, bool setter)>;
+
+// F: a `prop.get` / `prop.set` of a named key that nothing gave a slot or a
+// target, whose receivers had one dominant shape, complete and without the
+// key, gets the accessor half that shape's class resolves the key to as its
+// `directTarget`, with a fresh accessor cell pair per site (il.h), exactly
+// what lowering's class guess stamps. Runs where that guess is stamped,
+// before guarded inlining, which copies the body in behind the cell.
+void applyFeedbackAccessors(il::Module& mod, const FeedbackPlan& plan, const AccessorResolver& resolve,
+                            FeedbackApplyStats* stats);
 
 std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& stats);
 

@@ -128,6 +128,17 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // function's entry or a loop header, and an inlined body is neither),
     // and a typed site would lose its unboxed entry for a generic body.
     directMethods_.resolveAccessors(mod);
+    // A profile's accessor targets (F), for the sites the class guess left
+    // without one, where that guess is stamped: right before the inliner,
+    // which copies a getter's or setter's body in behind its cell.
+    if (plan != nullptr) {
+        spec::applyFeedbackAccessors(
+            mod, *plan,
+            [&](const std::string& proto, const std::string& key, bool setter) {
+                return directMethods_.accessorOfShownClass(mod, proto, key, setter);
+            },
+            &feedbackStats);
+    }
     if (inlineGuarded_) {
         std::vector<uint32_t> inlinedInto;
         const ClosureGuesses guesses = directMethods_.closureGuesses(mod);

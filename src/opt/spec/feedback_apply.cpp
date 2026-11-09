@@ -1,6 +1,7 @@
 // The consuming half of type-feedback specialization (feedback_plan.h): the
-// direct targets (B) before the passes that copy bodies, and the static-slot
-// claims (A) and number hints (C) on the finished module.
+// direct targets (B) before the passes that copy bodies, the accessor targets
+// (F) before guarded inlining, and the static-slot claims (A) and number
+// hints (C) on the finished module.
 
 #include <algorithm>
 #include <charconv>
@@ -434,6 +435,63 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
     const il::Function& callee = mod.functions[target];
     if (callee.needsThis && !callee.isStrict) return kNone;
     return target;
+}
+
+void applyFeedbackAccessors(il::Module& mod, const FeedbackPlan& plan, const AccessorResolver& resolve,
+                            FeedbackApplyStats* stats) {
+    FeedbackApplyStats local;
+    FeedbackApplyStats& st = stats ? *stats : local;
+    // One cell pair per site, shared by its copies as they share its cache
+    // (direct_method_table.cpp, resolveAccessors).
+    std::unordered_map<uint32_t, uint32_t> cellOf;
+    std::unordered_set<uint32_t> refused;
+    std::vector<std::string_view> keys;
+    for (il::Function& fn : mod.functions) {
+        if (fn.isExternal || fn.blocks.empty()) continue;
+        const std::vector<uint8_t> observable = observableValues(fn);
+        for (il::Block& block : fn.blocks) {
+            for (il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::PropGet && inst.op != il::Op::PropSet) continue;
+                // A definition never reaches a setter.
+                if (inst.staticSlot != il::Instruction::kNoStaticSlot ||
+                    inst.directTarget != il::Instruction::kNoDirectTarget || il::isDefineWrite(inst) ||
+                    inst.operands.empty() || inst.operands[0] >= observable.size() ||
+                    observable[inst.operands[0]] == 0 || inst.keyIndex >= mod.keyConstants.size()) {
+                    continue;
+                }
+                const std::string& key = mod.keyConstants[inst.keyIndex];
+                if (il::parseIndexKey(key)) continue;
+                const auto it = plan.shapesByIc.find(inst.icIndex);
+                if (it == plan.shapesByIc.end()) continue;
+                const std::string* shape = it->second.dominant(kDominantPercent);
+                bool complete = false;
+                if (shape == nullptr || !shapeKeys(*shape, keys, complete) || !complete) continue;
+                // The key own on the receiver is A's and E's (a slot), never
+                // an accessor of the prototype's.
+                if (std::find(keys.begin(), keys.end(), key) != keys.end()) continue;
+                // The class the prototype's constructor names; `^Name` (an
+                // `Object.create` link in between) names none.
+                std::string proto = shape->substr(0, shape->find('{'));
+                if (const size_t hash = proto.find('#'); hash != std::string::npos) proto.resize(hash);
+                if (proto.empty() || proto.front() == '^') continue;
+                const bool setter = inst.op == il::Op::PropSet;
+                const uint32_t target = resolve(proto, key, setter);
+                if (target >= mod.functions.size()) {
+                    if (refused.insert(inst.icIndex).second) ++st.accessorNone;
+                    continue;
+                }
+                auto cell = cellOf.find(inst.icIndex);
+                if (cell == cellOf.end()) {
+                    cell = cellOf.emplace(inst.icIndex, mod.staticSiteCount).first;
+                    mod.staticSiteCount += 2;
+                    st.accessorExecutions += it->second.total;
+                }
+                inst.directTarget = target;
+                inst.staticCellIndex = cell->second;
+                ++(setter ? st.accessorSets : st.accessorGets);
+            }
+        }
+    }
 }
 
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats) {

@@ -199,6 +199,9 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
            "; profiled executions " + n(stats.chainExecutions) + "), own-slot callees " + n(stats.ownCallees) +
            ", own-slot sites " + n(stats.ownSlotSites) + ", native-callee targets dropped " +
            n(stats.nativeTargetsDropped) + "\n";
+    out += "feedback: F accessor targets get " + n(stats.accessorGets) + ", set " + n(stats.accessorSets) +
+           " (dominant shape lacking the key with no one accessor " + n(stats.accessorNone) +
+           "); profiled executions " + n(stats.accessorExecutions) + "\n";
     return out;
 }
 

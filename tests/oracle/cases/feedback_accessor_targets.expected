@@ -1,0 +1,13 @@
+warm 3782400 203 200 206 200
+override 9 -9 0 209 7
+override px 10 7
+own data 42 0 q 243
+own accessor 99 4
+swapped swapped set 3 undefined
+restored 4 4 1 20
+number undefined undefined
+undefined TypeError
+redefined 142816 1203 200 144832 1206
+redefined override 9
+shadowed 392 77 1202 2204
+unshadowed 77 1001
