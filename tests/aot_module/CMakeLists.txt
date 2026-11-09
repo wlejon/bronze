@@ -30,3 +30,26 @@ add_test(NAME aot-module-gc-stress COMMAND bronze_aot_module_host)
 set_tests_properties(aot-module-gc-stress PROPERTIES
     LABELS shared
     ENVIRONMENT "BRONZE_GC_STRESS=1")
+
+# One file through the same build, load and run, for the oracle's module suite
+# (tests/oracle: "Oracle module*").
+add_executable(bronze_module_run_host run_host.cpp)
+target_link_libraries(bronze_module_run_host PRIVATE bronze::runtime_shared ${CMAKE_DL_LIBS})
+set_target_properties(bronze_module_run_host PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${BRONZE_SHARED_RUNTIME_DIR})
+if(MSVC)
+    target_compile_options(bronze_module_run_host PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(bronze_module_run_host PRIVATE -Wall -Wextra -Werror)
+endif()
+
+# Every oracle case as a module, plain and under gc-stress. The suite lives in
+# the oracle binary (oracle_module_test.cpp); it is registered here because the
+# runner exists only where the shared runtime is built.
+if(TARGET bronze_oracle_tests)
+    add_test(NAME oracle-module COMMAND bronze_oracle_tests "--test-case=Oracle module*")
+    set_tests_properties(oracle-module PROPERTIES
+        LABELS "oracle;shared"
+        PROCESSORS 4
+        ENVIRONMENT "BRONZE_MODULE_RUN_HOST=$<TARGET_FILE:bronze_module_run_host>")
+endif()

@@ -58,8 +58,12 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
 // The front end after the graph is loaded: the eval transform (a trailing
 // expression's value kept under `resName`, top-level declarations made
 // global), inference and lowering. Null with `diags` holding why.
+// `aheadOfTime` is a module build (aot_module.cpp): lowering also runs the
+// whole-program optimizer, as `bronze build` does, whose claims are guarded
+// fast paths and so hold for a program other units and the host reach into.
 std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptions& options,
                                          const CompileInputs& in, const std::string& resName,
-                                         DiagnosticSink& diags, SourceSet& sources);
+                                         DiagnosticSink& diags, SourceSet& sources,
+                                         bool aheadOfTime = false);
 
 }  // namespace bronze::eval::detail

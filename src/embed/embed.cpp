@@ -349,6 +349,8 @@ int64_t toInt64(Value v) {
 
 bool toBool(Value v) { return bronze_truthy(v.rawBits()); }
 
+std::string uncaughtReport(Value thrown) { return runtime::rtUncaughtReport(thrown); }
+
 std::string toUtf8(Value v) {
     // A string answers from its own bytes with no allocation; everything else
     // goes through the primitive ToString, which allocates a heap string this

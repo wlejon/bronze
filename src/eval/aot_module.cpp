@@ -143,7 +143,8 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         out.errorMessage = rendered(diags, sources, "the module graph could not be loaded");
         return out;
     }
-    std::unique_ptr<il::Module> ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources);
+    std::unique_ptr<il::Module> ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources,
+                                                                    /*aheadOfTime=*/true);
     if (!ilModule) {
         out.errorMessage = rendered(diags, sources, "lowering failed");
         return out;

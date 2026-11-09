@@ -620,7 +620,9 @@ const std::string& processKeyMaterial() {
 
 const std::string& moduleKeyMaterial() {
     static const std::string material = [] {
-        std::string m = "module-v" + std::to_string(kVersion) + "|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
+        // "wpo": a module is built with the whole-program optimizer
+        // (lowerProgram's aheadOfTime), which one built before it was not.
+        std::string m = "module-v" + std::to_string(kVersion) + "|wpo|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
         for (const auto& v : bronzeEnvironment()) m += "|" + v;
         return m;
     }();

@@ -1,4 +1,5 @@
-add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp oracle_stack_depth_test.cpp)
+add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp oracle_module_test.cpp
+               oracle_stack_depth_test.cpp)
 target_include_directories(bronze_oracle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases"
@@ -27,7 +28,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*,Oracle\ module*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without

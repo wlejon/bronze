@@ -934,6 +934,11 @@ BRONZE_EMBED_API bool toBool(Value v);
 // non-string inputs.
 BRONZE_EMBED_API std::string toUtf8(Value v);
 
+// The report a program's main makes of an uncaught throw: an Error with its
+// stack, anything else inspected, without the trailing newline. For a host
+// that ends a throw itself (a CallResult's `thrown`) and wants the same lines.
+BRONZE_EMBED_API std::string uncaughtReport(Value thrown);
+
 BRONZE_EMBED_API bool isUndefined(Value v);
 BRONZE_EMBED_API bool isNull(Value v);
 // A function object — callable through `call` above.

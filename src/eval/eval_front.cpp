@@ -240,7 +240,8 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
 
 std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptions& options,
                                          const CompileInputs& in, const std::string& resName,
-                                         DiagnosticSink& diags, SourceSet& sources) {
+                                         DiagnosticSink& diags, SourceSet& sources,
+                                         bool aheadOfTime) {
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
     auto temporarilyExported = prepareEvalAstForInference(astModule, resName);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
@@ -258,6 +259,9 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
 
+    lower::WholeProgramOptions wholeProgram;
+    wholeProgram.on = aheadOfTime;
+    wholeProgram.build.hostGlobals = hostGlobals;
     auto lowered = lower::lowerModule(astModule, diags,
                                       inferred ? &*inferred : nullptr,
                                       hostGlobals.empty() ? nullptr : &hostGlobals,
@@ -267,7 +271,8 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       in.pins.empty() ? nullptr : &in.pins,
                                       options.censusOutPath,
                                       in.nativeManifest ? &*in.nativeManifest : nullptr,
-                                      inlineGuardedFor(in));
+                                      inlineGuardedFor(in),
+                                      &wholeProgram);
     if (diags.hasErrors() || !lowered) return nullptr;
     timer.mark("lower");
     reportProgress(options, "lower", 0.88);
