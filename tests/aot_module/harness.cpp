@@ -249,6 +249,42 @@ int main() {
         }
     }
 
+    // ---- unloaded, then run again in the same realm (a host reloading its page) ------------
+    // The second entry must be a first one: the image's tables (environment
+    // cell, caches, the registry publish's callee) were written by the first
+    // run and stopped being roots at the unload. Before instances were reset
+    // at unload this threw "an object is not a function" or read freed objects.
+    {
+        const fs::path rdir = dir / "rerun";
+        fs::create_directories(rdir, ec);
+        writeText(rdir / "lib.js",
+                  "export const table = { a: 1, b: 2 };\n"
+                  "export class Box { constructor(v) { this.v = v; } get() { return this.v; } }\n");
+        const std::string again =
+            "import { table, Box } from './lib.js';\n"
+            "class Twice extends Box { twice() { return this.get() * 2; } }\n"
+            "let total = 0;\n"
+            "for (let i = 0; i < 100; i++) total += new Twice(i).twice() + table.a;\n"
+            "'total:' + total;\n";
+        const std::string rmod = (rdir / ("unit" + std::string(kModuleExt))).string();
+        const std::string rrec = (rdir / "unit.bzm").string();
+        const eval::ModuleBuildResult rb = eval::buildModule(again, optionsFor(rdir), rmod, rrec);
+        check(rb.success, "the rerun unit builds" + (rb.errorMessage.empty() ? std::string() : ": " + rb.errorMessage));
+        for (int round = 0; round < 3; ++round) {
+            const eval::LoadedModule rl = eval::loadModule(again, optionsFor(rdir), rrec);
+            check(rl.ok, "round " + std::to_string(round) + ": the module loads" + (rl.ok ? std::string() : ": " + rl.why));
+            if (!rl.ok) break;
+            embed::ModuleHandle handle = 0;
+            eval::EvalOptions runOpts = optionsFor(rdir);
+            runOpts.moduleHandleOut = &handle;
+            embed::CallResult res = eval::runModule(rl, runOpts);
+            const std::string got = res.thrown ? "threw " + embed::uncaughtReport(res.value) : embed::toUtf8(res.value);
+            check(got == "total:10000", "round " + std::to_string(round) + ": the entry runs as a first one: " + got);
+            embed::unloadModule(handle);
+            embed::collectGarbage();
+        }
+    }
+
     // ---- what makes a record stale ---------------------------------------------------------
     {
         eval::EvalOptions other = optionsFor(dir);

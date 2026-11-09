@@ -10,6 +10,16 @@ namespace bronze::runtime {
 // module's data is no longer the pristine one a first run starts from.
 bool rtThreadHasModuleInstance(const uint64_t* slotCell);
 void rtTeardownThreadModuleInstances();
+// The program loaded under `epoch` is being unloaded on this thread
+// (rtDropModuleEpoch): every instance its entries made, in any realm, is put
+// back as it was before an entry wrote to it, so a later entry of the same
+// image in that realm is a first entry. Called while the instance's memory is
+// still there.
+void rtResetModuleInstancesOfEpoch(uint64_t epoch);
+// The modules loaded under `epoch` were reclaimed by the collector, memory and
+// all (rt_state.cpp, sweepDynamicModules): their instances are no longer that
+// epoch's to reset.
+void rtForgetModuleInstancesOfEpoch(uint64_t epoch);
 
 // Make the instances of realm `realmSlot` the ones generated code addresses
 // (the TLS block's delta array). 0 is the thread's own table, which its

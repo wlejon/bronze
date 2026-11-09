@@ -97,9 +97,21 @@ struct ThreadModuleInstanceState {
     size_t deltaCapacity = 0;
     std::vector<uint64_t*> retiredDeltas;
     std::vector<void*> threadCopies;
-    // Where each instance this table uses lives (the image's run for the
-    // home, else a copy): what a destroyed realm's GC registrations point at.
-    std::vector<std::pair<const uint8_t*, size_t>> runs;
+    // Each instance this table uses: where it lives (the image's run for the
+    // home, else a copy), which is what a destroyed realm's GC registrations
+    // point at, and the module load whose entry made it (rt_state.h, epochs;
+    // 0 outside any bracket), which is the program that owns what it holds.
+    struct Run {
+        uint64_t slot;
+        uint8_t* addr;
+        size_t size;
+        uint64_t epoch;
+        // Its program was unloaded and the run put back as it was before any
+        // entry wrote to it; the next entry is its first again.
+        bool vacant;
+    };
+    std::vector<Run> runs;
+    size_t vacantRuns = 0;
 
     void clear() {
         delete[] deltas;
@@ -117,6 +129,7 @@ struct ThreadModuleInstanceState {
         threadCopies.shrink_to_fit();
         runs.clear();
         runs.shrink_to_fit();
+        vacantRuns = 0;
     }
 
     ~ThreadModuleInstanceState() { clear(); }
@@ -178,10 +191,54 @@ void rtReleaseRealmModuleInstances(uint32_t realmSlot) {
             t_active = &t_inst;
             rtTls()->module_deltas = t_inst.deltas;
         }
-        for (const auto& [addr, size] : it->second->runs) rtDropModuleCellsWithin(addr, size);
+        for (const auto& run : it->second->runs) rtDropModuleCellsWithin(run.addr, run.size);
         t_realmInst.erase(it);
     }
     rtDropRealmFunctionSingletons(realmSlot);
+}
+
+// An unloaded program's instances go back to what they were before its entry
+// ran. The spans the entry registered are gone with the epoch, so the run's
+// caches, environment cell and "already initialized" words name objects
+// nothing keeps alive; an entry that found them would run on them. The host
+// that reloads a page runs the same image again in the same realm, and that
+// entry must be a first one. The delta stays (generated code may hold it), so
+// the bytes are restored in place.
+void rtResetModuleInstancesOfEpoch(uint64_t epoch) {
+    if (epoch == 0) return;
+    auto resetIn = [epoch](ThreadModuleInstanceState& inst) {
+        for (auto& run : inst.runs) {
+            if (run.epoch != epoch || run.vacant) continue;
+            rtDropModuleCellsWithin(run.addr, run.size);
+            {
+                std::lock_guard<std::mutex> lock(imagesMutex());
+                const ImageRecord& rec = images()[run.slot - 1];
+                if (run.size != 0) std::memcpy(run.addr, rec.pristine.data(), run.size);
+            }
+            run.vacant = true;
+            ++inst.vacantRuns;
+        }
+    };
+    resetIn(t_inst);
+    for (auto& [slot, table] : t_realmInst) {
+        if (table) resetIn(*table);
+    }
+}
+
+// The collector reclaimed the in-process modules loaded under `epoch` along
+// with the memory a home instance lives in: no later unload of that epoch may
+// write to it.
+void rtForgetModuleInstancesOfEpoch(uint64_t epoch) {
+    if (epoch == 0) return;
+    auto forgetIn = [epoch](ThreadModuleInstanceState& inst) {
+        for (auto& run : inst.runs) {
+            if (run.epoch == epoch && !run.vacant) run.epoch = 0;
+        }
+    };
+    forgetIn(t_inst);
+    for (auto& [slot, table] : t_realmInst) {
+        if (table) forgetIn(*table);
+    }
 }
 
 void rtTeardownThreadModuleInstances() {
@@ -203,6 +260,17 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
     uint64_t slot = slotRef.load(std::memory_order_acquire);
     ThreadModuleInstanceState& inst = active();
     if (slot != 0 && slot < inst.deltaCapacity && inst.deltas[slot] != kNoDelta) {
+        if (inst.vacantRuns != 0) {
+            // The first entry since its last program was unloaded
+            // (rtResetModuleInstancesOfEpoch): this load owns it now.
+            for (auto& run : inst.runs) {
+                if (run.slot != slot || !run.vacant) continue;
+                run.vacant = false;
+                run.epoch = rtCurrentModuleEpoch();
+                --inst.vacantRuns;
+                break;
+            }
+        }
         return inst.deltas[slot];
     }
 
@@ -233,8 +301,8 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
     if (newCopy) {
         inst.threadCopies.push_back(newCopy);
     }
-    inst.runs.emplace_back(
-        reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(runBegin) + delta), size);
+    inst.runs.push_back({slot, reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(runBegin) + delta), size,
+                         rtCurrentModuleEpoch(), /*vacant=*/false});
     ensureDeltaCapacity(static_cast<size_t>(slot));
     inst.deltas[slot] = delta;
     return delta;

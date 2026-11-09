@@ -462,6 +462,9 @@ void rtDropModuleEpoch(uint64_t epoch) {
     if (epoch == 0 || !g_threadModules) return;
     ThreadModuleState& s = *g_threadModules;
     dropModuleSpansAndSingletons(s, epoch);
+    // Before the modules themselves go: a compiled-in-process module owns the
+    // memory its instance lives in.
+    rtResetModuleInstancesOfEpoch(epoch);
     std::erase_if(s.dynamicModules, [epoch, &s](const std::unique_ptr<DynamicModule>& mod) {
         if (mod->epoch != epoch) return false;
         for (const void* tok : mod->codeTokens) s.codeToModule.erase(tok);
@@ -667,6 +670,7 @@ static void sweepDynamicModules() {
         }
         for (const void* tok : mod->codeTokens) s.codeToModule.erase(tok);
         dropModuleSpansAndSingletons(s, mod->epoch);
+        rtForgetModuleInstancesOfEpoch(mod->epoch);
         g_totalDynamicModules.fetch_sub(1, std::memory_order_relaxed);
         retiredOwners.push_back(std::move(mod->owner));
         return true;
