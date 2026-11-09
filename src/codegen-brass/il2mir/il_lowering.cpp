@@ -242,7 +242,9 @@ static bool is_translator_data_symbol(std::string_view sym) {
 }
 
 // Declares every data symbol a func_addr in `mod` names as `data`
-// (runtime_symbols.hpp), so no engine binds it to a call stub.
+// (runtime_symbols.hpp), so no engine binds it to a call stub. A function
+// the module defines under the prefix (the sort merge stub, whose address
+// the runtime is handed) is code, not a table.
 static void declare_data_symbols(Module& mod) {
     std::vector<std::string> syms;
     for (const Function* fn : mod.functions()) {
@@ -252,7 +254,8 @@ static void declare_data_symbols(Module& mod) {
             for (const Instruction* inst : *bb) {
                 if (!inst || inst->opcode() != Opcode::func_addr) continue;
                 const std::string_view sym = inst->symbol();
-                if (is_translator_data_symbol(sym) && !mod.string_symbol(sym)) syms.emplace_back(sym);
+                if (is_translator_data_symbol(sym) && !mod.string_symbol(sym) && !mod.get_function(sym))
+                    syms.emplace_back(sym);
             }
         }
     }
