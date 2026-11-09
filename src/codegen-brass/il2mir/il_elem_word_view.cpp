@@ -1,18 +1,22 @@
-// Keyed element reads and writes on a receiver PROVEN a Float32Array or a
-// Float64Array: `is.typed_array r, kTypedArrayAnyFloat` (il_pin.h) dominates
-// them, and the typed-body versioning pass (lower/typed_body_version.h) marked
-// them with kElemFlagFloatViewReceiver. A view's kind never changes, so what
-// a site skips is the generic path's object, Array and view header compares
-// and its kind ladder; it asks only which of the two float kinds the view is.
-// Everything that changes with the view — its length (0 once detached) and
-// where its bytes are — is read at the access, before its first branch, so
-// the next access to the same view shares the loads.
+// Keyed element reads and writes on a receiver PROVEN a word view, an
+// Int32Array, Uint32Array, Float32Array or Float64Array:
+// `is.typed_array r, kTypedArrayWordView` (il_pin.h) dominates them, and the
+// typed-body versioning pass (lower/typed_body_version.h) marked them with
+// kElemFlagWordViewReceiver. A view's kind never changes, so what a site
+// skips is the generic path's object, Array and view header compares and its
+// kind ladder over every kind; it asks only which of the four it is (a store
+// which of three: both integer kinds store the same 32 bits). Everything that
+// changes with the view — its length (0 once detached, the tracked length of
+// a length-tracking view) and where its bytes are — is read at the access,
+// before its first branch, so the next access to the same view shares the
+// loads.
 //
 // The access answers exactly what the generic one does. With a Number key,
 // an index outside the view reads `undefined` and drops a Number store
 // (10.4.5.4 / 10.4.5.5), with no call, so a run of such accesses calls
 // nothing; a key that is no Number, or a value that is no Number (ToNumber
-// may run user code), takes the generic helper.
+// may run user code), takes the generic helper. An integer kind stores
+// ToInt32 of the Number, computed inline for every Number.
 
 #include "il/il_pin.h"
 #include "il_abi.h"
@@ -35,9 +39,13 @@ Value* view_length(Builder& b, Value* ptr) {
         with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
 }
 
-Value* is_float64_view(Builder& b, Value* ptr) {
-    Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
-    return b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64));
+Value* view_kind(Builder& b, Value* ptr) {
+    return with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
+}
+
+// Float32 and Float64 are the word kinds above the two integer ones.
+Value* is_float_kind(Builder& b, Value* kind) {
+    return b.build_uge(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32));
 }
 
 // Whether an index operand is a Number by its type or its definition.
@@ -47,17 +55,21 @@ bool known_number(Value* index) {
 
 }  // namespace
 
-bool PropertyLoweringHelper::elem_float_view_receiver(int64_t flags) {
-    return (flags & bronze::il::kElemFlagFloatViewReceiver) != 0;
+bool PropertyLoweringHelper::elem_word_view_receiver(int64_t flags) {
+    return (flags & bronze::il::kElemFlagWordViewReceiver) != 0;
 }
 
-Value* PropertyLoweringHelper::lower_elem_get_float_view(Builder& b, Value* obj, Value* index, int64_t flags) {
+Value* PropertyLoweringHelper::lower_elem_get_word_view(Builder& b, Value* obj, Value* index, int64_t flags) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
-    const std::string prefix = "elem_get_fv_" + std::to_string(fn->next_block_id());
+    const std::string prefix = "elem_get_wv_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_load = b.append_block(prefix + "_load");
+    BasicBlock* bb_float = b.append_block(prefix + "_float");
     BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
+    BasicBlock* bb_int = b.append_block(prefix + "_int");
+    BasicBlock* bb_u32 = b.append_block(prefix + "_u32");
+    BasicBlock* bb_i32 = b.append_block(prefix + "_i32");
     BasicBlock* bb_box = b.append_block(prefix + "_box");
     BasicBlock* bb_miss = b.append_block(prefix + "_miss");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
@@ -73,19 +85,29 @@ Value* PropertyLoweringHelper::lower_elem_get_float_view(Builder& b, Value* obj,
     Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
     Value* length = view_length(b, ptr);
     Value* data = load_typed_array_data(b, ptr);
-    Value* f64_view = is_float64_view(b, ptr);
+    Value* kind = view_kind(b, ptr);
+    Value* is_float = is_float_kind(b, kind);
     Value* idx = nullptr;
     Value* ok = nullptr;
     emit_elem_index_guard(b, index, idx, ok, (flags & bronze::il::kElemFlagProvenIntegralIndex) != 0);
     b.build_br_if(b.build_and(ok, b.build_ult(idx, length)), bb_load, bb_miss);
 
     b.position_at_end(bb_load);
-    b.build_br_if(f64_view, bb_f64, bb_f32);
+    b.build_br_if(is_float, bb_float, bb_int);
+    b.position_at_end(bb_float);
+    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), bb_f64, bb_f32);
     b.position_at_end(bb_f64);
     b.build_br(bb_box, {with_alias_class(b.build_load_indexed(Type::f64(), data, idx, 8), kTypedElementAliasClass)});
     b.position_at_end(bb_f32);
     Value* f32 = with_alias_class(b.build_load_indexed(Type::f32(), data, idx, 4), kTypedElementAliasClass);
     b.build_br(bb_box, {b.build_fpext_f64_f32(f32)});
+    b.position_at_end(bb_int);
+    Value* word = with_alias_class(b.build_load_indexed(Type::i32(), data, idx, 4), kTypedElementAliasClass);
+    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_UINT32)), bb_u32, bb_i32);
+    b.position_at_end(bb_u32);
+    b.build_br(bb_box, {b.build_sitofp_f64_i64(b.build_zext_i64(word))});
+    b.position_at_end(bb_i32);
+    b.build_br(bb_box, {b.build_sitofp_f64_i32(word)});
     b.position_at_end(bb_box);
     b.build_br(bb_merge, {box_f64_bits(b, number)});
 
@@ -109,15 +131,17 @@ Value* PropertyLoweringHelper::lower_elem_get_float_view(Builder& b, Value* obj,
     return result;
 }
 
-void PropertyLoweringHelper::lower_elem_set_float_view(Builder& b, Value* obj, Value* index, Value* val,
-                                                       uint32_t strict, int64_t flags) {
+void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Value* index, Value* val,
+                                                      uint32_t strict, int64_t flags) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
-    const std::string prefix = "elem_set_fv_" + std::to_string(fn->next_block_id());
+    const std::string prefix = "elem_set_wv_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_valid = b.append_block(prefix + "_valid");
     BasicBlock* bb_store = b.append_block(prefix + "_store");
+    BasicBlock* bb_float = b.append_block(prefix + "_float");
     BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
+    BasicBlock* bb_int = b.append_block(prefix + "_int");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
@@ -125,13 +149,14 @@ void PropertyLoweringHelper::lower_elem_set_float_view(Builder& b, Value* obj, V
     Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
     Value* length = view_length(b, ptr);
     Value* data = load_typed_array_data(b, ptr);
-    Value* f64_view = is_float64_view(b, ptr);
+    Value* kind = view_kind(b, ptr);
+    Value* is_float = is_float_kind(b, kind);
     Value* idx = nullptr;
     Value* ok = nullptr;
     emit_elem_index_guard(b, index, idx, ok, (flags & bronze::il::kElemFlagProvenIntegralIndex) != 0);
-    // A Number value stores as itself (Float32 rounded); anything else is
-    // ToNumber'd by the helper, which may run user code, before the index
-    // is looked at.
+    // A Number value stores as itself (Float32 rounded, an integer kind its
+    // ToInt32); anything else is ToNumber'd by the helper, which may run
+    // user code, before the index is looked at.
     Value* num = boxed_f64_source(val);
     Value* num_ok = nullptr;
     if (!num) {
@@ -158,13 +183,23 @@ void PropertyLoweringHelper::lower_elem_set_float_view(Builder& b, Value* obj, V
     }
 
     b.position_at_end(bb_store);
-    b.build_br_if(f64_view, bb_f64, bb_f32);
+    b.build_br_if(is_float, bb_float, bb_int);
+    b.position_at_end(bb_float);
+    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), bb_f64, bb_f32);
     b.position_at_end(bb_f64);
     with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, num), kTypedElementAliasClass);
     b.build_br(bb_merge);
     b.position_at_end(bb_f32);
     with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4, b.build_fptrunc_f32_f64(num)),
                      kTypedElementAliasClass);
+    b.build_br(bb_merge);
+
+    // Int32 and Uint32 store the same bits, ToInt32's, computed with no call
+    // for every Number, so that a store of a Number calls nothing and the
+    // loads above stay shared with the next access.
+    b.position_at_end(bb_int);
+    Value* word = narrow_f64_to_i32_callfree(b, num);
+    with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, word), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);

@@ -83,6 +83,35 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
                 r.ok = is_number ? is_number : b.build_iconst_i32(1);
                 return r;
             }
+            // `base + k` / `base - k` with an integral constant |k| <= 2^31
+            // (`view[index + 3]`): the index of the base, tested once and
+            // shared by every offset from it (GVN), plus k in integers. When
+            // the base is integral and base + k lands in a view (below 2^32),
+            // |base| < 2^33, so the double sum is exact and is that integer.
+            // When it is not, the double sum is no index below 2^32 either
+            // (a fraction of a base under 2^53 survives the add; a base of
+            // 2^53 or more sums past 2^52): both are outside every view, so
+            // the access misses either way, and the miss path is given the
+            // index operand itself.
+            const bool offset = (fdef->opcode() == Opcode::add || fdef->opcode() == Opcode::sub) &&
+                                fdef->operand_count() == 2 && f->type() == Type::f64() && !proven_integral &&
+                                is_number == nullptr;
+            for (int side = 0; offset && side < 2; ++side) {
+                if (side == 1 && fdef->opcode() == Opcode::sub) break;
+                Value* base = fdef->operand(side);
+                Value* k = fdef->operand(1 - side);
+                const Instruction* kdef = k && k->is_instruction() ? k->defining_instruction() : nullptr;
+                if (base == nullptr || base->type() != Type::f64() || kdef == nullptr ||
+                    kdef->opcode() != Opcode::fconst_f64 || !std::isfinite(kdef->imm_f64()) ||
+                    std::floor(kdef->imm_f64()) != kdef->imm_f64() || std::fabs(kdef->imm_f64()) > 2147483648.0) {
+                    continue;
+                }
+                const int64_t step = static_cast<int64_t>(kdef->imm_f64());
+                const ElemIndex at = elem_index(b, base);
+                r.i64 = b.build_add(at.i64, iconst(b, static_cast<uint64_t>(fdef->opcode() == Opcode::sub ? -step : step)));
+                r.ok = at.ok;
+                return r;
+            }
         }
     }
     // Integral when the round trip is exact (the compare is ordered: NaN
@@ -171,6 +200,8 @@ Value* extract_i32_from_sitofp(Value* v) {
     return nullptr;
 }
 
+} // namespace
+
 Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
     if (Value* x = extract_i32_from_sitofp(v)) return x;
     if (v && v->is_instruction()) {
@@ -225,14 +256,12 @@ Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
     return res;
 }
 
-} // namespace
-
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index, int64_t flags) {
     if (!enable_inlined_fastpaths_) {
         return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
     }
     if (elem_array_receiver(flags)) return lower_elem_get_array(b, obj, index, flags);
-    if (elem_float_view_receiver(flags)) return lower_elem_get_float_view(b, obj, index, flags);
+    if (elem_word_view_receiver(flags)) return lower_elem_get_word_view(b, obj, index, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -467,7 +496,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
         return;
     }
     if (elem_array_receiver(flags)) return lower_elem_set_array(b, obj, index, val, strict, flags);
-    if (elem_float_view_receiver(flags)) return lower_elem_set_float_view(b, obj, index, val, strict, flags);
+    if (elem_word_view_receiver(flags)) return lower_elem_set_word_view(b, obj, index, val, strict, flags);
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -883,9 +912,13 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
 
     b.position_at_end(bb_view);
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    if (imm == bronze::il::kTypedArrayAnyFloat) {
-        b.build_br(bb_merge, {b.build_or(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)),
-                                         b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)))});
+    if (imm == bronze::il::kTypedArrayWordView) {
+        // The word kinds are contiguous: Int32, Uint32, Float32, Float64.
+        static_assert(BRONZE_ABI_TA_KIND_UINT32 == BRONZE_ABI_TA_KIND_INT32 + 1 &&
+                      BRONZE_ABI_TA_KIND_FLOAT32 == BRONZE_ABI_TA_KIND_INT32 + 2 &&
+                      BRONZE_ABI_TA_KIND_FLOAT64 == BRONZE_ABI_TA_KIND_INT32 + 3);
+        b.build_br(bb_merge, {b.build_ult(b.build_sub(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_INT32)),
+                                          b.build_iconst_i32(4))});
         b.position_at_end(bb_merge);
         return result;
     }

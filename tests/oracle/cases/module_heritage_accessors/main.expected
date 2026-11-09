@@ -1,0 +1,11 @@
+warm -3 -2/-400 0/-200 2/0 -2/200 0/400 2/-400 -2/-200 0/0
+ticks 418,400,418,418,400,418,418,400 418
+s2:node(2,0) node(-2,200) 7
+odd 24 1/1 override NaN/1 5/1 plain1/8
+odd 25 2/2 override NaN/2 4/2 plain11/9
+odd 26 3/3 override NaN/3 3/3 plain111/10
+getter only true 1000 0
+own 3 0 3
+redefined 72 redefined/-402 redefined/-201 redefined/0
+swapped 7 5 2
+ticks 419,401,419,419,401,419,419,401

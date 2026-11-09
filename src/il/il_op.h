@@ -509,9 +509,10 @@ enum class Op : uint8_t {
     // element ops read afresh at every access. That is the licence for
     // `elem.get.typed` / `elem.set.typed` on the true edge, and the
     // typed-loop versioning pass (lower/typed_loop_version.h) produces it.
-    // With immI32 kTypedArrayAnyFloat (il_pin.h) it asks whether `b` is a
-    // Float32Array or a Float64Array, the licence for the element flag
-    // kElemFlagFloatViewReceiver (typed-body versioning,
+    // With immI32 kTypedArrayWordView (il_pin.h) it asks whether `b` is an
+    // Int32Array, Uint32Array, Float32Array or Float64Array, the licence for
+    // the element flag
+    // kElemFlagWordViewReceiver (typed-body versioning,
     // lower/typed_body_version.h). Header loads only: cannot throw, cannot
     // collect.
     //

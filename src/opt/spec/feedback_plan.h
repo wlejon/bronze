@@ -181,8 +181,8 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
 using AccessorResolver = std::function<uint32_t(const std::string& protoName, const std::string& key, bool setter)>;
 
 // F: a `prop.get` / `prop.set` of a named key that nothing gave a slot or a
-// target, whose receivers had one dominant shape, complete and without the
-// key, gets the accessor half that shape's class resolves the key to as its
+// target, whose receivers had one dominant shape whose listed keys lack the
+// key (a list the recorder cut short included), gets the accessor half that shape's class resolves the key to as its
 // `directTarget`, with a fresh accessor cell pair per site (il.h), exactly
 // what lowering's class guess stamps. Runs where that guess is stamped,
 // before guarded inlining, which copies the body in behind the cell.

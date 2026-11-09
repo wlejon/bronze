@@ -20,6 +20,11 @@ void emit_elem_stubs(IlLowering* lowering, Module& mod);
 
 class PropertyLoweringHelper;
 
+// ToInt32 of a double with no call (il_elem_lowering.cpp): the low 32 bits an
+// integer view stores, for every Number (NaN and the infinities are 0). The
+// builder is left in the block where the answer is defined.
+Value* narrow_f64_to_i32_callfree(Builder& b, Value* v);
+
 // An element key as the Value the helpers and stubs take: an i32 is an int32
 // Number, an f64 its boxed bits, anything else already a Value.
 Value* boxed_elem_key(Builder& b, Value* index);

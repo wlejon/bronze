@@ -437,7 +437,7 @@ inline constexpr int32_t kWriteLiteralElement = 3;
 // kElemFlagArrayReceiver, kElemFlagProvenIntegralIndex).
 inline constexpr int32_t kWriteModeMask = 0xFF;
 inline constexpr int32_t kElemSetFlagBits =
-    kWriteModeMask | kElemFlagArrayReceiver | kElemFlagProvenIntegralIndex | kElemFlagFloatViewReceiver;
+    kWriteModeMask | kElemFlagArrayReceiver | kElemFlagProvenIntegralIndex | kElemFlagWordViewReceiver;
 inline int32_t writeMode(const Instruction& inst) { return inst.immI32 & kWriteModeMask; }
 
 inline bool isDefineWrite(const Instruction& inst) {

@@ -464,8 +464,14 @@ void applyFeedbackAccessors(il::Module& mod, const FeedbackPlan& plan, const Acc
                 const auto it = plan.shapesByIc.find(inst.icIndex);
                 if (it == plan.shapesByIc.end()) continue;
                 const std::string* shape = it->second.dominant(kDominantPercent);
+                // A shape of more keys than the profile lists (`,+N`) may
+                // hold the key among the ones it leaves out: the guess is
+                // made all the same, and the cell's publish, which resolves
+                // the key on the receiver, refuses a receiver that has it
+                // as its own (pixi.js's Sprite has 62 own keys, and every
+                // accessor read on one met this).
                 bool complete = false;
-                if (shape == nullptr || !shapeKeys(*shape, keys, complete) || !complete) continue;
+                if (shape == nullptr || !shapeKeys(*shape, keys, complete)) continue;
                 // The key own on the receiver is A's and E's (a slot), never
                 // an accessor of the prototype's.
                 if (std::find(keys.begin(), keys.end(), key) != keys.end()) continue;

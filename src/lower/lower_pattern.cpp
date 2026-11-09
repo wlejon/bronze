@@ -364,7 +364,7 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
             getInst.type = il::Type::Dynamic;
             getInst.result = elemVal;
             getInst.operands = {source.id, idxBoxed.id};
-            getInst.immI32 = il::kElemFlagFloatViewReceiver | il::kElemFlagProvenIntegralIndex;
+            getInst.immI32 = il::kElemFlagWordViewReceiver | il::kElemFlagProvenIntegralIndex;
             emitInst(ilFn, getInst);
 
             fastTaArgs.push_back(elemVal);

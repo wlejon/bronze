@@ -407,10 +407,10 @@ public:
     Value* lower_elem_get_array(Builder& b, Value* obj, Value* index, int64_t flags);
     void lower_elem_set_array(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict, int64_t flags);
     Value* lower_is_array(Builder& b, Value* obj);
-    // The proven float-view forms (il_elem_float_view.cpp).
-    static bool elem_float_view_receiver(int64_t flags);
-    Value* lower_elem_get_float_view(Builder& b, Value* obj, Value* index, int64_t flags);
-    void lower_elem_set_float_view(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict,
+    // The proven word-view forms (il_elem_word_view.cpp).
+    static bool elem_word_view_receiver(int64_t flags);
+    Value* lower_elem_get_word_view(Builder& b, Value* obj, Value* index, int64_t flags);
+    void lower_elem_set_word_view(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict,
                                    int64_t flags);
 
     void lower_elem_set_typed(

@@ -97,8 +97,15 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // A heritage that is an expression (`extends mixin(Base)`) has no name; it
     // is recorded under one no class declares, so the table cannot take the
     // class for a root.
-    directMethods_.recordClassSuper(name, hasSuper && superName.empty() ? "<extends expression>"
-                                                                        : superName);
+    // The base by its binding: the module linker renames the heritage
+    // expression with the rest of an imported file (`mod2.ViewContainer`) and
+    // leaves `superName` at the parser's local spelling (`ViewContainer`),
+    // which names no class here, so every walk up from a class of an
+    // imported file stopped at it (types/method_ident.cpp reads it the same
+    // way).
+    std::string heritage = superName;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(superClass)) heritage = id->name;
+    directMethods_.recordClassSuper(name, hasSuper && heritage.empty() ? "<extends expression>" : heritage);
     directMethods_.recordClassShownName(name, shownName);
 
     // The private names this class declares, and the record that holds them.
@@ -379,7 +386,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         // reached as `recv.<name>`, and the accessor, private and computed-key
         // forms have all `continue`d above.
         if (!m.isStatic) {
-            directMethods_.recordClassMethod(name, superName, m.name, lastClosureFnIndex_);
+            directMethods_.recordClassMethod(name, heritage, m.name, lastClosureFnIndex_);
         }
 
         il::Instruction setInst;

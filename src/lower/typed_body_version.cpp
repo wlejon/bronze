@@ -296,7 +296,7 @@ private:
                 if (inst.result != il::kNoValue) inst.result = mapV(orig.result);
                 if (isElemAccess(orig) &&
                     std::binary_search(receivers.begin(), receivers.end(), orig.operands[0])) {
-                    inst.immI32 |= il::kElemFlagFloatViewReceiver;
+                    inst.immI32 |= il::kElemFlagWordViewReceiver;
                     if (const auto n = setNumbers_.find({b, i}); n != setNumbers_.end()) {
                         il::Instruction box;
                         box.op = il::Op::Box;
@@ -338,7 +338,7 @@ private:
             t.type = il::Type::Bool;
             t.result = static_cast<il::ValueId>(fn_.valueCount++);
             t.operands = {receivers[r]};
-            t.immI32 = il::kTypedArrayAnyFloat;
+            t.immI32 = il::kTypedArrayWordView;
             t.target = {};
             t.elseTarget = {};
             il::Instruction br = jump;

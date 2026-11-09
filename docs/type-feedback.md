@@ -256,10 +256,12 @@ the plan where each claim has to be made:
   `resolveAccessors`, before guarded inlining, so the inliner copies the
   getter or setter in): a `prop.get` / `prop.set` of a named key with no
   slot claim and no direct target, whose receivers had one dominant shape
-  with a complete key list that lacks the key, gets the accessor half that
-  shape's class resolves the key to as its `directTarget`, with an accessor
-  cell pair of its own (il.h). The class is the one the shape's prototype
-  is named by (its constructor's `name`): every class declared under that
+  whose key list lacks the key, gets the accessor half that shape's class
+  resolves the key to as its `directTarget`, with an accessor cell pair of
+  its own (il.h). A list the recorder cut short (`,+N`: it names 32 keys)
+  counts as lacking a key it does not name; a receiver holding the key among
+  the rest is the guard's to refuse. The class is the one the shape's
+  prototype is named by (its constructor's `name`): every class declared under that
   name must resolve the key, at or above it, to the same getter (or setter)
   that an accessor site's hit can call (`accessorOfShownClass`,
   `direct_method_table.cpp`); a name no class has, a `^Name` prototype, or
