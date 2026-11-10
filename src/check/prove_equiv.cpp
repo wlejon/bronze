@@ -541,6 +541,14 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     badCond = applyDomainConstraints(badCond);
 
     SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
+    // The default budget counts conflicts, and how many a proof takes depends
+    // on the order the search meets its clauses, which differs between
+    // standard libraries: the -0 identity (a 64-bit float division) fits on
+    // Linux and came back Unknown on macOS. A proof that ran out gets one
+    // more try with twenty times the budget before the answer is Unknown.
+    if (satRes.status == SolveOutcome::Unknown) {
+        satRes = brass::verify::solve_nonzero(ctx, badCond, 200000);
+    }
 
     if (satRes.status == SolveOutcome::Unsat) {
         return finalizeNoCounterexample(
