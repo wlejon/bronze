@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/builtin_object.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -445,5 +446,53 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
     scrubStack();
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
+    heap.set_gc_stress(wasStress);
+}
+
+// An old object given a young prototype while a marking cycle is open names
+// it through its shape's root, in the arena: behind no card once a minor has
+// cleaned the object's, and so out of sight of the finish, which decides the
+// young generation in place from the roots, the dirty cards and young
+// objects. The user prototype table is what holds a young prototype for every
+// minor; the finish must hold it too, or it clears the table's slot and the
+// object's chain ends at undefined (Object.setPrototypeOf(old, {...}) under
+// BRASS_GC_STRESS=incremental read nothing through the chain).
+TEST_CASE("an old object's young prototype survives an incremental cycle's finish") {
+    Heap& heap = rtHeap();
+    ShadowStackFrame frame;
+    const bool wasStress = heap.gc_stress();
+    heap.set_gc_stress(false);
+
+    auto selfRoot = heapRooted<Rooted<Value>>();
+    Rooted<Value>& self = *selfRoot;
+    inOwnFrame([&] { self.set(Value(bronze_create_object())); });
+    scrubStack();
+    heap.collect();
+    REQUIRE_FALSE(heap.is_movable(self.get().asObject()));
+
+    REQUIRE(heap.gc().start_marking());
+    // The old object is black before it is given the new prototype.
+    while (!heap.gc().mark_slice(UINT64_MAX)) {
+    }
+    inOwnFrame([&] {
+        Rooted<Value> proto{Value(bronze_create_object())};
+        REQUIRE(heap.is_movable(proto.get().asObject()));
+        Rooted<Value> key{Value::fromString(StringHeader::createFromUTF8(heap, "mark"))};
+        Rooted<Value> value{Value::fromDouble(42.0)};
+        proto.get().asObject<ObjectHeader>()->setProp(heap, rtArena(), key, value);
+        REQUIRE(rtObjectSetPrototypeOfOrdinary(self, proto));
+    });
+    scrubStack();
+    // Cleans the old object's card: what it names on the heap is old.
+    heap.collect_minor();
+    heap.gc().finish_marking();
+
+    const Value proto = self.get().asObject<ObjectHeader>()->shape->prototypeValue();
+    REQUIRE(proto.isObject());
+    inOwnFrame([&] {
+        Rooted<Value> holder{proto};
+        Rooted<Value> key{Value::fromString(StringHeader::createFromUTF8(heap, "mark"))};
+        CHECK(holder.get().asObject<ObjectHeader>()->getProp(heap, key).asNumber() == 42.0);
+    });
     heap.set_gc_stress(wasStress);
 }

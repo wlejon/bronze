@@ -198,10 +198,21 @@ size_t rtUserPrototypeShapeCount() {
 // The prototype slots of the user root shapes. A minor collection holds them
 // strongly (an old object built on one is not rescanned by it, so its young
 // prototype has no other visit that would move it); a full collection holds
-// them weakly and clears a dead one's slot to undefined, and the sweep below
-// then drops that shape.
+// an old prototype weakly and clears a dead one's slot to undefined, and the
+// sweep below then drops that shape.
 // A minor pass visits only the shapes whose prototype may be young (the
 // strong visit is the one a minor needs, and an old prototype needs none).
+//
+// A YOUNG prototype is held strongly by a full collection too, for the same
+// reason a minor holds it. The finish of an incremental cycle decides the
+// young generation in place, reaching young objects from the roots, the
+// dirty cards and other young objects only; an old object built on the
+// shape names the prototype through the arena, behind no card (an object
+// allocated old while eden is full of pinned objects, or an old object given
+// a new prototype, whose card the next minor cleans). Held weakly, such a
+// prototype was judged dead while that object still reached it: its slot
+// was cleared and the object lost its whole chain. A young prototype that is
+// in fact dead lives until it is old, as every minor collection keeps it.
 static void visitUserPrototypeShapes(brass::gc::Tracer& t) {
     auto slotAt = [](uint32_t i) { return prototypeSlot(g_userPrototypeShapes[i]); };
     if (rtRootRemsetPass(t)) {
@@ -212,7 +223,7 @@ static void visitUserPrototypeShapes(brass::gc::Tracer& t) {
     const uint64_t cleared = Value::fromUndefined().rawBits();
     for (Shape* root : g_userPrototypeShapes) {
         auto* slot = prototypeSlot(root);
-        if (full) t.visit_weak(slot, cleared);
+        if (full && !gcHoldsYoung(root->prototype)) t.visit_weak(slot, cleared);
         else t.visit(slot);
     }
 }

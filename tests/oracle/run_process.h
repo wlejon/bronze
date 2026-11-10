@@ -95,18 +95,30 @@ inline bool deoptStressActive() {
 #endif
 }
 
+// The collector stress a run is given, through the child's environment:
+// EveryAllocation is BRONZE_GC_STRESS=1 (a collection at every allocation),
+// Incremental is BRASS_GC_STRESS=incremental (marking cycles always open,
+// sliced, with minor collections inside them and the young generation
+// decided in place at their finish: what the write barriers and the root
+// remembered sets have to keep sound).
+enum class GcStress { None, EveryAllocation, Incremental };
+
+inline GcStress gcStressOf(bool everyAllocation) {
+    return everyAllocation ? GcStress::EveryAllocation : GcStress::None;
+}
+
 // The limit a run gets: the caller's, except that a run at the default limit
 // under gc-stress or deopt stress gets the stress limit.
-inline uint32_t effectiveTimeout(bool gcStress, uint32_t timeoutMs) {
+inline uint32_t effectiveTimeout(GcStress stress, uint32_t timeoutMs) {
     static const bool s_deoptStress = deoptStressActive();
-    return (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? kStressTimeoutMs : timeoutMs;
+    return (timeoutMs == kRunTimeoutMs && (stress != GcStress::None || s_deoptStress)) ? kStressTimeoutMs
+                                                                                       : timeoutMs;
 }
 
 #ifdef _WIN32
-inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
-                            uint32_t timeoutMs = kRunTimeoutMs) {
+inline RunResult runCommand(const std::string& cmdLine, GcStress stress, uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
-    const uint32_t effectiveTimeoutMs = effectiveTimeout(gcStress, timeoutMs);
+    const uint32_t effectiveTimeoutMs = effectiveTimeout(stress, timeoutMs);
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;
@@ -145,10 +157,12 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
         si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
 
         std::string mutableCmd = cmdLine;
-        _putenv_s("BRONZE_GC_STRESS", gcStress ? "1" : "");
+        _putenv_s("BRONZE_GC_STRESS", stress == GcStress::EveryAllocation ? "1" : "");
+        if (stress == GcStress::Incremental) _putenv_s("BRASS_GC_STRESS", "incremental");
         BOOL ok = CreateProcessA(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0, nullptr,
                                  nullptr, &si, &pi);
         _putenv_s("BRONZE_GC_STRESS", "");
+        if (stress == GcStress::Incremental) _putenv_s("BRASS_GC_STRESS", "");
         CloseHandle(outWrite);  // ours would keep the pipes open past child exit
         CloseHandle(errWrite);
         if (!ok) {
@@ -275,10 +289,9 @@ inline void closeInheritedFds(const int* keep, int nkeep) {
 // a watchdog never execs, so close-on-exec would not do it, and it would
 // hold other runs' lifelines and other workers' half-written files open for
 // as long as its run lasts.
-inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
-                            uint32_t timeoutMs = kRunTimeoutMs) {
+inline RunResult runCommand(const std::string& cmdLine, GcStress stress, uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
-    const uint32_t effectiveTimeoutMs = effectiveTimeout(gcStress, timeoutMs);
+    const uint32_t effectiveTimeoutMs = effectiveTimeout(stress, timeoutMs);
     // The stack a program gets from a default shell. ctest raises the soft
     // limit to the hard one (64 MB on macOS), and a case that recurses until
     // RangeError then goes eight times as deep: under gc-stress, which walks
@@ -290,7 +303,8 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
     const std::string cmd = "s=$(ulimit -s); if [ \"$s\" = unlimited ] || [ \"$s\" -gt " +
                             std::to_string(kChildStackBytes / 1024) + " ]; then ulimit -s " +
                             std::to_string(kChildStackBytes / 1024) + "; fi; " +
-                            (gcStress ? "BRONZE_GC_STRESS=1 " : "") + cmdLine;
+                            (stress == GcStress::EveryAllocation ? "BRONZE_GC_STRESS=1 " : "") +
+                            (stress == GcStress::Incremental ? "BRASS_GC_STRESS=incremental " : "") + cmdLine;
 
     int outPipe[2] = {-1, -1};
     int errPipe[2] = {-1, -1};
@@ -413,5 +427,11 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
     return result;
 }
 #endif
+
+// `gcStress`: the run under BRONZE_GC_STRESS=1.
+inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
+                            uint32_t timeoutMs = kRunTimeoutMs) {
+    return runCommand(cmdLine, gcStressOf(gcStress), timeoutMs);
+}
 
 }  // namespace oracle

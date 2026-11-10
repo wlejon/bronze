@@ -1,5 +1,5 @@
 add_executable(bronze_oracle_tests oracle_test.cpp oracle_feedback_test.cpp oracle_module_test.cpp
-               oracle_stack_depth_test.cpp)
+               oracle_stack_depth_test.cpp oracle_gc_incremental_test.cpp)
 target_include_directories(bronze_oracle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases"
@@ -28,7 +28,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*,Oracle\ harvest*,Oracle\ module*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*,Oracle\ harvest*,Oracle\ module*,Oracle\ incremental-gc*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -107,6 +107,15 @@ set_tests_properties(oracle-feedback PROPERTIES LABELS feedback)
 add_test(NAME oracle-harvest COMMAND bronze_oracle_tests "--test-case=Oracle harvest*")
 set_tests_properties(oracle-harvest PROPERTIES LABELS feedback)
 
+# Every case built once and run under brass's incremental-marking stress
+# (BRASS_GC_STRESS=incremental, oracle_gc_incremental_test.cpp): a marking
+# cycle open nearly all the time, sliced, with minor collections inside it,
+# finished with the young generation decided in place. The main suite's
+# BRONZE_GC_STRESS=1 runs stop the mutator for every collection and never
+# reach the barriers and remembered sets this holds to the pinned bytes.
+add_test(NAME oracle-gc-incremental COMMAND bronze_oracle_tests "--test-case=Oracle incremental-gc*")
+set_tests_properties(oracle-gc-incremental PROPERTIES LABELS "oracle;gc")
+
 # Each of these suites runs its cases on getWorkerJobCount() threads
 # (oracle_test.cpp: BRONZE_TEST_JOBS, else at most 4), one child process per
 # thread, so one suite is four busy cores and not one. ctest has to be told:
@@ -117,7 +126,7 @@ set_tests_properties(oracle-harvest PROPERTIES LABELS feedback)
 set_tests_properties(oracle oracle-jit oracle-jit-tier0 oracle-jit-tier2
                      oracle-tiers oracle-tiers-deopt-stress oracle-tiers-deopt-stress-3
                      oracle-tiers-arm-all-stress-3 oracle-spec-profile oracle-feedback oracle-harvest
-                     oracle-jit-release-stress oracle-tiers-release-stress
+                     oracle-jit-release-stress oracle-tiers-release-stress oracle-gc-incremental
                      PROPERTIES PROCESSORS 4)
 
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
