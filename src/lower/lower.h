@@ -96,6 +96,35 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       WholeProgramOptions* wholeProgram = nullptr,
                                       const FeedbackOptions* feedback = nullptr);
 
+// THE AHEAD-OF-TIME FRONT END, for every compile whose output is kept:
+// `bronze build` and the evaluator's module builds (eval::buildModule, what a
+// host compiles an installed app's scripts with). What such a compile always
+// does, the whole-program optimizer and guarded inlining, is decided here and
+// nowhere else: the two callers fill in what they have and cannot differ in
+// what runs. (They did: the optimizer ran for `bronze build` alone for as long
+// as the module build called lowerModule itself.) The JIT calls lowerModule.
+struct AheadOfTimeOptions {
+    // The host's global names, or null for a program with no host.
+    const std::vector<std::string>* hostGlobals = nullptr;
+    const types::PinManifest* pins = nullptr;
+    const NativeManifest* nativeManifest = nullptr;
+    std::string censusOutPath;
+    // A profile to record or to read (lower_feedback.h), or null.
+    const FeedbackOptions* feedback = nullptr;
+    // lowerModule's `assumeNoBigInt`: true only where no value can arrive
+    // from outside the program.
+    bool assumeNoBigInt = false;
+    InferStatsCollector* inferStats = nullptr;
+    // `--wpo-stats[=<filter>]`: the census, written to `wpoReport`.
+    bool wpoStats = false;
+    bool wpoStatsPerSite = false;
+    std::string wpoStatsFilter;
+    std::string* wpoReport = nullptr;
+};
+std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
+                                           const types::InferenceResult* inference, const SourceSet* sources,
+                                           const AheadOfTimeOptions& options);
+
 // The kind a TypeScript annotation claims, as the lattice states it: `number`,
 // an array type, a class's instances (an object), an alias followed to what
 // it names. `Dynamic` when the annotation claims no one kind — a union of

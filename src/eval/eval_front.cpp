@@ -265,24 +265,27 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
 
-    lower::WholeProgramOptions wholeProgram;
-    wholeProgram.on = aheadOfTime;
-    wholeProgram.build.hostGlobals = hostGlobals;
-    // A module's profile or harvest (EvalOptions::feedbackInPath), read as
-    // `bronze build --feedback-in` reads one.
-    lower::FeedbackOptions feedback;
-    if (aheadOfTime && in.feedback) feedback.profile = &*in.feedback;
-    auto lowered = lower::lowerModule(astModule, diags,
-                                      inferred ? &*inferred : nullptr,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      &sources,
-                                      /*stats=*/nullptr,
-                                      /*assumeNoBigInt=*/false,
-                                      in.pins.empty() ? nullptr : &in.pins,
-                                      options.censusOutPath,
-                                      in.nativeManifest ? &*in.nativeManifest : nullptr,
-                                      inlineGuardedFor(in),
-                                      &wholeProgram, &feedback);
+    std::optional<il::Module> lowered;
+    if (aheadOfTime) {
+        // A module build: the ahead-of-time front end (lower.h), which a
+        // `bronze build` goes through too. Its profile or harvest
+        // (EvalOptions::feedbackInPath) is read as `--feedback-in` reads one.
+        lower::FeedbackOptions feedback;
+        if (in.feedback) feedback.profile = &*in.feedback;
+        lower::AheadOfTimeOptions aot;
+        aot.hostGlobals = &hostGlobals;
+        aot.pins = in.pins.empty() ? nullptr : &in.pins;
+        aot.nativeManifest = in.nativeManifest ? &*in.nativeManifest : nullptr;
+        aot.censusOutPath = options.censusOutPath;
+        aot.feedback = &feedback;
+        lowered = lower::lowerAheadOfTime(astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
+    } else {
+        lowered = lower::lowerModule(astModule, diags, inferred ? &*inferred : nullptr,
+                                     hostGlobals.empty() ? nullptr : &hostGlobals, &sources, /*stats=*/nullptr,
+                                     /*assumeNoBigInt=*/false, in.pins.empty() ? nullptr : &in.pins,
+                                     options.censusOutPath, in.nativeManifest ? &*in.nativeManifest : nullptr,
+                                     inlineGuardedFor(in));
+    }
     if (diags.hasErrors() || !lowered) return nullptr;
     timer.mark("lower");
     reportProgress(options, "lower", 0.88);

@@ -749,4 +749,22 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
     return lowerer.lower();
 }
 
+std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
+                                           const types::InferenceResult* inference, const SourceSet* sources,
+                                           const AheadOfTimeOptions& options) {
+    WholeProgramOptions wholeProgram;
+    wholeProgram.on = true;
+    if (options.hostGlobals) wholeProgram.build.hostGlobals = *options.hostGlobals;
+    wholeProgram.build.stats = options.wpoStats;
+    wholeProgram.build.perSite = options.wpoStatsPerSite;
+    wholeProgram.build.filter = options.wpoStatsFilter;
+    auto lowered = lowerModule(astModule, diags, inference,
+                               options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
+                               sources, options.inferStats, options.assumeNoBigInt, options.pins,
+                               options.censusOutPath, options.nativeManifest, InlineGuardedOptions{/*on=*/true},
+                               &wholeProgram, options.feedback);
+    if (options.wpoReport) *options.wpoReport = std::move(wholeProgram.report);
+    return lowered;
+}
+
 }  // namespace bronze::lower

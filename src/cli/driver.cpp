@@ -409,15 +409,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     const bool noBigIntPromised =
         assumeNoBigInt || !hasHostBoundary(hostGlobalsPath, emitObj, emitShared);
 
-    // The whole-program optimizer: every AOT build runs it, inside lowering
-    // (lower.h WholeProgramOptions). `--wpo-stats` only adds its census, so
-    // the build's output is the same with the flag as without.
-    lower::WholeProgramOptions wholeProgram;
-    wholeProgram.on = true;
-    wholeProgram.build.hostGlobals = hostGlobals;
-    wholeProgram.build.stats = wpoStats;
-    wholeProgram.build.perSite = wpoStatsPerSite;
-    wholeProgram.build.filter = wpoStatsFilter;
     lower::InferStatsCollector statsCollector;
     // Read before the compile, like every manifest: a bad profile is a fact
     // about the invocation.
@@ -429,17 +420,23 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         else std::fputs(err.c_str(), stderr);
         return 1;
     }
-    auto ilModule = lower::lowerModule(*astModule, diags,
-                                       inferred ? &*inferred : nullptr,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals,
-                                       &sources,
-                                       inferStats ? &statsCollector : nullptr,
-                                       noBigIntPromised,
-                                       pins.empty() ? nullptr : &pins,
-                                       censusOutPath,
-                                       nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*on=*/true},
-                                       &wholeProgram, &feedback);
+    // The ahead-of-time front end (lower.h): the whole-program optimizer and
+    // guarded inlining are its, not this caller's. `--wpo-stats` only adds the
+    // census, so the build's output is the same with the flag as without.
+    std::string wpoReport;
+    lower::AheadOfTimeOptions aot;
+    aot.hostGlobals = &hostGlobals;
+    aot.pins = pins.empty() ? nullptr : &pins;
+    aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
+    aot.censusOutPath = censusOutPath;
+    aot.feedback = &feedback;
+    aot.assumeNoBigInt = noBigIntPromised;
+    aot.inferStats = inferStats ? &statsCollector : nullptr;
+    aot.wpoStats = wpoStats;
+    aot.wpoStatsPerSite = wpoStatsPerSite;
+    aot.wpoStatsFilter = wpoStatsFilter;
+    aot.wpoReport = &wpoReport;
+    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -470,7 +467,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    if (wpoStats) std::fputs(wholeProgram.report.c_str(), stdout);
+    if (wpoStats) std::fputs(wpoReport.c_str(), stdout);
 
     reportWarnings(diags, sources);
 
