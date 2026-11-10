@@ -50,6 +50,14 @@
     X(bronze_unbox_str,           BRONZE_ABI_CSTR, (BRONZE_ABI_U64)) \
     X(bronze_create_object,       BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_create_object_sized, BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
+    /* The module's tagged allocator (brass Module::tagged_allocator): a\
+     * cell of `bytes` bronze bytes (its header included, a multiple of 8)\
+     * whose collector header is `header` (the TLS block's gc_cell_header)\
+     * with the size ORed in, answered as an Object Value. The payload is\
+     * zero; generated code writes every word before its next GC point.\
+     * The allocation window's miss: generated code bumps the window\
+     * inline and calls this when the object does not fit. */ \
+    X(bronze_gc_alloc,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* `coro.start`: a coroutine body's fresh brass frame (a raw address)\
      * and its BRONZE_ABI_CORO_* kind; answers the generator object or the\
      * async function's promise. */ \

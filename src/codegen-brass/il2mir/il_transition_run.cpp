@@ -26,6 +26,7 @@
 #include "il_property.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <algorithm>
 #include <unordered_set>
 
 namespace il2mir {
@@ -101,15 +102,41 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
                                           const std::unordered_map<uint32_t, BasicBlock*>& block_map,
                                           uint32_t* cont_counter) {
     const auto& insts = blk_ast.instructions;
+    // A literal's create.object before a run on it, with nothing between
+    // them but what a run may hold and none of it using the object: the
+    // literal is lowered here with its run (below, `fresh`), after those.
+    size_t create_idx = SIZE_MAX;
+    size_t lead_end = inst_idx;
+    if (insts[inst_idx].op == BronzeOp::CreateObject && insts[inst_idx].result_id != UINT32_MAX && !run_once_) {
+        const uint32_t lit = insts[inst_idx].result_id;
+        std::unordered_set<uint32_t> none;
+        size_t j = inst_idx + 1;
+        while (j < insts.size() && insts[j].run_cell == BronzeInstruction::kNoTransitionRun &&
+               insts[j].op != BronzeOp::CreateObject && insts[j].op != BronzeOp::CreateArray &&
+               between(insts[j], none) &&
+               std::find(insts[j].operands.begin(), insts[j].operands.end(), lit) == insts[j].operands.end()) {
+            ++j;
+        }
+        if (j < insts.size() && insts[j].run_cell != BronzeInstruction::kNoTransitionRun &&
+            insts[j].operands.size() == 2 && insts[j].operands[0] == lit) {
+            create_idx = inst_idx;
+            lead_end = j;
+            inst_idx = j;
+        }
+    }
     const BronzeInstruction& first = insts[inst_idx];
     // An assignment's adds and a literal's or a class's definitions alike: on
     // the chain the publish admits — no setter, read-only property or trap for
     // any key, all of them absent — a [[Set]] and a CreateDataProperty store
     // the same property, so one fast copy serves both.
     const auto is_write = [](BronzeOp op) { return op == BronzeOp::PropSet || op == BronzeOp::PropDefine; };
-    if (!is_write(first.op) || first.run_cell == BronzeInstruction::kNoTransitionRun) return false;
+    const auto decline = [&] {
+        if (create_idx != SIZE_MAX) inst_idx = create_idx;
+        return false;
+    };
+    if (!is_write(first.op) || first.run_cell == BronzeInstruction::kNoTransitionRun) return decline();
     // A block run once calls its helpers (run_once): a guard is only size.
-    if (run_once_) return false;
+    if (run_once_) return decline();
     auto refuse = [&](const std::string& why) {
         if (diag_) diag_->error("il2mir: transition run at cell " + std::to_string(first.run_cell) + " " + why);
         has_error_ = true;
@@ -143,6 +170,31 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     const bool overflow = last_slot >= kBronzeObjOverflowSlot;
     const uint64_t need = overflow ? last_slot + 1 - kBronzeObjOverflowSlot : 0;
 
+    // FRESH: the receiver is the literal just made, every slot the run writes
+    // is inline in it, and nothing after the run uses it (the reads the IL
+    // forwarded were all it had). Then the guard is asked before the object
+    // exists, of the root it would start on, and the fast copy makes the
+    // object whole: the instructions between the writes first (none of them
+    // can see the receiver), then the allocation with the final shape and
+    // every value in its slot. With no other use, and the slow copy making
+    // its own object, the fast copy's object is one brass can see all of:
+    // scalar replacement removes it, leaving the guard.
+    const uint32_t root = create_idx != SIZE_MAX
+                              ? AllocLoweringHelper::literal_root(insts[create_idx].imm_i64 > 0
+                                                                      ? static_cast<uint32_t>(insts[create_idx].imm_i64)
+                                                                      : 0u)
+                              : 0u;
+    bool fresh = create_idx != SIZE_MAX && !overflow && last_slot < AllocLoweringHelper::literal_capacity(root) &&
+                 alloc_lowering_.enable_tlab();
+    if (fresh) {
+        uint32_t in_run = 0;
+        for (size_t j = inst_idx; j < end; ++j) {
+            for (uint32_t op_id : insts[j].operands) in_run += op_id == recv_id;
+        }
+        const auto uit = value_use_counts_.find(recv_id);
+        fresh = uit != value_use_counts_.end() && uit->second == in_run;
+    }
+
     // Values defined in the run with a use past it: one join parameter each.
     std::unordered_map<uint32_t, uint32_t> uses_in_run;
     for (size_t j = inst_idx; j < end; ++j) {
@@ -173,22 +225,50 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     // start shape. Read through receiver_shape's stand-in for a non-object,
     // so the loads are safe before anything is known.
     b.position_at_end(guard_bb);
+    // What stood between the literal and its run, which cannot see the
+    // literal, goes first.
+    for (size_t j = create_idx == SIZE_MAX ? lead_end : create_idx + 1; j < lead_end; ++j) {
+        apply_inst_loc(b, insts[j]);
+        if (!lower_instruction(insts[j], b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
+            return false;
+        }
+    }
+    guard_bb = b.current_block();
+    if (create_idx != SIZE_MAX && !fresh) {
+        // Not fresh: the literal is made as any other, and the run is on it.
+        apply_inst_loc(b, insts[create_idx]);
+        if (!lower_instruction(insts[create_idx], b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id,
+                               cont_counter)) {
+            return false;
+        }
+        guard_bb = b.current_block();
+    }
     apply_inst_loc(b, first);
-    Value* obj = ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b);
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    Value* recv_base = nullptr;
-    prop_lowering_.receiver_shape(b, obj, plain, ptr, shape, &recv_base);
     Value* cells = b.build_add(prop_lowering_.static_cells_addr(b),
                                iconst(b, uint64_t{first.run_cell} * sizeof(uint64_t)));
-    Value* header = b.build_load(Type::i64(), recv_base, 0);
-    Value* plain_kind = b.build_eq(b.build_trunc_i32(header), b.build_iconst_i32(kPlainHeaderLow));
     Value* start = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_START * kCell);
-    // What the publish is told the run started from; 0 for any receiver it
-    // must refuse anyway (the publish asks the bare question itself).
-    Value* start_seen = b.build_select(plain_kind, shape, iconst(b, 0));
-    b.build_br_if(b.build_and(plain_kind, b.build_eq(shape, start)), bb_check, bb_slow);
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    Value* header = nullptr;
+    Value* start_seen = nullptr;
+    if (fresh) {
+        // The object would start on its root, bare: the root published (a
+        // zero entry is no shape) and the run's start.
+        shape = alloc_lowering_.published_literal_root(b, root);
+        start_seen = shape;
+        b.build_br_if(b.build_and(b.build_ne(shape, iconst(b, 0)), b.build_eq(shape, start)), bb_check, bb_slow);
+    } else {
+        Value* obj = ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b);
+        Value* plain = nullptr;
+        Value* recv_base = nullptr;
+        prop_lowering_.receiver_shape(b, obj, plain, ptr, shape, &recv_base);
+        header = b.build_load(Type::i64(), recv_base, 0);
+        Value* plain_kind = b.build_eq(b.build_trunc_i32(header), b.build_iconst_i32(kPlainHeaderLow));
+        // What the publish is told the run started from; 0 for any receiver
+        // it must refuse anyway (the publish asks the bare question itself).
+        start_seen = b.build_select(plain_kind, shape, iconst(b, 0));
+        b.build_br_if(b.build_and(plain_kind, b.build_eq(shape, start)), bb_check, bb_slow);
+    }
 
     // Second half, now that `shape` is the published start: the prototype
     // chain as it was verified, the start no prototype's, each value fit for
@@ -200,8 +280,11 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     ok = b.build_and(ok, b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET)),
                                     iconst(b, 0)));
     // Bare: no internal slots, the whole header word the start shape's own
-    // (shape.h `bare_header`), read now that the shape is the start.
-    ok = b.build_and(ok, b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET)));
+    // (shape.h `bare_header`), read now that the shape is the start. A fresh
+    // literal's is its root's by construction.
+    if (!fresh) {
+        ok = b.build_and(ok, b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET)));
+    }
     Value* end_shape = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_END * kCell);
     Value* doubles = nullptr;
     for (size_t k = 0; k < sites.size(); ++k) {
@@ -270,10 +353,37 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     // FAST: the final shape, then the run.
     std::unordered_map<uint32_t, Value*> fast_map = val_map;
     b.position_at_end(bb_fast);
-    Value* cur_ptr = b.build_xor(ensure_type(get_val_by_id(recv_id, b, fast_map), Type::i64(), b),
-                                 iconst(b, kObjectTagBits));
+    if (fresh) {
+        std::vector<Value*> slots;
+        size_t site_k = 0;
+        for (size_t j = inst_idx; j < end; ++j) {
+            const BronzeInstruction& inst = insts[j];
+            if (site_k < sites.size() && sites[site_k] == j) {
+                ++site_k;
+                continue;
+            }
+            apply_inst_loc(b, inst);
+            BronzeInstruction copy = inst;
+            if (checked_unbox(copy)) copy.raw_unbox = true;
+            if (!lower_instruction(copy, b, fn, fast_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
+                return false;
+            }
+        }
+        apply_inst_loc(b, insts[create_idx]);
+        for (size_t k = 0; k < sites.size(); ++k) {
+            const uint32_t slot = first.run_slot + static_cast<uint32_t>(k);
+            if (slots.size() <= slot) slots.resize(slot + 1, nullptr);
+            slots[slot] = ensure_type(get_val_by_id(insts[sites[k]].operands[1], b, fast_map), Type::i64(), b);
+        }
+        alloc_lowering_.init_literal(b, root, end_shape, slots);
+    }
+    Value* cur_ptr = nullptr;
     Value* cur_block = fast_block;
-    with_alias_class(b.build_store(Type::i64(), cur_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end_shape), kShapeWordAliasClass);
+    if (!fresh) {
+        cur_ptr = b.build_xor(ensure_type(get_val_by_id(recv_id, b, fast_map), Type::i64(), b), iconst(b, kObjectTagBits));
+        with_alias_class(b.build_store(Type::i64(), cur_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end_shape),
+                         kShapeWordAliasClass);
+    }
     auto rederive = [&] {
         cur_ptr = b.build_xor(ensure_type(get_val_by_id(recv_id, b, fast_map), Type::i64(), b),
                               iconst(b, kObjectTagBits));
@@ -283,7 +393,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         }
     };
     size_t site_k = 0;
-    for (size_t j = inst_idx; j < end; ++j) {
+    for (size_t j = inst_idx; j < end && !fresh; ++j) {
         const BronzeInstruction& inst = insts[j];
         apply_inst_loc(b, inst);
         if (site_k < sites.size() && sites[site_k] == j) {
@@ -316,6 +426,13 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     // then the publish while the run is still taking them.
     std::unordered_map<uint32_t, Value*> slow_map = val_map;
     b.position_at_end(bb_slow);
+    if (fresh) {
+        apply_inst_loc(b, insts[create_idx]);
+        if (!lower_instruction(insts[create_idx], b, fn, slow_map, block_map, blk_ast.handler_id, blk_ast.id,
+                               cont_counter)) {
+            return false;
+        }
+    }
     BronzeBlock stretch;
     stretch.id = blk_ast.id;
     stretch.handler_id = blk_ast.handler_id;

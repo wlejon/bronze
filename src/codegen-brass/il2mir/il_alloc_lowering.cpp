@@ -127,6 +127,22 @@ static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronz
 }
 
 
+// A fresh cell of `bronze_bytes` (its bronze header included) from the
+// module's tagged allocator (bronze_gc_alloc; brass bumps the allocation
+// window inline): answers its Object Value's bits and sets `*addr` to its
+// address. The allocation is a GC point; nothing after it until the caller's
+// stores have written every word may be one (brass's verifier holds it to
+// that). Its second operand is the TLS block's gc_cell_header.
+static Value* tagged_cell(Builder& b, size_t bronze_bytes, Value** addr) {
+    using namespace bronze_heap_abi;
+    Value* cell = b.build_load(Type::i64(), bronze_tls_addr(b), TLS_GC_CELL_HEADER_OFF);
+    Value* o = b.build_call("bronze_gc_alloc", Type::tagged(),
+                            {b.build_iconst_i64(static_cast<int64_t>(bronze_bytes)), cell});
+    Value* bits = b.build_bitcast_i64_tagged(o);
+    *addr = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK)));
+    return bits;
+}
+
 Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* precondition,
                                               BasicBlock* miss, BasicBlock* bb_fast, uint32_t inline_slots) {
     using namespace bronze_heap_abi;
@@ -246,6 +262,36 @@ Value* AllocLoweringHelper::bump_slot_block(Builder& b, Value* capacity, BasicBl
     b.build_br_if(b.build_ult(next, capacity), bb_fill, {next}, fast, {});
     b.position_at_end(fast);
     return blk;
+}
+
+uint32_t AllocLoweringHelper::literal_root(uint32_t want) { return literal_inline_slots(want); }
+
+uint32_t AllocLoweringHelper::literal_capacity(uint32_t root) {
+    return root == 0 ? BRONZE_ABI_OBJ_INLINE_SLOTS : root;
+}
+
+Value* AllocLoweringHelper::published_literal_root(Builder& b, uint32_t root) {
+    using namespace bronze_heap_abi;
+    const int32_t shape_off =
+        root == 0 ? TLS_PLAIN_SHAPE_OFF : static_cast<int32_t>(BRONZE_TLS_PLAIN_SHAPES_OFF + 8 * root);
+    return b.build_load(Type::i64(), bronze_tls_addr(b), shape_off);
+}
+
+Value* AllocLoweringHelper::init_literal(Builder& b, uint32_t root, Value* shape, const std::vector<Value*>& slots) {
+    using namespace bronze_heap_abi;
+    const uint32_t capacity = literal_capacity(root);
+    const uint64_t header = bareHeaderFor(capacity);
+    Value* obj = nullptr;
+    Value* bits = tagged_cell(b, static_cast<size_t>(header >> 32), &obj);
+    b.build_store(Type::i64(), obj, 0, b.build_iconst_i64(static_cast<int64_t>(header)));
+    b.build_store(Type::i64(), obj, 8, shape);
+    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
+    b.build_store(Type::i64(), obj, 16, undef_val);
+    for (uint32_t i = 0; i < capacity; ++i) {
+        Value* v = i < slots.size() && slots[i] ? slots[i] : undef_val;
+        b.build_store(Type::i64(), obj, static_cast<int32_t>(24 + i * 8), v);
+    }
+    return bits;
 }
 
 Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b, uint32_t inline_slots) {

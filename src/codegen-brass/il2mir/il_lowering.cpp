@@ -282,6 +282,11 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // brass lowers each write_barrier to a test of its target against it and
     // calls brass_gc_write_barrier only for a target outside it.
     if (options_.pin_tls_register) mod->set_young_range(BRONZE_TLS_YOUNG_BASE_OFF, BRONZE_TLS_YOUNG_SPAN_OFF);
+    // A fresh literal is a brass tagged allocation (il_alloc_lowering.cpp
+    // init_literal): bronze_gc_alloc, Object-tagged, with the allocation
+    // window brass bumps inline through the pinned register.
+    mod->set_tagged_allocator("bronze_gc_alloc", BRONZE_TLS_ALLOC_CURSOR_OFF, BRONZE_TLS_ALLOC_LIMIT_OFF,
+                              static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) << BRONZE_ABI_VALUE_TAG_SHIFT);
     // The constants the runtime keeps below the block (bronze_abi_tls.h,
     // BRONZE_TLS_CONSTANTS), read there instead of from each function's pool.
     if (options_.pin_tls_register) {

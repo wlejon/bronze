@@ -265,6 +265,16 @@ uint64_t bronze_create_object_sized(uint32_t inlineSlots) {
     return Value::fromObject(obj).rawBits();
 }
 
+// The tagged allocator's miss (bronze_abi_functions.h): every bronze object
+// generated code allocates is a cell, so `header` only says what the inline
+// window writes for it.
+uint64_t bronze_gc_alloc(uint64_t bytes, uint64_t header) {
+    (void)header;
+    HeapObjectHeader* h = rtHeap().allocate(static_cast<size_t>(bytes) - sizeof(HeapObjectHeader), Tag::Object,
+                                            GcLayout::Cell);
+    return Value::fromObject(reinterpret_cast<ObjectHeader*>(h)).rawBits();
+}
+
 uint64_t bronze_create_array(uint32_t length) {
     recordHelperCall("bronze_create_array");
     // The floor is ABI: generated code's inline literal (llvm_construct.cpp)
