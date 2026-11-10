@@ -11,6 +11,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "abi/bronze_abi.h"
 #include "abi/bronze_feedback_site.h"
@@ -57,6 +58,11 @@ struct Module {
 
 struct State {
     std::vector<Module> modules;
+    // The identity records of the modules being harvested, by address. A
+    // registered table whose record is not one of these is never read: every
+    // module registers its tables, a compiled-in-process one's memory goes
+    // with its program, and a range it left behind names freed memory.
+    std::unordered_set<const void*> records;
     std::unordered_map<const Shape*, std::string> shapeNames;
     std::unordered_map<const Shape*, std::string> protoNames;
     bool atexitArmed = false;
@@ -240,6 +246,11 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
         m = &s.modules.back();
     }
     m->path = path;
+    if (path.empty()) {
+        s.records.erase(identity);
+    } else {
+        s.records.insert(identity);
+    }
     if (!path.empty() && !s.atexitArmed) {
         s.atexitArmed = true;
         std::atexit(writeAtExit);
@@ -259,11 +270,13 @@ void rtIcHarvestNoteIdentity(const uint64_t* identity) {
 void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* identity,
                      const std::vector<uint64_t>* methodSites) {
     if (!rtIcHarvestArmed() || table == nullptr) return;
-    Identity id;
-    if (!readIdentity(identity, id) || id.sites != siteCount) return;
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return;
     State& s = *g_state;
+    // Before the record or the table is read (State::records).
+    if (s.records.count(identity) == 0) return;
+    Identity id;
+    if (!readIdentity(identity, id) || id.sites != siteCount) return;
     Module* m = moduleOf(s, id.digest, id.sites);
     if (m == nullptr || m->path.empty()) return;
     constexpr uint64_t kWords = BRONZE_ABI_IC_SITE_SIZE / 8;

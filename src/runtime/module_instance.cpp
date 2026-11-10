@@ -232,7 +232,11 @@ void rtForgetModuleInstancesOfEpoch(uint64_t epoch) {
     if (epoch == 0) return;
     auto forgetIn = [epoch](ThreadModuleInstanceState& inst) {
         for (auto& run : inst.runs) {
-            if (run.epoch == epoch && !run.vacant) run.epoch = 0;
+            if (run.epoch != epoch || run.vacant) continue;
+            // Its registrations too, while the memory is still there: a
+            // table left registered would be read after it is freed.
+            rtDropModuleCellsWithin(run.addr, run.size);
+            run.epoch = 0;
         }
     };
     forgetIn(t_inst);
