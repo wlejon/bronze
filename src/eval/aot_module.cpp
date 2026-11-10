@@ -160,6 +160,7 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     backend.setEmitDebugInfo(options.emitDebugInfo);
     // An image is closed only before any of its code has run (closeImage).
     backend.setDirectJsCalls(true);
+    backend.setBuildThreads(options.buildThreads);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     if (!obj) {
         out.errorMessage = rendered(diags, sources, "code generation failed");

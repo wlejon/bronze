@@ -58,6 +58,11 @@ struct TranslatorOptions {
     // tiered engine turns it off unless asked (BrassTieredEngine,
     // BRONZE_VERIFY_MIR). An object-file build keeps it.
     bool verify_lowered_module = true;
+    // Threads brass's optimization pipeline may use for its function-local
+    // passes (brass::PipelineRunOptions::threads): 0 is the machine's
+    // hardware threads, 1 the calling thread alone. The module it leaves is
+    // the same at any count.
+    size_t build_threads = 0;
     // Build each function's body when something first needs it (its first
     // call, or a tier-up that copies it) instead of up front: the module
     // declares every function, builds the entry and the coroutine bodies

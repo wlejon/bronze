@@ -120,6 +120,11 @@ struct EvalOptions {
     // module was built on a profile it used. Running a module, not building it.
     std::string feedbackInPath = {};
     std::string harvestOutPath = {};
+    // buildModule only: threads for the per-function work of code generation
+    // (BrassBackend::setBuildThreads, `bronze build -j`). 0 is every hardware
+    // thread, 1 the compiling thread alone; the module's bytes, and so its
+    // record and key, are the same at any count.
+    size_t buildThreads = 0;
 };
 
 struct CompiledScript {

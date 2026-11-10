@@ -1,5 +1,6 @@
 #include "il_bridge_verifier.h"
 #include "il_abi.h"
+#include <brass/core/parallel_for.hpp>
 #include <brass/mir/verifier.hpp>
 #include <algorithm>
 #include <cmath>
@@ -286,20 +287,33 @@ BridgeVerifyResult verify_bridge_function_detailed(const brass::Function& fn) {
     return res;
 }
 
-BridgeVerifyResult verify_bridge_module_detailed(const brass::Module& mod) {
+BridgeVerifyResult verify_bridge_module_detailed(const brass::Module& mod, size_t threads) {
     BridgeVerifyResult res;
     brass::DiagnosticReporter mir_diag;
-    if (!brass::verify_module(mod, &mir_diag)) {
+    if (!brass::verify_module(mod, &mir_diag, threads)) {
         res.ok = false;
         res.errors.push_back({"<module>", 0, "MIR module verification failed: " + mir_diag.format_all()});
     }
-    for (const brass::Function* fn : mod.functions()) {
-        if (!fn || !fn->body_ready() || fn->blocks().empty()) continue;
-        BridgeVerifyResult fn_res = verify_bridge_function_detailed(*fn);
-        if (!fn_res.ok) {
-            res.ok = false;
-            res.errors.insert(res.errors.end(), fn_res.errors.begin(), fn_res.errors.end());
-        }
+    // Each function checked on its own (the checks only read it), the
+    // errors reported in module order.
+    const std::vector<brass::Function*>& fns = mod.functions();
+    std::vector<size_t> weights(fns.size(), 1);
+    size_t total = 0;
+    for (size_t i = 0; i < fns.size(); ++i) {
+        if (fns[i]) weights[i] += fns[i]->block_count();
+        total += weights[i];
+    }
+    std::vector<BridgeVerifyResult> per(fns.size());
+    const size_t n = brass::threads_for_work(threads, fns.size(), total, 4000);
+    brass::parallel_for_each(brass::heaviest_first(weights), n, [&](size_t i) {
+        const brass::Function* fn = fns[i];
+        if (!fn || !fn->body_ready() || fn->blocks().empty()) return;
+        per[i] = verify_bridge_function_detailed(*fn);
+    });
+    for (BridgeVerifyResult& fn_res : per) {
+        if (fn_res.ok) continue;
+        res.ok = false;
+        res.errors.insert(res.errors.end(), fn_res.errors.begin(), fn_res.errors.end());
     }
     return res;
 }
@@ -314,8 +328,8 @@ bool verify_bridge_function(const brass::Function& fn, brass::DiagnosticReporter
     return res.ok;
 }
 
-bool verify_bridge_module(const brass::Module& mod, brass::DiagnosticReporter* diag) {
-    BridgeVerifyResult res = verify_bridge_module_detailed(mod);
+bool verify_bridge_module(const brass::Module& mod, brass::DiagnosticReporter* diag, size_t threads) {
+    BridgeVerifyResult res = verify_bridge_module_detailed(mod, threads);
     if (!res.ok && diag) {
         for (const auto& err : res.errors) {
             diag->error(brass::SourceLocation(err.function_name, err.block_id, 0), err.message);

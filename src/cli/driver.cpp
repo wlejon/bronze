@@ -287,7 +287,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& specProfilePath, bool wpoStats,
              const std::string& wpoStatsFilter, bool wpoStatsPerSite,
              const std::string& feedbackOutPath, const std::string& feedbackInPath,
-             const std::string& harvestOutPath) {
+             const std::string& harvestOutPath, size_t buildThreads) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -485,6 +485,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         objBackend.setEmitDebugInfo(emitDebugInfo);
         objBackend.setSpecProfile(specProfile);
         objBackend.setDirectJsCalls(true);
+        objBackend.setBuildThreads(buildThreads);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -508,6 +509,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setEmitDebugInfo(emitDebugInfo);
     backend.setSpecProfile(specProfile);
     backend.setDirectJsCalls(true);
+    backend.setBuildThreads(buildThreads);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
     if (!obj) {
@@ -847,6 +849,7 @@ int runDriver(int argc, char** argv) {
         std::string feedbackOutPath;
         std::string feedbackInPath;
         std::string harvestOutPath;
+        std::string jobsText;
         std::string flagErr;
 
         for (int i = 2; i < argc; ++i) {
@@ -914,8 +917,12 @@ int runDriver(int argc, char** argv) {
                        takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr) ||
-                       takeFlagValue(arg, "--harvest-out", i, argc, argv, harvestOutPath, flagErr)) {
+                       takeFlagValue(arg, "--harvest-out", i, argc, argv, harvestOutPath, flagErr) ||
+                       takeFlagValue(arg, "--jobs", i, argc, argv, jobsText, flagErr) ||
+                       takeFlagValue(arg, "-j", i, argc, argv, jobsText, flagErr)) {
                 if (!flagErr.empty()) return fail(flagErr);
+            } else if (arg.size() > 2 && arg.compare(0, 2, "-j") == 0) {
+                jobsText = arg.substr(2);
             } else if (arg == "--pins-allow-observed") {
                 pinsAllowObserved = true;
             } else if (arg == "--module-root") {
@@ -964,12 +971,22 @@ int runDriver(int argc, char** argv) {
         }
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
+        size_t buildThreads = 0;
+        if (!jobsText.empty()) {
+            char* end = nullptr;
+            const unsigned long n = std::strtoul(jobsText.c_str(), &end, 10);
+            if (!end || *end != '\0' || n == 0) {
+                return fail("error: -j/--jobs takes a thread count of at least 1, not '" + jobsText + "'\n");
+            }
+            buildThreads = static_cast<size_t>(n);
+        }
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
-                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath);
+                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath,
+                        buildThreads);
     }
 
     return fail(kUsage);

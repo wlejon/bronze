@@ -583,7 +583,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     ltimer.mark("data syms");
 
     // 3. Verify module
-    if (options_.verify_lowered_module && !verify_bridge_module(*mod, diag_)) {
+    if (options_.verify_lowered_module && !verify_bridge_module(*mod, diag_, options_.build_threads)) {
         return nullptr;
     }
     ltimer.mark("verify");
@@ -597,22 +597,27 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
 
     // 5. Optionally optimize module
     if (options_.enable_optimizations) {
+        // A hook only when it verifies: with one, brass takes each run of
+        // function-local passes a step at a time (all functions through one
+        // pass, then the hook) rather than each function through the whole
+        // run; the module comes out the same either way.
         PassPipelineHooks hooks;
-        hooks.after_pass = [&](std::string_view name) {
-            if (!options_.verify_after_each_pass && !verifyEachPassEnv()) return true;
-            if (!verify_module(*mod, diag_)) {
-                std::fprintf(stderr, "[FATAL] Broken after %.*s\n",
-                             static_cast<int>(name.size()), name.data());
-                return false;
-            }
-            return true;
-        };
+        if (options_.verify_after_each_pass || verifyEachPassEnv()) {
+            hooks.after_pass = [&](std::string_view name) {
+                if (!verify_module(*mod, diag_, options_.build_threads)) {
+                    std::fprintf(stderr, "[FATAL] Broken after %.*s\n",
+                                 static_cast<int>(name.size()), name.data());
+                    return false;
+                }
+                return true;
+            };
+        }
         if (!run_bronze_optimization_pipeline(*mod, options_, hooks)) {
             return nullptr;
         }
         // What the passes removed (barriers, guards) is checked against its
         // certificate in every build; the full verifier only where it runs.
-        if (options_.verify_lowered_module ? !verify_module(*mod, diag_)
+        if (options_.verify_lowered_module ? !verify_module(*mod, diag_, options_.build_threads)
                                            : !verify_module_certificates(*mod, diag_)) {
             return nullptr;
         }

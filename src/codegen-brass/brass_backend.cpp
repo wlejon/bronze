@@ -369,6 +369,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
     options.per_thread_module_data = perThreadModuleData_;
     options.verify_lowered_module = verifyLowered_;
+    options.build_threads = buildThreads_;
     options.lazy_bodies = lazyBodies_ && !optimize;
     options.spec_feedback = specFeedback_;
     options.spec_profile = specProfile_;
@@ -504,6 +505,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // Each function's map travels in its code range (brass_backend_sections.cpp);
     // the module-wide `__brass_stack_maps` blob would be a second copy.
     compiler.set_emit_stack_map_symbol(false);
+    compiler.set_threads(buildThreads_);
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
     timer.mark("brass compile");
 

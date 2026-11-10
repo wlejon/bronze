@@ -33,10 +33,13 @@ struct BridgeVerifyResult {
 //     never signed predicates (slt/sle/sgt/sge).
 //  4. Tag-mask comparison invariant: (v & 0xFFFF000000000000) == tag must
 //     compare against a valid Bronze shifted tag constant.
+// The module forms check the functions on up to `threads` threads (0: the
+// machine's hardware threads; a small module uses one) and report in module
+// order, as one thread would.
 BridgeVerifyResult verify_bridge_function_detailed(const brass::Function& fn);
-BridgeVerifyResult verify_bridge_module_detailed(const brass::Module& mod);
+BridgeVerifyResult verify_bridge_module_detailed(const brass::Module& mod, size_t threads = 1);
 
 bool verify_bridge_function(const brass::Function& fn, brass::DiagnosticReporter* diag = nullptr);
-bool verify_bridge_module(const brass::Module& mod, brass::DiagnosticReporter* diag = nullptr);
+bool verify_bridge_module(const brass::Module& mod, brass::DiagnosticReporter* diag = nullptr, size_t threads = 1);
 
 } // namespace il2mir

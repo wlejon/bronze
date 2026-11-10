@@ -166,7 +166,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {},
              // `--harvest-out <file.tfb>`: the program writes its inline-cache
              // harvest there at exit (docs/type-feedback.md, "Harvest").
-             const std::string& harvestOutPath = {});
+             const std::string& harvestOutPath = {},
+             // `-j <n>` / `--jobs <n>`: threads for code generation's
+             // per-function work (BrassBackend::setBuildThreads); 0 is every
+             // hardware thread. The output does not depend on it.
+             size_t buildThreads = 0);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

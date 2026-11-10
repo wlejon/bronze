@@ -103,6 +103,13 @@ public:
     // immortal callee directly is sound, as the caller is running and so
     // already held.
     void setDirectCallSites(bool on) { directJsCalls_ = on; }
+    // Threads the per-function work of a build may use: brass's MIR
+    // optimizer (brass::PipelineRunOptions) and its code generation
+    // (brass::object::ModuleCompiler::set_threads). 0, the default, is the
+    // machine's hardware threads; 1 runs it all on the calling thread. The
+    // object's bytes are the same at any count.
+    void setBuildThreads(size_t threads) { buildThreads_ = threads; }
+    size_t buildThreads() const { return buildThreads_; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -139,6 +146,7 @@ private:
     bool lazyBodies_ = false;
     bool directJsCalls_ = false;
     bool directCallees_ = false;
+    size_t buildThreads_ = 0;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;

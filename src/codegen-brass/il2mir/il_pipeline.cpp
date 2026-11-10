@@ -85,7 +85,9 @@ bool run_bronze_optimization_pipeline(
     brass::Module& mod,
     const TranslatorOptions& options,
     const brass::PassPipelineHooks& hooks) {
-    return brass::run_pipeline(mod, bronze_optimization_pipeline(options), hooks).completed;
+    brass::PipelineRunOptions run;
+    run.threads = options.build_threads;
+    return brass::run_pipeline(mod, bronze_optimization_pipeline(options), hooks, run).completed;
 }
 
 } // namespace il2mir
