@@ -23,6 +23,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/selfhost.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
@@ -672,6 +673,11 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
             (native->arity == 0 || argc >= native->arity) && rtEntersWithoutScope(native)) {
             CalleeRealmScope realm(native->realmSlot());
             if (realm.dead()) return rtThrowTypeError(kDeadRealmCall).rawBits();
+            // A self-hosted builtin is compiled code behind a native's object
+            // (selfhost.h): the same call, through the generated-code entry.
+            if (rtIsSelfHostedCode(reinterpret_cast<const void*>(native->code))) {
+                return rtEnterJs(native->code, native->env_record.rawBits(), thisBits, argc, argvBits);
+            }
             return native->code(native->env_record.rawBits(), thisBits, argc, argvBits);
         }
     }

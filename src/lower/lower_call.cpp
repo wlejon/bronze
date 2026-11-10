@@ -149,6 +149,10 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
 
 std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
                                                  bool onSpine) {
+    if (selfHost_) {
+        std::optional<Value> intrinsic;
+        if (lowerIntrinsicCall(call, ilFn, intrinsic)) return intrinsic;
+    }
     if (nativeManifest_) {
         if (auto nativeVal = tryLowerNativeCall(call, ilFn)) {
             return nativeVal;

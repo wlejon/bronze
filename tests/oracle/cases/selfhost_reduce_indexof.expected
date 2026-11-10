@@ -1,0 +1,59 @@
+reduce empty TypeError: Reduce of empty array with no initial value
+reduce empty with initial init
+reduce explicit undefined initial undefined12
+reduce all holes TypeError: Reduce of empty array with no initial value
+reduce all holes with initial 0
+reduce one element 42
+reduce first after holes 3:3=4
+reduce indices 0a31b32c3
+reduce extra args ignored 13
+reduce on array-like empty TypeError: Reduce of empty array with no initial value
+reduce on array-like holes only
+reduce not callable first TypeError: number 5 is not a function
+reduceRight still 6
+indexOf 0 0
+indexOf -0 0
+indexOf 1 1
+indexOf "1" 2
+indexOf null -1
+indexOf null 4
+indexOf undefined 5
+indexOf false 6
+indexOf "" 7
+indexOf [] -1
+indexOf {} -1
+indexOf -0 finds +0 0 0
+indexOf object identity 1 -1
+fromIndex undefined 5 0 9
+fromIndex 0 5 0 9
+fromIndex 3 5 -1 9
+fromIndex -3 -1 -1 9
+fromIndex 9 -1 -1 9
+fromIndex 10 -1 -1 -1
+fromIndex 11 -1 -1 -1
+fromIndex -10 5 0 9
+fromIndex -11 5 0 9
+fromIndex 2.7 5 -1 9
+fromIndex -2.7 -1 -1 9
+fromIndex "4" 5 -1 9
+fromIndex " 4 " 5 -1 9
+fromIndex "x" 5 0 9
+fromIndex NaN 5 0 9
+fromIndex Infinity -1 -1 -1
+fromIndex -Infinity 5 0 9
+fromIndex null 5 0 9
+fromIndex true 5 -1 9
+fromIndex [5] 5 -1 9
+fromIndex 1e+21 -1 -1 -1
+fromIndex -1e+21 5 0 9
+fromIndex 4294967296 -1 -1 -1
+fromIndex -4294967296 5 0 9
+fromIndex -0 result is +0 true
+fromIndex valueOf 7 1
+fromIndex throws URIError: from
+fromIndex symbol TypeError: Cannot convert a Symbol value to a number
+fromIndex bigint TypeError: Cannot convert a BigInt value to a number
+indexOf length 2 slots 1 -1
+indexOf no argument 0 -1
+indexOf big 999 -1 -1
+indexOf strings 2 1 -1

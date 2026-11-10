@@ -407,6 +407,10 @@ public:
     Value* lower_elem_get_array(Builder& b, Value* obj, Value* index, int64_t flags);
     void lower_elem_set_array(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict, int64_t flags);
     Value* lower_is_array(Builder& b, Value* obj);
+    // `key in obj` (il_elem_array.cpp): an Array's own element answered inline.
+    // CreateDataPropertyOrThrow (elem.define) on an open Array, inline (il_elem_array.cpp).
+    void lower_elem_define_array(Builder& b, Value* obj, Value* key, Value* val);
+    Value* lower_has_index_array(Builder& b, Value* key, Value* obj);
     // The proven word-view forms (il_elem_word_view.cpp).
     static bool elem_word_view_receiver(int64_t flags);
     Value* lower_elem_get_word_view(Builder& b, Value* obj, Value* index, int64_t flags);

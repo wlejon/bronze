@@ -116,6 +116,7 @@ add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
 add_subdirectory(src/eval)
 add_subdirectory(src/cli)
+add_subdirectory(src/selfhost)
 # The runtime again, as a DLL/.so/.dylib. After every module it is built from,
 # because it reads their source lists off the targets rather than relisting
 # them. It needs no backend: the backend is what EMITS a loadable module, the

@@ -1,0 +1,63 @@
+forEach holes [0,2,4]
+map holes length 5
+map keeps holes false false 50
+filter holes [1,3,5]
+some calls 3
+every calls 3
+find visits holes ["0:1","1:undefined","2:3","3:undefined","4:5"]
+findIndex undefined 1
+indexOf undefined -1
+reduce holes 9
+sparse forEach [3,100]
+sparse map length 101
+sparse indexOf 100
+push during forEach [1,2,3]
+grown to 6
+pop during forEach [1,2,3,4]
+delete ahead in map [1,2,null,4]
+change ahead in filter [1,20,3]
+find sees change 99
+reduce truncation 6
+forEach throw RangeError: stop at 1
+stopped at 1
+map throw SyntaxError: in map
+reduce throw String: undefined
+every threw 42
+args strict no thisArg [["a",0,2,true],["b",1,2,true]]
+thisArg ctx
+thisArg primitive stays number
+arrow ignores thisArg object
+reduce this undefined 1
+generator callback (truthy iterator) 2
+async callback (truthy promise) true
+bound callback [101,102]
+method callback [2,3]
+builtin callback [1,2,3]
+builtin callback parseInt [1,null,null]
+Boolean filter [1,"a"]
+class callback TypeError: Class constructor K cannot be invoked without 'new'
+map(K) TypeError: Class constructor K cannot be invoked without 'new'
+callable proxy [3,6]
+nested builtin as callback [[2,3],[4]]
+builtin bound as callback [-1,-1]
+forEach(undefined) TypeError: undefined is not a function
+forEach(null) TypeError: object null is not a function
+forEach(1) TypeError: number 1 is not a function
+forEach("x") TypeError: string "x" is not a function
+forEach(true) TypeError: boolean true is not a function
+forEach({}) TypeError: object is not a function
+forEach([]) TypeError: object is not a function
+forEach(symbol) TypeError: symbol is not a function
+map(undefined) on empty TypeError: undefined is not a function
+some(null) TypeError: object null is not a function
+every(1) TypeError: number 1 is not a function
+filter('f') TypeError: string "f" is not a function
+find({}) TypeError: object is not a function
+findIndex(true) TypeError: boolean true is not a function
+reduce(undefined) TypeError: undefined is not a function
+length read before callable check TypeError: number 1 is not a function
+length reads 1
+forEach returns undefined
+some on empty false every on empty true
+find none undefined findIndex none -1
+findIndex zero 0

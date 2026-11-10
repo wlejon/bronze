@@ -1,0 +1,88 @@
+forEach function forEach 1 function forEach() { [native code] } function forEach() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+map function map 1 function map() { [native code] } function map() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+filter function filter 1 function filter() { [native code] } function filter() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+some function some 1 function some() { [native code] } function some() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+every function every 1 function every() { [native code] } function every() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+find function find 1 function find() { [native code] } function find() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+findIndex function findIndex 1 function findIndex() { [native code] } function findIndex() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+reduce function reduce 1 function reduce() { [native code] } function reduce() { [native code] }
+  own keys ["length","name"] false false
+  name attrs false false true length attrs false false true
+  new TypeError
+  Reflect.construct TypeError
+  proto is Function.prototype true
+  extensible true
+forEach on Array.prototype true false true true
+map on Array.prototype true false true true
+filter on Array.prototype true false true true
+some on Array.prototype true false true true
+every on Array.prototype true false true true
+find on Array.prototype true false true true
+findIndex on Array.prototype true false true true
+reduce on Array.prototype true false true true
+indexOf on Array.prototype true false true true
+Object.assign attrs true true
+Array.prototype keys hide them 0
+identity true true true
+identity via subclass true
+bind 6,8
+bind name bound map
+call 6
+apply 1
+Reflect.apply true
+as a value -1,-1
+expando 1
+expando deleted undefined
+at Array.forEach (<anonymous>)
+at Array.map (<anonymous>)
+at Array.filter (<anonymous>)
+at Array.some (<anonymous>)
+at Array.every (<anonymous>)
+at Array.find (<anonymous>)
+at Array.findIndex (<anonymous>)
+at Array.reduce (<anonymous>)
+at Array.map (<anonymous>) | at Array.forEach (<anonymous>)
+stack starts Error: boom
+helpers hidden false

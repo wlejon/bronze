@@ -8,6 +8,7 @@
 #include "runtime/gc.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
+#include "runtime/selfhost.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -272,13 +273,24 @@ bool rtFunctionKindInheritedMember(Rooted<Value>& obj, StringHeader* keyHeader,
 // `arity` is the count a short call is padded to (0 for a variadic); `length`
 // is 10.2.10's number, read off the member's clause. Every method table in the
 // runtime carries both columns for the reason `rtNativeFunction` gives.
+//
+// A row whose builtin is written in JavaScript (selfhost.h) names it in
+// `selfHosted` and has no `code`: its object, name and length are the
+// library's, and rtMethodFunction hands either kind out.
 struct NativeMethod {
     const char* name;
     bronze_fn_code code;
     uint32_t arity;
     uint32_t length;
     const char* qualifiedName = nullptr;
+    SelfHosted selfHosted = SelfHosted::None;
 };
+
+// The function object a NativeMethod row stands for.
+inline Value rtMethodFunction(const NativeMethod& m) {
+    if (m.selfHosted != SelfHosted::None) return rtSelfHostedFunction(m.selfHosted);
+    return rtNativeFunction(m.code, m.arity, m.name, m.length, m.qualifiedName);
+}
 
 // Define each as a NON-ENUMERABLE own property. That attribute is not tidiness:
 // `for-in` walks the prototype chain, so one enumerable member on

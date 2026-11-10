@@ -597,6 +597,9 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         }
         const bronze_fn_desc* desc = fi.desc;
         if (!desc) continue;
+        // A self-hosted builtin's own helpers (lower_selfhost.cpp): part of
+        // the builtin's algorithm, as unlisted as a C++ builtin's calls.
+        if (desc->flags & BRONZE_FN_DESC_HIDDEN) continue;
 
         std::string lineStr;
         bool isAnon = ((desc->flags & BRONZE_FN_DESC_TOPLEVEL) || !desc->name ||

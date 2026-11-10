@@ -58,6 +58,7 @@ std::optional<il::Module> Lowerer::lower() {
     fnParamFactsStack_.clear();
     fnParamFactsStack_.emplace_back();
     planFunctionParamFacts({}, astModule_.body);
+    if (selfHost_ && !planSelfHostBuiltins()) return std::nullopt;
 
     std::vector<const ast::Stmt*> topLevelStmts;
     for (const auto& stmtPtr : astModule_.body) {
@@ -405,6 +406,7 @@ std::optional<il::Module> Lowerer::lower() {
     // The IL -> IL passes, LAST (lower_final_passes.cpp): they read the
     // finished module, and everything above is frozen before they copy code.
     if (!finishIlPasses()) return std::nullopt;
+    if (selfHost_ && !finishSelfHost()) return std::nullopt;
     // The type-feedback instrument, after everything: its sites are the final
     // IL's own (lower_feedback.h), and the build that reads the profile back
     // enumerates them at this same point. Nothing runs after it, so no pass
@@ -740,12 +742,13 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const NativeManifest* nativeManifest,
                                       const InlineGuardedOptions& inlineGuarded,
                                       WholeProgramOptions* wholeProgram,
-                                      const FeedbackOptions* feedback) {
+                                      const FeedbackOptions* feedback, bool selfHost) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
                     assumeNoBigInt, pins, censusOutPath, nativeManifest);
     lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
     lowerer.setWholeProgram(wholeProgram);
     lowerer.setFeedback(feedback);
+    lowerer.setSelfHost(selfHost);
     return lowerer.lower();
 }
 
@@ -762,7 +765,7 @@ std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, Diagnos
                                options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
                                sources, options.inferStats, options.assumeNoBigInt, options.pins,
                                options.censusOutPath, options.nativeManifest, InlineGuardedOptions{/*on=*/true},
-                               &wholeProgram, options.feedback);
+                               &wholeProgram, options.feedback, options.selfHost);
     if (options.wpoReport) *options.wpoReport = std::move(wholeProgram.report);
     return lowered;
 }

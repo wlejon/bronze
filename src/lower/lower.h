@@ -94,7 +94,8 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const NativeManifest* nativeManifest = nullptr,
                                       const InlineGuardedOptions& inlineGuarded = {},
                                       WholeProgramOptions* wholeProgram = nullptr,
-                                      const FeedbackOptions* feedback = nullptr);
+                                      const FeedbackOptions* feedback = nullptr,
+                                      bool selfHost = false);
 
 // THE AHEAD-OF-TIME FRONT END, for every compile whose output is kept:
 // `bronze build` and the evaluator's module builds (eval::buildModule, what a
@@ -120,6 +121,9 @@ struct AheadOfTimeOptions {
     bool wpoStatsPerSite = false;
     std::string wpoStatsFilter;
     std::string* wpoReport = nullptr;
+    // The self-hosted builtins' compile (src/selfhost; lower_selfhost.cpp):
+    // `$Name(...)` intrinsics, no global reads, `$Builtin` registrations.
+    bool selfHost = false;
 };
 std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
                                            const types::InferenceResult* inference, const SourceSet* sources,

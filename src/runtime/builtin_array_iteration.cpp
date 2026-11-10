@@ -6,111 +6,6 @@
 
 namespace bronze::runtime {
 
-uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "forEach")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    DirectCallee direct;
-    direct.bind(fn.get(), 3);
-    NewTargetScope callTargetScope(Value::fromUndefined());
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!rtArrayLikeHasElement(self, i)) continue;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        if (direct.bound()) {
-            const uint64_t block[3] = {elem.get().rawBits(),
-                                       Value::fromDouble(static_cast<double>(i)).rawBits(),
-                                       self.get().rawBits()};
-            direct.call(fn, thisArg.get().rawBits(), 3, block);
-        } else {
-            callBack(fn, thisArg, elem, i, self);
-        }
-    }
-    return Value::fromUndefined().rawBits();
-}
-
-uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "map")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "map")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    Rooted<Value> out{rtArraySpeciesCreate(self, len)};
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!rtArrayLikeHasElement(self, i)) {
-            continue;
-        }
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
-        rtCreateDataPropertyOrThrow(out, i, mapped);
-    }
-    return out.get().rawBits();
-}
-
-uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "filter")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "filter")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
-    uint32_t to = 0;
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!rtArrayLikeHasElement(self, i)) continue;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        Rooted<Value> kept{callBack(fn, thisArg, elem, i, self)};
-        if (bronze_truthy(kept.get().rawBits())) {
-            rtCreateDataPropertyOrThrow(out, to++, elem);
-        }
-    }
-    return out.get().rawBits();
-}
-
-uint64_t arraySome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "some")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "some")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!rtArrayLikeHasElement(self, i)) continue;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        Rooted<Value> hit{callBack(fn, thisArg, elem, i, self)};
-        if (bronze_truthy(hit.get().rawBits())) {
-            return Value::fromBool(true).rawBits();
-        }
-    }
-    return Value::fromBool(false).rawBits();
-}
-
-uint64_t arrayEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "every")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "every")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!rtArrayLikeHasElement(self, i)) continue;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        Rooted<Value> held{callBack(fn, thisArg, elem, i, self)};
-        if (!bronze_truthy(held.get().rawBits())) {
-            return Value::fromBool(false).rawBits();
-        }
-    }
-    return Value::fromBool(true).rawBits();
-}
-
 template <bool Reverse>
 static uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
@@ -144,10 +39,6 @@ static uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, cons
                                           reinterpret_cast<const uint64_t*>(block))));
     }
     return acc.get().rawBits();
-}
-
-uint64_t arrayReduce(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    return arrayReduceImpl<false>(env, thisBits, argc, argv);
 }
 
 uint64_t arrayReduceRight(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {

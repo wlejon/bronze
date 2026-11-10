@@ -222,8 +222,6 @@ uint64_t arrayIndexOf(uint64_t env, uint64_t thisBits, uint32_t argc, const uint
 uint64_t arrayLastIndexOf(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayIncludes(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayAt(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayFind(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayFindIndex(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayFindLast(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayFindLastIndex(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
@@ -239,12 +237,6 @@ uint64_t arrayToSpliced(uint64_t env, uint64_t thisBits, uint32_t argc, const ui
 uint64_t arrayWith(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
 // Iteration
-uint64_t arrayForEach(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayMap(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayFilter(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arraySome(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayEvery(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayReduce(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayReduceRight(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
 }  // namespace bronze::runtime

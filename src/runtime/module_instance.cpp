@@ -56,6 +56,7 @@
 #include "runtime/module_instance.h"
 #include "runtime/atomic_ref.h"
 #include "runtime/fatal.h"
+#include "runtime/fn.h"
 #include "runtime/rt_state.h"
 #include "runtime/tls_block.h"
 
@@ -140,11 +141,13 @@ thread_local ThreadModuleInstanceState t_inst;
 // now. Heap-allocated so a table's address is stable while the map grows.
 thread_local std::unordered_map<uint32_t, std::unique_ptr<ThreadModuleInstanceState>> t_realmInst;
 thread_local ThreadModuleInstanceState* t_active = nullptr;
+// The modules whose thread-table instance every realm shares, by slot
+// (rtRunEntryForEveryRealm).
+thread_local std::vector<uint64_t> t_sharedSlots;
 
 ThreadModuleInstanceState& active() { return t_active ? *t_active : t_inst; }
 
-void ensureDeltaCapacity(size_t slot) {
-    ThreadModuleInstanceState& inst = active();
+void ensureDeltaCapacity(ThreadModuleInstanceState& inst, size_t slot) {
     if (slot < inst.deltaCapacity) return;
     size_t cap = inst.deltaCapacity == 0 ? 16 : inst.deltaCapacity;
     while (cap <= slot) cap *= 2;
@@ -158,7 +161,19 @@ void ensureDeltaCapacity(size_t slot) {
     }
     inst.deltas = grown;
     inst.deltaCapacity = cap;
-    rtTls()->module_deltas = grown;
+    if (&inst == &active()) rtTls()->module_deltas = grown;
+}
+
+void ensureDeltaCapacity(size_t slot) { ensureDeltaCapacity(active(), slot); }
+
+// A realm's table answers each shared module with the thread table's delta.
+void adoptSharedSlots(ThreadModuleInstanceState& inst) {
+    if (&inst == &t_inst) return;
+    for (const uint64_t slot : t_sharedSlots) {
+        if (slot < inst.deltaCapacity && inst.deltas[slot] != kNoDelta) continue;
+        ensureDeltaCapacity(inst, static_cast<size_t>(slot));
+        inst.deltas[slot] = t_inst.deltas[slot];
+    }
 }
 
 }  // namespace
@@ -177,6 +192,7 @@ void rtActivateRealmModuleInstances(uint32_t realmSlot) {
         auto& slotTable = t_realmInst[realmSlot];
         if (!slotTable) slotTable = std::make_unique<ThreadModuleInstanceState>();
         next = slotTable.get();
+        adoptSharedSlots(*next);
     }
     if (next == &active() && rtTls()->module_deltas == next->deltas) return;
     t_active = next;
@@ -245,7 +261,29 @@ void rtForgetModuleInstancesOfEpoch(uint64_t epoch) {
     }
 }
 
+bool rtRunEntryForEveryRealm(void (*entry)()) {
+    ThreadModuleInstanceState* const saved = t_active;
+    struct Restore {
+        ThreadModuleInstanceState* saved;
+        ~Restore() {
+            t_active = saved;
+            rtTls()->module_deltas = active().deltas;
+        }
+    } restore{saved};
+    t_active = &t_inst;
+    rtTls()->module_deltas = t_inst.deltas;
+    const size_t before = t_inst.runs.size();
+    rtCallModuleEntry(entry);
+    if (t_inst.runs.size() == before) return false;
+    t_sharedSlots.push_back(t_inst.runs[before].slot);
+    for (auto& [slot, table] : t_realmInst) {
+        if (table) adoptSharedSlots(*table);
+    }
+    return true;
+}
+
 void rtTeardownThreadModuleInstances() {
+    t_sharedSlots.clear();
     rtTls()->module_deltas = nullptr;
     t_active = nullptr;
     t_realmInst.clear();

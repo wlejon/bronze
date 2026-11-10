@@ -9,6 +9,7 @@
 #include "runtime/fn.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -34,10 +35,15 @@ namespace bronze::runtime {
 // "no box" IS "the constructor is exactly the Array intrinsic", answered by one
 // load with no property path entered at all.
 Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
-    if (!isArray(originalArray.get())) {
+    // Step 2's IsArray holds of a proxy over an array too (7.2.2), and its
+    // `constructor` is read through the proxy, traps and all.
+    const bool proxied = originalArray.get().isObject() &&
+                         originalArray.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy &&
+                         rtIsArray(originalArray.get());
+    if (!proxied && !isArray(originalArray.get())) {
         return Value(bronze_create_array(length));
     }
-    if (!rtExoticPropertyBox(originalArray.get()).isObject()) {
+    if (!proxied && !rtExoticPropertyBox(originalArray.get()).isObject()) {
         return Value(bronze_create_array(length));
     }
     // Step 5: Get(originalArray, "constructor"), which for a subclass instance
@@ -49,8 +55,10 @@ Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
     // build the intrinsic it compares against, and an identity test run against
     // a pre-collection address answers a confident no.
     Rooted<Value> ctorRoot{Value::fromUndefined()};
-    if (Value found;
-        rtExoticNamedRead(originalArray, ctorKey.get().asString<StringHeader>(), found)) {
+    if (proxied) {
+        ctorRoot.set(Value(bronze_elem_get(originalArray.get().rawBits(), ctorKey.get().rawBits())));
+    } else if (Value found;
+               rtExoticNamedRead(originalArray, ctorKey.get().asString<StringHeader>(), found)) {
         ctorRoot.set(found);
     }
     // `Array` itself takes the same shortcut the missing-box case does: its
@@ -77,6 +85,10 @@ Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
             return Value(bronze_construct(speciesRoot.get().rawBits(), 1,
                                           reinterpret_cast<const uint64_t*>(lenRoot.slot_ptr())));
         }
+    } else {
+        // Steps 5-8: a `constructor` that is neither undefined nor an object
+        // is not a constructor.
+        return rtThrowTypeError("object.constructor is not a constructor");
     }
     return Value(bronze_create_array(length));
 }
@@ -102,30 +114,30 @@ const ArrayMethod kArrayMethods[] = {
     {"concat", arrayConcat, 0, 1},
     {"copyWithin", arrayCopyWithin, 0, 2},
     {"entries", rtArrayEntriesBuiltin, 0, 0},
-    {"every", arrayEvery, 1, 1},
+    {"every", nullptr, 1, 1, nullptr, SelfHosted::ArrayEvery},
     {"fill", arrayFill, 0, 1},
-    {"filter", arrayFilter, 1, 1, "Array.filter"},
-    {"find", arrayFind, 1, 1},
-    {"findIndex", arrayFindIndex, 1, 1},
+    {"filter", nullptr, 1, 1, nullptr, SelfHosted::ArrayFilter},
+    {"find", nullptr, 1, 1, nullptr, SelfHosted::ArrayFind},
+    {"findIndex", nullptr, 1, 1, nullptr, SelfHosted::ArrayFindIndex},
     {"findLast", arrayFindLast, 1, 1},
     {"findLastIndex", arrayFindLastIndex, 1, 1},
     {"flat", arrayFlat, 0, 0},
     {"flatMap", arrayFlatMap, 1, 1},
-    {"forEach", arrayForEach, 1, 1, "Array.forEach"},
+    {"forEach", nullptr, 1, 1, nullptr, SelfHosted::ArrayForEach},
     {"includes", arrayIncludes, 1, 1},
     {"indexOf", arrayIndexOf, 1, 1},
     {"join", arrayJoin, 0, 1},
     {"keys", rtArrayKeysBuiltin, 0, 0},
     {"lastIndexOf", arrayLastIndexOf, 1, 1},
-    {"map", arrayMap, 1, 1, "Array.map"},
+    {"map", nullptr, 1, 1, nullptr, SelfHosted::ArrayMap},
     {"pop", bronze_array_pop, 0, 0},
     {"push", bronze_array_push, 0, 1},
-    {"reduce", arrayReduce, 0, 1},
+    {"reduce", nullptr, 0, 1, nullptr, SelfHosted::ArrayReduce},
     {"reduceRight", arrayReduceRight, 0, 1},
     {"reverse", arrayReverse, 0, 0},
     {"shift", bronze_array_shift, 0, 0},
     {"slice", arraySlice, 0, 2},
-    {"some", arraySome, 1, 1},
+    {"some", nullptr, 1, 1, nullptr, SelfHosted::ArraySome},
     {"sort", rtArraySortBuiltin, 1, 1},
     {"splice", arraySplice, 0, 2},
     {"toReversed", arrayToReversed, 0, 0},
@@ -172,7 +184,7 @@ Value rtArrayMethodById(uint32_t id) {
         } else {
             const size_t idx = id - 1;
             const ArrayMethod& m = kArrayMethods[idx];
-            g_arrayMethodValues[id] = rtNativeFunction(m.code, m.arity, m.name, m.length, m.qualifiedName);
+            g_arrayMethodValues[id] = rtMethodFunction(m);
         }
     }
     return g_arrayMethodValues[id];
@@ -188,7 +200,7 @@ Value rtArrayPrototypeObject() {
 
     for (const ArrayMethod& m : kArrayMethods) {
         Rooted<Value> key{rtMakeString(m.name)};
-        Rooted<Value> fn{rtNativeFunction(m.code, m.arity, m.name, m.length, m.qualifiedName)};
+        Rooted<Value> fn{rtMethodFunction(m)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
     }

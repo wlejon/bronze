@@ -708,8 +708,14 @@ bool lower_ops_instruction(
         }
 
         case BronzeOp::In: {
-            Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
             Value* op1 = lowering->ensure_type(get_opd(1), Type::i64(), b);
+            // The inline Array-element arm (il_elem_array.cpp); a key that is
+            // not an index takes its helper.
+            if (lowering->prop_lowering().enable_inlined_fastpaths()) {
+                res_val = lowering->prop_lowering().lower_has_index_array(b, get_opd(0), op1);
+                return true;
+            }
+            Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_has_property", Type::i32(), {op0, op1});
             res_val = b.build_and(res_val, b.build_iconst_i32(1));
             return true;

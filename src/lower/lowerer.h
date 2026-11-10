@@ -74,6 +74,10 @@ public:
     void setWholeProgram(WholeProgramOptions* options) { wholeProgram_ = options; }
     // The type-feedback instrument and the profile read back (lower_feedback.h).
     void setFeedback(const FeedbackOptions* options) { feedback_ = options; }
+    // Compile the self-hosted builtins (lower_selfhost.cpp, src/selfhost):
+    // `$Name(...)` calls are intrinsics, no global may be read, and each
+    // function a top-level `$Builtin(...)` names becomes a builtin.
+    void setSelfHost(bool on) { selfHost_ = on; }
     // The `--feedback-in` profile, or null: what a pass that specializes on
     // observed types asks (docs/type-feedback.md, "Consumers").
     const spec::TypeProfile* feedbackProfile() const {
@@ -104,6 +108,24 @@ private:
     bool inlineGuarded_ = false;
     WholeProgramOptions* wholeProgram_ = nullptr;
     const FeedbackOptions* feedback_ = nullptr;
+
+    // --- The self-hosted builtins (lower_selfhost.cpp) ---
+    struct SelfHostBuiltin {
+        std::string key;      // the runtime's registry name, "Array.prototype.map"
+        std::string display;  // the stack frame's name, "Array.map"
+        uint32_t nameKey = 0; // `fn.name`, as a key constant
+        uint32_t length = 0;  // `fn.length`
+    };
+    bool selfHost_ = false;
+    std::unordered_map<std::string, SelfHostBuiltin> selfHostBuiltins_;
+    // Reads the top level's `$Builtin(fn, key, display, name, length)` rows.
+    bool planSelfHostBuiltins();
+    // `$Name(...)`: true when the call is an intrinsic, with `out` its value
+    // (nullopt and an error reported for a malformed one).
+    bool lowerIntrinsicCall(const ast::Call* call, il::Function& ilFn, std::optional<Value>& out);
+    // After every pass: builtins get their object flags, name, length and
+    // frame; every other function is a hidden frame; a global read is refused.
+    bool finishSelfHost();
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
     // The class name inference gives `receiver`'s object type, or empty.
     std::unordered_map<std::string, std::string> fieldClassGuesses() const;

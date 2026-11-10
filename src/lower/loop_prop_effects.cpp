@@ -99,6 +99,12 @@ std::vector<FunctionEffects> computeModuleEffects(
 
     for (size_t f = 0; f < module.functions.size(); ++f) {
         const auto& fn = module.functions[f];
+        // A self-hosted builtin's intrinsic helper (lower_selfhost.cpp) runs
+        // program code: a proxy trap, a getter, a species constructor.
+        if (fn.isExternal && fn.name.rfind("bronze_sh_", 0) == 0) {
+            effects[f].hasUnresolvedCalls = true;
+            continue;
+        }
         std::vector<DefSite> defs = computeDefSites(fn);
         const bool isCtor = (fn.descFlags & BRONZE_FN_DESC_CONSTRUCTOR) != 0;
         const il::ValueId thisVal = fn.needsEnv ? 1u : 0u;

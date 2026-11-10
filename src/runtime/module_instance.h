@@ -30,4 +30,13 @@ void rtActivateRealmModuleInstances(uint32_t realmSlot);
 // active table (the caller activated another first). 0 is ignored.
 void rtReleaseRealmModuleInstances(uint32_t realmSlot);
 
+// Runs a module's entry against the THREAD's own table, whatever realm is
+// current, and from then on every realm on the thread uses that one instance
+// of the module. For the self-hosted builtins (selfhost.cpp): their function
+// objects are the thread's intrinsics, which belong to no realm and are
+// called from all of them, and their data holds nothing a realm owns (no
+// top-level bindings; caches checked by shape). Returns false when the entry
+// registered no instance.
+bool rtRunEntryForEveryRealm(void (*entry)());
+
 }  // namespace bronze::runtime

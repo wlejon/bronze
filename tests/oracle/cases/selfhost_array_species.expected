@@ -1,0 +1,19 @@
+subclass map true MyArray [2,4,6]
+subclass filter true [2,3]
+species Array false true
+species null true
+species undefined true
+constructor undefined true
+constructor not an object TypeError
+species not a constructor TypeError
+species called with [3] true 5 7 undefined
+filter species length arg [3,0] 4 6 undefined
+map into frozen TypeError
+filter into sealed TypeError
+setter not run false 2
+map with call/apply replaced [2,3]
+reduce with call/apply replaced 3
+assign with Object replaced {"a":1}
+TypeError is the real one true true
+Array species is Array true
+map with Object.prototype.length setter [1,2]

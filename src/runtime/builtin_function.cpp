@@ -24,6 +24,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/selfhost.h"
 #include "runtime/host_globals.h"
 #include "runtime/fn_source.h"
 #include "runtime/gc.h"
@@ -174,6 +175,9 @@ uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
             (fnHdr->arity == 0 || forwarded >= fnHdr->arity)) {
             const uint64_t thisArgBits = argc > 0 ? argv[0] : Value::fromUndefined().rawBits();
             const uint64_t* fwdArgv = forwarded > 0 ? (argv + 1) : nullptr;
+            if (rtIsSelfHostedCode(reinterpret_cast<const void*>(fnHdr->code))) {
+                return rtEnterJs(fnHdr->code, fnHdr->env_record.rawBits(), thisArgBits, forwarded, fwdArgv);
+            }
             return fnHdr->code(fnHdr->env_record.rawBits(), thisArgBits, forwarded, fwdArgv);
         }
     }

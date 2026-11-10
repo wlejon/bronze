@@ -128,14 +128,6 @@ static uint64_t arrayFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const 
     return WantIndex ? Value::fromDouble(-1.0).rawBits() : Value::fromUndefined().rawBits();
 }
 
-uint64_t arrayFind(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    return arrayFindImpl<false, false>(env, thisBits, argc, argv);
-}
-
-uint64_t arrayFindIndex(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    return arrayFindImpl<false, true>(env, thisBits, argc, argv);
-}
-
 uint64_t arrayFindLast(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     return arrayFindImpl<true, false>(env, thisBits, argc, argv);
 }

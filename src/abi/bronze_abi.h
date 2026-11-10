@@ -278,6 +278,10 @@ enum {
     BRONZE_FN_DESC_ASYNC       = 1u << 2,
     BRONZE_FN_DESC_TOPLEVEL    = 1u << 3,
     BRONZE_FN_DESC_BUILTIN     = 1u << 4,
+    /* A helper of the self-hosted builtins (src/selfhost): a frame that is
+     * part of a builtin's own algorithm, which Error.stack leaves out as it
+     * leaves out a C++ builtin's internal calls. */
+    BRONZE_FN_DESC_HIDDEN      = 1u << 5,
 };
 
 typedef struct bronze_fn_desc {

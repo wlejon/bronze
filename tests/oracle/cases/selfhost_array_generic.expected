@@ -1,0 +1,65 @@
+forEach array-like ["0a","2c"]
+map array-like ["a!",null,"c!"]
+map array-like is array true
+filter array-like ["a","c"]
+some array-like true
+every array-like true
+find array-like undefined
+findIndex array-like 2
+reduce array-like ac
+indexOf array-like 2 -1
+map string ["A","B","C"]
+indexOf string 2
+reduce string cba
+every string true
+forEach number undefined
+map boolean []
+indexOf symbol -1
+map typed array via call [3,5,7]
+map typed array via call is array true
+indexOf typed 2
+reduce typed 300
+filter typed [-1,-3]
+forEach.call(null) TypeError: Array.prototype.forEach called on null or undefined
+forEach.call(undefined) TypeError: Array.prototype.forEach called on null or undefined
+map.call(null) TypeError: Array.prototype.map called on null or undefined
+map.call(undefined) TypeError: Array.prototype.map called on null or undefined
+filter.call(null) TypeError: Array.prototype.filter called on null or undefined
+filter.call(undefined) TypeError: Array.prototype.filter called on null or undefined
+some.call(null) TypeError: Array.prototype.some called on null or undefined
+some.call(undefined) TypeError: Array.prototype.some called on null or undefined
+every.call(null) TypeError: Array.prototype.every called on null or undefined
+every.call(undefined) TypeError: Array.prototype.every called on null or undefined
+find.call(null) TypeError: Array.prototype.find called on null or undefined
+find.call(undefined) TypeError: Array.prototype.find called on null or undefined
+findIndex.call(null) TypeError: Array.prototype.findIndex called on null or undefined
+findIndex.call(undefined) TypeError: Array.prototype.findIndex called on null or undefined
+reduce.call(null) TypeError: Array.prototype.reduce called on null or undefined
+reduce.call(undefined) TypeError: Array.prototype.reduce called on null or undefined
+length -1 -> 0
+length 0 -> 0
+length 0.5 -> 0
+length 2.9 -> 2
+length 2 -> 2
+length NaN -> 0
+length null -> 0
+length true -> 1
+length 0x2 -> 2
+length obj -> 2
+length obj -> 2
+length symbol TypeError: Cannot convert a Symbol value to a number
+length bigint TypeError: Cannot convert a BigInt value to a number
+length valueOf throws RangeError: len
+huge length with early exit true
+huge length findIndex 5
+indexOf huge 7
+getter order ["length","get0","cb a","get1","cb b"]
+hole filled from chain [1,"inherited",3]
+indexOf from chain 1
+proxy forEach ["get length","has 0","get 0","has 1","has 2","get 2"]
+proxy find ["get length","get 0","get 1"]
+proxy indexOf ["get length","has 0","get 0","has 1","get 1"]
+proxy reduce ["get length","has 0","get 0","has 1","get 1"]
+proxy map ["get length","get constructor","has 0","get 0","has 1","get 1"]
+proxy map result [2,4]
+proxy filter ["get length","get constructor","has 0","get 0","has 1","get 1"]

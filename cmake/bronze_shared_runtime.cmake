@@ -71,6 +71,12 @@ bronze_abi_export_files("${CMAKE_CURRENT_SOURCE_DIR}/src/abi/bronze_abi.h"
 add_library(bronze_runtime_shared SHARED ${_bronze_shared_sources})
 add_library(bronze::runtime_shared ALIAS bronze_runtime_shared)
 
+# The self-hosted builtins (src/selfhost), which the static runtime takes
+# through its link interface.
+set_source_files_properties("${BRONZE_SELFHOST_OBJECT}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+target_sources(bronze_runtime_shared PRIVATE "${BRONZE_SELFHOST_OBJECT}")
+add_dependencies(bronze_runtime_shared bronze_selfhost)
+
 target_include_directories(bronze_runtime_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
     target_include_directories(bronze_runtime_shared PUBLIC "${BRASS_ROOT}/include")

@@ -2,6 +2,7 @@
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
+#include "runtime/selfhost.h"
 #include "runtime/gc.h"
 #include "runtime/ic_hot.h"
 #include "runtime/native_fn_memo.h"
@@ -483,7 +484,11 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
             static_cast<uint32_t>(arityWord & ~BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT);
         const bool scopeFree = (arityWord & BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT) != 0;
         if (native && scopeFree && (arity == 0 || argc >= arity)) {
-            result = code(way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
+            // A self-hosted builtin (selfhost.h) is compiled code: no scope,
+            // but the generated-code entry.
+            result = rtIsSelfHostedCode(reinterpret_cast<const void*>(code))
+                         ? rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv)
+                         : code(way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
             return true;
         }
         if (arity == 0 || argc >= arity) {
