@@ -144,7 +144,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-
+    if (hdr->flags == HeapKind::Array && rtArrayTruncateFast(objVal, keyIndex, valVal)) return;
     // IC-hit fast path: a shape match writes the slot with no key and no
     // rooting (nothing below can allocate).
     //

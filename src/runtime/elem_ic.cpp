@@ -141,17 +141,22 @@ thread_local uint32_t g_elemKeyCount = 0;
 StringHeader* elemCacheInternKey(StringHeader* live) {
     if (!live) return nullptr;
     const uint64_t h = live->hash();
-    auto& bucket = g_elemKeyArena[h];
-    for (StringHeader* candidate : bucket) {
-        if (candidate == live || candidate->equals(*live)) return candidate;
+    auto found = g_elemKeyArena.find(h);
+    if (found != g_elemKeyArena.end()) {
+        for (StringHeader* candidate : found->second) {
+            if (candidate == live || candidate->equals(*live)) return candidate;
+        }
     }
     // The budget, and the one place it is spent. A program that computes a
     // fresh key per iteration reaches it, stops growing the arena, and keeps
     // the uncached read it always had — a slow answer, never a wrong one.
+    // Checked before the table is touched: a bucket is made only for a key
+    // that is kept, or every fresh key past the budget would still leave an
+    // empty bucket behind for the life of the thread.
     if (g_elemKeyCount >= kElemKeyBudget) return nullptr;
     StringHeader* copy = StringHeader::internToArena(rtArena(), live);
     ++g_elemKeyCount;
-    bucket.push_back(copy);
+    g_elemKeyArena[h].push_back(copy);
     return copy;
 }
 

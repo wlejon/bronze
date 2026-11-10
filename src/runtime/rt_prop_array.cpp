@@ -123,6 +123,27 @@ void rtArrayIndexSet(Value arrVal, uint32_t index, Value v, bool strict) {
     if (refusal != SetRefusal::None) rtReportSetRefusal(refusal, strict, std::to_string(index));
 }
 
+// `arr.length = n` that truncates (or keeps) an ordinary array: what
+// rtArraySetLength does for it, without its tests that cannot fail here. An
+// array with no properties object is open — extensible, its elements
+// configurable, `length` writable (integrity.cpp keeps a sealed or frozen
+// array's attributes in that object) — and a Number that is an integer in
+// [0, length] is its own ToUint32, so neither the RangeError nor the sealed
+// stop applies. Shrinking allocates nothing but the root. False when the write
+// is not that one, for the caller's ordinary path.
+bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal) {
+    if (!newLenVal.isNumber()) return false;
+    auto* arr = arrVal.asObject<ArrayHeader>();
+    if (arr->properties.isObject() || !rtKeyInfo(keyIndex).isLength) return false;
+    const double num = newLenVal.asNumber();
+    if (!(num >= 0.0) || num > static_cast<double>(arr->length) || std::floor(num) != num) {
+        return false;
+    }
+    Rooted<Value> arrRoot{arrVal};
+    ArrayHeader::setLength(rtHeap(), arrRoot, static_cast<uint32_t>(num));
+    return true;
+}
+
 SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal) {
     // 10.4.2.4 steps 3 and 4: ToUint32 and ToNumber of the value must have the
     // same mathematical value, or it was never an array length. NaN, a

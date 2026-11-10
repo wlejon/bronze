@@ -1,0 +1,13 @@
+[[0,"c0",true,"fn|context|once"],[1,"c1",false,"fn|context|once"],[2,"c2",true,"fn|context|once"],[3,"c3",false,"fn|context|once"],[4,"c4",true,"fn|context|once"],[5,"c5",false,"fn|context|once"]]
+[{"alpha":0,"beta":0,"gamma":"g0"},{"alpha":1,"beta":2,"gamma":"g1"},{"alpha":2,"beta":4,"gamma":"g2"},{"alpha":3,"beta":6,"gamma":"g3"}]
+1 alpha|_beta|gamma 2
+alpha|beta locked
+TypeError
+0 0 0
+TypeError
+pa pb pc
+200
+alpha|gamma|beta 4 5 6
+gamma|alpha|beta
+1|x|y sym
+alpha|_b|gamma 20

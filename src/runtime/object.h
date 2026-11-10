@@ -145,8 +145,29 @@ struct InlineCache {
     // whether the walk to the holder is safe to take; `cachedProtoHolder` owns
     // that, and a caller needs both.
     bool describes(const Shape* receiverShape) const noexcept {
-        return isRealShape() && !isAbsent() && cached_shape == receiverShape &&
+        return isRealShape() && !isAbsent() && !isStatics() && cached_shape == receiverShape &&
                (realDepth() == 0 || cached_epoch == protoMutationEpoch());
+    }
+
+    // A function receiver's chain entry (BRONZE_ABI_IC_DEPTH_STATICS_FLAG):
+    // its depth, flags off, is staticsDepth(). realDepth() keeps the flag, so
+    // to every consumer that does not ask this the depth is one no chain has.
+    bool isStatics() const noexcept {
+        return (cached_depth & BRONZE_ABI_IC_DEPTH_STATICS_FLAG) != 0;
+    }
+    uint32_t staticsDepth() const noexcept {
+        return realDepth() & ~BRONZE_ABI_IC_DEPTH_STATICS_FLAG;
+    }
+
+    // What a FUNCTION receiver whose statics box has `boxShape` may take from
+    // this entry (rtFunctionCachedMember): an own data property or accessor of
+    // the box, which a shape describes for any object it is the shape of, or
+    // a statics chain entry while the epoch holds. Never an absent entry or a
+    // plain object's chain entry: a function's chain is not a plain object's.
+    bool describesForFunction(const Shape* boxShape) const noexcept {
+        if (!isRealShape() || isAbsent() || cached_shape != boxShape) return false;
+        if (realDepth() == 0) return true;
+        return isStatics() && cached_epoch == protoMutationEpoch();
     }
 
     // The same question for the negative answer. Its validity is the depth > 0

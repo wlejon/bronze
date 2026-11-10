@@ -253,6 +253,9 @@ std::string escapeRegExpPattern(const std::string& pattern) {
     if (pattern.empty()) return "(?:)";
     std::string out;
     out.reserve(pattern.size());
+    // A `/` inside a character class does not end a literal (12.9.5's
+    // RegularExpressionClass), so it stays as written there, as node keeps it.
+    bool inClass = false;
     for (size_t i = 0; i < pattern.size(); ++i) {
         const char c = pattern[i];
         if (c == '\\' && i + 1 < pattern.size()) {
@@ -261,7 +264,15 @@ std::string escapeRegExpPattern(const std::string& pattern) {
             continue;
         }
         switch (c) {
-            case '/': out += "\\/"; break;
+            case '[': inClass = true; out.push_back(c); break;
+            case ']': inClass = false; out.push_back(c); break;
+            case '/':
+                if (inClass) {
+                    out.push_back(c);
+                } else {
+                    out += "\\/";
+                }
+                break;
             case '\n': out += "\\n"; break;
             case '\r': out += "\\r"; break;
             default:
@@ -430,10 +441,51 @@ bool storeLastIndex(Rooted<Value>& re, double value) {
     return true;
 }
 
+// What one initialisation from an ARENA source string decided, so that the
+// next one from the same string and flag spelling — a regular expression
+// literal evaluated again, which is every evaluation after its first —
+// copies three slots instead of re-deriving them. The source is keyed by
+// address, which an arena string keeps for as long as the thread lives; both
+// answers are arena strings too, so the memo holds nothing the collector
+// moves or frees. The program is still the cache's: its slot and id are
+// checked as programSharedOf checks them, and an evicted program misses here
+// and is compiled again by the ordinary path.
+struct LiteralMemo {
+    const StringHeader* written{nullptr};
+    std::string flagsText;
+    Value source;
+    Value canonicalFlags;
+    uint64_t programId{0};
+};
+
+constexpr size_t kLiteralMemoSize = 64;
+
+LiteralMemo& literalMemoFor(const StringHeader* written) {
+    static thread_local LiteralMemo memo[kLiteralMemoSize];
+    const auto bits = reinterpret_cast<uintptr_t>(written);
+    return memo[(bits >> 4) % kLiteralMemoSize];
+}
+
 }  // namespace
 
 bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::string& flagsText) {
-    const std::string written = rtUtf8Chars(sourceStr.get().asString<StringHeader>());
+    const StringHeader* writtenStr = sourceStr.get().asString<StringHeader>();
+    LiteralMemo* memo = writtenStr->isArena() ? &literalMemoFor(writtenStr) : nullptr;
+    if (memo != nullptr && memo->written == writtenStr && memo->flagsText == flagsText) {
+        const auto slot = static_cast<uint32_t>(memo->programId & 0xFFFF);
+        auto& cache = regExpCache();
+        if (cache.isValid(slot, memo->programId)) {
+            cache.touch(slot);
+            auto* header = re.get().asObject<RegExpHeader>();
+            header->source = memo->source;
+            header->flagsText = memo->canonicalFlags;
+            header->lastIndex = Value::fromDouble(0.0);
+            header->programIndex = Value::fromDouble(static_cast<double>(memo->programId));
+            return true;
+        }
+    }
+
+    const std::string written = rtUtf8Chars(writtenStr);
     const std::string sourceUtf8 = escapeRegExpPattern(written);
     if (sourceUtf8 != written) sourceStr.set(rtMakeString(sourceUtf8.c_str()));
     const regex::Units source = unitsOfString(sourceStr.get().asString<StringHeader>());
@@ -449,6 +501,20 @@ bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::
     header->flagsText = canonicalFlags.get();
     header->lastIndex = Value::fromDouble(0.0);
     header->programIndex = Value::fromDouble(static_cast<double>(index));
+
+    if (memo != nullptr) {
+        // Interned, so both answers are immortal: the escaped source is the
+        // written string itself when escaping changed nothing, and a flag
+        // spelling is one of a handful.
+        NonMovingArena& arena = rtArena();
+        StringHeader* src = StringHeader::internToArena(arena, sourceStr.get().asString<StringHeader>());
+        StringHeader* fl = StringHeader::internToArena(arena, canonicalFlags.get().asString<StringHeader>());
+        memo->written = writtenStr;
+        memo->flagsText = flagsText;
+        memo->source = Value::fromString(src);
+        memo->canonicalFlags = Value::fromString(fl);
+        memo->programId = index;
+    }
     return true;
 }
 

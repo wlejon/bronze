@@ -112,8 +112,10 @@ TEST_CASE("source is always a pattern that could have been written as a literal"
     Rooted<Value> slash{makeRegExp("a/b", "")};
     CHECK(textOf(memberOf(slash, "source")) == "a\\/b");
     CHECK(rtRegExpText(slash.get()) == "/a\\/b/");
+    // Inside a class a `/` ends no literal (`/[/]/` parses), and V8 leaves
+    // it as written.
     Rooted<Value> inClass{makeRegExp("[/]", "")};
-    CHECK(textOf(memberOf(inClass, "source")) == "[\\/]");
+    CHECK(textOf(memberOf(inClass, "source")) == "[/]");
     Rooted<Value> newline{makeRegExp("a\nb", "")};
     CHECK(textOf(memberOf(newline, "source")) == "a\\nb");
     // An escape already in the pattern is left alone rather than doubled.

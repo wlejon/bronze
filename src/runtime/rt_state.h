@@ -77,6 +77,7 @@ struct KeyInfo {
     uint32_t elemIndex = UINT32_MAX;
     bool isElemIndex = false;
     bool isLength = false;
+    bool isPrototype = false;
 };
 
 const std::string& rtKeyString(uint32_t index);

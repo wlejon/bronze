@@ -1,0 +1,9 @@
+point,sub:S,sub:D,plain,point,sub:S,sub:D,plain,point,sub:S,sub:D,plain,point,sub:S,sub:D,plain 12
+over,sub:S,over,sub:S,over,sub:S,redefined:true,redefined:false,redefined:true,redefined:false,redefined:true,redefined:false,data now,data now,data now,data now,data now,data now
+Fx,Cx,Cx,Cx,ox,,Fx,Cx,Cx,Cx,ox,,Fx,Cx,Cx,Cx,ox,
+Dx,Dx,Cx,Dx,Dx,Cx,Cx,Cx,Cx,Cx,Cx2,,,
+undefined,function,true,false,undefined,function,true,false,undefined,function,true,false
+base-name,NamedSub,F,gen,99,0,0,object,undefined,false,true,false,base-name,NamedSub,F,gen,99,0,0,object,undefined,false,true,false,base-name,NamedSub,F,gen,99,0,0,object,undefined,false,true,false
+Gk,,Gk,arrowk,Arrayk,ok,Gk,,Gk,arrowk,Arrayk,ok,Gk,,Gk,arrowk,Arrayk,ok,
+fx,frozen-shared,,getter threw,fx,frozen-shared,,getter threw,fx,frozen-shared,,getter threw
+p1,p1,p2,p2

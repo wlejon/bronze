@@ -283,6 +283,18 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                 if (result == BRONZE_ABI_UNDEFINED_BITS) arrayAbsentFill(keyIndex);
                 return result;
             }
+        } else if (fastHdr->flags == HeapKind::Function) {
+            // `prototype` of a function compiled from source that has one is
+            // its slot, once made: no intrinsic table answers ahead of it and
+            // no box of it holds the key (rtStaticsArmServes). Else a static
+            // from the site's ways against the statics box's shape
+            // (rt_prop_function.cpp), which the ladder below would fill.
+            if (rtKeyInfo(keyIndex).isPrototype) {
+                const Value proto = reinterpret_cast<const FunctionHeader*>(fastHdr)->prototype;
+                if (proto.isObject() && rtStaticsArmServes(objVal)) return proto.rawBits();
+            } else if (uint64_t out = 0; rtFunctionCachedMember(objVal, site, out)) {
+                return out;
+            }
         }
     } else if (objVal.isString()) {
         // A STRING receiver, which generated code's inline IC can never hit

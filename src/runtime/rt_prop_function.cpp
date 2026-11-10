@@ -20,6 +20,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -89,7 +90,52 @@ bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
     return !censusFillsSuppressed();
 }
 
+bool rtStaticsArmServes(Value fnVal) noexcept {
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
+    const uint8_t flags = fnVal.asObject<FunctionHeader>()->function_flags;
+    return (flags & BRONZE_ABI_FN_FLAG_NATIVE) == 0 && (flags & BRONZE_ABI_FN_FLAG_PROTOTYPE) != 0;
+}
+
+bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint64_t& out) {
+    if (site == nullptr || !rtStaticsArmServes(fnVal)) return false;
+    const Value box = fnVal.asObject<FunctionHeader>()->properties;
+    if (!box.isObject() || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+    ObjectHeader* boxObj = box.asObject<ObjectHeader>();
+    InlineCache* ic = site->find(boxObj->shape);
+    if (ic == nullptr || !ic->describesForFunction(boxObj->shape)) return false;
+    ObjectHeader* holder = boxObj;
+    if (ic->isStatics()) {
+        bool crossedDictionary = false;
+        holder = boxObj->cachedProtoHolder(ic->staticsDepth(), crossedDictionary);
+        if (holder == nullptr) return false;
+    }
+    if (!ic->isAccessor()) {
+        out = holder->getSlot(ic->cached_slot).rawBits();
+        return true;
+    }
+    // A getter sees the function, not the box it is kept in.
+    Rooted<Value> self{fnVal};
+    Rooted<Value> getter{holder->getSlot(ic->cached_slot)};
+    out = callGetter(getter.get(), self).rawBits();
+    return true;
+}
+
 namespace {
+
+// Every link `depth` up from a statics box is a plain object of a
+// non-dictionary shape marked as a prototype, so an add to any of them bumps
+// the epoch an inherited entry is filled at (InlineCache::describesForFunction).
+bool statsChainMarked(ObjectHeader* box, uint32_t depth) {
+    ObjectHeader* cur = box;
+    for (uint32_t i = 0; i < depth; ++i) {
+        if (!cur->shape) return false;
+        const Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject() || proto.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+        cur = proto.asObject<ObjectHeader>();
+        if (!cur->shape || cur->shape->isDictionary() || !cur->shape->used_as_prototype) return false;
+    }
+    return true;
+}
 
 // Teach this site that the answer for a FUNCTION receiver is an own data
 // property of the receiver's STATICS object, so the next read hits inline
@@ -101,17 +147,35 @@ namespace {
 // against THAT object's shape (llvm_prop_get.cpp), so the two sides describe
 // the same object or neither does.
 //
-// Depth is 0 by construction: only an OWN property of the statics object gets
-// here. A static INHERITED through `extends` is answered further down this file
-// and fills nothing, because the entry has no way to say "own property of an
-// ancestor of the receiver's statics object" that generated code could check.
+// An own ACCESSOR of the box is filled too, as the accessor entry a plain
+// object's own accessor gets: every reader of it calls the getter with the
+// RECEIVER as `this` (the function, for a function receiver), never the box.
+//
+// A static INHERITED through `extends` (`depth` links up the box chain, every
+// link a base class's box) is filled with BRONZE_ABI_IC_DEPTH_STATICS_FLAG,
+// which only the function arms take (InlineCache::describesForFunction): a
+// plain object's chain entry at the same shape would name %Object.prototype%,
+// which is not on a function's path to its members, and the flag keeps the
+// two apart. Only for a function the arms serve (staticsArmServes).
 void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* propsObj,
-                              const PropertyInfo& own) {
-    if (site == nullptr || own.accessor) return;
+                              const PropertyInfo& found, uint32_t depth) {
+    if (site == nullptr) return;
     if (!rtStaticsBoxCacheable(fnVal, propsObj)) return;
+    if (depth > 0 && !rtStaticsArmServes(fnVal)) return;
+    const uint32_t word = depth == 0 ? 0u : (depth | BRONZE_ABI_IC_DEPTH_STATICS_FLAG);
     if (InlineCache* into = site->slotForInstall(propsObj->shape)) {
-        into->fill(propsObj->shape, own.slot, /*depth=*/0);
+        if (found.accessor) {
+            into->fillAccessor(propsObj->shape, found.slot, word);
+        } else {
+            into->fill(propsObj->shape, found.slot, word);
+        }
     }
+}
+
+// The keys a function's ladder answers between its own box and the boxes
+// `extends` linked in: an inherited entry for one would skip that answer.
+bool keyAnsweredBeforeInheritedStatics(const std::string& keyStr) {
+    return keyStr == "prototype" || keyStr == "length" || keyStr == "name" || keyStr == "constructor";
 }
 
 }  // namespace
@@ -194,7 +258,7 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
             // Before the read, because the read can run a getter and a getter
             // can collect: `propsObj` and `own` are both dead after it, and the
             // entry is about the shape they name now.
-            installStaticsCacheEntry(recv.get(), site, propsObj, own);
+            installStaticsCacheEntry(recv.get(), site, propsObj, own, 0);
             Rooted<Value> key(Value::fromString(keyHeader));
             return propsObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
         }
@@ -255,6 +319,14 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
             PropertyInfo inherited;
             if (ancestor->shape &&
                 ancestor->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
+                // The ladder's steps between the own box and here answered
+                // nothing for this key (they returned above), and for any
+                // other function the arms serve they answer by key alone, so
+                // the entry is the answer for every box at this shape while
+                // the epoch holds.
+                if (!keyAnsweredBeforeInheritedStatics(keyStr) && statsChainMarked(propsObj, depth)) {
+                    installStaticsCacheEntry(recv.get(), site, propsObj, inherited, depth);
+                }
                 Rooted<Value> key(Value::fromString(keyHeader));
                 return propsObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
             }

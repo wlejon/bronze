@@ -141,6 +141,19 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
 // since only the caller knows whether what it found is one.
 bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept;
 
+// Whether the function arms of the read paths (the read stub's, and
+// rtFunctionCachedMember) serve this receiver: a function compiled from
+// source (BRONZE_ABI_FN_FLAG_NATIVE clear, so no intrinsic constructor, bound
+// function or host function, whose answers can come from ahead of the box)
+// that has a `prototype` property (BRONZE_ABI_FN_FLAG_PROTOTYPE, so a write or
+// define of `prototype` goes to its slot and no box of it holds that key).
+bool rtStaticsArmServes(Value fnVal) noexcept;
+
+// A function receiver's read answered from the site's ways against its
+// statics box's shape (InlineCache::describesForFunction), as the read stub's
+// function arm answers it; false when no way answers. May run a getter.
+bool rtFunctionCachedMember(Value fnVal, struct InlineCacheSite* site, uint64_t& out);
+
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //
 // A key means the same thing whichever direction it is used in, so the READ
@@ -269,6 +282,9 @@ bool rtArrayNamedDelete(Value arrVal, PropertyKey name);
 // an array length; the refusal is a frozen `length` or a sealed array's
 // elements refusing to be deleted.
 SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal);
+// The open-array truncation `arr.length = n` (n an integral Number in
+// [0, length]) done in place; false when the write is anything else.
+bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal);
 
 // ---- an array's holes (rt_array_holes.cpp) ----
 //

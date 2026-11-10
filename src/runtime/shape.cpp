@@ -127,6 +127,42 @@ void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     obj->shape = fresh;
 }
 
+namespace {
+
+// The transition count at which a node's edges get a hash index. Below it a
+// scan of the vector is as cheap as hashing the key.
+constexpr size_t kTransitionIndexAt = 16;
+
+// A string key by its content hash, so a heap string finds the edge an arena
+// copy of it made; a symbol by its address, since a symbol is its identity.
+// Equal keys hash equal; the scan still asks `matches`, so a collision costs a
+// compare and nothing else.
+uint32_t transitionKeyHash(PropertyKey key) {
+    if (key.isString()) return key.string()->hash();
+    const auto bits = reinterpret_cast<uintptr_t>(key.identity());
+    return static_cast<uint32_t>(bits ^ (bits >> 32));
+}
+
+void indexTransition(Shape& shape, uint32_t position) {
+    shape.transition_index->operator[](transitionKeyHash(shape.transitions[position].key))
+        .push_back(position);
+}
+
+// Every edge whose key may be `key`, in insertion order — all of them on a
+// short list, the hash bucket's on a long one.
+template <typename F>
+void forEachTransitionFor(const Shape& shape, PropertyKey key, F&& visit) {
+    if (!shape.transition_index) {
+        for (const ShapeTransition& trans : shape.transitions) visit(trans);
+        return;
+    }
+    auto found = shape.transition_index->find(transitionKeyHash(key));
+    if (found == shape.transition_index->end()) return;
+    for (uint32_t position : found->second) visit(shape.transitions[position]);
+}
+
+}  // namespace
+
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
                           uint32_t& out_slot, bool is_enumerable, bool is_accessor,
                           bool is_writable, bool is_configurable, SlotRepr desired) {
@@ -152,12 +188,9 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     PropertyKey stored = incoming;
     if (!incoming.isSymbol()) {
         stored = PropertyKey{};
-        for (const auto& trans : transitions) {
-            if (trans.key.matches(incoming)) {
-                stored = trans.key;
-                break;
-            }
-        }
+        forEachTransitionFor(*this, incoming, [&](const ShapeTransition& trans) {
+            if (!stored.valid() && trans.key.matches(incoming)) stored = trans.key;
+        });
         if (!stored.valid()) stored = PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
     }
     return addPropertyKey(arena, stored, out_slot, is_enumerable, is_accessor, is_writable,
@@ -185,16 +218,16 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // turns over — so the sticky bit sends the store to the boxed edge instead.
     Shape* next_shape = nullptr;
     Shape* boxed_edge = nullptr;
-    for (const auto& trans : transitions) {
+    forEachTransitionFor(*this, stored, [&](const ShapeTransition& trans) {
         if (trans.enumerable != is_enumerable || trans.accessor != is_accessor ||
             trans.writable != is_writable || trans.configurable != is_configurable ||
             !trans.key.matches(stored)) {
-            continue;
+            return;
         }
         if (trans.repr == SlotRepr::Boxed) boxed_edge = trans.next_shape;
-        if (trans.repr != desired) continue;
+        if (trans.repr != desired) return;
         next_shape = trans.next_shape;
-    }
+    });
     if (next_shape != nullptr && desired == SlotRepr::Double && next_shape->repr_generalized) {
         desired = SlotRepr::Boxed;
         next_shape = boxed_edge;
@@ -219,6 +252,15 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
                                 is_writable, is_configurable, desired);
         transitions.push_back(ShapeTransition{stored, next_shape, is_enumerable, is_accessor,
                                               is_writable, is_configurable, desired});
+        if (transition_index) {
+            indexTransition(*this, static_cast<uint32_t>(transitions.size() - 1));
+        } else if (transitions.size() >= kTransitionIndexAt) {
+            transition_index =
+                std::make_unique<std::unordered_map<uint32_t, std::vector<uint32_t>>>();
+            for (size_t i = 0; i < transitions.size(); ++i) {
+                indexTransition(*this, static_cast<uint32_t>(i));
+            }
+        }
         // A stable layout's child is watched (shape.h `watched`). Only a NEW
         // node needs it: an existing child of a watched node was marked by
         // `Shape::watch` with the rest of the subtree.

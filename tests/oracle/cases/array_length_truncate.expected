@@ -1,0 +1,23 @@
+truncate 3 [0,1,2] [{"i":0},{"i":1},{"i":2}]
+grow 5 [0,1,2] [{"i":0},{"i":1},{"i":2},null,null]
+hole false undefined
+clear 0 [] []
+push after clear 1 [0] [7]
+same 1 [0] [7]
+same double 1 [0] [7]
+bad -1 RangeError
+bad 1.5 RangeError
+bad NaN RangeError
+bad 4294967296 RangeError
+bad 2x RangeError
+string 2 [0,1] [1,2]
+valueOf 1 [0] [1]
+named 1 [0,tag] [1]
+x
+sealed TypeError
+sealed 3 [0,1,2] [1,2,3]
+sealed same 3 [0,1,2] [1,2,3]
+frozen TypeError
+frozen 3 [0,1,2] [1,2,3]
+holey 2 [0] [1,null]
+loop 6004990 0

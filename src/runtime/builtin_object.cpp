@@ -77,8 +77,11 @@ PropertyKey rtInternPropertyKey(Value keyVal) {
 // receiver in a different position, and writing it twice is how the two would
 // come to disagree about a dictionary-mode object.
 //
-// The key is interned BEFORE the object is read: `rtInternPropertyKey` runs
-// ToString, which allocates, so an ObjectHeader* taken across it would be stale.
+// The key is converted BEFORE the object is read: ToString allocates, so an
+// ObjectHeader* taken across it would be stale. It is NOT interned: a lookup
+// matches string keys by content and nothing here keeps the key, so a query
+// for a name the object never had leaves nothing behind in the immortal arena
+// (interning made every distinct name ever asked about permanent).
 bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
     // The characters first (10.4.3.3), then the shape: a String exotic object
     // has both, and `String.prototype` is the one every program meets — its
@@ -94,7 +97,9 @@ bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
         // were the whole answer.
         if (!self.get().isObject()) return false;
     }
-    PropertyKey name = rtInternPropertyKey(key);
+    Rooted<Value> keyRoot{key.isSymbol() ? key : rtValueToString(key)};
+    const PropertyKey name = PropertyKey::fromValue(keyRoot.get());
+    if (!name.valid()) return false;  // ToString threw; the exception is pending
     auto* obj = self.get().asObject<ObjectHeader>();
     uint32_t slot = 0;
     return obj->shape && obj->shape->lookupProperty(name, slot);

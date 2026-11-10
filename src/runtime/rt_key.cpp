@@ -164,6 +164,7 @@ uint32_t bronze_register_key_string_len(const char* str, size_t len) {
         info.elemIndex = UINT32_MAX;
     }
     info.isLength = (text == "length");
+    info.isPrototype = (text == "prototype");
     g_keyInfos.push_back(info);
     g_keyIndex.emplace(text, index);
     return index;

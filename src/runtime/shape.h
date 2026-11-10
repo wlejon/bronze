@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -191,6 +193,13 @@ public:
     // and a standard-library type's size may differ between build
     // configurations — so nothing the backend reads may sit after one.
     std::vector<ShapeTransition> transitions;
+    // Positions in `transitions` by key hash, built once the list is long:
+    // a root that every `{}` starts from gains an edge per distinct name ever
+    // added to an empty object, and a program that adds a fresh name to each
+    // new object (an id-keyed record) made every add scan all of them — 100k
+    // such objects took 10 s. Only the runtime's two scans in shape.cpp read
+    // it; generated code follows IC entries, never this list.
+    std::unique_ptr<std::unordered_map<uint32_t, std::vector<uint32_t>>> transition_index;
 
     // The slot-number split (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT): a slot
     // below it is an inline Value, slot kOverflowSlot + i is Value i of the

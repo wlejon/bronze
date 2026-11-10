@@ -110,6 +110,15 @@
 #define BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG 0x80000000u
 #define BRONZE_ABI_IC_DEPTH_ABSENT_FLAG   0x40000000u
 #define BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG   0x20000000u
+/* A chain entry filled for a FUNCTION receiver (rt_prop_function.cpp): the
+ * shape is the receiver's statics box's, and the holder `depth` links up is a
+ * base class's statics box reached through `extends`, never %Object.prototype%
+ * or above (a function's chain goes from its boxes to %Function.prototype%,
+ * which a plain object's chain does not). Only the function arms of the read
+ * paths take one; to every other consumer the flag makes the depth one no
+ * walk reaches, so a plain receiver (which never has such a shape anyway)
+ * misses. */
+#define BRONZE_ABI_IC_DEPTH_STATICS_FLAG  0x10000000u
 /* How many (shape -> answer) entries one property site holds, and the stride
  * the IC table is therefore indexed by. Four, from the marker-probe evidence
  * in brobench/analysis/chunk1_bill.md: three.js's polymorphic sites mix an

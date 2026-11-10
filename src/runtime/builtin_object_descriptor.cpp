@@ -151,8 +151,19 @@ Value readField(Rooted<Value>& desc, DescField field, bool ordinary, bool& prese
 
 namespace descriptor_internal {
 
+// Every caller names one of the six descriptor fields, so the key is the
+// registry's immortal string for it (descFieldKey): no heap string per field
+// of every descriptor built, and the transition the add takes finds its edge
+// by address. Another name still works, through a fresh string.
 void putField(Rooted<Value>& obj, const char* name, Rooted<Value>& val) {
-    Rooted<Value> key{rtMakeString(name)};
+    Rooted<Value> key;
+    for (size_t i = 0; i < kDescFieldCount; ++i) {
+        if (std::strcmp(name, kDescFieldNames[i]) == 0) {
+            key.set(descFieldKey(static_cast<DescField>(i)).toValue());
+            break;
+        }
+    }
+    if (key.get().isUndefined()) key.set(rtMakeString(name));
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
 }
 
