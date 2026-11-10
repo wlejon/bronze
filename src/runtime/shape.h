@@ -456,7 +456,7 @@ public:
     static constexpr uint32_t kComputedTransitionBudget = 1u << 16;
     // Would adding `key` (with any attributes) have to mint an edge the bound
     // refuses? Cheap unless a limit is reached: a key constant answers at once.
-    bool refusesNewTransition(PropertyKey key) const noexcept;
+    bool refusesNewTransition(PropertyKey added) const noexcept;
 
     Value prototypeValue() const noexcept { return root ? root->prototype : Value::fromUndefined(); }
 };

@@ -168,15 +168,15 @@ namespace {
 thread_local uint32_t t_computedTransitions = 0;
 }  // namespace
 
-bool Shape::refusesNewTransition(PropertyKey key) const noexcept {
-    if (!key.isString() || key.immortal()) return false;
+bool Shape::refusesNewTransition(PropertyKey added) const noexcept {
+    if (!added.isString() || added.immortal()) return false;
     if (computed_transitions < kComputedTransitionLimit &&
         t_computedTransitions < kComputedTransitionBudget) {
         return false;
     }
     bool exists = false;
-    forEachTransitionFor(*this, key, [&](const ShapeTransition& trans) {
-        if (!exists && trans.key.matches(key)) exists = true;
+    forEachTransitionFor(*this, added, [&](const ShapeTransition& trans) {
+        if (!exists && trans.key.matches(added)) exists = true;
     });
     return !exists;
 }
