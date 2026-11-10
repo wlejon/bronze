@@ -334,11 +334,11 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         b.position_at_end(bb_cap);
         b.build_br_if(b.build_uge(cap, iconst(b, need)), bb_bump, bb_slow);
         b.position_at_end(bb_bump);
-        Value* fresh = alloc_lowering_.bump_slot_block(b, cap, bb_slow, bb_alloced);
+        Value* block = alloc_lowering_.bump_slot_block(b, cap, bb_slow, bb_alloced);
         // A fresh block holds no reference yet; the receiver may be old, so
         // the store of the block into it takes the barrier, and the call
         // means the receiver is re-read after it.
-        Value* ov_val = b.build_or(b.build_and(fresh, iconst(b, kPayloadMask)), iconst(b, kObjectTagBits));
+        Value* ov_val = b.build_or(b.build_and(block, iconst(b, kPayloadMask)), iconst(b, kObjectTagBits));
         Value* ov_addr = b.build_add(ptr, iconst(b, kBronzeObjOverflowOffset));
         with_alias_class(b.build_store(Type::i64(), ov_addr, 0, ov_val), kShapeWordAliasClass);
         b.build_write_barrier(ov_addr, ov_val);
