@@ -236,18 +236,16 @@ std::string protoName(Value proto) {
 
 // A shape's stable name: `<prototype>{k1,k2,...}`, its own keys in the order
 // they were added (a dictionary is `<prototype>{dict}`), with `#N` before the
-// brace for an inline capacity N other than the default 4. Two shapes that differ
-// only in attributes or slot representation share a name, which is the
-// granularity a specialization guards on anyway. Cached by the shape, which is
-// immortal and non-moving.
-uint32_t shapeName(State& s, const ObjectHeader* obj) {
-    const Shape* sh = obj->shape;
-    if (sh == nullptr) return internName(s, "object{?}");
-    auto it = s.shapeNames.find(sh);
-    if (it != s.shapeNames.end()) return it->second;
+// brace for an inline capacity N other than the default 4. Every key is listed
+// (format 2; format 1 cut the list at 32 with `,+N`, which left a wide
+// object's later slots unclaimable). Two shapes that differ only in
+// attributes or slot representation share a name, which is the granularity a
+// specialization guards on anyway. `protoNames` caches the prototype part by
+// root shape.
+std::string shapeText(const Shape* sh, std::unordered_map<const Shape*, std::string>& protoNames) {
     const Shape* root = sh->root;
-    auto pit = s.protoNames.find(root);
-    if (pit == s.protoNames.end()) pit = s.protoNames.emplace(root, protoName(sh->prototypeValue())).first;
+    auto pit = protoNames.find(root);
+    if (pit == protoNames.end()) pit = protoNames.emplace(root, protoName(sh->prototypeValue())).first;
     std::string name = pit->second;
     // A capacity other than the default is part of the name: the same keys
     // sit at other slots past it (shape.h `Shape::placeSlot`).
@@ -262,15 +260,22 @@ uint32_t shapeName(State& s, const ObjectHeader* obj) {
             else keys.push_back("@@symbol");
         }
         std::reverse(keys.begin(), keys.end());
-        constexpr size_t kShown = 32;
-        for (size_t i = 0; i < keys.size() && i < kShown; ++i) {
+        for (size_t i = 0; i < keys.size(); ++i) {
             if (i != 0) name += ",";
             name += keys[i];
         }
-        if (keys.size() > kShown) name += ",+" + std::to_string(keys.size() - kShown);
     }
     name += "}";
-    const uint32_t id = internName(s, name);
+    return name;
+}
+
+// Cached by the shape, which is immortal and non-moving.
+uint32_t shapeName(State& s, const ObjectHeader* obj) {
+    const Shape* sh = obj->shape;
+    if (sh == nullptr) return internName(s, "object{?}");
+    auto it = s.shapeNames.find(sh);
+    if (it != s.shapeNames.end()) return it->second;
+    const uint32_t id = internName(s, shapeText(sh, s.protoNames));
     s.shapeNames.emplace(sh, id);
     return id;
 }
@@ -437,6 +442,20 @@ uint64_t flushIntrinsic(uint64_t, uint64_t, uint32_t, const uint64_t*) {
 }
 
 }  // namespace
+
+std::string typeFeedbackShapeName(const Shape* shape, std::unordered_map<const Shape*, std::string>& protoNames) {
+    if (shape == nullptr) return "object{?}";
+    return shapeText(shape, protoNames);
+}
+
+const char* typeFeedbackKindWord(uint16_t flags) { return kindWord(flags); }
+
+std::string typeFeedbackCodeName(const void* code) {
+    if (code == nullptr) return {};
+    const std::string_view src = rtFunctionSourceText(code);
+    if (src.empty()) return {};
+    return "~" + std::to_string(rtFunctionSourceBegin(code)) + "@" + hex8(fnv32(src));
+}
 
 void typeFeedbackRegister(const char* outPath, const uint32_t* table, uint32_t count,
                           const uint32_t* keyMap) {

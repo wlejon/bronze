@@ -28,7 +28,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*,Oracle\ module*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*,Oracle\ feedback*,Oracle\ harvest*,Oracle\ module*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -101,6 +101,11 @@ set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spe
 # profile may only cost speed. Three builds a case: its own label, `-L feedback`.
 add_test(NAME oracle-feedback COMMAND bronze_oracle_tests "--test-case=Oracle feedback*")
 set_tests_properties(oracle-feedback PROPERTIES LABELS feedback)
+# The inline-cache harvest the same way: every case built plain with
+# `--harvest-out` and run, then built on the harvest its run wrote and on an
+# adversarial one made from it, each held to the pinned bytes.
+add_test(NAME oracle-harvest COMMAND bronze_oracle_tests "--test-case=Oracle harvest*")
+set_tests_properties(oracle-harvest PROPERTIES LABELS feedback)
 
 # Each of these suites runs its cases on getWorkerJobCount() threads
 # (oracle_test.cpp: BRONZE_TEST_JOBS, else at most 4), one child process per
@@ -111,7 +116,7 @@ set_tests_properties(oracle-feedback PROPERTIES LABELS feedback)
 # whole core.
 set_tests_properties(oracle oracle-jit oracle-jit-tier0 oracle-jit-tier2
                      oracle-tiers oracle-tiers-deopt-stress oracle-tiers-deopt-stress-3
-                     oracle-tiers-arm-all-stress-3 oracle-spec-profile oracle-feedback
+                     oracle-tiers-arm-all-stress-3 oracle-spec-profile oracle-feedback oracle-harvest
                      oracle-jit-release-stress oracle-tiers-release-stress
                      PROPERTIES PROCESSORS 4)
 

@@ -792,7 +792,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* table_addr = module_data_addr(b, "__bronze_ic_table");
                 Value* hot_addr = b.build_add(table_addr, b.build_iconst_i64(ic_hot_table_offset(options_.ic_site_count)));
                 Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.ic_site_count));
-                b.build_call("bronze_register_ic_hot", Type::void_type(), {table_addr, hot_addr, site_count});
+                Value* identity_addr = b.build_func_addr(module_sym("__bronze_ic_identity"));
+                b.build_call("bronze_register_ic_hot", Type::void_type(),
+                             {table_addr, hot_addr, site_count, identity_addr});
             }
             // The method-call sites' rows (bronze_abi_layout.h, "the METHOD
             // ROWS"), kept by the runtime's latches the same way.

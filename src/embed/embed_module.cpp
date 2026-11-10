@@ -19,6 +19,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/host_globals.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/microtask.h"
 #include "runtime/module_registry.h"
 #include "runtime/profile.h"
@@ -142,6 +143,12 @@ void setProfileCalleeNamer(ProfileCalleeNamer namer) {
 void dumpProfileReport() {
     runtime::dumpProfileReport();
 }
+
+bool harvestInlineCaches(const void* identity, const std::string& path) {
+    return runtime::rtIcHarvestConfigure(identity, path);
+}
+
+int writeInlineCacheHarvests() { return runtime::rtIcHarvestWriteAll(); }
 
 RuntimeTelemetry getRuntimeTelemetry() {
     RuntimeTelemetry tel;

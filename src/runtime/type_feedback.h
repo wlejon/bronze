@@ -31,10 +31,26 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 #include "runtime/value.h"
 
+namespace bronze {
+class Shape;
+}
+
 namespace bronze::runtime {
+
+// The names the recorder writes, for the inline-cache harvester
+// (runtime/ic_harvest.h), which names what the caches hold the same way: a
+// shape (`<prototype>{k1,...}`, every key; `protoNames` caches the prototype
+// part by root shape), a heap kind (`array`, `typedarray`, ...), and a
+// compiled function by its code pointer, `~<source offset>@<hash of its
+// source text>` (empty when no source was registered for that code: a native,
+// or a build without function source).
+std::string typeFeedbackShapeName(const Shape* shape, std::unordered_map<const Shape*, std::string>& protoNames);
+const char* typeFeedbackKindWord(uint16_t flags);
+std::string typeFeedbackCodeName(const void* code);
 
 // Registration (the census table's FEEDBACK rows): the output path and the
 // method-name links. Arms the atexit writer.

@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <string_view>
+#include <utility>
 
 namespace bronze::il {
 
@@ -348,6 +350,46 @@ std::vector<std::string> feedbackFunctionKeys(const Module& module) {
         keys[i] = std::move(k);
     }
     return keys;
+}
+
+uint64_t icLayoutDigest(const Module& module) {
+    uint64_t h = 1469598103934665603ull;
+    auto mixByte = [&h](uint8_t b) {
+        h ^= b;
+        h *= 1099511628211ull;
+    };
+    auto mix64 = [&](uint64_t v) {
+        for (int i = 0; i < 8; ++i) mixByte(static_cast<uint8_t>(v >> (i * 8)));
+    };
+    auto mixText = [&](std::string_view s) {
+        mix64(s.size());
+        for (unsigned char c : s) mixByte(c);
+    };
+    mix64(module.sourceTexts.size());
+    for (const std::string& text : module.sourceTexts) mixText(text);
+    mix64(module.icSiteCount);
+    // Index -> (op, key): the first instruction met in function, block and
+    // instruction order. Copies of a site (inlining, versioning, threading)
+    // share its index and say the same thing about it.
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> named;
+    for (const Function& fn : module.functions) {
+        for (const Block& block : fn.blocks) {
+            for (const Instruction& inst : block.instructions) {
+                if (inst.op != Op::PropGet && inst.op != Op::PropSet && inst.op != Op::MethodCall &&
+                    inst.op != Op::MethodCallSpread) {
+                    continue;
+                }
+                named.emplace(inst.icIndex, std::make_pair(static_cast<uint32_t>(inst.op), inst.keyIndex));
+            }
+        }
+    }
+    for (const auto& [index, what] : named) {
+        mix64(index);
+        mix64(what.first);
+        mixText(what.second < module.keyConstants.size() ? std::string_view(module.keyConstants[what.second])
+                                                         : std::string_view("?"));
+    }
+    return h;
 }
 
 }  // namespace bronze::il

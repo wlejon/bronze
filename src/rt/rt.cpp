@@ -11,6 +11,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/microtask.h"
 #include "runtime/sampler.h"
 
@@ -52,5 +53,8 @@ int main() {
     // a promise exits the way it observably behaved (microtask.cpp says why at
     // length, beside the report).
     bronze::runtime::rtDrainMicrotasks();
+    // `--harvest-out`: the inline caches as the run left them, read while the
+    // heap their shapes name is still live (ic_harvest.h). Nothing otherwise.
+    bronze::runtime::rtIcHarvestWriteAll();
     return 0;
 }

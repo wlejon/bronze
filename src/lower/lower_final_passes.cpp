@@ -32,6 +32,7 @@
 #include "lower/typed_body_version.h"
 #include "lower/typed_loop_version.h"
 #include "opt/spec/feedback_plan.h"
+#include "il/feedback_site.h"
 #include "il/print.h"
 #include "opt/wpo/wpo.h"
 
@@ -199,6 +200,14 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         if (build.stats) report += layoutFactReport(layoutStats) + layoutPerFn;
     }
     if (plan != nullptr && wholeProgram && build.stats) report += spec::feedbackReport(*plan, feedbackStats);
+    // The harvest identity (il.h icLayoutDigest), before the threading below,
+    // which the probe does not run: a plain build's digest is the one a later
+    // build's probe computes here. A build that spent a profile says so, and
+    // its caches are not harvested (docs/type-feedback.md, "Harvest").
+    mod.icLayoutDigest = il::icLayoutDigest(mod);
+    if (plan != nullptr && !probe) {
+        mod.feedbackApplied = plan->stats.matchedFunctions != 0 || plan->stats.harvestSites != 0;
+    }
     // Last: control flow only, after every pass that reads or copies a site.
     // Not in the probe, nor in a build a profile is recorded from: a profile
     // numbers its sites in the order the final IL has them, and the probe is

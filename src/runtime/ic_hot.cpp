@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/ic_hot.h"
 #include "runtime/object.h"
 
@@ -37,6 +38,9 @@ struct HotRange {
     uintptr_t lo;   // the first site
     uintptr_t hi;   // one past the last
     uint64_t* rows;
+    // The module's IC identity record (bronze_abi_layout.h): what a harvest
+    // of this range is filed under (ic_harvest.h).
+    const uint64_t* identity;
 };
 
 thread_local std::vector<HotRange> t_ranges;
@@ -88,6 +92,18 @@ void copyRow(const HotRange& r, uintptr_t at) noexcept {
     row[1] = words[1];
 }
 
+// One range to the harvester, with its method sites (the method-row range
+// that starts at the same table, if the module has method sites).
+void foldRange(const HotRange& r) {
+    if (r.identity == nullptr) return;
+    const std::vector<uint64_t>* methods = nullptr;
+    for (const MethodRange& m : t_methodRanges) {
+        if (m.lo == r.lo) methods = &m.sites;
+    }
+    runtime::rtIcHarvestFold(reinterpret_cast<const uint64_t*>(r.lo), (r.hi - r.lo) / BRONZE_ABI_IC_SITE_SIZE,
+                             r.identity, methods);
+}
+
 }  // namespace
 
 void rtIcHotNoteWrite(const InlineCache* entry) noexcept {
@@ -137,6 +153,13 @@ void rtMethodRowNoteWrite(const uint64_t* icEntry) noexcept {
 void rtIcHotDropWithin(const void* begin, size_t size) noexcept {
     const auto lo = reinterpret_cast<uintptr_t>(begin);
     const uintptr_t hi = lo + size;
+    // The caches are about to be forgotten or put back as they were (a
+    // reload, a realm's end): a module being harvested keeps what they hold.
+    if (rtIcHarvestArmed()) {
+        for (const HotRange& r : t_ranges) {
+            if (r.lo < hi && r.hi > lo) foldRange(r);
+        }
+    }
     std::erase_if(t_ranges, [lo, hi](const HotRange& r) { return r.lo < hi && r.hi > lo; });
     std::erase_if(t_methodRanges, [lo, hi](const MethodRange& r) { return r.lo < hi && r.hi > lo; });
     t_last = 0;
@@ -156,11 +179,16 @@ size_t rtMethodRowRangeCount() noexcept { return t_methodRanges.size(); }
 
 size_t rtIcHotRangeCount() noexcept { return t_ranges.size(); }
 
+void rtIcHotFoldLiveRanges() {
+    for (const HotRange& r : t_ranges) foldRange(r);
+}
+
 }  // namespace runtime
 
 }  // namespace bronze
 
-extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_t siteCount) {
+extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_t siteCount,
+                                       const uint64_t* identity) {
     using namespace bronze;
     if (!icTable || !hot || siteCount == 0) return;
     const auto lo = reinterpret_cast<uintptr_t>(icTable);
@@ -168,7 +196,9 @@ extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_
     // An instance registered again (a module whose init runs twice in one
     // instance) replaces its range rather than adding a second copy of it.
     runtime::rtIcHotDropWithin(icTable, static_cast<size_t>(hi - lo));
-    t_ranges.push_back({lo, hi, hot});
+    t_ranges.push_back({lo, hi, hot, identity});
+    // A standalone program built with `--harvest-out` names its file here.
+    runtime::rtIcHarvestNoteIdentity(identity);
     // The rows start as copies of what the sites hold now: zero for a fresh
     // instance, and whatever a realm copy's pristine snapshot carried.
     for (uintptr_t at = lo; at < hi; at += BRONZE_ABI_IC_SITE_SIZE) copyRow(t_ranges.back(), at);

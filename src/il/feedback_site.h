@@ -93,4 +93,13 @@ bool verifyFeedbackRecords(const Function& fn, DiagnosticSink& diags);
 // appended to the Nth further function that would otherwise share the key.
 std::vector<std::string> feedbackFunctionKeys(const Module& module);
 
+// The identity an inline-cache HARVEST is filed under (docs/type-feedback.md,
+// "Harvest"): a 64-bit FNV-1a hash of every source text and of what each IC
+// index names — for each index, in ascending order, the op and key string of
+// the first prop.get / prop.set / method.call carrying it — and the site
+// count. A harvest is a table indexed by IC number, so it says something about
+// a build only when that build numbers its sites the same way over the same
+// text; a different digest is a stale harvest, ignored.
+uint64_t icLayoutDigest(const Module& module);
+
 }  // namespace bronze::il

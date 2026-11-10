@@ -21,7 +21,7 @@ using namespace bronze;
 namespace {
 
 const char* const kProfile =
-    "bronze-type-feedback 1\n"
+    "bronze-type-feedback 2\n"
     "fn\tVector3.add#00112233aabbccdd\t40\n"
     "site\t0\tentry\t40\t\n"
     "site\t1\tthis\t40\tobject=40\n"
@@ -36,6 +36,19 @@ const char* const kProfile =
     "target\t0\t7\tupdateMatrix@0badf00d\n"
     "site\t1\ttarget\t3\tfunction=3\n"
     "target\t1\t3\tnative:bound f\n";
+
+// An inline-cache harvest (docs/type-feedback.md, "Harvest").
+const char* const kHarvest =
+    "bronze-type-feedback 2\n"
+    "harvest\t00112233aabbccdd\t9\n"
+    "ic\t0\tproperty\t-\n"
+    "way\t0\town\tVector3{x,y,z,w,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,aa,bb,cc,dd,ee,ff,gg,hh}\n"
+    "ic\t3\tproperty\tfull\n"
+    "way\t3\tproto\tVec{}<Vec.prototype>\n"
+    "way\t3\tabsent\tObject{a}\n"
+    "ic\t8\tmethod\tmega\n"
+    "way\t8\tdirect\tMesh{uuid,name}\t~1204@0badf00d\n"
+    "way\t8\tnative\tarray\tnative:array\n";
 
 // The keys of the module's functions whose IL name ends with `suffix`.
 std::vector<std::string> keysEndingIn(const il::Module& mod, const std::string& suffix) {
@@ -66,6 +79,48 @@ TEST_CASE("profile: parse and serialize round trip byte for byte") {
     REQUIRE_MESSAGE(profile.has_value(), err);
     CHECK(profile->serialize() == kProfile);
     CHECK(profile->functions().size() == 2);
+    CHECK(profile->harvest() == nullptr);
+    // A version-1 file (a recorder that cut shapes at 32 keys) still reads.
+    std::string v1 = kProfile;
+    v1.replace(v1.find(" 2\n"), 3, " 1\n");
+    CHECK(spec::TypeProfile::parse(v1, &err).has_value());
+}
+
+TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every key") {
+    std::string err;
+    auto profile = spec::TypeProfile::parse(kHarvest, &err);
+    REQUIRE_MESSAGE(profile.has_value(), err);
+    CHECK(profile->serialize() == kHarvest);
+    const spec::Harvest* h = profile->harvest();
+    REQUIRE(h != nullptr);
+    CHECK(h->digest == 0x00112233aabbccddull);
+    CHECK(h->sites == 9);
+    REQUIRE(h->ics.size() == 3);
+    CHECK(h->ics.at(0).ways.front().receiver.find(",hh}") != std::string::npos);
+    CHECK(h->ics.at(3).full);
+    CHECK(h->ics.at(3).ways.size() == 2);
+    CHECK(h->ics.at(8).method);
+    CHECK(h->ics.at(8).mega);
+    CHECK(h->ics.at(8).ways.front().callee == "~1204@0badf00d");
+}
+
+TEST_CASE("profile: a malformed harvest is refused") {
+    std::string err;
+    const std::string head = "bronze-type-feedback 2\n";
+    // A row before the harvest row; a short digest; an index past the sites.
+    CHECK_FALSE(spec::TypeProfile::parse(head + "ic\t0\tproperty\t-\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t0011\t4\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nic\t4\tproperty\t-\n", &err));
+    // An unknown flag, form, or a method way without its callee.
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\thot\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(
+        head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\t-\nway\t1\tdirect\tA{x}\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(
+        head + "harvest\t00112233aabbccdd\t4\nic\t1\tmethod\t-\nway\t1\tdirect\tA{x}\n", &err));
+    // A way for an ic not listed, and an ic listed twice.
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nway\t1\town\tA{x}\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(
+        head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\t-\nic\t1\tproperty\t-\n", &err));
 }
 
 TEST_CASE("profile: queries by function key and ordinal") {

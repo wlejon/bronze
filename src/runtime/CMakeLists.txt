@@ -116,6 +116,7 @@ bronze_add_module(runtime
         rt_key.cpp
         elem_ic.cpp
         ic_hot.cpp
+        ic_harvest.cpp
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp

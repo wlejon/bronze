@@ -175,5 +175,9 @@ int main() {
     // A GC root frame, the entry, then one drain of the microtask queue —
     // what runMain does for a linked program (embed_module.cpp).
     bronze::embed::runEntry(entry);
+    // `--harvest-out`: the inline caches as the run left them, read while the
+    // heap their shapes name is still live (runtime/ic_harvest.h). Nothing
+    // to do otherwise.
+    bronze::embed::writeInlineCacheHarvests();
     return 0;
 }

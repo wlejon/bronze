@@ -87,6 +87,9 @@ std::vector<std::string> moduleExports(const brass::object::ObjectFile& obj,
         entry + "_native_imports",
         prefix + "_code_ranges",
         prefix + "_code_range_count",
+        // The inline-cache identity (bronze_abi_layout.h), which a host hands
+        // embed::harvestInlineCaches.
+        prefix + "_ic_identity",
     };
     std::vector<std::string> present;
     for (const std::string& name : wanted) {

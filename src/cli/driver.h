@@ -163,7 +163,10 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // run writes a type-feedback profile there; `--feedback-in
              // <file.tfb>`: read one back for the passes that consume it
              // (docs/type-feedback.md). Neither changes the build otherwise.
-             const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {});
+             const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {},
+             // `--harvest-out <file.tfb>`: the program writes its inline-cache
+             // harvest there at exit (docs/type-feedback.md, "Harvest").
+             const std::string& harvestOutPath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

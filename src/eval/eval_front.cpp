@@ -189,6 +189,8 @@ bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink&
         in.pins.parse(in.pinsText, options.pinsPath, err, /*allowObserved=*/true);
     }
     in.tier = options.tier.value_or(defaultTier());
+    in.feedbackText = readPins(options.feedbackInPath);
+    if (!in.feedbackText.empty()) in.feedback = spec::TypeProfile::parse(in.feedbackText, nullptr);
     return true;
 }
 
@@ -212,7 +214,7 @@ static lower::InlineGuardedOptions inlineGuardedFor(const CompileInputs&) {
 
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
-                         std::string_view entryText) {
+                         std::string_view entryText, bool withFeedback) {
     cache::KeyBuilder k;
     k.field(processMaterial);
     k.field(options.filename);
@@ -234,6 +236,10 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field("|natives");
     k.field(in.manifestJson);
     k.field(in.pinsText);
+    if (withFeedback) {
+        k.field("|feedback");
+        k.field(in.feedbackText);
+    }
     k.field(entryText);
     return k.finish();
 }
@@ -262,6 +268,10 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     lower::WholeProgramOptions wholeProgram;
     wholeProgram.on = aheadOfTime;
     wholeProgram.build.hostGlobals = hostGlobals;
+    // A module's profile or harvest (EvalOptions::feedbackInPath), read as
+    // `bronze build --feedback-in` reads one.
+    lower::FeedbackOptions feedback;
+    if (aheadOfTime && in.feedback) feedback.profile = &*in.feedback;
     auto lowered = lower::lowerModule(astModule, diags,
                                       inferred ? &*inferred : nullptr,
                                       hostGlobals.empty() ? nullptr : &hostGlobals,
@@ -272,7 +282,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       options.censusOutPath,
                                       in.nativeManifest ? &*in.nativeManifest : nullptr,
                                       inlineGuardedFor(in),
-                                      &wholeProgram);
+                                      &wholeProgram, &feedback);
     if (diags.hasErrors() || !lowered) return nullptr;
     timer.mark("lower");
     reportProgress(options, "lower", 0.88);

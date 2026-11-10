@@ -521,8 +521,10 @@
      * array"), handed over at module init: `siteCount` sites at `icTable`
      * and their rows at `hot`, both this instance's. Registration-only: the
      * runtime keeps the rows current on every way-0 write it makes into those
-     * sites, and forgets the range when the instance goes. */ \
-    X(bronze_register_ic_hot, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+     * sites, and forgets the range when the instance goes. `identity` is the
+     * module's IC IDENTITY record (bronze_abi_layout.h): what a harvest of
+     * these sites is filed under, and where a standalone program writes it. */ \
+    X(bronze_register_ic_hot, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_MU64, BRONZE_ABI_U64, BRONZE_ABI_PU64)) \
     /* The module's METHOD ROWS (bronze_abi_layout.h), handed over at module
      * init: `count` rows at `rows`, one per site of the sorted `siteIndexes`
      * (the list bronze_register_method_ic_cells takes) into `icTable`, all

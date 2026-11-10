@@ -18,6 +18,7 @@
 #include "il/il.h"
 #include "lower/native_manifest.h"
 #include "modules/modules.h"
+#include "opt/spec/profile.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
 #include "types/pins.h"
@@ -40,6 +41,11 @@ struct CompileInputs {
     std::string pinsText;
     types::PinManifest pins;
     ExecutionTier tier = ExecutionTier::Auto;
+    // EvalOptions::feedbackInPath's bytes ("" for none or a missing file),
+    // keyed, and the profile or harvest they parse to (none when they do
+    // not: a damaged file costs the specialization, not the build).
+    std::string feedbackText;
+    std::optional<spec::TypeProfile> feedback;
 };
 
 bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags);
@@ -50,10 +56,14 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options);
 
 // Everything a compile reads, hashed under `processMaterial` (the code
 // cache's processKeyMaterial, or a module record's moduleKeyMaterial): two
-// compiles with the same key build the same program.
+// compiles with the same key build the same program. `withFeedback` false
+// leaves the profile out: the key a module's result global is named from, so
+// a build on a harvest names it as the plain build it was harvested from did
+// (the name is a property key of the program, and so part of the caches'
+// layout the harvest is checked against, il/feedback_site.h icLayoutDigest).
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
-                         std::string_view entryText);
+                         std::string_view entryText, bool withFeedback = true);
 
 // The front end after the graph is loaded: the eval transform (a trailing
 // expression's value kept under `resName`, top-level declarations made

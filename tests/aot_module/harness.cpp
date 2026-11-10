@@ -285,6 +285,68 @@ int main() {
         }
     }
 
+    // ---- an inline-cache harvest, fed back (docs/type-feedback.md, "Harvest") ------------
+    // A plain build run with harvestOutPath writes what its caches held; a
+    // build with feedbackInPath on that file uses it, is a different program
+    // to the record (the file's text is in the key), prints the same, and is
+    // never harvested itself.
+    {
+        const fs::path hdir = dir / "harvest";
+        fs::create_directories(hdir, ec);
+        const std::string poly =
+            "class A { constructor(v) { this.v = v; } get() { return this.v; } }\n"
+            "class B extends A { get() { return this.v * 2; } }\n"
+            "let total = 0;\n"
+            "const list = [];\n"
+            "for (let i = 0; i < 300; i++) list.push(i % 3 ? new A(i) : new B(i));\n"
+            "for (let k = 0; k < 50; k++) for (const o of list) total += o.get() + o.v;\n"
+            "'poly:' + total;\n";
+        const std::string plainMod = (hdir / ("plain" + std::string(kModuleExt))).string();
+        const std::string plainRec = (hdir / "plain.bzm").string();
+        const std::string fedMod = (hdir / ("fed" + std::string(kModuleExt))).string();
+        const std::string fedRec = (hdir / "fed.bzm").string();
+        const std::string harvest = (hdir / "unit.tfb").string();
+        const eval::ModuleBuildResult pb = eval::buildModule(poly, optionsFor(hdir), plainMod, plainRec);
+        check(pb.success && !pb.feedbackApplied, "the plain unit builds without a profile");
+        std::string plainOut;
+        {
+            const eval::LoadedModule pl = eval::loadModule(poly, optionsFor(hdir), plainRec);
+            check(pl.ok && pl.icIdentity != nullptr, "and loads, with its cache identity");
+            if (pl.ok) {
+                eval::EvalOptions runOpts = optionsFor(hdir);
+                runOpts.harvestOutPath = harvest;
+                embed::CallResult res = eval::runModule(pl, runOpts);
+                plainOut = res.thrown ? std::string("threw") : embed::toUtf8(res.value);
+                check(embed::writeInlineCacheHarvests() == 1, "writeInlineCacheHarvests writes one file");
+            }
+        }
+        check(fs::is_regular_file(harvest, ec), "the harvest is on disk");        eval::EvalOptions fed = optionsFor(hdir);
+        fed.feedbackInPath = harvest;
+        const eval::ModuleBuildResult fb = eval::buildModule(poly, fed, fedMod, fedRec);
+        check(fb.success && fb.feedbackApplied,
+              "a build on the harvest uses it" + (fb.errorMessage.empty() ? std::string() : ": " + fb.errorMessage));
+        const eval::LoadedModule unfed = eval::loadModule(poly, optionsFor(hdir), fedRec);
+        check(!unfed.ok, "its record refuses a load without the profile: " + unfed.why);
+        const eval::LoadedModule fl = eval::loadModule(poly, fed, fedRec);
+        check(fl.ok, "and accepts one with it" + (fl.ok ? std::string() : ": " + fl.why));
+        if (fl.ok) {
+            check(!embed::harvestInlineCaches(fl.icIdentity, harvest + ".again"),
+                  "a module built on a profile is not harvested");
+            embed::CallResult res = eval::runModule(fl, fed);
+            const std::string got = res.thrown ? std::string("threw") : embed::toUtf8(res.value);
+            check(got == plainOut && got.rfind("poly:", 0) == 0, "it prints what the plain build did: " + got);
+        }
+        eval::EvalOptions garbage = optionsFor(hdir);
+        writeText(hdir / "garbage.tfb", "not a profile\n");
+        garbage.feedbackInPath = (hdir / "garbage.tfb").string();
+        const eval::ModuleBuildResult gb = eval::buildModule(poly, garbage, fedMod + ".g", fedRec + ".g");
+        check(gb.success && !gb.feedbackApplied, "a damaged profile builds without it");
+        // ... and is the module a build without the file makes: it loads
+        // with no profile named, so a host can delete the stale file.
+        const eval::LoadedModule gl = eval::loadModule(poly, optionsFor(hdir), fedRec + ".g");
+        check(gl.ok, "a module whose profile went unused loads without it" + (gl.ok ? std::string() : ": " + gl.why));
+    }
+
     // ---- what makes a record stale ---------------------------------------------------------
     {
         eval::EvalOptions other = optionsFor(dir);

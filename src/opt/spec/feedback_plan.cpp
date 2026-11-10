@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 
 #include "abi/bronze_feedback_site.h"
 #include "il/feedback_site.h"
@@ -57,13 +58,18 @@ std::unordered_map<std::string, uint32_t> resolveCallees(const il::Module& mod, 
             continue;
         }
         const std::string name = callee.substr(0, at);
+        // A harvest names a callee by where its text starts (`~<offset>`):
+        // the cache holds its code, not the function object with its name.
+        const bool byOffset = !name.empty() && name.front() == '~';
+        const uint32_t offset = byOffset ? static_cast<uint32_t>(std::strtoul(name.c_str() + 1, nullptr, 10)) : 0;
         uint32_t found = UINT32_MAX;
         uint32_t matches = 0;
         for (uint32_t i : it->second) {
             const std::string& shown = mod.functions[i].displayName;
-            const bool same = shown == name ||
-                              (shown.size() > name.size() && shown.compare(shown.size() - name.size(), name.size(), name) == 0 &&
-                               shown[shown.size() - name.size() - 1] == '.');
+            const bool same = byOffset ? mod.functions[i].sourceBegin == offset
+                                       : shown == name || (shown.size() > name.size() &&
+                                                           shown.compare(shown.size() - name.size(), name.size(), name) == 0 &&
+                                                           shown[shown.size() - name.size() - 1] == '.');
             if (same) {
                 found = i;
                 ++matches;
@@ -72,6 +78,119 @@ std::unordered_map<std::string, uint32_t> resolveCallees(const il::Module& mod, 
         if (matches == 1) out[callee] = found;
     }
     return out;
+}
+
+// Whether `key` is the last key a shape name lists (`P{...,key}`): a write
+// cache holding that shape may have latched the transition that ADDS the key,
+// whose receivers have the shape one key short (object.cpp, the
+// shape-transition hit), or a store to a key the receiver already had.
+bool lastKeyIs(const std::string& shape, const std::string& key) {
+    if (key.empty() || shape.size() < key.size() + 2 || shape.back() != '}') return false;
+    const size_t start = shape.size() - 1 - key.size();
+    if (shape.compare(start, key.size(), key) != 0) return false;
+    return shape[start - 1] == ',' || shape[start - 1] == '{';
+}
+
+// HARVEST (docs/type-feedback.md, "Harvest"): a cache's contents filed as a
+// recorded site's would be. A cache keeps what a site met, never how often,
+// so every harvested site stands for kHarvestExecutions (past every
+// threshold: a site whose cache filled ran at least once, and nothing says
+// how much more), split evenly over the receivers it held. Where the cache
+// says it met more than it holds, half goes to `*other*`, which no consumer
+// claims and which keeps a read off the inline way chain (E):
+//   - a read whose four ways were all in use (move to front: at least four
+//     shapes, the stub's table answering the rest);
+//   - a write whose way-0 misses the table answered (it keeps one way);
+//   - a method call whose stub's table answered.
+// So one receiver held and nothing more is a dominant shape (A, F), two to
+// three a chain (E), two at a method site poly receivers (B). A write cache
+// holding a shape whose last key is the site's key is ambiguous (the
+// transition that adds it, or a store to it), and gives that receiver's share
+// half to `*other*`: no claim either way. A read's answers are what its ways
+// say: `absent` answered undefined, everything else a value.
+void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& plan) {
+    plan.stats.harvest = true;
+    if (harvest.digest != probe.icLayoutDigest || harvest.sites != probe.icSiteCount) {
+        plan.stats.harvestStale = true;
+        return;
+    }
+    struct Named {
+        il::Op op;
+        uint32_t key;
+    };
+    std::unordered_map<uint32_t, Named> named;
+    for (const il::Function& fn : probe.functions) {
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet || inst.op == il::Op::MethodCall ||
+                    inst.op == il::Op::MethodCallSpread) {
+                    named.emplace(inst.icIndex, Named{inst.op, inst.keyIndex});
+                }
+            }
+        }
+    }
+    constexpr uint64_t W = kHarvestExecutions;
+    for (const auto& [ic, site] : harvest.ics) {
+        const auto it = named.find(ic);
+        if (it == named.end() || site.ways.empty()) continue;
+        const il::Op op = it->second.op;
+        const bool method = op == il::Op::MethodCall || op == il::Op::MethodCallSpread;
+        if (method != site.method) continue;  // not what this index names here
+        ++plan.stats.harvestSites;
+        if (method) {
+            ++plan.stats.harvestMethod;
+            const uint64_t n = site.ways.size();
+            const uint64_t share = site.mega ? W / (2 * n) : W / n;
+            NameCounts& shapes = plan.methodShapesByIc[ic];
+            NameCounts& callees = plan.methodsByIc[ic];
+            for (const HarvestWay& way : site.ways) {
+                shapes.counts[way.receiver] += share;
+                callees.counts[way.callee] += share;
+            }
+            if (site.mega) {
+                shapes.counts["*other*"] += W - share * n;
+                callees.counts["*other*"] += W - share * n;
+            }
+            shapes.total += site.mega ? W : share * n;
+            callees.total += site.mega ? W : share * n;
+            continue;
+        }
+        ++plan.stats.harvestProperty;
+        const bool write = op == il::Op::PropSet;
+        const std::string& key = it->second.key < probe.keyConstants.size() ? probe.keyConstants[it->second.key]
+                                                                               : std::string();
+        // Receivers, each once; a read's receiver answered undefined when a
+        // way held the key absent for it.
+        std::map<std::string, bool> receivers;
+        for (const HarvestWay& way : site.ways) {
+            bool& absent = receivers[way.receiver];
+            absent = absent || way.form == "absent";
+        }
+        const bool more = site.full || (write && site.mega);
+        const uint64_t n = receivers.size();
+        const uint64_t share = more ? W / (2 * n) : W / n;
+        NameCounts& counts = plan.shapesByIc[ic];
+        uint64_t total = 0;
+        for (const auto& [receiver, absent] : receivers) {
+            if (write && lastKeyIs(receiver, key)) {
+                counts.counts[receiver] += share / 2;
+                counts.counts["*other*"] += share - share / 2;
+            } else {
+                counts.counts[receiver] += share;
+            }
+            total += share;
+        }
+        if (more) {
+            counts.counts["*other*"] += W - total;
+            total = W;
+        }
+        counts.total += total;
+        if (!write) {
+            ReadResults& results = plan.readResultsByIc[ic];
+            results.total += total;
+            for (const auto& [receiver, absent] : receivers) results.undefineds += absent ? share : 0;
+        }
+    }
 }
 
 }  // namespace
@@ -168,6 +287,7 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
             }
         }
     }
+    if (const Harvest* harvest = profile.harvest()) planHarvest(probe, *harvest, plan);
     std::vector<std::string> wanted;
     for (const auto& [ic, names] : plan.methodsByIc) {
         if (const std::string* d = names.dominant(kDominantPercent)) wanted.push_back(*d);
@@ -185,6 +305,13 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
                       n(plan.stats.matchedFunctions) + "; sites value " + n(plan.stats.valueSites) + ", shape " +
                       n(plan.stats.shapeSites) + ", method " + n(plan.stats.methodSites) + ", target " +
                       n(plan.stats.targetSites) + "; callee names resolved " + n(plan.callees.size()) + "\n";
+    if (plan.stats.harvest) {
+        out += plan.stats.harvestStale
+                   ? std::string("feedback: harvest from another build (IC layout digest differs): ignored\n")
+                   : "feedback: harvest sites " + n(plan.stats.harvestSites) + " (property " +
+                         n(plan.stats.harvestProperty) + ", method " + n(plan.stats.harvestMethod) +
+                         "); no value sites (C, D)\n";
+    }
     out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + " (regrow " +
            n(stats.shapeRegrow) + "), family " + n(stats.shapeFamily) +
            " (dominant shape without a claimable slot " + n(stats.shapeRefused) + "); profiled executions " +

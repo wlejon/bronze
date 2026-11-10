@@ -22,6 +22,12 @@ std::string moduleSymbolName(const std::string& entrySymbol, const std::string& 
     return base + "_" + entrySymbol;
 }
 
+std::string icIdentitySymbol(const std::string& entrySymbol) {
+    return entrySymbol.empty() || entrySymbol == "main" || entrySymbol == "bronze_main"
+               ? "bronze_object_ic_identity"
+               : entrySymbol + "_ic_identity";
+}
+
 namespace {
 
 using brass::object::ObjectFile;
@@ -151,6 +157,26 @@ void emitMethodIcSites(ObjectFile& obj, Section& roSec, int32_t roIdx,
     }
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_method_ic_sites"), roIdx, sitesOffset,
                  roSec.data.size() - sitesOffset, SymbolBinding::Local);
+}
+
+// The IC IDENTITY record (bronze_abi_layout.h): what a harvest of the module's
+// inline caches is filed under. Local under the module's own name, which init
+// hands `bronze_register_ic_hot`, and exported for a host that loaded the
+// image (eval::LoadedModule).
+void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
+                    const il::Module& module) {
+    roSec.align_to(8);
+    const size_t at = roSec.data.size();
+    roSec.emit32(BRONZE_ABI_IC_IDENTITY_VERSION);
+    roSec.emit32(module.feedbackApplied ? BRONZE_ABI_IC_IDENTITY_PROFILED : 0u);
+    roSec.emit32(module.icSiteCount);
+    roSec.emit32(static_cast<uint32_t>(module.harvestOutPath.size()));
+    roSec.emit64(module.icLayoutDigest);
+    roSec.emit_bytes(reinterpret_cast<const uint8_t*>(module.harvestOutPath.data()), module.harvestOutPath.size());
+    roSec.emit8(0);
+    const size_t size = roSec.data.size() - at;
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_identity"), roIdx, at, size, SymbolBinding::Local);
+    defineSymbol(obj, icIdentitySymbol(entrySymbol), roIdx, at, size, SymbolBinding::Global);
 }
 
 void emitSourceTextsAndEntries(ObjectFile& obj, Section& roSec, int32_t roIdx,
@@ -634,7 +660,8 @@ void demoteInternalSymbols(ObjectFile& obj, const std::string& entrySymbol) {
                 sym.name != keySymbol &&
                 sym.name != importsSymbol &&
                 sym.name != codeRangesSymbol &&
-                sym.name != codeRangeCountSymbol) {
+                sym.name != codeRangeCountSymbol &&
+                sym.name != icIdentitySymbol(entrySymbol)) {
                 sym.binding = SymbolBinding::Local;
             }
         }
@@ -677,6 +704,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitKeyConstants(obj, roSec, roIdx, keySymbol, in.module.keyConstants);
     emitCensusData(obj, roSec, roIdx, entrySymbol, in.module);
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
+    emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module);
     emitClassFamilies(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     emitFileStrings(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles);

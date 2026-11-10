@@ -19,6 +19,10 @@ namespace bronze::codegen {
 // image never define the same key map or IC table.
 std::string moduleSymbolName(const std::string& entrySymbol, const std::string& base);
 
+// The exported name of a module's IC IDENTITY record (bronze_abi_layout.h):
+// `<entry>_ic_identity`, or `bronze_object_ic_identity` for the default entry.
+std::string icIdentitySymbol(const std::string& entrySymbol);
+
 // Everything the object carries beside brass's code that the runtime reads by
 // name (bronze_abi.h has each layout); what BrassBackend::buildObjectFile
 // appends after brass has compiled the module.

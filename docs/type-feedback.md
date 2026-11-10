@@ -33,7 +33,11 @@ Implementation:
 | probe + where each consumer runs | `src/lower/lower_final_passes.cpp` |
 | closure split for profiled `call.dynamic` | `src/lower/own_callee_calls.{h,cpp}` (`applyClosureCalls`) |
 | hinted backend lowering | `src/codegen-brass/il2mir/il_lowering_dynamic.{h,cpp}` |
-| adversarial-profile suite | `tests/oracle/oracle_feedback_test.cpp` |
+| inline-cache harvest: identity digest | `src/il/feedback_site.{h,cpp}` (`icLayoutDigest`) |
+| inline-cache harvest: identity record | `src/abi/bronze_abi_layout.h`, `src/codegen-brass/brass_backend_sections.cpp` (`emitIcIdentity`) |
+| inline-cache harvest: reader of the caches, writer | `src/runtime/ic_harvest.{h,cpp}`, `src/runtime/ic_hot.cpp` |
+| inline-cache harvest: plan | `src/opt/spec/feedback_plan.cpp` (`planHarvest`) |
+| adversarial-profile and harvest suites | `tests/oracle/oracle_feedback_test.cpp` |
 | report | `bench/tools/feedback_report.py` |
 
 ## Sites
@@ -102,7 +106,8 @@ Per site the recorder keeps:
 - **shapes** (shape and method sites): by stable name,
   `<prototype>{k1,k2,...}`, where the prototype is named by its own
   `constructor`'s `name` (`^` per level climbed when it has none), and the
-  keys are the own keys in insertion order (32 shown, then `+N`). A dictionary
+  keys are the own keys in insertion order, every one of them (version 1
+  showed 32, then `+N`). A dictionary
   is `<prototype>{dict}`. A receiver that is not a plain object is named by
   kind (`array`, `function`, `number`, ...). Shapes that differ only in
   attributes or slot representation share a name;
@@ -124,14 +129,16 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 1)
+## File format (version 2)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
-are comments.
+are comments. Version 2 differs from version 1 in two ways: a shape name lists
+every key, and a file may carry a harvest (below). The reader takes both
+versions.
 
 ```
-bronze-type-feedback 1
+bronze-type-feedback 2
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -258,9 +265,9 @@ the plan where each claim has to be made:
   slot claim and no direct target, whose receivers had one dominant shape
   whose key list lacks the key, gets the accessor half that shape's class
   resolves the key to as its `directTarget`, with an accessor cell pair of
-  its own (il.h). A list the recorder cut short (`,+N`: it names 32 keys)
-  counts as lacking a key it does not name; a receiver holding the key among
-  the rest is the guard's to refuse. The class is the one the shape's
+  its own (il.h). A list a version-1 recorder cut short (`,+N`: it named 32
+  keys) counts as lacking a key it does not name; a receiver holding the key
+  among the rest is the guard's to refuse. The class is the one the shape's
   prototype is named by (its constructor's `name`): every class declared under that
   name must resolve the key, at or above it, to the same getter (or setter)
   that an accessor site's hit can call (`accessorOfShownClass`,
@@ -307,6 +314,146 @@ own profile and on an ADVERSARIAL one (every value site numbers only, every
 shape's keys rotated so each slot guess is wrong, every callee another
 site's, each with 1000 executions), and requires the pinned bytes from all
 three. `BRONZE_ORACLE_FEEDBACK_CASES=<substr>[,...]` runs a subset.
+
+## Harvest (`bronze build --harvest-out <file.tfb>`)
+
+An ordinary build's inline caches already hold what its property and method
+sites met. A HARVEST reads them back when the run ends and writes them as a
+profile `--feedback-in` reads. No site is instrumented and nothing is counted
+on a hot path, so the harvested build is the build that ships.
+
+```sh
+bronze build app.js -o app --harvest-out app.tfb      # 1. an ordinary build
+./app                                                 # 2. a run; app.tfb at exit
+bronze build app.js -o app --feedback-in app.tfb      # 3. the build that reads it
+```
+
+**What is read.** A module's IC table (`__bronze_ic_table`, 12 words a site)
+is registered per (thread, realm) at module init by `bronze_register_ic_hot`,
+and its method sites by `bronze_register_method_ic_rows`. Both registrations
+already existed. The harvest folds a table when its instance is dropped (a
+realm released, a reload resetting the image) and at the end of the run. A
+property site's four ways give `<form> <receiver>` per way:
+
+- `own`, `proto`, `absent` or `accessor`, from the depth word's flags;
+- `array`, from the array-method sentinel.
+
+A method site's two ways give `<form> <receiver> <callee>`:
+
+- `direct`: a receiver shape and the code it calls. The callee is named
+  `~<source offset>@<fnv32 of its source>`, which the plan matches against an
+  IL function's `sourceBegin`;
+- `slot`: an own-slot entry, whose callee is `*other*`;
+- `native`: an exotic receiver, named by kind.
+
+Two flags record that a site met more receivers than its cache holds:
+
+- `full` marks a read whose four ways are all in use;
+- `mega` marks a write or call whose stub's mega table answered.
+
+Receivers are named as the recorder names them, with every key. Writing at
+exit reads only what was already folded and never walks the heap.
+
+**Identity.** A harvest names sites by IC index, so it is valid only for the
+build whose indices it names. Lowering computes `il::icLayoutDigest` before
+the final threading pass. The digest is FNV-1a over:
+
+- the source texts;
+- the IC site count;
+- for each index, the op and key of the first instruction that carries it.
+
+The build bakes the digest into an IC IDENTITY record, `<entry>_ic_identity`
+(`bronze_abi_layout.h`): version, flags, site count, digest, and the baked
+harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
+argument. The file's `harvest` row carries the digest and site count.
+
+A `--feedback-in` build compares them with its probe's. The probe runs the
+same passes as a build without a profile, so the indices are the same. A
+build from other source, another compiler, or other options gets a different
+digest. Its harvest is then reported as `ignored` and changes nothing.
+
+A build that spent a profile has the `PROFILED` flag set and is never
+harvested. Its inlined copies number their sites differently, and its claimed
+sites never fill their caches. Harvesting it again would also be a loop.
+
+**How sites map onto the thresholds** (`planHarvest`). A cache records which
+receivers a site met, not how often. Each harvested site therefore counts as
+`kHarvestExecutions` (1024) executions, which is past every threshold, split
+evenly over the receivers it held.
+
+When the cache says the site met more receivers than it holds, half of the
+executions go to `*other*`. No consumer claims `*other*`. This applies to:
+
+- a full read;
+- a write whose mega counter is non-zero;
+- a mega method site.
+
+A write cache holds the shape after a transition. When a write cache holds a
+receiver whose last key is the site's key, the write may have been the
+transition that added the key, so half of that receiver's share also goes to
+`*other*`. The result:
+
+- a single held receiver is dominant (consumers A and F);
+- two or three receivers are a chain (E). Four receivers fill the cache, so
+  that site is marked `full`;
+- two receivers at a method site get poly receivers or a direct target (B).
+
+**What it cannot see**, and what that costs:
+
+- **Value sites**, so no number hints (C) and no profile-guided regions (D).
+  The table below measures this cost.
+- **Entry and execution counts.** A site that ran once looks as hot as one
+  that ran a million times, so the plan may spend code size on cold sites.
+- **`call.dynamic` callees.** There is no call cache, so there is no closure
+  split.
+- **Sites that never fill a cache.** These are sites already answered by a
+  static claim, a layout fact or a typed path, and dictionary receivers.
+- **Own-slot callees.** These appear as `*other*`.
+- **Callees without source.** The callee is named `*other*` in a build that
+  registers no function source.
+
+**Configuration.** Harvesting is off unless a path is given. A path can be
+given in three ways:
+
+- `bronze build --harvest-out <file>` bakes the absolute path into the
+  identity record. The program writes the file at exit (atexit, and from
+  `bronze_host`'s main after the entry).
+- An embedding host sets `eval::EvalOptions::harvestOutPath` for
+  `eval::runModule`. That call passes the loaded module's identity to
+  `embed::harvestInlineCaches(identity, path)`, which returns false for a
+  profiled module.
+- A host calls `embed::harvestInlineCaches` itself.
+
+`embed::writeInlineCacheHarvests()` folds the live instances on the calling
+thread and writes every file now. Call it before leaving through `_exit`,
+when a page is hidden, or before a reload. The reverse direction is
+`eval::EvalOptions::feedbackInPath`: `buildModule` reads that profile or
+harvest, and the module's key includes the file's text. The module's result
+global is named from the key *without* the profile, so a build on a harvest
+has the same property keys, and therefore the same digest, as the build the
+harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
+build used the profile.
+
+**Format.** A harvest is a version 2 file with these rows (any `fn` rows
+come first):
+
+```
+harvest <16 hex digest>  <IC site count>
+ic      <index>  property|method  -|full|mega|full,mega
+way     <index>  <form>  <receiver>[  <callee>]
+```
+
+**Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
+case three ways and requires the pinned bytes and exit code from each run:
+
+1. plain with `--harvest-out`, then run;
+2. on that harvest;
+3. on an adversarial harvest, in which every site holds one way (so it reads
+   as monomorphic with every threshold met), every receiver's keys are
+   rotated, and every method site calls another site's callee.
+
+`BRONZE_ORACLE_FEEDBACK_CASES` selects the cases. `aot-module` runs the
+evaluator path, and `spec` covers parsing and round trips.
 
 ## Report
 

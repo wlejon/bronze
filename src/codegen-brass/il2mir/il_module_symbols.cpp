@@ -55,7 +55,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_pattern_check", "bronze_array_sort_merged", "bronze_array_append", "bronze_array_append_hole", "bronze_array_spread",
         "bronze_object_spread", "bronze_object_rest", "bronze_dynamic_call_spread", "bronze_call_method_spread",
         "bronze_call_method", "bronze_register_method_ic_cells", "__bronze_ic_table", "__bronze_method_ic_sites",
-        "bronze_register_ic_hot", "bronze_register_method_ic_rows",
+        "bronze_register_ic_hot", "bronze_register_method_ic_rows", "__bronze_ic_identity",
         "bronze_static_shape_publish", "bronze_family_stamp", "bronze_register_class_family",
         "__bronze_static_cells", "__bronze_family_base", "__bronze_class_families", "__bronze_class_family_fields",
         "bronze_construct_spread", "bronze_super_call_spread", "bronze_arg_at", "bronze_arguments_object",
@@ -124,6 +124,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         mod->add_external_symbol("__bronze_census_sites_" + entry_symbol);
         mod->add_external_symbol("__bronze_ic_table_" + entry_symbol);
         mod->add_external_symbol("__bronze_method_ic_sites_" + entry_symbol);
+        mod->add_external_symbol("__bronze_ic_identity_" + entry_symbol);
         for (const char* base : {"__bronze_static_cells", "__bronze_family_base", "__bronze_class_families",
                                  "__bronze_class_family_fields"}) {
             mod->add_external_symbol(std::string(base) + "_" + entry_symbol);

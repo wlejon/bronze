@@ -135,8 +135,10 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     modules::ModuleOptions modOpts = detail::moduleOptionsFor(options);
     modules::DependencyLog deps;
     modOpts.dependencyLog = &deps;
-    const cache::Digest key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source);
-    const std::string resName = resNameFor(key);
+    const cache::Digest profiledKey = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source);
+    const cache::Digest plainKey =
+        detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, /*withFeedback=*/false);
+    const std::string resName = resNameFor(plainKey);
 
     auto astModule = modules::loadProgramSource(std::string(source), options.filename, sources, diags, modOpts);
     if (diags.hasErrors() || !astModule) {
@@ -150,6 +152,7 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         return out;
     }
     if (!options.retainSource) ilModule->sourceTexts.clear();
+    out.feedbackApplied = ilModule->feedbackApplied;
 
     BrassBackend backend;
     backend.setEntrySymbol(kEntrySymbol);
@@ -171,6 +174,16 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         return out;
     }
 
+    // A profile the build did not use (another build's harvest, a file naming
+    // nothing here) left no mark on the module: it is the module a build
+    // without the file makes, and is recorded as that one, so the host can
+    // drop the stale file and still load what it just built.
+    cache::Digest key = profiledKey;
+    if (!out.feedbackApplied && !options.feedbackInPath.empty()) {
+        detail::CompileInputs unfed = in;
+        unfed.feedbackText.clear();
+        key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, unfed, source);
+    }
     cache::ModuleRecord record{resName, kEntrySymbol, fs::path(modulePath).filename().string()};
     std::string err;
     if (!cache::writeModuleRecord(fs::path(recordPath), key, record, sources, deps, err)) {
@@ -234,6 +247,7 @@ LoadedModule loadModule(std::string_view source, const EvalOptions& options, con
     }
     out.resName = record.resName;
     out.entry = entry;
+    out.icIdentity = imageSymbol(image, record.entrySymbol + "_ic_identity");
     out.ok = true;
     return out;
 }
@@ -249,6 +263,8 @@ embed::CallResult runModule(const LoadedModule& module, const EvalOptions& optio
     // The thread that runs a module's entry runs its compiled code from then
     // on: what the sampling profiler needs to know (embed's runEntry says so too).
     runtime::samplerNoteJsThread();
+    // Before the entry, whose init registers the caches the harvest reads.
+    if (!options.harvestOutPath.empty()) embed::harvestInlineCaches(module.icIdentity, options.harvestOutPath);
 
     uint64_t epoch = 0;
     if (options.moduleHandleOut) {

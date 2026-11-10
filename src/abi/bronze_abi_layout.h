@@ -145,6 +145,34 @@
 #define BRONZE_ABI_IC_HOT_SHAPE_OFFSET  0
 #define BRONZE_ABI_IC_HOT_SLOT_OFFSET   8
 
+/* ---- the IC IDENTITY: what a harvest of the table is filed under ---------
+ *
+ * Read-only, one per module, handed to `bronze_register_ic_hot` with the
+ * table (docs/type-feedback.md, "Harvest"): the runtime reads a module's
+ * caches back as a type-feedback HARVEST, and the record says which build's
+ * site numbering that harvest describes and whether to take one.
+ *
+ *   u32 version   BRONZE_ABI_IC_IDENTITY_VERSION
+ *   u32 flags     BRONZE_ABI_IC_IDENTITY_PROFILED: the build spent a profile
+ *                 or harvest, so its caches describe a specialized build and
+ *                 are never harvested
+ *   u32 sites     the table's site count
+ *   u32 pathLen   bytes of `path`, without its NUL
+ *   u64 digest    il/feedback_site.h icLayoutDigest
+ *   char path[]   where a standalone program writes its harvest
+ *                 (`bronze build --harvest-out`), NUL-terminated; empty for
+ *                 none (a host names the file at run time instead)
+ *
+ * Exported as `<entry>_ic_identity` beside the ABI stamp, so a host that
+ * loaded the image can name the module to the harvester. */
+#define BRONZE_ABI_IC_IDENTITY_VERSION      1u
+#define BRONZE_ABI_IC_IDENTITY_PROFILED     1u
+#define BRONZE_ABI_IC_IDENTITY_FLAGS_OFFSET  4
+#define BRONZE_ABI_IC_IDENTITY_SITES_OFFSET  8
+#define BRONZE_ABI_IC_IDENTITY_PATHLEN_OFFSET 12
+#define BRONZE_ABI_IC_IDENTITY_DIGEST_OFFSET 16
+#define BRONZE_ABI_IC_IDENTITY_PATH_OFFSET   24
+
 /* ---- the METHOD ROWS: every method-call site's way 0, packed -------------
  *
  * After the hot array, at the next line, each module carries one

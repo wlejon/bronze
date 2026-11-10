@@ -91,9 +91,11 @@
     { "f64", "i32", "undefined", "null", "bool", "string", "object", "array",       \
       "typedarray", "function", "other" }
 
-/* The file format version `bronze-type-feedback <N>` the writer stamps and
- * the reader requires. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 1u
+/* The file format version `bronze-type-feedback <N>` the writers stamp. The
+ * reader takes 1 and 2: 2 names every key of a shape (1 cut the list at 32
+ * with `,+N`) and may carry an inline-cache harvest (`harvest`, `ic` and
+ * `way` rows, runtime/ic_harvest.h). */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 2u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

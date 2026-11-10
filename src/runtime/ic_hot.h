@@ -25,4 +25,9 @@ void rtMethodRowNoteWrite(const uint64_t* icEntry) noexcept;
 // How many method-row ranges this thread has (tests).
 size_t rtMethodRowRangeCount() noexcept;
 
+// Hands every range this thread has registered with an identity record to
+// the harvester (ic_harvest.h rtIcHarvestFold): the inline caches as they
+// stand. A range is also folded as it is dropped, while harvesting is armed.
+void rtIcHotFoldLiveRanges();
+
 }  // namespace bronze::runtime

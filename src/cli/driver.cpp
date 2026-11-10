@@ -286,7 +286,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
              const std::string& specProfilePath, bool wpoStats,
              const std::string& wpoStatsFilter, bool wpoStatsPerSite,
-             const std::string& feedbackOutPath, const std::string& feedbackInPath) {
+             const std::string& feedbackOutPath, const std::string& feedbackInPath,
+             const std::string& harvestOutPath) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -454,6 +455,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // file it still has. `lineTables` stays: Error.stack's positions come
     // from it, and a build without function source still names the line.
     if (!retainFnSource) ilModule->sourceTexts.clear();
+    if (!harvestOutPath.empty()) {
+        std::error_code ec;
+        const auto abs = std::filesystem::absolute(harvestOutPath, ec);
+        ilModule->harvestOutPath = ec ? harvestOutPath : abs.string();
+    }
 
     if (inferStats) {
         std::string statsStr = statsCollector.format();
@@ -843,6 +849,7 @@ int runDriver(int argc, char** argv) {
         std::string wpoStatsFilter;
         std::string feedbackOutPath;
         std::string feedbackInPath;
+        std::string harvestOutPath;
         std::string flagErr;
 
         for (int i = 2; i < argc; ++i) {
@@ -909,7 +916,8 @@ int runDriver(int argc, char** argv) {
             } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
                        takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
-                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
+                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr) ||
+                       takeFlagValue(arg, "--harvest-out", i, argc, argv, harvestOutPath, flagErr)) {
                 if (!flagErr.empty()) return fail(flagErr);
             } else if (arg == "--pins-allow-observed") {
                 pinsAllowObserved = true;
@@ -964,7 +972,7 @@ int runDriver(int argc, char** argv) {
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
-                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath);
+                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath);
     }
 
     return fail(kUsage);

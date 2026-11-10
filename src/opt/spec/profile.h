@@ -12,9 +12,13 @@
 // which is the answer it should get — feedback about a different body is not
 // feedback about this one.
 //
+// The same file can carry an inline-cache HARVEST instead (or as well): what
+// an uninstrumented build's caches held, by IC index (`Harvest` below).
+//
 // The parser is strict, like every reader in bronze: an unknown version, a
 // malformed line or a row outside a function is an error naming the line, not
-// a skipped row.
+// a skipped row. Versions 1 and 2 are read; 2 lists every key of a shape
+// (1 cut the list at 32 with `,+N`) and may carry a harvest.
 
 #include <array>
 #include <cstdint>
@@ -61,6 +65,32 @@ struct FunctionFeedback {
     std::map<uint32_t, SiteFeedback> sites;
 };
 
+// An INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"; the runtime's
+// ic_harvest.h writes it): what each IC site's cache held when an ordinary
+// build's run was read back, by IC index. No counts: a cache holds shapes,
+// not executions; feedback_plan.cpp says how a site maps onto the thresholds.
+struct HarvestWay {
+    // Property sites: `own`, `proto`, `absent`, `accessor`, `array`; method
+    // sites: `direct`, `slot`, `native`.
+    std::string form;
+    std::string receiver;
+    // Method sites only: the callee, `*other*` when the entry does not say.
+    std::string callee;
+};
+
+struct HarvestSite {
+    bool method = false;
+    bool full = false;  // a read whose four ways were in use
+    bool mega = false;  // the stub's table answered a write or a method call
+    std::vector<HarvestWay> ways;
+};
+
+struct Harvest {
+    uint64_t digest = 0;  // il/feedback_site.h icLayoutDigest of the build harvested
+    uint32_t sites = 0;
+    std::map<uint32_t, HarvestSite> ics;
+};
+
 class TypeProfile {
 public:
     // Parses the file format; on failure returns nullopt and sets `error`
@@ -83,8 +113,13 @@ public:
     // Adds or replaces one function; for tests and for merging profiles.
     void put(FunctionFeedback fn);
 
+    // The file's harvest section, or null for a recorded profile.
+    const Harvest* harvest() const { return harvest_ ? &*harvest_ : nullptr; }
+    void setHarvest(Harvest harvest) { harvest_ = std::move(harvest); }
+
 private:
     std::map<std::string, FunctionFeedback> functions_;
+    std::optional<Harvest> harvest_;
 };
 
 }  // namespace bronze::spec

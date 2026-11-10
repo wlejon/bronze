@@ -733,7 +733,25 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
     // inlining (a diagnostic, like BRONZE_INLINE_GUARDED_TRACE).
     const char* dump = std::getenv("BRONZE_INLINE_DUMP");
     for (size_t f = 0; f < module.functions.size(); ++f) {
+        // The caller as it stood: a copy the verifier refuses is undone.
+        il::Function before = module.functions[f];
         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;
+        // A guessed callee can be one this site never calls (a profile that
+        // is stale or wrong names it), and its body copied over this site's
+        // arguments can hold an operation whose certificate they contradict:
+        // an element store on what is here a boxed number. The guard would
+        // never pass, but the IL has to stand on its own, so the caller keeps
+        // its calls. A wrong guess costs speed, never a build.
+        if (DiagnosticSink refused; !il::verifyFunction(module.functions[f], refused)) {
+            if (std::getenv("BRONZE_INLINE_GUARDED_DEBUG")) {
+                il::Module one;
+                one.keyConstants = module.keyConstants;
+                one.functions.push_back(module.functions[f]);
+                std::fputs(il::print(one).c_str(), stderr);
+            }
+            module.functions[f] = std::move(before);
+            continue;
+        }
         any = true;
         if (dump && module.functions[f].name == dump) {
             il::Module one;
@@ -742,18 +760,8 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
             std::fputs(il::print(one).c_str(), stderr);
         }
         if (changed) changed->push_back(static_cast<uint32_t>(f));
-        if (!il::verifyFunction(module.functions[f], diags)) {
-            if (std::getenv("BRONZE_INLINE_GUARDED_DEBUG")) {
-                il::Module one;
-                one.keyConstants = module.keyConstants;
-                one.functions.push_back(module.functions[f]);
-                std::fputs(il::print(one).c_str(), stderr);
-            }
-            diags.error(Span{}, "internal: guarded method inlining produced invalid IL in '" +
-                                    module.functions[f].name + "'");
-            return any;
-        }
     }
+    (void)diags;
     return any;
 }
 

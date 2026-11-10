@@ -30,6 +30,11 @@ std::string_view rtFunctionSourceText(const void* code) {
     return std::string_view(it->second.text + it->second.begin, it->second.length);
 }
 
+uint32_t rtFunctionSourceBegin(const void* code) {
+    auto it = g_fnSources.find(code);
+    return it == g_fnSources.end() ? 0 : it->second.begin;
+}
+
 void rtDropModuleFnSources(uint64_t epoch) {
     if (epoch == 0) return;
     std::erase_if(g_fnSources, [epoch](const auto& kv) { return kv.second.epoch == epoch; });

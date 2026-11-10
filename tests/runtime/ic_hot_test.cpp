@@ -33,7 +33,7 @@ struct Tables {
     std::vector<InlineCacheSite> sites = std::vector<InlineCacheSite>(kSites);
     std::vector<uint64_t> rows = std::vector<uint64_t>(kSites * 2, 0);
     uint64_t* table() { return reinterpret_cast<uint64_t*>(sites.data()); }
-    void registerHere() { bronze_register_ic_hot(table(), rows.data(), kSites); }
+    void registerHere() { bronze_register_ic_hot(table(), rows.data(), kSites, nullptr); }
     bool rowIsWay0(size_t i) const {
         uint64_t w[2];
         std::memcpy(w, &sites[i].ways[0], sizeof w);

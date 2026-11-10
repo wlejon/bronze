@@ -135,6 +135,9 @@ struct ModuleMirror {
     std::vector<uint32_t> slotReprFields;
     std::vector<Module::CensusSiteEntry> censusSites;
     std::string censusOutPath;
+    uint64_t icLayoutDigest;
+    bool feedbackApplied;
+    std::string harvestOutPath;
     std::vector<Module::NativeImport> nativeImports;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
@@ -658,6 +661,9 @@ std::string serializeModule(const Module& module) {
         w.var(c.info);
     }
     w.str(module.censusOutPath);
+    w.var(module.icLayoutDigest);
+    w.u8(module.feedbackApplied ? 1 : 0);
+    w.str(module.harvestOutPath);
     w.var(module.nativeImports.size());
     for (const auto& n : module.nativeImports) {
         w.str(n.name);
@@ -706,6 +712,9 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         c.info = r.u32();
     }
     out.censusOutPath = r.str();
+    out.icLayoutDigest = r.var();
+    out.feedbackApplied = r.u8() != 0;
+    out.harvestOutPath = r.str();
     out.nativeImports.resize(r.count());
     for (auto& n : out.nativeImports) {
         n.name = r.str();

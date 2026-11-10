@@ -20,7 +20,9 @@ import argparse
 import json
 import sys
 
-VERSION = "bronze-type-feedback 1"
+# Version 2 lists every key of a shape and may carry a harvest (ic rows,
+# docs/type-feedback.md "Harvest"), which has no counts to report.
+VERSIONS = ("bronze-type-feedback 1", "bronze-type-feedback 2")
 NUMBER_TAGS = {"f64", "i32"}
 
 
@@ -48,8 +50,8 @@ def parse(path):
         if not line or line.startswith("#"):
             continue
         if not header:
-            if line != VERSION:
-                sys.exit(f"{path}:{n}: expected '{VERSION}'")
+            if line not in VERSIONS:
+                sys.exit(f"{path}:{n}: expected '{VERSIONS[-1]}'")
             header = True
             continue
         f = line.split("\t")
@@ -66,6 +68,8 @@ def parse(path):
                                      "shapes": [], "targets": []}
         elif f[0] in ("shape", "target"):
             fn["sites"][int(f[1])][f[0] + "s"].append((unescape(f[3]), int(f[2])))
+        elif f[0] in ("harvest", "ic", "way"):
+            continue
         else:
             sys.exit(f"{path}:{n}: unknown row '{f[0]}'")
     return fns

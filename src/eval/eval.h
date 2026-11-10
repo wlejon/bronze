@@ -107,6 +107,19 @@ struct EvalOptions {
     uint64_t codeCacheMaxBytes = uint64_t{256} << 20;
     // Called on the compiling thread at each phase boundary.
     std::function<void(const CompileProgress&)> onProgress = {};
+    // Ahead-of-time modules only (buildModule / loadModule / runModule;
+    // docs/type-feedback.md, "Harvest"). `feedbackInPath`: a type-feedback
+    // file, a `--feedback-out` profile or an inline-cache harvest, that the
+    // build specializes on as `bronze build --feedback-in` does; its bytes are
+    // part of the module key, so a new file is a new module. A missing file
+    // is no profile, and so is one the build did not use
+    // (ModuleBuildResult::feedbackApplied false): that module is recorded
+    // under the key of a build without the file, and loads without it. `harvestOutPath`: runModule has the runtime read the
+    // module's inline caches back into this file (embed::harvestInlineCaches;
+    // written by embed::writeInlineCacheHarvests and at exit), unless the
+    // module was built on a profile it used. Running a module, not building it.
+    std::string feedbackInPath = {};
+    std::string harvestOutPath = {};
 };
 
 struct CompiledScript {
@@ -214,6 +227,10 @@ struct ModuleBuildResult {
     // files a program built with moduleRegistry publishes, for a host
     // predicting the registry a later unit will be compiled against.
     std::vector<std::string> filesRead;
+    // The build read EvalOptions::feedbackInPath and specialized on it (a
+    // harvest of another build, or a profile naming nothing here, is not
+    // used); such a module is not harvested again.
+    bool feedbackApplied = false;
 };
 
 // Compiles `source` as compileScript would with `options`, writes the module
@@ -230,6 +247,9 @@ struct LoadedModule {
     std::string modulePath;
     std::string resName;
     void* entry = nullptr;
+    // The image's IC identity record (`<entry>_ic_identity`,
+    // bronze_abi_layout.h): what embed::harvestInlineCaches takes.
+    const void* icIdentity = nullptr;
 };
 
 // Checks the record at `recordPath` against `source` and `options`, then maps

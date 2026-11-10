@@ -408,6 +408,23 @@ using ProfileCalleeNamer = bool (*)(uint64_t calleeBits, void* code, char* out, 
 BRONZE_EMBED_API void setProfileCalleeNamer(ProfileCalleeNamer namer);
 BRONZE_EMBED_API void dumpProfileReport();
 
+// ---- inline-cache harvest (embed_module.cpp; docs/type-feedback.md) --------
+// Harvest the module whose IC identity record is `identity` (an image's
+// `<entry>_ic_identity`, eval::LoadedModule::icIdentity) into `path`: from
+// then on its instances are read back as a type-feedback file a later build
+// takes with --feedback-in (eval::EvalOptions::feedbackInPath). An empty path
+// stops it. False for a module built with a profile (never harvested) or a
+// record this runtime does not read. eval::runModule calls it for
+// EvalOptions::harvestOutPath.
+BRONZE_EMBED_API bool harvestInlineCaches(const void* identity, const std::string& path);
+// Reads this thread's live instances of every harvested module and writes
+// their files now; the number written. Call it from the thread that runs the
+// module, while its realm is alive: before a host exits through `_exit`, when
+// a page is hidden, before a reload (a reload's reset also keeps what the
+// caches held, so calling it once at the end is enough when the process
+// exits normally). Nothing to do costs one load.
+BRONZE_EMBED_API int writeInlineCacheHarvests();
+
 // ---- runtime telemetry (embed_module.cpp) ----------------------------------
 struct RuntimeTelemetry {
     size_t heapUsedBytes{0};

@@ -91,10 +91,22 @@ struct ReadResults {
     uint64_t undefineds = 0;
 };
 
+// The executions a harvested site is taken to stand for (feedback_plan.cpp,
+// "Harvest"): a cache holds what a site met, not how often, so a filled one
+// counts as a site that ran past every threshold here, its shapes sharing
+// that count evenly.
+inline constexpr uint64_t kHarvestExecutions = 1024;
+
 struct FeedbackPlanStats {
     uint32_t profileFunctions = 0;
     uint32_t matchedFunctions = 0;
     uint32_t valueSites = 0, shapeSites = 0, methodSites = 0, targetSites = 0;
+    // An inline-cache harvest: whether the file carried one, whether it was
+    // made from another build (a different icLayoutDigest: ignored), and the
+    // property and method sites it supplied.
+    bool harvest = false;
+    bool harvestStale = false;
+    uint32_t harvestSites = 0, harvestProperty = 0, harvestMethod = 0;
 };
 
 struct FeedbackPlan {
@@ -120,7 +132,9 @@ ValueKey valueKey(const il::Instruction& inst, uint32_t operand);
 // Reads `profile` against `probe`, the module after its final passes, as the
 // recorded build had it. `functionCount` is how many functions the module had
 // before those passes: a callee name resolves only to one of them (the passes
-// add typed entries, which no closure is).
+// add typed entries, which no closure is). A harvest is read when its digest
+// is the probe's `icLayoutDigest` (the probe is the build harvested), and
+// filed by IC index like a recorded property or method site.
 FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, size_t functionCount);
 
 // What the build did with a plan (`--wpo-stats` prints it).

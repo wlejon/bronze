@@ -37,7 +37,8 @@ namespace bronze::il {
 // 23: create.object's immI32 and fnFlags bits 8..12 carry an inline-slot
 //     prediction (BRONZE_ABI_FN_INLINE_SLOTS_SHIFT); slots split at 16.
 // 24: is.array (il_op.h).
-inline constexpr uint32_t kFormatVersion = 25;
+// 26: Module::icLayoutDigest, feedbackApplied, harvestOutPath (the IC harvest).
+inline constexpr uint32_t kFormatVersion = 26;
 
 std::string serializeModule(const Module& module);
 

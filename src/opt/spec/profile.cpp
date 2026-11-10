@@ -1,6 +1,8 @@
 #include "opt/spec/profile.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -69,6 +71,85 @@ int kindFromName(std::string_view name) {
     return -1;
 }
 
+bool isPropertyForm(std::string_view form) {
+    return form == "own" || form == "proto" || form == "absent" || form == "accessor" || form == "array";
+}
+
+bool isMethodForm(std::string_view form) { return form == "direct" || form == "slot" || form == "native"; }
+
+// One row of a harvest section:
+//   harvest <16 hex digits> <sites>
+//   ic      <index> property|method <flags: -, or full / mega, comma-separated>
+//   way     <index> <form> <receiver> [<callee>, method sites]
+bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harvest>& harvest, std::string& why) {
+    if (f[0] == "harvest") {
+        Harvest h;
+        uint64_t sites = 0;
+        if (harvest || f.size() != 3 || f[1].size() != 16 || !parseU64(f[2], sites) || sites > UINT32_MAX) {
+            why = "malformed harvest row";
+            return false;
+        }
+        const auto res = std::from_chars(f[1].data(), f[1].data() + 16, h.digest, 16);
+        if (res.ec != std::errc() || res.ptr != f[1].data() + 16) {
+            why = "malformed harvest digest";
+            return false;
+        }
+        h.sites = static_cast<uint32_t>(sites);
+        harvest = std::move(h);
+        return true;
+    }
+    if (!harvest) {
+        why = "an '" + std::string(f[0]) + "' row before the harvest row";
+        return false;
+    }
+    uint64_t index = 0;
+    if (f.size() < 2 || !parseU64(f[1], index) || index >= harvest->sites) {
+        why = "malformed or out-of-range IC index";
+        return false;
+    }
+    const auto ic = static_cast<uint32_t>(index);
+    if (f[0] == "ic") {
+        HarvestSite site;
+        if (f.size() != 4 || (f[2] != "property" && f[2] != "method")) {
+            why = "malformed ic row";
+            return false;
+        }
+        site.method = f[2] == "method";
+        for (std::string_view rest = f[3]; rest != "-" && !rest.empty();) {
+            const size_t comma = std::min(rest.find(','), rest.size());
+            const std::string_view flag = rest.substr(0, comma);
+            if (flag == "full") site.full = true;
+            else if (flag == "mega") site.mega = true;
+            else {
+                why = "unknown ic flag '" + std::string(flag) + "'";
+                return false;
+            }
+            rest = rest.substr(std::min(comma + 1, rest.size()));
+        }
+        if (!harvest->ics.emplace(ic, std::move(site)).second) {
+            why = "ic listed twice";
+            return false;
+        }
+        return true;
+    }
+    auto it = harvest->ics.find(ic);
+    if (it == harvest->ics.end()) {
+        why = "a way row for an ic not yet listed";
+        return false;
+    }
+    HarvestWay way;
+    const bool method = it->second.method;
+    if (f.size() != (method ? 5u : 4u) || !(method ? isMethodForm(f[2]) : isPropertyForm(f[2])) ||
+        !unescapeName(f[3], way.receiver) || way.receiver.empty() ||
+        (method && (!unescapeName(f[4], way.callee) || way.callee.empty()))) {
+        why = "malformed way row";
+        return false;
+    }
+    way.form = std::string(f[2]);
+    it->second.ways.push_back(std::move(way));
+    return true;
+}
+
 std::string sole(const std::vector<std::pair<std::string, uint64_t>>& list) {
     if (list.size() != 1 || list.front().first == "*other*") return {};
     return list.front().first;
@@ -103,6 +184,7 @@ std::string SiteFeedback::soleTarget() const { return sole(targets); }
 
 std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string* error) {
     TypeProfile profile;
+    std::optional<Harvest> harvest;
     FunctionFeedback* fn = nullptr;
     size_t lineNo = 0;
     bool sawHeader = false;
@@ -122,11 +204,17 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         if (!sawHeader) {
             const std::string want =
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
-            if (line != want) return fail("expected '" + want + "', got '" + std::string(line) + "'");
+            if (line != want && line != "bronze-type-feedback 1") {
+                return fail("expected '" + want + "', got '" + std::string(line) + "'");
+            }
             sawHeader = true;
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way") {
+            if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
+            continue;
+        }
         if (f[0] == "fn") {
             FunctionFeedback next;
             if (f.size() != 3 || !unescapeName(f[1], next.key) || next.key.empty() ||
@@ -184,6 +272,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         lineNo = 0;
         return fail("empty profile (no 'bronze-type-feedback' header)");
     }
+    if (harvest) profile.harvest_ = std::move(harvest);
     return profile;
 }
 
@@ -225,6 +314,23 @@ std::string TypeProfile::serialize() const {
             for (const auto& [name, count] : site.targets) {
                 out += "target\t" + std::to_string(ordinal) + "\t" + std::to_string(count) + "\t" +
                        escapeName(name) + "\n";
+            }
+        }
+    }
+    if (harvest_) {
+        char hex[17];
+        std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(harvest_->digest));
+        out += "harvest\t" + std::string(hex) + "\t" + std::to_string(harvest_->sites) + "\n";
+        for (const auto& [index, site] : harvest_->ics) {
+            std::string flags;
+            if (site.full) flags = "full";
+            if (site.mega) flags += flags.empty() ? "mega" : ",mega";
+            out += "ic\t" + std::to_string(index) + "\t" + (site.method ? "method" : "property") + "\t" +
+                   (flags.empty() ? "-" : flags) + "\n";
+            for (const HarvestWay& way : site.ways) {
+                out += "way\t" + std::to_string(index) + "\t" + way.form + "\t" + escapeName(way.receiver);
+                if (site.method) out += "\t" + escapeName(way.callee);
+                out += "\n";
             }
         }
     }

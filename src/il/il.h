@@ -753,6 +753,17 @@ struct Module {
     std::vector<CensusSiteEntry> censusSites;
     // Where the census run writes its manifest. Empty unless `--census`.
     std::string censusOutPath;
+    // THE INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"). The image
+    // carries an identity record its module init hands the runtime with the
+    // IC table: `icLayoutDigest`, a hash of the source texts and of what every
+    // IC index names (il/feedback_site.h icLayoutDigest), as the final passes
+    // left them before a profile was spent; `feedbackApplied` when a profile
+    // or harvest changed this build (its caches then describe a specialized
+    // build, and the runtime does not harvest it); and `harvestOutPath`
+    // (`--harvest-out`), where a standalone program writes its harvest.
+    uint64_t icLayoutDigest = 0;
+    bool feedbackApplied = false;
+    std::string harvestOutPath;
     // THE NATIVE IMPORT TABLE (`--native-manifest`; bronze_abi.h's loadable-
     // module section): one entry per native the program calls directly, in
     // the order lowering first met them. Entry `i` is reached through the
