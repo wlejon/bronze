@@ -278,6 +278,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // interrupt (runtime/tls_block.h) stops a runaway loop as well as the
     // next call: a compartment's time slice and its termination.
     if (options_.pin_tls_register) mod->set_interrupt_poll(kBronzeTlsStackLimitOff, "bronze_interrupt_poll");
+    // The thread's young range (bronze_abi_tls.h young_base/young_span):
+    // brass lowers each write_barrier to a test of its target against it and
+    // calls brass_gc_write_barrier only for a target outside it.
+    if (options_.pin_tls_register) mod->set_young_range(BRONZE_TLS_YOUNG_BASE_OFF, BRONZE_TLS_YOUNG_SPAN_OFF);
     // The constants the runtime keeps below the block (bronze_abi_tls.h,
     // BRONZE_TLS_CONSTANTS), read there instead of from each function's pool.
     if (options_.pin_tls_register) {

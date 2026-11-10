@@ -683,6 +683,12 @@ bool IlLowering::lower_instruction(
                 res_val = prop_lowering().lower_length_of_array_like(b, ensure_type(get_opd(0), Type::i64(), b));
                 break;
             }
+            if (callee_name == "bronze_sh_array_species_create" && inst_ast.operands.size() == 2 &&
+                prop_lowering().enable_inlined_fastpaths()) {
+                res_val = alloc_lowering().lower_array_species_create(b, ensure_type(get_opd(0), Type::i64(), b),
+                                                                      ensure_type(get_opd(1), Type::i64(), b));
+                break;
+            }
             Function* callee = fn->parent()->get_function(callee_name);
             Type callee_ret = callee ? callee->return_type() : lower_type(inst_ast.result_type);
             const std::vector<Type>* expected_params = callee ? &callee->param_types() : nullptr;

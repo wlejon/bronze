@@ -121,10 +121,12 @@ typedef struct bronze_tls_block {
      * thread binds to it (span 0 while it is bound to none, which no address
      * is inside). A store into an object in that range needs no write
      * barrier (brass's slow path is only for a target in the old range,
-     * which the young range never overlaps), so generated code tests the
+     * which the young range never overlaps), so compiled code tests the
      * target against it before calling brass_gc_write_barrier — the store a
      * fresh object takes, an iteration record's `current`, a literal's
-     * fields — and calls only for an object outside it. */
+     * fields — and calls only for an object outside it. The test is brass's
+     * lowering of MIR's write_barrier, which reads the range here (brass
+     * Module::set_young_range). */
     uint64_t young_base;
     uint64_t young_span;
     /* The megamorphic property cache (runtime/rt_prop_mega.h): a direct-

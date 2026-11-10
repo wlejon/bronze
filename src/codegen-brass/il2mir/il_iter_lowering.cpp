@@ -15,7 +15,6 @@
 #include "il_abi.h"
 #include "il_iter_lowering.h"
 #include "il_lowering.h"
-#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <string>
 
@@ -75,7 +74,7 @@ Value* lower_iter_step_inline(Builder& b, Value* iter) {
     b.build_br_if(b.build_ugt(elem, iconst(b, kBronzeNumberMaxBits)), bb_barrier, {}, bb_merge, {one});
 
     b.position_at_end(bb_barrier);
-    build_write_barrier(b, b.build_add(rec, iconst(b, BRONZE_ABI_ITER_CURRENT_OFFSET)), elem);
+    b.build_write_barrier(b.build_add(rec, iconst(b, BRONZE_ABI_ITER_CURRENT_OFFSET)), elem);
     b.build_br(bb_merge, {b.build_iconst_i32(1)});
 
     b.position_at_end(bb_slow);

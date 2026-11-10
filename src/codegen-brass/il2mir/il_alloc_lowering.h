@@ -39,6 +39,13 @@ public:
     // of the thread's window when it has room, else a branch to `miss`. Ends
     // in `fast` and answers the block's header address, untagged. No GC point.
     Value* bump_slot_block(Builder& b, Value* capacity, BasicBlock* miss, BasicBlock* fast);
+    // $ArraySpeciesCreate(O, length) (bronze_sh_array_species_create, the
+    // self-hosted map/filter/slice's result): for a plain Array O (no
+    // property box: no subclass, no `constructor` of its own) and a length
+    // that is a small integer Number, the array bronze_create_array(length)
+    // makes, header and element block bumped out of the thread's window in
+    // one allocation; otherwise the helper.
+    Value* lower_array_species_create(Builder& b, Value* o, Value* length);
 
 private:
     Value* lower_create_object_bronze(Builder& b, uint32_t inline_slots);

@@ -94,6 +94,9 @@ public:
         for (const MathSymbol& m : kMathSymbols) {
             interp.register_external_function(m.name, brass::FastHostFn(host_function<brass::FastInterpreter>(m.fn)));
         }
+        // MIR's write_barrier calls the host's barrier by address
+        // (FastInterpreter::handle_write_barrier), as compiled code does.
+        interp.register_external_symbol("brass_gc_write_barrier", reinterpret_cast<void*>(&::brass_gc_write_barrier));
         interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
         interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
         // The interrupt poll's handler is called by address at a backward

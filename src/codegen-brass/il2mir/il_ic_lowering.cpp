@@ -5,7 +5,6 @@
 #include "il_abi.h"
 #include "il_property.h"
 #include "il_speculation.h"
-#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <cstdlib>
@@ -586,7 +585,7 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
         Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
         b.build_br_if(is_ref, bb_barrier, done);
         b.position_at_end(bb_barrier);
-        build_write_barrier(b, slot_addr, val);
+        b.build_write_barrier(slot_addr, val);
     }
     b.build_br(done);
 
@@ -671,7 +670,7 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
         Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
         b.build_br_if(is_ref, bb_barrier, bb_merge);
         b.position_at_end(bb_barrier);
-        build_write_barrier(b, slot_addr, val);
+        b.build_write_barrier(slot_addr, val);
         b.build_br(bb_merge);
     } else {
         with_alias_class(b.build_store_indexed(Type::i64(), base, slot_word, 8, kBronzeObjSlotsOffset, val), kObjectSlotAliasClass);

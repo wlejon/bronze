@@ -11,7 +11,6 @@
 #include "il_lowering_ops.h"
 #include "il_elem_stub.h"
 #include "il_property.h"
-#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <cmath>
 #include <string>
@@ -549,7 +548,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.position_at_end(bb_barrier);
     forget_numbers(b, obj);
     Value* slot_addr = b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
-    build_write_barrier(b, slot_addr, val);
+    b.build_write_barrier(slot_addr, val);
     b.build_br(bb_merge);
 
     // A TypedArray of a Number kind, in bounds, and a Number value.

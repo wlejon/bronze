@@ -14,7 +14,6 @@
 // closure's captured variable).
 
 #include "il_lowering.h"
-#include "il_write_barrier.h"
 
 namespace il2mir {
 
@@ -96,7 +95,7 @@ void IlLowering::lower_env_set(Builder& b, Value* env, uint32_t depth, uint32_t 
     b.build_br_if(is_ref, bb_barrier, bb_merge);
     b.position_at_end(bb_barrier);
     Value* slot_addr = b.build_add(rec, iconst64(b, static_cast<uint64_t>(slot_offset(index))));
-    build_write_barrier(b, slot_addr, bits);
+    b.build_write_barrier(slot_addr, bits);
     b.build_br(bb_merge);
     b.position_at_end(bb_merge);
 }

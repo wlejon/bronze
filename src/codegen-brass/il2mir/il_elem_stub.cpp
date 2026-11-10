@@ -42,7 +42,6 @@
 #include "il_lowering.h"
 #include "il_lowering_ops.h"
 #include "il_property.h"
-#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <string>
@@ -226,7 +225,7 @@ void build_elem_set_stub(PropertyLoweringHelper& pl, Function* fn) {
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), barrier, done);
 
     b.position_at_end(barrier);
-    build_write_barrier(b, slot_addr, val);
+    b.build_write_barrier(slot_addr, val);
     b.build_br(done);
 
     b.position_at_end(done);

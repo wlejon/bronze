@@ -24,7 +24,6 @@
 #include "il_abi.h"
 #include "il_lowering.h"
 #include "il_property.h"
-#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <unordered_set>
@@ -259,7 +258,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         Value* ov_val = b.build_or(b.build_and(fresh, iconst(b, kPayloadMask)), iconst(b, kObjectTagBits));
         Value* ov_addr = b.build_add(ptr, iconst(b, kBronzeObjOverflowOffset));
         with_alias_class(b.build_store(Type::i64(), ov_addr, 0, ov_val), kShapeWordAliasClass);
-        build_write_barrier(b, ov_addr, ov_val);
+        b.build_write_barrier(ov_addr, ov_val);
         Value* again = b.build_xor(ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b),
                                    iconst(b, kObjectTagBits));
         Value* moved = b.build_xor(b.build_load(Type::i64(), again, kBronzeObjOverflowOffset), iconst(b, kObjectTagBits));

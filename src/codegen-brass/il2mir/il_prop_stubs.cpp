@@ -4,7 +4,6 @@
 #include "il_direct_common.h"
 
 #include "il_lowering.h"
-#include "il_write_barrier.h"
 
 #include <brass/mir/block.hpp>
 #include <brass/mir/function.hpp>
@@ -351,7 +350,7 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.build_br_if(is_ref, barrier, done);
 
     b.position_at_end(barrier);
-    build_write_barrier(b, slot_addr, val);
+    b.build_write_barrier(slot_addr, val);
     b.build_br(done);
 
     b.position_at_end(done);

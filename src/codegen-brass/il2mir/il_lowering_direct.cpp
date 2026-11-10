@@ -16,7 +16,6 @@
 #include "il_array_sort.h"
 #include "il_lowering.h"
 #include "il_prop_get_fast.h"
-#include "il_write_barrier.h"
 
 #include <string>
 
