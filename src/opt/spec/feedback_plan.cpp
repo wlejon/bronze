@@ -129,6 +129,13 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             }
         }
     }
+    for (const il::Function& fn : probe.functions) {
+        if (fn.isExternal || harvest.samples.empty()) continue;
+        const auto it = harvest.samples.find(il::functionNameHash(fn.name));
+        if (it == harvest.samples.end()) continue;
+        plan.samples[fn.name] += it->second;
+        plan.stats.harvestSamples += it->second;
+    }
     constexpr uint64_t W = kHarvestExecutions;
     for (const auto& [ic, site] : harvest.ics) {
         const auto it = named.find(ic);
@@ -288,9 +295,13 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
         }
     }
     if (const Harvest* harvest = profile.harvest()) planHarvest(probe, *harvest, plan);
+    // Every callee a method site names, not only the dominant ones the claims
+    // spend: function placement (lower/function_placement.h) reads them all.
     std::vector<std::string> wanted;
     for (const auto& [ic, names] : plan.methodsByIc) {
-        if (const std::string* d = names.dominant(kDominantPercent)) wanted.push_back(*d);
+        for (const auto& [name, count] : names.counts) {
+            if (name != "*other*") wanted.push_back(name);
+        }
     }
     for (const auto& [span, names] : plan.dynamicCallees) {
         if (const std::string* d = names.dominant(kDominantPercent)) wanted.push_back(*d);
@@ -310,7 +321,7 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
                    ? std::string("feedback: harvest from another build (IC layout digest differs): ignored\n")
                    : "feedback: harvest sites " + n(plan.stats.harvestSites) + " (property " +
                          n(plan.stats.harvestProperty) + ", method " + n(plan.stats.harvestMethod) +
-                         "); no value sites (C, D)\n";
+                         "), samples " + n(plan.stats.harvestSamples) + "; no value sites (C, D)\n";
     }
     out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + " (regrow " +
            n(stats.shapeRegrow) + "), family " + n(stats.shapeFamily) +

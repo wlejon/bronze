@@ -2,6 +2,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-brass/il2mir/il_abi.h"
+#include "il/feedback_site.h"
 #include "support/source.h"
 
 #include <brass/gc/stack_map.hpp>
@@ -172,6 +173,11 @@ void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::s
     roSec.emit32(module.icSiteCount);
     roSec.emit32(static_cast<uint32_t>(module.harvestOutPath.size()));
     roSec.emit64(module.icLayoutDigest);
+    // The module's code ranges: the functions whose samples its harvest
+    // carries (ic_harvest.cpp).
+    emitPointer(roSec, entrySymbol == "bronze_main" ? "bronze_object_code_ranges" : entrySymbol + "_code_ranges");
+    roSec.emit32(static_cast<uint32_t>(obj.functions.size()));
+    roSec.emit32(0);
     roSec.emit_bytes(reinterpret_cast<const uint8_t*>(module.harvestOutPath.data()), module.harvestOutPath.size());
     roSec.emit8(0);
     const size_t size = roSec.data.size() - at;
@@ -276,7 +282,7 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
         roSec.emit32(line);
         roSec.emit32(col);
         roSec.emit32(fn.descFlags);
-        roSec.emit32(0);
+        roSec.emit32(il::functionNameHash(fn.name));
         // A coroutine body is entered only by brass's resume, never through a
         // call wrapper, so its descriptor names the body itself.
         emitPointer(roSec, (uniqueNames[i] == "main")

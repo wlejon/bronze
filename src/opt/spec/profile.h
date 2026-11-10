@@ -89,6 +89,10 @@ struct Harvest {
     uint64_t digest = 0;  // il/feedback_site.h icLayoutDigest of the build harvested
     uint32_t sites = 0;
     std::map<uint32_t, HarvestSite> ics;
+    // The run's samples (runtime/harvest_sampler.h): per function, by the
+    // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
+    // many of the sampler's interrupts its code took.
+    std::map<uint32_t, uint64_t> samples;
 };
 
 class TypeProfile {

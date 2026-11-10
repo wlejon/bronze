@@ -363,8 +363,9 @@ the final threading pass. The digest is FNV-1a over:
 - for each index, the op and key of the first instruction that carries it.
 
 The build bakes the digest into an IC IDENTITY record, `<entry>_ic_identity`
-(`bronze_abi_layout.h`): version, flags, site count, digest, and the baked
-harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
+(`bronze_abi_layout.h`, version 2): version, flags, site count, digest, the
+module's code-range table and its length (for the samples, below), and the
+baked harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
 argument. The file's `harvest` row carries the digest and site count.
 
 A `--feedback-in` build compares them with its probe's. The probe runs the
@@ -404,6 +405,8 @@ transition that added the key, so half of that receiver's share also goes to
   The table below measures this cost.
 - **Entry and execution counts.** A site that ran once looks as hot as one
   that ran a million times, so the plan may spend code size on cold sites.
+  (The samples, below, say which functions the time went to; only function
+  placement reads them.)
 - **`call.dynamic` callees.** There is no call cache, so there is no closure
   split.
 - **Sites that never fill a cache.** These are sites already answered by a
@@ -411,6 +414,27 @@ transition that added the key, so half of that receiver's share also goes to
 - **Own-slot callees.** These appear as `*other*`.
 - **Callees without source.** The callee is named `*other*` in a build that
   registers no function source.
+
+**Samples** (`runtime/harvest_sampler.{h,cpp}`). While a harvest is armed, a
+sampler thread arms the JS thread's interrupt every 250 us, and the next
+interrupt poll the thread reaches (a prologue's stack check or a loop's back
+edge, both in every compiled function already) notes the compiled function it
+polled from; at a prologue the first JS function among its callers is noted
+too, since the time before the call was the caller's. A poll in a stub's loop
+(a sort's merge) passes the sample on to the next poll, the comparator's
+entry. Nothing is added to the code. The writer files each count under the
+module whose code-range table holds the function, by its descriptor's
+`name_hash` (FNV-1a of the IL name), and `planHarvest` matches the hashes to
+the probe's functions (`FeedbackPlan::samples`). A stale harvest gives no
+samples.
+
+The sampler wakes only while JS runs: after arming it sleeps with no timeout
+until a poll takes the sample, so an app that is idle, blocked or in the
+background causes no wakeups. It exits after 10,000 samples, when no harvest
+is armed, and once the harvest is written. The interrupt it rides is the
+stack-limit word every target's compiled code checks, so it samples on every
+platform; MSVC builds credit only the polling function (no frame-pointer
+walk to the caller).
 
 **Configuration.** Harvesting is off unless a path is given. A path can be
 given in three ways:
@@ -441,6 +465,7 @@ come first):
 harvest <16 hex digest>  <IC site count>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]
+sample  <8 hex name hash>  <count>
 ```
 
 **Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
@@ -454,6 +479,42 @@ case three ways and requires the pinned bytes and exit code from each run:
 
 `BRONZE_ORACLE_FEEDBACK_CASES` selects the cases. `aot-module` runs the
 evaluator path, and `spec` covers parsing and round trips.
+
+## Function placement (`src/lower/function_placement.{h,cpp}`)
+
+Where each function sits in the module's text is decided from the profile,
+not left to module order (brass `FunctionPlacement`, set by
+`brass_backend_placement.cpp`). Laid out in module order, a program's hot
+functions are scattered over megabytes; which of their lines share L1
+instruction-cache sets and op-cache lines is a draw that every edit anywhere
+in the module redraws (a few percent of cycles at equal instructions on the
+realworld scenes, from padding alone). The text is laid out as:
+
+1. the IC stubs every module calls (`__bronze_prop_get_ic` and its kin);
+2. with a profile: the most sampled functions to 99% of the samples
+   (samples plus a recorded profile's entry counts), in C3 call chains, then
+   the functions they call that ran but were not sampled hot, in module
+   order; each function is followed by its call wrapper;
+3. the slow-path stubs (`__bronze_prop_get_slow`, `__bronze_sort_merge`);
+4. everything else, in module order;
+5. last: top-level code (it runs once), and with a profile the functions
+   whose cache sites could have filled and none did.
+
+Without a usable profile (none, a stale harvest, or a run too short to be
+sampled) there is no placement at all: module order, as before. Moving only
+the stubs and the top level measured +1.5% and +2.8% on pixi_sprites and
+nothing better elsewhere. Placement never changes an instruction. The hot functions keep the
+target's alignment (32 on x64): 64 bought nothing measurable, 16 was 7%
+slower on pixi_sprites (loop heads are aligned from the function's start).
+
+What it cannot fix: a hot function's own cold code. On the realworld scenes
+the lines that take 99% of a frame's cycles are 30 KB (pixi_sprites) to
+140 KB (three_skinned), inside 1.4 to 3.5 MB of hot functions, because a
+compiled function carries its slow paths inline. Where those lines fit the
+L1 instruction cache (pixi_sprites) placement takes 5% off the frame and
+holds it under edits elsewhere; where they do not, the order of whole
+functions moves the frame by a couple of percent either way, and splitting
+the slow paths out of the hot functions is the remaining lever.
 
 ## Report
 

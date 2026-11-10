@@ -107,6 +107,7 @@ struct FeedbackPlanStats {
     bool harvest = false;
     bool harvestStale = false;
     uint32_t harvestSites = 0, harvestProperty = 0, harvestMethod = 0;
+    uint64_t harvestSamples = 0;  // the samples matched to a function
 };
 
 struct FeedbackPlan {
@@ -119,8 +120,13 @@ struct FeedbackPlan {
     // Function name -> the times its entry site ran (a probe function's
     // name is the final module's).
     std::unordered_map<std::string, uint64_t> entries;
-    // Callee name (`<name>@<hash>`) -> module function index, for the names
-    // that resolve to exactly one function of the module the probe copied.
+    // Function name -> the harvest's samples of it (runtime/harvest_sampler.h):
+    // how often the run was found in its code.
+    std::unordered_map<std::string, uint64_t> samples;
+    // Callee name (`<name>@<hash>`) -> module function index, for every name
+    // a method or closure site saw that resolves to exactly one function of
+    // the module the probe copied (the claims read the dominant ones,
+    // function placement all).
     std::unordered_map<std::string, uint32_t> callees;
     FeedbackPlanStats stats;
 };

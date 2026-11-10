@@ -59,4 +59,12 @@ void emitBronzeSections(brass::object::ObjectFile& obj,
                         const SectionInputs& in,
                         support::PhaseTimer& timer);
 
+// Where brass lays out the module's functions (brass_backend_placement.cpp):
+// the inline-cache stubs every site calls and the IL's hot functions
+// (il.h `hotFunctions`, each followed by its call wrapper) first, the
+// module's slow-path stubs after them, the IL's cold functions last.
+brass::object::FunctionPlacement functionPlacement(const il::Module& module,
+                                                   const std::vector<std::string>& uniqueNames,
+                                                   const std::string& entrySymbol);
+
 }  // namespace bronze::codegen

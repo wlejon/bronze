@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "lower/function_placement.h"
 #include "lower/guard_region.h"
 #include "lower/inline_guarded.h"
 #include "lower/inline_small.h"
@@ -218,6 +219,12 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // read against it as the recorded build had it, so both stay unthreaded.
     const bool recording = feedback_ != nullptr && !feedback_->outPath.empty();
     if (!probe && !recording) threadTruthJoins(mod);
+    // Where each function goes in the text (function_placement.h): from the
+    // profile when there is one, last of all, as the module now stands.
+    if (!probe) {
+        const PlacementStats placement = planFunctionPlacement(mod, plan);
+        if (wholeProgram && build.stats) report += placementReport(placement);
+    }
     if (!probe) dumpFinalIl(mod);
     return true;
 }

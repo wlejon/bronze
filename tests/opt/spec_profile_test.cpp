@@ -48,7 +48,9 @@ const char* const kHarvest =
     "way\t3\tabsent\tObject{a}\n"
     "ic\t8\tmethod\tmega\n"
     "way\t8\tdirect\tMesh{uuid,name}\t~1204@0badf00d\n"
-    "way\t8\tnative\tarray\tnative:array\n";
+    "way\t8\tnative\tarray\tnative:array\n"
+    "sample\t0000002a\t7\n"
+    "sample\tdeadbeef\t1500\n";
 
 // The keys of the module's functions whose IL name ends with `suffix`.
 std::vector<std::string> keysEndingIn(const il::Module& mod, const std::string& suffix) {
@@ -102,6 +104,9 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
     CHECK(h->ics.at(8).method);
     CHECK(h->ics.at(8).mega);
     CHECK(h->ics.at(8).ways.front().callee == "~1204@0badf00d");
+    REQUIRE(h->samples.size() == 2);
+    CHECK(h->samples.at(0x2a) == 7);
+    CHECK(h->samples.at(0xdeadbeef) == 1500);
 }
 
 TEST_CASE("profile: a malformed harvest is refused") {
@@ -121,6 +126,11 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nway\t1\town\tA{x}\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(
         head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\t-\nic\t1\tproperty\t-\n", &err));
+    // A sample before the harvest row, a short hash, a hash twice.
+    CHECK_FALSE(spec::TypeProfile::parse(head + "sample\t0000002a\t7\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nsample\t2a\t7\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(
+        head + "harvest\t00112233aabbccdd\t4\nsample\t0000002a\t7\nsample\t0000002a\t1\n", &err));
 }
 
 TEST_CASE("profile: queries by function key and ordinal") {

@@ -120,6 +120,7 @@ bronze_add_module(runtime
         elem_ic.cpp
         ic_hot.cpp
         ic_harvest.cpp
+        harvest_sampler.cpp
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp

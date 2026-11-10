@@ -2,6 +2,7 @@
 // travels).
 
 #include "runtime/exception.h"
+#include "runtime/harvest_sampler.h"
 #include "runtime/stack_trace.h"
 #include "runtime/tls_block.h"
 
@@ -587,6 +588,7 @@ void bronze_stack_overflow(void) {
     const uintptr_t callerSp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0)) + 2 * sizeof(void*);
 #endif
     if (rtTls()->stack_limit == kInterruptArmed) {
+        rtHarvestSampleAt(BRONZE_RETURN_ADDRESS(), BRONZE_CALLER_FP(), true);
         rtDisarmInterrupt();
         rtServiceInterrupt();
     }

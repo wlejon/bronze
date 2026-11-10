@@ -764,6 +764,11 @@ struct Module {
     uint64_t icLayoutDigest = 0;
     bool feedbackApplied = false;
     std::string harvestOutPath;
+    // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
+    // `functions` the backend lays out first in its text, in this order, and
+    // last. Only where code sits, never what it is.
+    std::vector<uint32_t> hotFunctions;
+    std::vector<uint32_t> coldFunctions;
     // THE NATIVE IMPORT TABLE (`--native-manifest`; bronze_abi.h's loadable-
     // module section): one entry per native the program calls directly, in
     // the order lowering first met them. Entry `i` is reached through the

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "abi/bronze_feedback_site.h"
@@ -101,5 +102,18 @@ std::vector<std::string> feedbackFunctionKeys(const Module& module);
 // a build only when that build numbers its sites the same way over the same
 // text; a different digest is a stale harvest, ignored.
 uint64_t icLayoutDigest(const Module& module);
+
+// What a function's descriptor carries as `name_hash` (bronze_abi.h), and
+// what a harvest's samples name a function by: FNV-1a (32-bit) of its IL
+// name. The harvested build's names are its probe's (the same final passes),
+// and the build reading the harvest matches them back by this hash.
+inline uint32_t functionNameHash(std::string_view name) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : name) {
+        h ^= c;
+        h *= 16777619u;
+    }
+    return h;
+}
 
 }  // namespace bronze::il

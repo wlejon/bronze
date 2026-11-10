@@ -81,6 +81,7 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   harvest <16 hex digits> <sites>
 //   ic      <index> property|method <flags: -, or full / mega, comma-separated>
 //   way     <index> <form> <receiver> [<callee>, method sites]
+//   sample  <8 hex digits: the function's name hash> <count>
 bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harvest>& harvest, std::string& why) {
     if (f[0] == "harvest") {
         Harvest h;
@@ -101,6 +102,20 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     if (!harvest) {
         why = "an '" + std::string(f[0]) + "' row before the harvest row";
         return false;
+    }
+    if (f[0] == "sample") {
+        uint32_t hash = 0;
+        uint64_t count = 0;
+        bool ok = f.size() == 3 && f[1].size() == 8;
+        if (ok) {
+            const auto res = std::from_chars(f[1].data(), f[1].data() + 8, hash, 16);
+            ok = res.ec == std::errc() && res.ptr == f[1].data() + 8;
+        }
+        if (!ok || !parseU64(f[2], count) || !harvest->samples.emplace(hash, count).second) {
+            why = "malformed sample row";
+            return false;
+        }
+        return true;
     }
     uint64_t index = 0;
     if (f.size() < 2 || !parseU64(f[1], index) || index >= harvest->sites) {
@@ -211,7 +226,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
-        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way") {
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "sample") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
         }
@@ -332,6 +347,11 @@ std::string TypeProfile::serialize() const {
                 if (site.method) out += "\t" + escapeName(way.callee);
                 out += "\n";
             }
+        }
+        for (const auto& [hash, count] : harvest_->samples) {
+            char h[9];
+            std::snprintf(h, sizeof h, "%08x", hash);
+            out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
         }
     }
     return out;

@@ -11,6 +11,7 @@
 // changes them goes through the runtime, which initializes lazily.
 
 #include "runtime/tls_block.h"
+#include "runtime/harvest_sampler.h"
 #include "runtime/heap.h"
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
@@ -195,15 +196,28 @@ std::atomic_ref<uint64_t> blockLimit(bronze_tls_block* tls) noexcept {
     return std::atomic_ref<uint64_t>(tls->stack_limit);
 }
 
+// After a store of the real limit over the block's word: a harvest sample
+// still wanted from this thread (harvest_sampler.h) keeps its interrupt
+// armed, since its sampler waits for the poll without looking again. The
+// fence pairs with the sampler's between wanting and arming.
+void keepWantedSample(bronze_tls_block* tls) noexcept {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (g_harvestSampleWanted.load(std::memory_order_relaxed) == tls) {
+        blockLimit(tls).store(kInterruptArmed, std::memory_order_relaxed);
+    }
+}
+
 // Registered by hand rather than with registerStackLocalWord: the restore
 // also puts the entered stack's limit in the block, which an interrupt armed
-// for the stack being left must not follow onto it.
+// for the stack being left must not follow onto it (a harvest sample may: any
+// poll answers it).
 [[maybe_unused]] const int g_stackLimitLocal = [] {
     brass::gc::StackLocal local;
     local.save = [](void** slot) { *slot = reinterpret_cast<void*>(g_stackLimit); };
     local.restore = [](void** slot, bool fresh) {
         g_stackLimit = fresh ? 0 : reinterpret_cast<uintptr_t>(*slot);
         blockLimit(&g_tls_area.block).store(g_stackLimit, std::memory_order_relaxed);
+        keepWantedSample(&g_tls_area.block);
     };
     return brass::gc::register_stack_local(local);
 }();
@@ -215,6 +229,7 @@ uintptr_t rtStackLimit() noexcept { return g_stackLimit; }
 void rtSetStackLimit(uintptr_t limit) noexcept {
     g_stackLimit = limit;
     blockLimit(&g_tls_area.block).store(limit, std::memory_order_relaxed);
+    keepWantedSample(&g_tls_area.block);
 }
 
 uintptr_t rtStackLimitFor(uintptr_t low, uintptr_t high) noexcept {
@@ -230,6 +245,7 @@ void rtArmInterrupt(bronze_tls_block* tls) noexcept {
 
 void rtDisarmInterrupt() noexcept {
     blockLimit(&g_tls_area.block).store(g_stackLimit, std::memory_order_relaxed);
+    keepWantedSample(&g_tls_area.block);
 }
 
 }  // namespace bronze::runtime
@@ -277,6 +293,7 @@ extern "C" void* bronze_tls_enter(void) {
 // stack pointer below `stack_limit`, which in a loop means the limit is the
 // armed one: put the real limit back and service the interrupt.
 extern "C" void bronze_interrupt_poll(void) {
+    bronze::runtime::rtHarvestSampleAt(BRONZE_RETURN_ADDRESS(), BRONZE_CALLER_FP(), false);
     bronze::runtime::rtDisarmInterrupt();
     bronze::runtime::rtServiceInterrupt();
 }

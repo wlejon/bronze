@@ -506,6 +506,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // the module-wide `__brass_stack_maps` blob would be a second copy.
     compiler.set_emit_stack_map_symbol(false);
     compiler.set_threads(buildThreads_);
+    compiler.set_placement(codegen::functionPlacement(module, uniqueNames, entrySymbol_));
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
     timer.mark("brass compile");
 

@@ -138,6 +138,8 @@ struct ModuleMirror {
     uint64_t icLayoutDigest;
     bool feedbackApplied;
     std::string harvestOutPath;
+    std::vector<uint32_t> hotFunctions;
+    std::vector<uint32_t> coldFunctions;
     std::vector<Module::NativeImport> nativeImports;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
@@ -664,6 +666,10 @@ std::string serializeModule(const Module& module) {
     w.var(module.icLayoutDigest);
     w.u8(module.feedbackApplied ? 1 : 0);
     w.str(module.harvestOutPath);
+    w.var(module.hotFunctions.size());
+    for (uint32_t f : module.hotFunctions) w.var(f);
+    w.var(module.coldFunctions.size());
+    for (uint32_t f : module.coldFunctions) w.var(f);
     w.var(module.nativeImports.size());
     for (const auto& n : module.nativeImports) {
         w.str(n.name);
@@ -715,6 +721,10 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     out.icLayoutDigest = r.var();
     out.feedbackApplied = r.u8() != 0;
     out.harvestOutPath = r.str();
+    out.hotFunctions.resize(r.count());
+    for (auto& f : out.hotFunctions) f = r.u32();
+    out.coldFunctions.resize(r.count());
+    for (auto& f : out.coldFunctions) f = r.u32();
     out.nativeImports.resize(r.count());
     for (auto& n : out.nativeImports) {
         n.name = r.str();
