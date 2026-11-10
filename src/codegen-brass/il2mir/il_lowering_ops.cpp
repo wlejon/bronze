@@ -135,6 +135,7 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::IsNumberArray:
         case BronzeOp::IsTypedArray:
         case BronzeOp::IsArray:
+        case BronzeOp::IsPlainArray:
         case BronzeOp::IsNullish:
         case BronzeOp::TypeOf:
         case BronzeOp::InstanceOf:
@@ -672,6 +673,18 @@ bool lower_ops_instruction(
                 return true;
             }
             res_val = lowering->prop_lowering().lower_is_array(b, lowering->ensure_type(get_opd(0), Type::i64(), b));
+            return true;
+        }
+
+        // Without the inline paths the guard always misses: its edge is then
+        // the original call.
+        case BronzeOp::IsPlainArray: {
+            if (!lowering->prop_lowering().enable_inlined_fastpaths()) {
+                res_val = b.build_iconst_i32(0);
+                return true;
+            }
+            res_val = lowering->prop_lowering().lower_is_plain_array(
+                b, lowering->ensure_type(get_opd(0), Type::i64(), b));
             return true;
         }
 

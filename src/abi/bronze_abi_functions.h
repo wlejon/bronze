@@ -285,6 +285,16 @@
      * from compiled code. Anything the stub does not cover takes the\
      * builtin's own merge. */ \
     X(bronze_array_sort_merged,   BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_FNPTR)) \
+    /* The self-hosted builtins' intrinsics (runtime/selfhost.cpp, src/lower/\
+     * lower_selfhost.cpp): what the library calls, from the prebuilt object\
+     * and from a program that compiles the builtins it reaches in\
+     * (src/lower/selfhost_merge.cpp). Value bits in and out. */ \
+    X(bronze_sh_to_object,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_sh_throw_not_callable, BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
+    X(bronze_sh_throw_type_error, BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_sh_throw_range_error, BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
+    X(bronze_sh_array_species_create, BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_sh_length_of_array_like, BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
     X(bronze_array_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_spread,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_rest,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

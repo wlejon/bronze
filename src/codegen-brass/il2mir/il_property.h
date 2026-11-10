@@ -407,6 +407,7 @@ public:
     Value* lower_elem_get_array(Builder& b, Value* obj, Value* index, int64_t flags);
     void lower_elem_set_array(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict, int64_t flags);
     Value* lower_is_array(Builder& b, Value* obj);
+    Value* lower_is_plain_array(Builder& b, Value* obj);
     // `key in obj` (il_elem_array.cpp): an Array's own element answered inline.
     // CreateDataPropertyOrThrow (elem.define) on an open Array, inline (il_elem_array.cpp).
     void lower_elem_define_array(Builder& b, Value* obj, Value* key, Value* val);

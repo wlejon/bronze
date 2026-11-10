@@ -159,7 +159,7 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     return res;
                 }
                 case Op::ClosureIs: case Op::IsNumber: case Op::IsDenseArray: case Op::IsNumberArray:
-                case Op::IsShape: case Op::IsArray: case Op::IsTypedArray: case Op::LayoutEpoch:
+                case Op::IsShape: case Op::IsArray: case Op::IsPlainArray: case Op::IsTypedArray: case Op::LayoutEpoch:
                 case Op::LayoutFact: case Op::MethodIcIs: case Op::AccessorIcIs:
                     if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                     break;

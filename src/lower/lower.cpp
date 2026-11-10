@@ -405,7 +405,10 @@ std::optional<il::Module> Lowerer::lower() {
     }
     // The IL -> IL passes, LAST (lower_final_passes.cpp): they read the
     // finished module, and everything above is frozen before they copy code.
-    if (!finishIlPasses()) return std::nullopt;
+    // The library's reachable builtins join the module first, so every
+    // final pass treats them as the program's own functions.
+    if (selfHostLibrary_ != nullptr && !mergeSelfHostLibrary()) return std::nullopt;
+    if (!libraryOnly_ && !finishIlPasses()) return std::nullopt;
     if (selfHost_ && !finishSelfHost()) return std::nullopt;
     // The type-feedback instrument, after everything: its sites are the final
     // IL's own (lower_feedback.h), and the build that reads the profile back
@@ -742,14 +745,36 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const NativeManifest* nativeManifest,
                                       const InlineGuardedOptions& inlineGuarded,
                                       WholeProgramOptions* wholeProgram,
-                                      const FeedbackOptions* feedback, bool selfHost) {
+                                      const FeedbackOptions* feedback, bool selfHost,
+                                      const SelfHostLibrary* selfHostLibrary) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
                     assumeNoBigInt, pins, censusOutPath, nativeManifest);
     lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
     lowerer.setWholeProgram(wholeProgram);
     lowerer.setFeedback(feedback);
     lowerer.setSelfHost(selfHost);
+    lowerer.setSelfHostLibrary(selfHost ? nullptr : selfHostLibrary);
     return lowerer.lower();
+}
+
+std::optional<SelfHostLibrary> lowerSelfHostLibrary(const ast::Module& astModule, DiagnosticSink& diags,
+                                                    const types::InferenceResult* inference,
+                                                    const SourceSet* sources) {
+    // As the prebuilt object's compile lowers it (src/selfhost/selfhost_build.cpp),
+    // up to the final passes.
+    Lowerer lowerer(astModule, diags, inference, nullptr, sources, nullptr, /*assumeNoBigInt=*/false);
+    lowerer.setSelfHost(true);
+    lowerer.setLibraryOnly(true);
+    auto module = lowerer.lower();
+    if (!module || diags.hasErrors()) return std::nullopt;
+    SelfHostLibrary library;
+    library.builtins = lowerer.selfHostBuiltinTable(*module);
+    library.module = std::move(*module);
+    if (sources != nullptr && sources->size() > 0) {
+        library.sourceName = std::string(sources->at(0).name());
+        library.sourceText = std::string(sources->at(0).text());
+    }
+    return library;
 }
 
 std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
@@ -765,7 +790,7 @@ std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, Diagnos
                                options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
                                sources, options.inferStats, options.assumeNoBigInt, options.pins,
                                options.censusOutPath, options.nativeManifest, InlineGuardedOptions{/*on=*/true},
-                               &wholeProgram, options.feedback, options.selfHost);
+                               &wholeProgram, options.feedback, options.selfHost, options.selfHostLibrary);
     if (options.wpoReport) *options.wpoReport = std::move(wholeProgram.report);
     return lowered;
 }

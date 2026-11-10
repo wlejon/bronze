@@ -429,6 +429,7 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
             case Op::IsNumberArray:
             case Op::IsShape:
             case Op::IsArray:
+            case Op::IsPlainArray:
             case Op::IsTypedArray:
             case Op::LayoutEpoch:
             case Op::LayoutFact:

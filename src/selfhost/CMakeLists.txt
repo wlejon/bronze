@@ -8,13 +8,25 @@
 # host embedding bronze — gets the library with the runtime, and the shared
 # runtime (cmake/bronze_shared_runtime.cmake) has the object as a source.
 
+# The library's text, compiled into the compiler (selfhost_library.h): what
+# bronze_stage0 builds the prebuilt object from and what an ahead-of-time
+# program compiles in (lower.h SelfHostLibrary). Editing builtins.js
+# re-runs the configure step that writes it.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/builtins.js" BRONZE_SELFHOST_SOURCE)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/builtins.js")
+configure_file(selfhost_source.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/selfhost_source.cpp" @ONLY)
+bronze_add_module(selfhost_il
+    SOURCES selfhost_library.cpp "${CMAKE_CURRENT_BINARY_DIR}/selfhost_source.cpp"
+    DEPS lower modules types support)
+
 # The compiler's libraries one by one rather than bronze::cli, whose build
 # depends on the runtimes (bronze_rt, bronze_host): this executable is
 # upstream of both.
 add_executable(bronze_stage0 stage0.cpp selfhost_build.cpp)
 target_include_directories(bronze_stage0 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(bronze_stage0 PRIVATE bronze::parse bronze::lex bronze::ast bronze::support
-    bronze::il bronze::types bronze::lower bronze::modules bronze::codegen_brass bronze::runtime bronze::embed)
+    bronze::il bronze::types bronze::lower bronze::modules bronze::codegen_brass bronze::runtime bronze::embed
+    bronze::selfhost_il)
 set_target_properties(bronze_stage0 PROPERTIES BRONZE_STAGE0 ON)
 if(MSVC)
     target_compile_options(bronze_stage0 PRIVATE /W4 /WX /permissive- /wd4324)
@@ -26,7 +38,7 @@ set(BRONZE_SELFHOST_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/bronze_selfhost${CMAKE_C
     CACHE INTERNAL "The compiled self-hosted builtins")
 add_custom_command(
     OUTPUT "${BRONZE_SELFHOST_OBJECT}"
-    COMMAND bronze_stage0 "${CMAKE_CURRENT_SOURCE_DIR}/builtins.js" "${BRONZE_SELFHOST_OBJECT}"
+    COMMAND bronze_stage0 "${BRONZE_SELFHOST_OBJECT}"
     DEPENDS bronze_stage0 "${CMAKE_CURRENT_SOURCE_DIR}/builtins.js"
     COMMENT "Compiling the self-hosted builtins"
     VERBATIM)

@@ -26,7 +26,9 @@
 // the library is a HIDDEN frame: part of a builtin's algorithm, which a stack
 // trace leaves out as it leaves out a C++ builtin's own calls.
 
+#include <algorithm>
 #include <string>
+#include <unordered_map>
 
 #include "lower/lowerer.h"
 
@@ -81,16 +83,19 @@ bool Lowerer::planSelfHostBuiltins() {
         const std::string* key = stringArg(*row, 1);
         const std::string* display = stringArg(*row, 2);
         const std::string* name = stringArg(*row, 3);
-        const auto* length = row->args.size() == 5 ? dynamic_cast<const ast::NumberLit*>(row->args[4].get()) : nullptr;
-        if (!fn || !key || !display || !name || !length || !declared.contains(fn->name)) {
+        const auto* length = row->args.size() >= 5 ? dynamic_cast<const ast::NumberLit*>(row->args[4].get()) : nullptr;
+        const auto* direct = row->args.size() == 6 ? dynamic_cast<const ast::Ident*>(row->args[5].get()) : nullptr;
+        if (!fn || !key || !display || !name || !length || !declared.contains(fn->name) || row->args.size() > 6 ||
+            (row->args.size() == 6 && (!direct || !declared.contains(direct->name) || direct->name == fn->name))) {
             diags_.error(row->span,
-                         "$Builtin(fn, key, display, name, length): fn a top-level function declaration, "
-                         "three string literals and a number literal");
+                         "$Builtin(fn, key, display, name, length[, direct]): fn and direct top-level function "
+                         "declarations, three string literals and a number literal");
             return false;
         }
         if (!selfHostBuiltins_
                  .emplace(fn->name, SelfHostBuiltin{*key, *display, getKeyConstantIndex(*name),
-                                                    static_cast<uint32_t>(length->value)})
+                                                    static_cast<uint32_t>(length->value),
+                                                    direct ? direct->name : std::string{}})
                  .second) {
             diags_.error(row->span, "$Builtin: " + fn->name + " is registered twice");
             return false;
@@ -196,8 +201,16 @@ bool Lowerer::finishSelfHost() {
         if (fn.isEntryPoint) continue;
         const std::string& origin =
             fn.typedOrigin != il::Function::kNoTypedOrigin ? ilModule_.functions[fn.typedOrigin].name : fn.name;
+        // A direct entry's frame is its builtin's, under the builtin's name;
+        // the registered function then only forwards to it, a hidden frame
+        // like any helper's.
+        const SelfHostBuiltin* framed = nullptr;
+        for (const auto& [name, b] : selfHostBuiltins_) {
+            if (b.direct == origin) framed = &b;
+        }
         auto it = selfHostBuiltins_.find(origin);
-        if (it == selfHostBuiltins_.end()) {
+        const bool registered = it != selfHostBuiltins_.end();
+        if (!registered && framed == nullptr) {
             fn.descFlags |= BRONZE_FN_DESC_HIDDEN;
             continue;
         }
@@ -208,13 +221,49 @@ bool Lowerer::finishSelfHost() {
             ok = false;
             continue;
         }
+        if (framed != nullptr && (registered || fn.hasRestParam)) {
+            diags_.error(Span{}, "self-hosted direct entry " + fn.name +
+                                     " is registered itself or has a rest parameter");
+            ok = false;
+            continue;
+        }
+        if (framed != nullptr) {
+            fn.displayName = framed->display;
+            fn.descFlags |= BRONZE_FN_DESC_BUILTIN;
+            continue;
+        }
         fn.fnFlags = BRONZE_ABI_FN_FLAG_NATIVE;
         fn.nameKeyIndex = it->second.nameKey;
         fn.requiredArgs = it->second.length;
+        if (!it->second.direct.empty()) {
+            fn.descFlags |= BRONZE_FN_DESC_HIDDEN;
+            continue;
+        }
         fn.displayName = it->second.display;
         fn.descFlags |= BRONZE_FN_DESC_BUILTIN;
     }
     return ok;
+}
+
+std::vector<SelfHostLibrary::Builtin> Lowerer::selfHostBuiltinTable(const il::Module& module) const {
+    std::unordered_map<std::string, uint32_t> index;
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (!module.functions[i].isExternal) index.emplace(module.functions[i].name, static_cast<uint32_t>(i));
+    }
+    std::vector<SelfHostLibrary::Builtin> table;
+    for (const auto& [name, b] : selfHostBuiltins_) {
+        SelfHostLibrary::Builtin row;
+        row.key = b.key;
+        row.method = module.keyConstants[b.nameKey];
+        row.function = index.at(name);
+        row.direct = b.direct.empty() ? row.function : index.at(b.direct);
+        row.counted = !b.direct.empty();
+        table.push_back(std::move(row));
+    }
+    // The map's order is no order: a build must not depend on it.
+    std::sort(table.begin(), table.end(),
+              [](const SelfHostLibrary::Builtin& a, const SelfHostLibrary::Builtin& b) { return a.key < b.key; });
+    return table;
 }
 
 }  // namespace bronze::lower

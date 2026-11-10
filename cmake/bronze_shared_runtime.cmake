@@ -95,6 +95,7 @@ target_link_libraries(bronze_runtime_shared PRIVATE
     bronze::codegen_brass
     bronze::support
     bronze::modules
+    bronze::selfhost_il
 )
 
 # BRONZE_ABI_FINGERPRINT, copied off the target that computes it rather than

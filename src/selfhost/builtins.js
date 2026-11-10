@@ -108,15 +108,22 @@ function findIndex(predicate, thisArg) {
 
 // 23.1.3.24 Array.prototype.reduce(callbackfn [, initialValue]). Whether an
 // initial value was PASSED is the question (an explicit `undefined` is one),
-// which is the rest parameter's length.
+// which is the rest parameter's length. The algorithm is `reduceCounted`, the
+// builtin's DIRECT ENTRY (the row's sixth argument): a call site compiled
+// with the library calls it with the receiver and the count it passes, and
+// its frame is the one Error.stack shows as `Array.reduce`.
 function reduce(callbackfn, ...initial) {
-    const O = $ToObject(this, "Array.prototype.reduce called on null or undefined");
+    return reduceCounted(this, callbackfn, initial[0], initial.length + 1);
+}
+
+function reduceCounted(thisValue, callbackfn, initialValue, argumentCount) {
+    const O = $ToObject(thisValue, "Array.prototype.reduce called on null or undefined");
     const len = +$LengthOfArrayLike(O);
     if (typeof callbackfn !== "function") $ThrowNotCallable(callbackfn);
     let k = 0;
     let accumulator;
-    if (initial.length > 0) {
-        accumulator = initial[0];
+    if (argumentCount > 1) {
+        accumulator = initialValue;
     } else {
         let kPresent = false;
         while (!kPresent && k < len) {
@@ -133,7 +140,8 @@ function reduce(callbackfn, ...initial) {
 }
 
 // ---- the registry ------------------------------------------------------------
-// $Builtin(function, registry key, frame name in Error.stack, name, length)
+// $Builtin(function, registry key, frame name in Error.stack, name, length
+//          [, direct entry])
 
 $Builtin(forEach, "Array.prototype.forEach", "Array.forEach", "forEach", 1);
 $Builtin(map, "Array.prototype.map", "Array.map", "map", 1);
@@ -142,4 +150,4 @@ $Builtin(some, "Array.prototype.some", "Array.some", "some", 1);
 $Builtin(every, "Array.prototype.every", "Array.every", "every", 1);
 $Builtin(find, "Array.prototype.find", "Array.find", "find", 1);
 $Builtin(findIndex, "Array.prototype.findIndex", "Array.findIndex", "findIndex", 1);
-$Builtin(reduce, "Array.prototype.reduce", "Array.reduce", "reduce", 1);
+$Builtin(reduce, "Array.prototype.reduce", "Array.reduce", "reduce", 1, reduceCounted);

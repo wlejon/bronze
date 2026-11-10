@@ -185,6 +185,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
+        case il::Op::IsPlainArray: out.op = il2mir::BronzeOp::IsPlainArray; break;
         case il::Op::IsNumberArray:
             out.op = il2mir::BronzeOp::IsNumberArray;
             out.imm_i64 = inst.immI32;

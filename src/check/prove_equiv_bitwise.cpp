@@ -187,6 +187,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::IsNumberArray:
                 case Op::IsShape:
                 case Op::IsArray:
+                case Op::IsPlainArray:
                 case Op::IsTypedArray:
                 case Op::LayoutEpoch:
                 case Op::LayoutFact:

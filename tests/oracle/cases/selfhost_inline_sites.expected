@@ -1,0 +1,63 @@
+one site [2,3,4,5]
+one site [3,6,9,12]
+one site [1,1.4142135623730951,1.7320508075688772,2]
+one site ["1","2","3","4"]
+one site [true,true,true,true]
+swapped 0 [1,2,3,4]
+swapped 1 [2,4]
+swapped 2 [3,4]
+swapped 3 [2,4]
+non-callable undefined TypeError: undefined is not a function
+non-callable null TypeError: object null is not a function
+non-callable 1 TypeError: number 1 is not a function
+non-callable f TypeError: string "f" is not a function
+non-callable [object Object] TypeError: object is not a function
+non-callable Symbol(Symbol.iterator) TypeError: symbol is not a function
+empty non-callable TypeError: number 42 is not a function
+class on empty []
+class on one TypeError: Class constructor K cannot be invoked without 'new'
+bound [10,20,30,40]
+generator fn ["function","function","function","function"]
+async fn [true,true,true,true]
+proxy ["p7","p14","p21","p28"]
+method [0,1,2,3]
+getter [-1,-2,-3,-4]
+strict no thisArg ["undef"]
+strict thisArg 5 ["number"]
+arrow ignores thisArg ["object"]
+thisArg object [101,102]
+extra args [[1,0,4,null],[2,1,4,null],[3,2,4,null],[4,3,4,null]]
+index 2
+reduce no initial 10
+reduce initial 110
+reduce initial undefined "undefined1234"
+reduce extra args 10
+reduce empty TypeError: Reduce of empty array with no initial value
+reduce empty initial "init"
+subclass map true Sub
+own method own map
+own constructor species {"0":1,"1":2,"2":3,"made":3}
+prototype changed proto map
+frozen map [2,3,4]
+sealed filter [1,3]
+call on array-like ["A","B","C"]
+call on string ["a","c"]
+call on null TypeError: Array.prototype.forEach called on null or undefined
+variable-held [1.5,2.5,3.5,4.5]
+apply true
+Reflect.apply true
+bound builtin 3
+computed key 3
+push during map [1,2,3]
+pop during filter [1,2,3]
+delete ahead [1,null,3,null]
+length cut false
+own prop mid-walk [2,4,6]
+reassigned receiver [1,2,3]
+after reassign ["z!"]
+recursive 4
+recursive reduce [1,2,3,4,5,6]
+throw mid-walk RangeError: at 2
+visited before throw 2
+throw in find Error: found 3
+all eight 22035000

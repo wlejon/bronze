@@ -78,6 +78,11 @@ public:
     // `$Name(...)` calls are intrinsics, no global may be read, and each
     // function a top-level `$Builtin(...)` names becomes a builtin.
     void setSelfHost(bool on) { selfHost_ = on; }
+    void setLibraryOnly(bool on) { libraryOnly_ = on; }
+    void setSelfHostLibrary(const SelfHostLibrary* library) { selfHostLibrary_ = library; }
+    // The library's builtins as lower.h SelfHostLibrary lists them, read off
+    // a module lower() returned in library-only mode.
+    std::vector<SelfHostLibrary::Builtin> selfHostBuiltinTable(const il::Module& module) const;
     // The `--feedback-in` profile, or null: what a pass that specializes on
     // observed types asks (docs/type-feedback.md, "Consumers").
     const spec::TypeProfile* feedbackProfile() const {
@@ -115,6 +120,9 @@ private:
         std::string display;  // the stack frame's name, "Array.map"
         uint32_t nameKey = 0; // `fn.name`, as a key constant
         uint32_t length = 0;  // `fn.length`
+        // The row's direct entry (lower.h SelfHostLibrary::Builtin), or
+        // empty: the function whose frame is the builtin's.
+        std::string direct;
     };
     bool selfHost_ = false;
     std::unordered_map<std::string, SelfHostBuiltin> selfHostBuiltins_;
@@ -126,6 +134,14 @@ private:
     // After every pass: builtins get their object flags, name, length and
     // frame; every other function is a hidden frame; a global read is refused.
     bool finishSelfHost();
+    // The library lowered for a program to compile in (lower.h
+    // SelfHostLibrary): no final passes, which the program runs.
+    bool libraryOnly_ = false;
+    const SelfHostLibrary* selfHostLibrary_ = nullptr;
+    // selfhost_merge.cpp: the library's reachable functions appended to this
+    // module, and each Array method call site that can reach one split on
+    // `is.plain_array` into a direct call of it and the original call.
+    bool mergeSelfHostLibrary();
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
     // The class name inference gives `receiver`'s object type, or empty.
     std::unordered_map<std::string, std::string> fieldClassGuesses() const;

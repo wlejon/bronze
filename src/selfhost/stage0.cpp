@@ -14,9 +14,9 @@ extern "C" void bronze_selfhost_main() {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::fputs("usage: bronze_stage0 <builtins.js> <output object>\n", stderr);
+    if (argc != 2) {
+        std::fputs("usage: bronze_stage0 <output object>\n", stderr);
         return 2;
     }
-    return bronze::selfhost::runSelfHostBuild(argv[1], argv[2]);
+    return bronze::selfhost::runSelfHostBuild(argv[1]);
 }

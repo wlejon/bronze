@@ -10,6 +10,7 @@
 #include "ast/query_walk.h"
 #include "embed/embed.h"
 #include "lower/lower.h"
+#include "selfhost/selfhost_library.h"
 #include "runtime/host_globals.h"
 #include "runtime/module_registry.h"
 #include "runtime/rt_builtins.h"
@@ -278,6 +279,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
         aot.nativeManifest = in.nativeManifest ? &*in.nativeManifest : nullptr;
         aot.censusOutPath = options.censusOutPath;
         aot.feedback = &feedback;
+        aot.selfHostLibrary = selfhost::library();
         lowered = lower::lowerAheadOfTime(astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     } else {
         lowered = lower::lowerModule(astModule, diags, inferred ? &*inferred : nullptr,

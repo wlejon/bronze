@@ -16,6 +16,7 @@ bronze_add_module(eval
         embed
         support
         modules
+        selfhost_il
     TEST_SOURCES
         ../../tests/eval/eval_test.cpp
         ../../tests/eval/eval_module_registry_test.cpp

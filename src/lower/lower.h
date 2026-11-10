@@ -63,6 +63,7 @@ namespace bronze::lower {
 // never passed a flag.
 class InferStatsCollector;
 class NativeManifest;
+struct SelfHostLibrary;
 
 // The whole-program optimizer (src/opt/wpo/wpo.h) of an AOT build, which only
 // `bronze build` asks for: lowering then solves the module before the passes
@@ -95,7 +96,49 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const InlineGuardedOptions& inlineGuarded = {},
                                       WholeProgramOptions* wholeProgram = nullptr,
                                       const FeedbackOptions* feedback = nullptr,
-                                      bool selfHost = false);
+                                      bool selfHost = false,
+                                      const SelfHostLibrary* selfHostLibrary = nullptr);
+
+// THE SELF-HOSTED LIBRARY AS PROGRAM CODE (selfhost_merge.cpp). The
+// self-hosted builtins (src/selfhost) are a prebuilt object every runtime
+// links; an ahead-of-time program ALSO compiles the ones it can reach as its
+// own functions, so that a site such as `arr.map(f)` calls (and the inliner
+// copies in) the builtin's body and, inside it, the callback's. This is the
+// library lowered for that: the self-host dialect's IL before the final
+// passes, which the program's own final passes then run over with it.
+//
+// One implementation: the prebuilt object and this IL are the same text
+// through the same lowering (src/selfhost/selfhost_library.h owns the text).
+// A program's copy is reached only behind `is.plain_array` (il_op.h), which
+// holds only for a receiver whose [[Get]] of the method's key answers the
+// intrinsic function (Array.prototype refuses every change, rt_prop_write.cpp,
+// and an Array with no named-property box has nothing that could shadow it).
+// So the copy runs exactly where a call would have entered the prebuilt
+// function with the same arguments, and it IS that function's algorithm.
+struct SelfHostLibrary {
+    il::Module module;
+    struct Builtin {
+        // The method's property key ("map") and the registry key
+        // ("Array.prototype.map").
+        std::string method;
+        std::string key;
+        // The registered function, and the function a call site enters: the
+        // same one, or the row's DIRECT ENTRY (builtins.js `reduceCounted`),
+        // which takes (receiver, the declared parameters, the argument
+        // count) where the registered one has a rest parameter.
+        uint32_t function = 0;
+        uint32_t direct = 0;
+        bool counted = false;
+    };
+    std::vector<Builtin> builtins;
+    // The library's text and its name, which the program carries as one more
+    // source file (its instructions' spans name it).
+    std::string sourceName;
+    std::string sourceText;
+};
+std::optional<SelfHostLibrary> lowerSelfHostLibrary(const ast::Module& astModule, DiagnosticSink& diags,
+                                                    const types::InferenceResult* inference,
+                                                    const SourceSet* sources);
 
 // THE AHEAD-OF-TIME FRONT END, for every compile whose output is kept:
 // `bronze build` and the evaluator's module builds (eval::buildModule, what a
@@ -124,6 +167,10 @@ struct AheadOfTimeOptions {
     // The self-hosted builtins' compile (src/selfhost; lower_selfhost.cpp):
     // `$Name(...)` intrinsics, no global reads, `$Builtin` registrations.
     bool selfHost = false;
+    // The library a program compiles in (SelfHostLibrary above):
+    // src/selfhost/selfhost_library.h `selfhost::library()`, which every
+    // caller passes. Null only for the library's own compile.
+    const SelfHostLibrary* selfHostLibrary = nullptr;
 };
 std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
                                            const types::InferenceResult* inference, const SourceSet* sources,

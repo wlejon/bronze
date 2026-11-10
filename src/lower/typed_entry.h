@@ -107,8 +107,11 @@ bool typedSignatureAt(const il::Module& module, const std::vector<const il::Inst
 
 // The local fold the copy's typed parameters license, to a fixpoint. Returns
 // how many instructions and branches it decided (dead-code removal is not
-// counted: it follows from a fold and is not one).
-uint32_t foldTypedEntry(il::Function& fn);
+// counted: it follows from a fold and is not one). Given the module (its keys
+// and externals), also the typeof / string-compare folds, the Array facts
+// and the closure sinking an inlined self-hosted builtin's body needs
+// (typed_entry_fold.cpp).
+uint32_t foldTypedEntry(il::Function& fn, const il::Module* module = nullptr);
 
 void applyTypedEntries(il::Module& module, TypedEntryStats* stats);
 

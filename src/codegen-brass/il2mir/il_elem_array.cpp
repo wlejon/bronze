@@ -55,6 +55,34 @@ Value* PropertyLoweringHelper::lower_is_array(Builder& b, Value* obj) {
     return result;
 }
 
+// `is.plain_array` (il_op.h): an Array whose props word holds no object, the
+// test il_array_method.cpp's arms make before they skip the method lookup.
+Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "is_parr_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_obj);
+    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* is_arr = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
+    b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_arr);
+    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    b.build_br(bb_merge, {b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits))});
+
+    b.position_at_end(bb_merge);
+    return result;
+}
+
 // `key in obj` (13.10.1, HasProperty) where obj is an Array and key an index
 // below its length whose slot holds a value: an own element, so true without
 // the chain. Everything else — not an object, another kind, a key that is not

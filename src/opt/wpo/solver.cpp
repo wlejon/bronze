@@ -468,6 +468,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber:
         case Op::IsDenseArray: case Op::InstanceOf: case Op::In: case Op::IterStep:
         case Op::MethodIcIs: case Op::AccessorIcIs: case Op::IsTypedArray: case Op::IsNumberArray: case Op::IsArray:
+        case Op::IsPlainArray:
         case Op::ClosureIs: case Op::PrivateHas: case Op::IsShape:
             primResult(kBool);
             break;

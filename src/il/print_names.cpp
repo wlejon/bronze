@@ -162,6 +162,7 @@ const char* opName(Op op) {
         case Op::IsTypedArray: return "is.typed_array";
         case Op::IsNumberArray: return "is.number_array";
         case Op::IsArray: return "is.array";
+        case Op::IsPlainArray: return "is.plain_array";
         case Op::MethodSlotFn: return "method.slot.fn";
         case Op::ClosureIs: return "closure.is";
         case Op::ClosureEnv: return "closure.env";

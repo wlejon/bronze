@@ -520,8 +520,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                         " takes one operand and is a dynamic value");
                 return false;
             }
-            if (inst.op == Op::ClosureIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
-                diags.error(Span{}, "Function " + fn.name + ": closure.is takes one operand and is a bool");
+            if ((inst.op == Op::ClosureIs || inst.op == Op::IsPlainArray) && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
+                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " takes one operand and is a bool");
                 return false;
             }
             if (inst.op == Op::ClosureEnv && !closureEnvProved(fn, bIdx, iIdx)) {

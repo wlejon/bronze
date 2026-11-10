@@ -115,6 +115,7 @@ bool canThrow(const Instruction& inst) {
         // tag.
         case Op::IsTypedArray:
         case Op::IsArray:
+        case Op::IsPlainArray:
         // Header loads, and on a miss a scan of at most
         // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements that raises nothing.
         case Op::IsNumberArray:
@@ -276,6 +277,7 @@ bool canCollect(const Instruction& inst) {
         case Op::IsShape:
         case Op::IsTypedArray:
         case Op::IsArray:
+        case Op::IsPlainArray:
         // The claim's scan rewrites an Int32 box as a double in place: a
         // store of a Number, which allocates nothing.
         case Op::IsNumberArray:

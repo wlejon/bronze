@@ -9,6 +9,7 @@
 // code for the life of the process.
 
 #include "selfhost/selfhost_build.h"
+#include "selfhost/selfhost_library.h"
 
 #include <cstdio>
 #include <string>
@@ -22,11 +23,14 @@
 
 namespace bronze::selfhost {
 
-int runSelfHostBuild(const std::string& sourcePath, const std::string& outputPath) {
+int runSelfHostBuild(const std::string& outputPath) {
     SourceSet sources;
     DiagnosticSink diags;
     modules::ModuleOptions moduleOptions{{}, {}};
-    auto astModule = modules::loadProgram(sourcePath, sources, diags, moduleOptions);
+    // The text the compiler carries (selfhost_library.h), which is also what
+    // a program compiles in: one source, one meaning.
+    auto astModule = modules::loadProgramSource(std::string(librarySource()), "bronze:selfhost/builtins.js",
+                                                sources, diags, moduleOptions);
     const auto fail = [&]() {
         std::fputs(diags.render(sources).c_str(), stderr);
         return 1;

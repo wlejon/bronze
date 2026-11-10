@@ -148,6 +148,21 @@ closure-slot resolution is the only static signal that `projectObject` and
   to take bodies (setProgram, 882 IL); `BRONZE_INLINE_DUMP=<fn>` prints that
   function's IL after inlining.
 
+## Self-hosted builtins and their callbacks
+
+`arr.map(x => x * 2)` and the other self-hosted Array builtins
+(`src/selfhost/README.md`, "In a program's own code"): an ahead-of-time build
+compiles the library into the program (`lower/selfhost_merge.cpp`), each
+site calls the program's copy behind `is.plain_array`, and the inliner takes
+two more forms with no guard of their own: an EXACT call of such a copy (in
+any block, since the body is the walk) and a LITERAL call, a `call.dynamic`
+whose callee is a `create.func` of the caller. The fold after inlining
+(`lower/typed_entry_fold.cpp`) decides the builtin's `typeof callbackfn`
+test, its `ToObject` and `is.array` tests below the site's guard and
+`reduce`'s argument count, and moves the literal's `create.func` to the slow
+path. Error.stack is unchanged (copied frames name the builtin's
+descriptor). Oracle cases `selfhost_inline_sites`, `selfhost_inline_bodies`.
+
 ## Ranked from here
 
 1. **Instructions inside bodies, not calls.** Inlining moves the cost; what

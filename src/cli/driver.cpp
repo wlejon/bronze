@@ -32,6 +32,7 @@
 #include "lex/lexer.h"
 #include "lower/infer_stats.h"
 #include "lower/lower.h"
+#include "selfhost/selfhost_library.h"
 #include "lower/native_manifest.h"
 #include "modules/modules.h"
 #include "parse/parser.h"
@@ -436,6 +437,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     aot.wpoStatsPerSite = wpoStatsPerSite;
     aot.wpoStatsFilter = wpoStatsFilter;
     aot.wpoReport = &wpoReport;
+    aot.selfHostLibrary = selfhost::library();
     auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {

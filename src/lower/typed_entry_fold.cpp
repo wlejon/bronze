@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <string>
 #include <vector>
 
 #include "lower/guard_region_cfg.h"
@@ -19,6 +20,27 @@ namespace bronze::lower {
 //     (an omitted parameter reads `const.undefined`, and these are its
 //     defaulted-parameter tests)
 //   br <const>                  -> jump to the arm it names
+//
+// and, given the module's key constants, the tests a self-hosted builtin's
+// body makes of what its caller passed once inlining has put the two side by
+// side (selfhost_merge.cpp): a callback that is a function literal
+//
+//   typeof (create.func | func.ref) -> "function"; typeof box.f64|box.i32 ->
+//     "number", box.bool -> "boolean", box.str -> "string"
+//   strict.eq <either of those>, box.str k -> whether the strings are equal
+//   strict.eq box.str k1, box.str k2 -> whether k1 and k2 are the same key
+//   cmp.eq | cmp.ne of two const.bool -> the answer
+//   rel.lt | rel.gt | rel.le | rel.ge of two box.f64 (const.f64) -> the answer
+//
+// and, below a branch on `is.plain_array v` or `is.array v` (its true arm,
+// entered from that branch alone), what holds of v there because an Array
+// stays an Array: `is.array v` -> true, and `$ToObject(v, _)`
+// (`bronze_sh_to_object`) -> v itself;
+//
+// after which a `create.func` every remaining use of which is in one block
+// that only its own block reaches (the call's slow path, once the builtin's
+// copy takes the literal's body) moves into that block: the closure is made
+// only where something still needs it.
 //
 // then what those decided: blocks nothing reaches any more are dropped, a block
 // parameter every remaining edge passes the same value is that value, and pure
@@ -100,8 +122,46 @@ void applyRename(il::Function& fn, std::vector<il::ValueId>& to) {
     }
 }
 
+// The string `v` is known to be: a `box.str`'s key, or the answer a
+// `typeof` of a value of known kind gives. Null when not known.
+const std::string* knownString(const Defs& d, il::ValueId v, const std::vector<std::string>* keys) {
+    static const std::string kFunction = "function", kNumber = "number", kBoolean = "boolean",
+                             kString = "string";
+    if (keys == nullptr || v >= d.inst.size() || d.inst[v] == nullptr) return nullptr;
+    const il::Instruction& def = *d.inst[v];
+    if (def.op == il::Op::Box && def.boxType == il::Type::Str && def.operands.empty()) {
+        return def.keyIndex < keys->size() ? &(*keys)[def.keyIndex] : nullptr;
+    }
+    if (def.op != il::Op::TypeOf || def.operands.size() != 1) return nullptr;
+    const il::ValueId of = def.operands[0];
+    if (of >= d.inst.size() || d.inst[of] == nullptr) return nullptr;
+    const il::Instruction& src = *d.inst[of];
+    if (src.op == il::Op::CreateFunction || src.op == il::Op::FunctionRef) return &kFunction;
+    if (src.op != il::Op::Box || src.operands.size() != 1) return nullptr;
+    switch (src.boxType) {
+        case il::Type::F64:
+        case il::Type::I32:
+            return &kNumber;
+        case il::Type::Bool:
+            return &kBoolean;
+        case il::Type::Str:
+            return &kString;
+        default:
+            return nullptr;
+    }
+}
+
+// The number `v` boxes when it is `box.f64 (const.f64 x)`, else null.
+const double* constNumber(const Defs& d, il::ValueId v) {
+    const il::Instruction* box = boxDef(d, v);
+    if (box == nullptr || box->boxType != il::Type::F64) return nullptr;
+    const il::ValueId x = box->operands[0];
+    if (x >= d.inst.size() || d.inst[x] == nullptr || d.inst[x]->op != il::Op::ConstF64) return nullptr;
+    return &d.inst[x]->immF64;
+}
+
 // The value-level rules. Returns how many fired.
-uint32_t foldValues(il::Function& fn) {
+uint32_t foldValues(il::Function& fn, const std::vector<std::string>* keys) {
     const Defs d = collectDefs(fn);
     std::vector<il::ValueId> to(fn.valueCount);
     for (il::ValueId v = 0; v < to.size(); ++v) to[v] = v;
@@ -159,7 +219,31 @@ uint32_t foldValues(il::Function& fn) {
                     // `undefined === undefined`, `null === null`; the two differ.
                     makeConstBool(inst, la == lb);
                     ++folds;
+                } else if (const std::string* x = knownString(d, inst.operands[0], keys)) {
+                    if (const std::string* y = knownString(d, inst.operands[1], keys)) {
+                        makeConstBool(inst, *x == *y);
+                        ++folds;
+                    }
                 }
+            } else if ((inst.op == il::Op::RelLt || inst.op == il::Op::RelGt || inst.op == il::Op::RelLe ||
+                        inst.op == il::Op::RelGe) &&
+                       inst.operands.size() == 2 && constNumber(d, inst.operands[0]) &&
+                       constNumber(d, inst.operands[1])) {
+                // Two boxed constants: reduce's argument count against 1.
+                const double x = *constNumber(d, inst.operands[0]);
+                const double y = *constNumber(d, inst.operands[1]);
+                const bool r = inst.op == il::Op::RelLt   ? x < y
+                               : inst.op == il::Op::RelGt ? x > y
+                               : inst.op == il::Op::RelLe ? x <= y
+                                                          : x >= y;
+                makeConstBool(inst, r);
+                ++folds;
+            } else if ((inst.op == il::Op::CmpEq || inst.op == il::Op::CmpNe) && inst.operands.size() == 2 &&
+                       constOp(d, inst.operands[0]) == il::Op::ConstBool &&
+                       constOp(d, inst.operands[1]) == il::Op::ConstBool) {
+                const bool same = (d.inst[inst.operands[0]]->immI32 != 0) == (d.inst[inst.operands[1]]->immI32 != 0);
+                makeConstBool(inst, inst.op == il::Op::CmpEq ? same : !same);
+                ++folds;
             }
         }
     }
@@ -167,6 +251,64 @@ uint32_t foldValues(il::Function& fn) {
         auto& insts = fn.blocks[bi].instructions;
         for (size_t k = erase[bi].size(); k-- > 0;) {
             insts.erase(insts.begin() + static_cast<ptrdiff_t>(erase[bi][k]));
+        }
+    }
+    if (renamed) applyRename(fn, to);
+    return folds;
+}
+
+uint32_t foldArrayFacts(il::Function& fn, const il::Module& module) {
+    const Defs d = collectDefs(fn);
+    const Cfg cfg = buildCfg(fn);
+    // (arm, v): the true arm of a test that v is an Array.
+    std::vector<std::pair<il::BlockId, il::ValueId>> facts;
+    for (const auto& block : fn.blocks) {
+        if (block.instructions.empty()) continue;
+        const il::Instruction& term = block.instructions.back();
+        if (term.op != il::Op::Branch || term.operands.size() != 1) continue;
+        const il::ValueId c = term.operands[0];
+        if (c >= d.inst.size() || d.inst[c] == nullptr) continue;
+        const il::Instruction& test = *d.inst[c];
+        if ((test.op != il::Op::IsPlainArray && test.op != il::Op::IsArray) || test.operands.size() != 1) continue;
+        const il::BlockId arm = term.target.block;
+        if (arm == il::kNoBlock || arm >= fn.blocks.size() || arm == term.elseTarget.block ||
+            cfg.preds[arm].size() != 1) {
+            continue;
+        }
+        facts.emplace_back(arm, test.operands[0]);
+    }
+    if (facts.empty()) return 0;
+    const auto isArrayAt = [&](il::ValueId v, il::BlockId at) {
+        for (const auto& [arm, of] : facts) {
+            if (of == v && cfg.dominates(arm, at)) return true;
+        }
+        return false;
+    };
+    std::vector<il::ValueId> to(fn.valueCount);
+    for (il::ValueId v = 0; v < to.size(); ++v) to[v] = v;
+    bool renamed = false;
+    uint32_t folds = 0;
+    for (auto& block : fn.blocks) {
+        if (cfg.rpoIndex[block.id] == UINT32_MAX) continue;
+        std::vector<size_t> erase;
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            il::Instruction& inst = block.instructions[i];
+            if (inst.op == il::Op::IsArray && inst.operands.size() == 1 && isArrayAt(inst.operands[0], block.id)) {
+                makeConstBool(inst, true);
+                ++folds;
+            } else if (inst.op == il::Op::Call && inst.operands.size() == 2 && inst.result != il::kNoValue &&
+                       inst.result < to.size() && inst.calleeIndex < module.functions.size() &&
+                       module.functions[inst.calleeIndex].isExternal &&
+                       module.functions[inst.calleeIndex].name == "bronze_sh_to_object" &&
+                       isArrayAt(inst.operands[0], block.id)) {
+                to[inst.result] = inst.operands[0];
+                renamed = true;
+                erase.push_back(i);
+                ++folds;
+            }
+        }
+        for (size_t k = erase.size(); k-- > 0;) {
+            block.instructions.erase(block.instructions.begin() + static_cast<ptrdiff_t>(erase[k]));
         }
     }
     if (renamed) applyRename(fn, to);
@@ -289,7 +431,12 @@ bool isPureDroppable(const il::Instruction& inst) {
     switch (inst.op) {
         case il::Op::Box:
             return inst.boxType == il::Type::F64 || inst.boxType == il::Type::Bool ||
-                   inst.boxType == il::Type::I32;
+                   inst.boxType == il::Type::I32 || inst.boxType == il::Type::Str;
+        // An allocation nothing reads: the closure has no effect but its
+        // existence.
+        case il::Op::CreateFunction:
+        case il::Op::FunctionRef:
+        case il::Op::TypeOf:
         case il::Op::ConstF64:
         case il::Op::ConstI32:
         case il::Op::ConstBool:
@@ -331,18 +478,91 @@ bool dropDead(il::Function& fn) {
     }
 }
 
+// A `create.func` whose every use is in one other block U that is reached
+// only through a chain of single-predecessor blocks from its own moves to the
+// head of U: U runs at most as often as the defining block and only after
+// it, so the operands still dominate and no path makes the closure where it
+// did not. Handler blocks and blocks under another handler stay put.
+uint32_t sinkClosures(il::Function& fn) {
+    const size_t n = fn.blocks.size();
+    std::vector<uint32_t> predCount(n, 0);
+    std::vector<il::BlockId> onlyPred(n, il::kNoBlock);
+    std::vector<uint8_t> isHandler(n, 0);
+    for (const auto& block : fn.blocks) {
+        if (block.handler != il::kNoBlock && block.handler < n) isHandler[block.handler] = 1;
+        if (block.instructions.empty()) continue;
+        const il::Instruction& term = block.instructions.back();
+        il::BlockId seen = il::kNoBlock;
+        for (const il::BlockTarget* t : {&term.target, &term.elseTarget}) {
+            if (t->block == il::kNoBlock || t->block >= n || t->block == seen) continue;
+            seen = t->block;
+            ++predCount[t->block];
+            onlyPred[t->block] = block.id;
+        }
+    }
+    // Where each value is used: one block, or kNoBlock with `multi` set.
+    std::vector<il::BlockId> useBlock(fn.valueCount, il::kNoBlock);
+    std::vector<uint8_t> multi(fn.valueCount, 0);
+    for (auto& block : fn.blocks) {
+        for (auto& inst : block.instructions) {
+            forEachUse(inst, [&](il::ValueId& v) {
+                if (v >= useBlock.size()) return;
+                if (useBlock[v] == il::kNoBlock) useBlock[v] = block.id;
+                else if (useBlock[v] != block.id) multi[v] = 1;
+            });
+        }
+    }
+    uint32_t sunk = 0;
+    for (size_t b = 0; b < n; ++b) {
+        auto& insts = fn.blocks[b].instructions;
+        for (size_t i = 0; i < insts.size();) {
+            const il::Instruction& inst = insts[i];
+            const il::ValueId r = inst.result;
+            bool move = inst.op == il::Op::CreateFunction && r < useBlock.size() && !multi[r] &&
+                        useBlock[r] != il::kNoBlock && useBlock[r] != b;
+            const il::BlockId to = move ? useBlock[r] : il::kNoBlock;
+            if (move) {
+                // The chain back from U to b: single predecessors, no handler
+                // block, the same handler as b throughout.
+                il::BlockId at = to;
+                for (size_t steps = 0; move && at != b; ++steps) {
+                    if (steps > n || isHandler[at] || predCount[at] != 1 ||
+                        fn.blocks[at].handler != fn.blocks[b].handler) {
+                        move = false;
+                        break;
+                    }
+                    at = onlyPred[at];
+                }
+            }
+            if (!move) {
+                ++i;
+                continue;
+            }
+            il::Instruction moved = std::move(insts[i]);
+            insts.erase(insts.begin() + static_cast<ptrdiff_t>(i));
+            auto& dest = fn.blocks[to].instructions;
+            dest.insert(dest.begin(), std::move(moved));
+            ++sunk;
+        }
+    }
+    return sunk;
+}
+
 }  // namespace
 
-uint32_t foldTypedEntry(il::Function& fn) {
+uint32_t foldTypedEntry(il::Function& fn, const il::Module* module) {
+    const std::vector<std::string>* keys = module != nullptr ? &module->keyConstants : nullptr;
     uint32_t folds = 0;
     for (;;) {
-        const uint32_t decided = foldValues(fn) + foldBranches(fn);
+        const uint32_t decided =
+            foldValues(fn, keys) + foldBranches(fn) + (module != nullptr ? foldArrayFacts(fn, *module) : 0);
         folds += decided;
         const bool pruned = pruneBlocks(fn);
         const bool forwarded = forwardParams(fn);
         if (decided == 0 && !pruned && !forwarded) break;
     }
     dropDead(fn);
+    if (keys != nullptr) folds += sinkClosures(fn);
     return folds;
 }
 

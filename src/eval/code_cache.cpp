@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 #include "il/serialize.h"
+#include "selfhost/selfhost_library.h"
 #include "support/timings.h"
 
 #ifdef _WIN32
@@ -623,6 +624,9 @@ const std::string& moduleKeyMaterial() {
         // "wpo": a module is built with the whole-program optimizer
         // (lowerProgram's aheadOfTime), which one built before it was not.
         std::string m = "module-v" + std::to_string(kVersion) + "|wpo|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
+        // A module compiles in the self-hosted builtins it reaches (lower.h
+        // SelfHostLibrary), so the library's text is part of what it is.
+        m += "|selfhost" + std::to_string(selfhost::libraryDigest());
         for (const auto& v : bronzeEnvironment()) m += "|" + v;
         return m;
     }();

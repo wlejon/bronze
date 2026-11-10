@@ -176,6 +176,7 @@ enum class BronzeOp {
     AccessorIcIs,
     IsTypedArray,
     IsArray,
+    IsPlainArray,
     MethodSlotFn,
     ClosureIs,
     ClosureEnv,

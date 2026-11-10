@@ -1,0 +1,51 @@
+map 0 [3,1,4,1,5,9,2,6]
+filter 0 [3,1,1,5,9]
+reduce 0 62
+find 0 [5,null]
+findIndex 0 [5,-1]
+some/every 0 [false,true,true,false]
+forEach 0 31
+map 1 [4,2,5,2,6,10,3,7]
+filter 1 [3,1,1,5,9]
+reduce 1 62
+find 1 [9,null]
+findIndex 1 [5,-1]
+some/every 1 [false,true,true,false]
+forEach 1 31
+map 2 [5,3,6,3,7,11,4,8]
+filter 2 [3,1,1,5,9]
+reduce 2 62
+find 2 [9,null]
+findIndex 2 [5,-1]
+some/every 2 [false,true,true,false]
+forEach 2 31
+mixed [2,"a1",1,null,2,2.5,1,null]
+strings reduce "0abc"
+objects [{},"5",9]
+NaN find -1 minus zero 0
+param callback [2,-4,6]
+param callback [-1,2,-3]
+param callback [true,true,true]
+param callback [1,2,3]
+param callback ["1","-2","3"]
+param non-callable TypeError string "nope" is not a function
+holes map [2,null,4]
+holes kept false
+holes reduce 3
+holes find 1
+subclass through inlined site false 2
+own method through inlined site own
+frozen through inlined site [2,3]
+reduce empty TypeError Reduce of empty array with no initial value
+growing [7,8]
+shrinking [1,2]
+own prop mid-walk [2,3,4]
+prototype set mid-walk [1,2,3]
+delete ahead 3
+thrown TypeError two
+seen before throw 2
+recursive 21
+recursive map [10,[20,[30]],40]
+closures [2,4,6]
+captured loop var [3,2,1]
+hot 49535999

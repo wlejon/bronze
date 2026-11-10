@@ -13,7 +13,9 @@ moved and measured slower, 33% and 27%, and are C++ again.
 
 `bronze_stage0` (this directory) is bronze's front end and brass backend
 linked against a runtime without the library, the one image that cannot have
-it. The build runs it over `builtins.js` (`selfhost_build.cpp`):
+it. The build runs it over `builtins.js`, which the configure step embeds in
+the `selfhost_il` module (`selfhost_source.cpp.in`, `selfhost_library.cpp`),
+so stage0 and every compiler read the one text (`selfhost_build.cpp`):
 
     loadProgram -> inferModule -> lowerAheadOfTime(selfHost) -> brass --emit-obj
 
@@ -61,7 +63,13 @@ tier, `eval::buildModule` (an installed app's scripts) and `bronze build`
   [[Construct]], no `prototype`; realm 0, the thread's intrinsics) with a
   BUILTIN descriptor. A builtin may not capture, read `arguments`, or be a
   generator or async function (a rest parameter is fine: `reduce`'s
-  "was an initial value passed" is `initial.length`). Every other function of
+  "was an initial value passed" is `initial.length`). A row's optional sixth
+  argument is the builtin's DIRECT ENTRY, the function a program's call site
+  enters (below): `reduceCounted(thisValue, callbackfn, initialValue,
+  argumentCount)` holds `reduce`'s algorithm, and the registered `reduce` is
+  only its rest-parameter wrapper. The direct entry gets the builtin's frame
+  name and the wrapper is HIDDEN, so either way in Error.stack reads
+  `at Array.reduce`. Every other function of
   the library is a HIDDEN frame (`BRONZE_FN_DESC_HIDDEN`), which Error.stack
   leaves out as it leaves out a C++ builtin's own calls.
 
@@ -83,6 +91,39 @@ code as a C function — `bronze_dynamic_call`'s native shortcut,
 `rtIsSelfHostedCode` and take `rtEnterJs` instead. Generated code calls the
 code directly either way.
 
+## In a program's own code
+
+An ahead-of-time compile (`lowerAheadOfTime`: `bronze build`, an installed
+app's `eval::buildModule`) also compiles the library as part of the program,
+so that `arr.map(x => x * 2)` is one loop with the callback's body in it
+rather than a call into the library and a call back per element.
+`selfhost::library()` lowers `builtins.js` once per process (the self-host
+dialect, up to but not including the final passes) and
+`src/lower/selfhost_merge.cpp` runs before the program's final passes:
+
+- each `method.call` whose key is one of the builtins' method names becomes
+  `is.plain_array recv ? call @selfhost.<name>(recv, args...) : <the method
+  call as it was>`. `is.plain_array` (il_op.h) holds only for an Array with no
+  named-property box: Array.prototype refuses every change in bronze
+  (rt_prop_write.cpp), so for such a receiver the property read can only
+  answer the intrinsic, and the copy runs exactly where the registered builtin
+  would have, with the same arguments (padded with `undefined`, extra ones
+  dropped, `reduce`'s argument count passed to its direct entry);
+- the library functions those sites reach are copied into the module as
+  ordinary functions named `selfhost.<name>`, with the library text as one more
+  source file so their positions stay correct.
+
+The guarded inliner (`src/lower/inline_guarded.cpp`) then copies the
+builtin's body in with no guard of its own (an EXACT call, in any block,
+because the body is the walk) and, inside it, a callback that is a function
+literal of the caller (a LITERAL call: `call.dynamic` of a `create.func`). The
+fold after inlining (`typed_entry_fold.cpp`) decides `typeof f === "function"`
+for that literal and moves its `create.func` to the slow path that still
+passes it, so a site whose receiver is a plain array makes no closure.
+Frames copied in name the builtin's descriptor, so Error.stack is what the
+call would have printed. The module key of an app's build includes the
+library's digest (`eval/code_cache.cpp`).
+
 ## Adding a builtin
 
 1. Write it in `builtins.js` against its clause, with a `$Builtin` row.
@@ -91,4 +132,8 @@ code directly either way.
 3. Point its table row at the id (`{"name", nullptr, arity, length, nullptr,
    SelfHosted::Id}`) and delete the C++ body.
 4. A new intrinsic is a row of `kHelpers` (`lower_selfhost.cpp`) and an
-   `extern "C"` helper in `runtime/selfhost.cpp`.
+   `extern "C"` helper in `runtime/selfhost.cpp`, exported in
+   `abi/bronze_abi_functions.h` (a program's copy of the library calls it).
+5. For a program's sites to take it, its method name joins the merge's table
+   (`Lowerer::selfHostBuiltinTable`) by its row, and every function it reaches
+   must pass `mergeable()` in `selfhost_merge.cpp`.
