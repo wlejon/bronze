@@ -39,6 +39,9 @@ set_target_properties(bronze_module_run_host PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BRONZE_SHARED_RUNTIME_DIR})
 if(MSVC)
     target_compile_options(bronze_module_run_host PRIVATE /W4 /WX /permissive-)
+    # The stack the bronze CLI runs a program on (src/cli/CMakeLists.txt): a
+    # case that recurses 800 async frames deep fits it and not MSVC's 1 MB.
+    target_link_options(bronze_module_run_host PRIVATE /STACK:8388608)
 else()
     target_compile_options(bronze_module_run_host PRIVATE -Wall -Wextra -Werror)
 endif()

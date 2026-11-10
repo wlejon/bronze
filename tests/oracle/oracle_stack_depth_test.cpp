@@ -54,3 +54,28 @@ TEST_CASE("gc stress leaves a recursion the depth it has without it, at each tie
         CHECK_MESSAGE(stressed * 4 >= plain * 3, where);
     }
 }
+
+// Async recursion past the stack: the innermost call's RangeError rejects
+// every level above it, and the program goes on. Plain runs only: under
+// gc-stress a run to the stack's end costs the square of its depth (76 s for
+// this one on a fast machine, past the limit on a slow one), which is why it
+// is here and not in an oracle case every stressed suite runs.
+TEST_CASE("async recursion past the stack rejects with a RangeError at every tier") {
+    const std::filesystem::path js = bronze_test::tempDir() / "async_recursion_past_stack.js";
+    {
+        std::ofstream out(js, std::ios::binary);
+        out << "async function depth(n) { if (n === 0) return 0; const below = await depth(n - 1); return below + 1; }\n"
+               "(async () => {\n"
+               "  try { await depth(100000); console.log('no throw'); } catch (e) { console.log('too deep: ' + e.name); }\n"
+               "  console.log('after: ' + await depth(50));\n"
+               "})();\n";
+    }
+    for (const char* tier : {"0", "1", "2"}) {
+        const oracle::RunResult run = oracle::runCommand(
+            oracle::quoted(TEST_BRONZE_CLI) + " run --tier=" + tier + " " + oracle::quoted(js.string()),
+            /*gcStress=*/false);
+        const std::string where = std::string("--tier=") + tier + ": " + run.output + run.errors;
+        CHECK_MESSAGE(run.ran, where);
+        CHECK_MESSAGE(run.output == "too deep: RangeError\nafter: 50\n", where);
+    }
+}

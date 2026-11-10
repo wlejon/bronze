@@ -82,12 +82,9 @@ async function main() {
   }
   await forAwait();
   console.log("depth:", await depth(800));
-  // Past the stack: the innermost call's RangeError rejects every level.
-  try {
-    await depth(100000);
-  } catch (e) {
-    console.log("too deep:", e.name);
-  }
+  // (Recursion past the stack is tests/oracle/oracle_stack_depth_test.cpp's:
+  // under gc-stress every collection walks the whole stack, and a run to the
+  // stack's end costs the square of its depth.)
   await asyncGenThrow();
 }
 

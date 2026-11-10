@@ -15,7 +15,6 @@ counter finally
 for-await sum: 6
 for-await sync iterable: abc
 depth: 800
-too deep: RangeError
 {"value":1,"done":false}
 gen caught: x
 {"value":"recovered","done":false}
