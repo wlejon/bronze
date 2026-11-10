@@ -106,6 +106,31 @@ function findIndex(predicate, thisArg) {
     return -1;
 }
 
+// 23.1.3.11 Array.prototype.findLast(predicate [, thisArg]): every index from
+// the last, a hole read as what Get answers for it (FindViaPredicate,
+// descending).
+function findLast(predicate, thisArg) {
+    const O = $ToObject(this, "Array.prototype.findLast called on null or undefined");
+    const len = +$LengthOfArrayLike(O);
+    if (typeof predicate !== "function") $ThrowNotCallable(predicate);
+    for (let k = len - 1; k >= 0; k--) {
+        const kValue = O[k];
+        if ($Call(predicate, thisArg, kValue, k, O)) return kValue;
+    }
+    return undefined;
+}
+
+// 23.1.3.12 Array.prototype.findLastIndex(predicate [, thisArg])
+function findLastIndex(predicate, thisArg) {
+    const O = $ToObject(this, "Array.prototype.findLastIndex called on null or undefined");
+    const len = +$LengthOfArrayLike(O);
+    if (typeof predicate !== "function") $ThrowNotCallable(predicate);
+    for (let k = len - 1; k >= 0; k--) {
+        if ($Call(predicate, thisArg, O[k], k, O)) return k;
+    }
+    return -1;
+}
+
 // 23.1.3.24 Array.prototype.reduce(callbackfn [, initialValue]). Whether an
 // initial value was PASSED is the question (an explicit `undefined` is one),
 // which is the rest parameter's length. The algorithm is `reduceCounted`, the
@@ -150,4 +175,6 @@ $Builtin(some, "Array.prototype.some", "Array.some", "some", 1);
 $Builtin(every, "Array.prototype.every", "Array.every", "every", 1);
 $Builtin(find, "Array.prototype.find", "Array.find", "find", 1);
 $Builtin(findIndex, "Array.prototype.findIndex", "Array.findIndex", "findIndex", 1);
+$Builtin(findLast, "Array.prototype.findLast", "Array.findLast", "findLast", 1);
+$Builtin(findLastIndex, "Array.prototype.findLastIndex", "Array.findLastIndex", "findLastIndex", 1);
 $Builtin(reduce, "Array.prototype.reduce", "Array.reduce", "reduce", 1, reduceCounted);

@@ -222,8 +222,6 @@ uint64_t arrayIndexOf(uint64_t env, uint64_t thisBits, uint32_t argc, const uint
 uint64_t arrayLastIndexOf(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayIncludes(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayAt(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayFindLast(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
-uint64_t arrayFindLastIndex(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
 // Transform
 uint64_t arraySlice(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);

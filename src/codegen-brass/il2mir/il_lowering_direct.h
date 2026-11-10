@@ -67,6 +67,12 @@ MethodWay0 method_way0(Value* site, Value* row);
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site, Value* row, bool way1 = false);
 
+// The same call with no inline arm: the stub alone. For a site whose way 0
+// is rarely a plain object's DIRECT entry, which an arm in front of it
+// answers (il_native_fast.h).
+Value* lower_method_stub_call(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
+                              const std::vector<Value*>& boxed_args, Value* site, Value* row);
+
 // The method stub's way-1 hit (build_method_call_stub): the site's two
 // DIRECT entries trade places, so way 0, the one the site tests inline, comes
 // to hold the shape the site meets now (il_method_site.cpp says when it may),

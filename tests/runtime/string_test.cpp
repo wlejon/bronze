@@ -7,6 +7,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/builtin_regexp_internal.h"
+#include "runtime/builtin_string_internal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -225,7 +226,7 @@ static Value callSlice(Value str, Value start = Value::fromUndefined(), Value en
             argv[argc++] = end.rawBits();
         }
     }
-    return Value(runtime::stringSlice(0, str.rawBits(), argc, argv));
+    return Value(::bronze_string_slice(0, str.rawBits(), argc, argv));
 }
 
 static Value callSubstring(Value str, Value start = Value::fromUndefined(), Value end = Value::fromUndefined()) {
@@ -237,7 +238,7 @@ static Value callSubstring(Value str, Value start = Value::fromUndefined(), Valu
             argv[argc++] = end.rawBits();
         }
     }
-    return Value(runtime::stringSubstring(0, str.rawBits(), argc, argv));
+    return Value(::bronze_string_substring(0, str.rawBits(), argc, argv));
 }
 
 static Value callSubstr(Value str, Value start = Value::fromUndefined(), Value length = Value::fromUndefined()) {
@@ -249,7 +250,7 @@ static Value callSubstr(Value str, Value start = Value::fromUndefined(), Value l
             argv[argc++] = length.rawBits();
         }
     }
-    return Value(runtime::stringSubstr(0, str.rawBits(), argc, argv));
+    return Value(runtime::string_detail::stringSubstr(0, str.rawBits(), argc, argv));
 }
 
 TEST_CASE("fast direct string slicing - Latin-1 strings (ASCII)") {

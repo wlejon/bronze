@@ -37,6 +37,8 @@ enum class SelfHosted : uint8_t {
     ArrayFind,
     ArrayFindIndex,
     ArrayReduce,
+    ArrayFindLast,
+    ArrayFindLastIndex,
     Count,
 };
 

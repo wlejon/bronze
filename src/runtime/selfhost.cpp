@@ -51,6 +51,8 @@ constexpr const char* kKeys[kCount] = {
     "Array.prototype.find",
     "Array.prototype.findIndex",
     "Array.prototype.reduce",
+    "Array.prototype.findLast",
+    "Array.prototype.findLastIndex",
 };
 
 thread_local std::array<Value, kCount> t_functions{};

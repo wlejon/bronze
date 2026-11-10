@@ -285,6 +285,8 @@
     X(bronze_array_claim_numbers, BRONZE_ABI_U32,  (BRONZE_ABI_U64)) \
     X(bronze_array_pop,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_array_push,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_fast_array_index_of, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_array_includes, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_array_shift,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     /* `recv.sort(comparefn)` on an Array a site's guard found with no\
      * properties object (so `sort` is the intrinsic): the builtin, with its\
@@ -654,6 +656,17 @@
     X(bronze_math_atan,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_atan2,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_string_char_code_at, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_char_at,      BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_index_of,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_starts_with,  BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_slice,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_substring,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_fast_string_char_code_at, BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_char_at,      BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_index_of,     BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_starts_with,  BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_slice,        BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_substring,    BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_sincos_f64,     BRONZE_ABI_VOID, (BRONZE_ABI_F64, BRONZE_ABI_VPTR)) \

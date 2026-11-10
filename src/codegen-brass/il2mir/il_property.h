@@ -412,7 +412,8 @@ public:
     void lower_elem_define_array(Builder& b, Value* obj, Value* key, Value* val);
     // `key in obj` (il_elem_array.cpp): an Array's own element answered inline,
     // and with `elem_out` the slot it loaded (the hole on every other arm).
-    Value* lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out = nullptr);
+    Value* lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out = nullptr,
+                                 int64_t flags = 0);
     // A proven Array's `length` (il_pin.h kPropGetArrayLength), its box.
     Value* lower_array_length(Builder& b, Value* obj);
     // `$LengthOfArrayLike(O)` with an Array's header length inline.

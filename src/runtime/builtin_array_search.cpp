@@ -1,4 +1,5 @@
 #include "runtime/builtin_array_internal.h"
+#include "runtime/native_fast.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 
@@ -92,6 +93,55 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     return Value::fromDouble(-1.0).rawBits();
 }
 
+}  // namespace bronze::runtime
+
+// The fast entries (native_fast.h): the receiver an Array with no box, one
+// argument. What arrayIndexOf's own first test answers, without the call
+// through argv: a needle no String or BigInt compares without a call, and a
+// chain with no index lets the block's holes read as absent.
+extern "C" uint64_t bronze_fast_array_index_of(uint64_t thisBits, uint64_t needleBits) {
+    using namespace bronze;
+    using namespace bronze::runtime;
+    const Value self(thisBits);
+    const Value needle(needleBits);
+    if (isArray(self) && !needle.isString() && !needle.isBigInt() && !rtArrayChainHoldsIndex(self)) {
+        const ArrayHeader* arr = self.asObject<ArrayHeader>();
+        return Value::fromDouble(static_cast<double>(strictSearchPlain(arr, 0, arr->length, needle))).rawBits();
+    }
+    const uint64_t argv[1] = {needleBits};
+    return arrayIndexOf(0, thisBits, 1, argv);
+}
+
+namespace bronze::runtime {
+
+// 23.1.3.16 over an Array's block from `from`, while the chain holds no
+// index: SameValueZero against every index, a hole read as `undefined`.
+// SameValueZero neither converts nor allocates, so the walk needs no roots.
+static bool includesBlock(const ArrayHeader* arr, uint32_t from, uint32_t len, Value needle) {
+    for (uint32_t i = from; i < len; ++i) {
+        if (sameValueZero(arr->getElem(i), needle)) return true;
+    }
+    return false;
+}
+
+}  // namespace bronze::runtime
+
+// The fast entry for `array.includes(x)`: arrayIncludes' own block walk,
+// without the call through argv.
+extern "C" uint64_t bronze_fast_array_includes(uint64_t thisBits, uint64_t needleBits) {
+    using namespace bronze;
+    using namespace bronze::runtime;
+    const Value self(thisBits);
+    if (isArray(self) && !rtArrayChainHoldsIndex(self)) {
+        const ArrayHeader* arr = self.asObject<ArrayHeader>();
+        return Value::fromBool(includesBlock(arr, 0, arr->length, Value(needleBits))).rawBits();
+    }
+    const uint64_t argv[1] = {needleBits};
+    return arrayIncludes(0, thisBits, 1, argv);
+}
+
+namespace bronze::runtime {
+
 uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{toObject(Value(thisBits), "lastIndexOf")};
@@ -141,10 +191,7 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     // 23.1.3.16 reads every index with Get, so a hole is `undefined` only when
     // the chain has nothing for it.
     if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
-        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
-        for (uint32_t i = from; i < len; ++i) {
-            if (sameValueZero(arr->getElem(i), args[0])) return Value::fromBool(true).rawBits();
-        }
+        return Value::fromBool(includesBlock(self.get().asObject<ArrayHeader>(), from, len, args[0])).rawBits();
     } else {
         for (uint32_t i = from; i < len; ++i) {
             Value elem = rtArrayLikeGetElement(self, i);
@@ -168,32 +215,5 @@ uint64_t arrayAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     return rtArrayLikeGetElement(self, static_cast<uint32_t>(idx)).rawBits();
 }
 
-template <bool Reverse, bool WantIndex>
-static uint64_t arrayFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{toObject(Value(thisBits), "find")};
-    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    Rooted<Value> fn{args[0]};
-    if (!requireCallable(fn.get(), "find")) return Value::fromUndefined().rawBits();
-    Rooted<Value> thisArg{args[1]};
-    const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    for (uint32_t n = 0; n < len; ++n) {
-        uint32_t i = Reverse ? len - 1 - n : n;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
-        Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
-        if (bronze_truthy(found.get().rawBits())) {
-            return WantIndex ? Value::fromDouble(i).rawBits() : elem.get().rawBits();
-        }
-    }
-    return WantIndex ? Value::fromDouble(-1.0).rawBits() : Value::fromUndefined().rawBits();
-}
-
-uint64_t arrayFindLast(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    return arrayFindImpl<true, false>(env, thisBits, argc, argv);
-}
-
-uint64_t arrayFindLastIndex(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    return arrayFindImpl<true, true>(env, thisBits, argc, argv);
-}
 
 }  // namespace bronze::runtime

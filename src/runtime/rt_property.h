@@ -9,6 +9,7 @@
 #include "runtime/property_key.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 // The property and member protocol: how a key is decoded, what order own keys
@@ -298,7 +299,18 @@ bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal);
 // paths' whole premise. Cached per chain and per prototype-mutation epoch,
 // so a run of holes asks it once; true is conservative for a link that is no
 // ordinary object (a proxy answers for itself). The receiver must be an array.
-bool rtArrayChainHoldsIndex(Value arr);
+//
+// Inline for its common answer: the TLS hazard word clear means no prototype
+// anywhere holds an index (one load, the test generated code makes too), and
+// only a set word, or BRONZE_CHECK_INDEX_HAZARD's verification, calls out.
+// A push or an indexOf asked it through a call of its own, and through a
+// second one for the TLS block (4% of pixi_graphics' calls).
+extern const bool g_checkIndexHazard;
+bool rtArrayChainHoldsIndexSlow(Value arr);
+inline bool rtArrayChainHoldsIndex(Value arr) {
+    if (rtTls()->array_index_hazard == 0 && !g_checkIndexHazard) return false;
+    return rtArrayChainHoldsIndexSlow(arr);
+}
 
 // The same question and a scan of [0, length) for a hole, which is when a
 // method that MOVES elements (`shift`, `splice`, `reverse`, ...) must take the

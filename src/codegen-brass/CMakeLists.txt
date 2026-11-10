@@ -46,6 +46,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_static_slot.cpp
     il2mir/il_accessor_direct.cpp
     il2mir/il_array_method.cpp
+    il2mir/il_native_fast.cpp
     il2mir/il_array_sort.cpp
     il2mir/il_lowering_static_run.cpp
     il2mir/il_transition_run.cpp

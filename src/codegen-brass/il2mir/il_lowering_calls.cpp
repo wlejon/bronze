@@ -6,6 +6,7 @@
 #include "il_accessor_direct.h"
 #include "il_array_method.h"
 #include "il_is_array.h"
+#include "il_native_fast.h"
 #include "il/il.h"
 #include <brass/mir/module.hpp>
 #include <algorithm>
@@ -649,11 +650,37 @@ bool lower_call_instruction(
                     std::vector<Value*> args;
                     for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
                     Value* row = lowering->prop_lowering().method_row(b, inst_ast.ic_index);
+                    const auto rows = native_fast_rows(lowering, inst_ast);
+                    const auto ic = [&](Builder& bb) {
+                        return lower_method_call_ic(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
+                                                    args, site, row, poly_recv);
+                    };
+                    // A push the inline arm leaves (a full block) enters the
+                    // native at the site.
                     res_val = lower_array_method_inline(
                         lowering, b, arr, recv, args.empty() ? nullptr : args[0], [&](Builder& bb) {
-                            return lower_method_call_ic(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
-                                                        args, site, row, poly_recv);
+                            if (rows.empty()) return ic(bb);
+                            return lower_native_fast(lowering, bb, rows, recv, args, site, [&](Builder& sb) {
+                                return lower_method_stub_call(lowering, sb, recv, lowering->get_key_id(sb, inst_ast.index),
+                                                              args, site, row);
+                            });
                         });
+                    break;
+                }
+            }
+            if (const auto rows = can_direct ? std::vector<const NativeFastRow*>{} : native_fast_rows(lowering, inst_ast);
+                !rows.empty()) {
+                if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
+                    std::vector<Value*> args;
+                    for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
+                    Value* row = lowering->prop_lowering().method_row(b, inst_ast.ic_index);
+                    // The stub alone behind the arms: way 0 is a plain
+                    // object's DIRECT entry only where a program gives one
+                    // a member of a builtin's name.
+                    res_val = lower_native_fast(lowering, b, rows, recv, args, site, [&](Builder& bb) {
+                        return lower_method_stub_call(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
+                                                      args, site, row);
+                    });
                     break;
                 }
             }

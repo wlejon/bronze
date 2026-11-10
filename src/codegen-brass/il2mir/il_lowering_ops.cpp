@@ -9,6 +9,19 @@ namespace il2mir {
 
 namespace {
 
+// Which operand of a strict.eq is known to be a Number (an f64, or a box of
+// one), with the other a boxed Value or an f64: 0 or 1, else -1. An i32 is
+// left out, since an IL bool is held in one too.
+int strict_eq_number_side(IlLowering* lowering, const BronzeInstruction& inst, Value* op0, Value* op1) {
+    if (!lowering || inst.operands.size() != 2) return -1;
+    auto number = [&](int i, Value* v) { return v->type() == Type::f64() || lowering->is_number_value(inst.operands[i]); };
+    auto value = [](Value* v) { return v->type() == Type::i64() || v->type() == Type::f64(); };
+    if (!value(op0) || !value(op1)) return -1;
+    if (number(1, op1)) return 1;
+    if (number(0, op0)) return 0;
+    return -1;
+}
+
 // ToInt32 of the Value or double `v` (`is_f64`): inline for a Number
 // int32_convertible accepts, else inline bit-extraction for f64 (zero calls,
 // so live XMM values in enclosing loops are never spilled across a call) or
@@ -514,6 +527,15 @@ bool lower_ops_instruction(
                 res_val = b.build_eq(op0, op1);
             } else if (op0->type() == Type::i32() && op1->type() == Type::i32()) {
                 res_val = b.build_eq(op0, op1);
+            } else if (const int known = strict_eq_number_side(lowering, inst_ast, op0, op1); known >= 0) {
+                // One side a Number: the other is equal exactly when it is a
+                // Number of the same value. Every other value's bits are a
+                // NaN as a double (tags sit above the Number range), so one
+                // f64 compare answers both, NaN and -0 as IsStrictlyEqual has
+                // them.
+                Value* num = lowering->ensure_type(known == 0 ? op0 : op1, Type::f64(), b);
+                Value* other = lowering->ensure_type(known == 0 ? op1 : op0, Type::i64(), b);
+                res_val = b.build_eq(b.build_bitcast_f64_i64(other), num);
             } else {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
@@ -736,7 +758,8 @@ bool lower_ops_instruction(
                 // this loads (il_in_elem_fuse.cpp).
                 if (lowering->in_loads_element(inst_ast.result_id)) {
                     Value* elem = nullptr;
-                    res_val = lowering->prop_lowering().lower_has_index_array(b, get_opd(0), op1, &elem);
+                    res_val = lowering->prop_lowering().lower_has_index_array(
+                        b, get_opd(0), op1, &elem, lowering->in_element_flags(inst_ast.result_id));
                     lowering->note_in_element(inst_ast.result_id, elem);
                     return true;
                 }

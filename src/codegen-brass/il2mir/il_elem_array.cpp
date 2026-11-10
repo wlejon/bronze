@@ -90,7 +90,12 @@ Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
 // of the self-hosted Array builtins (src/selfhost) ask this once per index.
 // With `elem_out`, the slot the inline arm loaded is handed out too, the hole
 // on every other arm (il_in_elem_fuse.cpp).
-Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out) {
+//
+// `flags` are a fused read's (il_in_elem_fuse.cpp): with
+// kElemFlagArrayReceiver the receiver is an Array, and the tag and header
+// compares are left out.
+Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out,
+                                                     int64_t flags) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "in_a_" + std::to_string(fn->next_block_id());
@@ -110,13 +115,20 @@ Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Val
     }
 
     b.position_at_end(cur);
-    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    b.build_br_if(is_obj, bb_obj, bb_slow);
-
-    b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
-    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_array,
-                  bb_slow);
+    Value* ptr = nullptr;
+    if (elem_array_receiver(flags)) {
+        ptr = b.build_and(obj, iconst(b, kPayloadMask));
+        b.build_br(bb_obj);
+        b.position_at_end(bb_obj);
+        b.build_br(bb_array);
+    } else {
+        Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+        b.build_br_if(is_obj, bb_obj, bb_slow);
+        b.position_at_end(bb_obj);
+        ptr = b.build_and(obj, iconst(b, kPayloadMask));
+        b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_array,
+                      bb_slow);
+    }
 
     b.position_at_end(bb_array);
     Value* idx = nullptr;

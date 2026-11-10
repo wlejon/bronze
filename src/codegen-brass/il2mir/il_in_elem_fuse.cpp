@@ -18,6 +18,11 @@
 // and before the read in `B` is a box or a constant, which neither writes an
 // object nor collects, so the slot is still the element and its bits still
 // name the same object when the read uses them.
+//
+// The read's flags go to the `in` too: an `is.array` that dominates the read
+// dominates the `in` (the read's block is entered only from the `in`'s), and
+// both name one receiver, whose heap kind never changes, so the `in` skips
+// the tag and header compares the read skips.
 
 #include "il_lowering.h"
 #include <unordered_map>
@@ -50,6 +55,7 @@ bool quiet(const BronzeInstruction& inst) {
 void IlLowering::pair_in_element_reads(const BronzeFunction& fn_ast) {
     in_element_reads_.clear();
     in_elements_.clear();
+    in_element_flags_.clear();
 
     std::unordered_map<uint32_t, const BronzeBlock*> blocks;
     std::unordered_map<uint32_t, uint32_t> incoming;
@@ -97,6 +103,7 @@ void IlLowering::pair_in_element_reads(const BronzeFunction& fn_ast) {
             if (inst.op == BronzeOp::ElemGet && inst.operands.size() == 2 && inst.result_id != UINT32_MAX &&
                 inst.operands[0] == in.operands[1] && key_of(inst.operands[1]) == key_of(in.operands[0])) {
                 in_element_reads_[inst.result_id] = in.result_id;
+                in_element_flags_[in.result_id] = inst.imm_i64;
             }
             break;
         }
@@ -108,6 +115,11 @@ bool IlLowering::in_loads_element(uint32_t in_id) const {
         if (pair.second == in_id) return true;
     }
     return false;
+}
+
+int64_t IlLowering::in_element_flags(uint32_t in_id) const {
+    const auto it = in_element_flags_.find(in_id);
+    return it == in_element_flags_.end() ? 0 : it->second;
 }
 
 Value* IlLowering::in_element_for(uint32_t get_id) const {

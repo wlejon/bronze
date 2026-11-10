@@ -137,25 +137,21 @@ namespace {
 
 bool chainHoldsIndexLatched(Value arr);
 
+}  // namespace
+
 // BRONZE_CHECK_INDEX_HAZARD=1: while the hazard is clear, the latch's scan is
 // run anyway and a chain it finds holding an index is a fatal error — the
 // test that every way an index reaches a prototype trips the hazard
-// (object.h), which generated code relies on without asking.
-bool checkHazard() {
-    static const bool on = [] {
-        const char* env = std::getenv("BRONZE_CHECK_INDEX_HAZARD");
-        return env && env[0] && env[0] != '0';
-    }();
-    return on;
-}
+// (object.h), which generated code relies on without asking. Read once at
+// load: the inline test (rt_property.h) asks it beside the hazard word.
+const bool g_checkIndexHazard = [] {
+    const char* env = std::getenv("BRONZE_CHECK_INDEX_HAZARD");
+    return env && env[0] && env[0] != '0';
+}();
 
-}  // namespace
-
-bool rtArrayChainHoldsIndex(Value arr) {
-    // The hazard clear means no prototype anywhere holds an index, so no chain
-    // does: one load, and the answer generated code also acts on.
-    if (bronze_tls_block_addr()->array_index_hazard == 0) {
-        if (BRONZE_UNLIKELY(checkHazard()) && chainHoldsIndexLatched(arr)) {
+bool rtArrayChainHoldsIndexSlow(Value arr) {
+    if (rtTls()->array_index_hazard == 0) {
+        if (BRONZE_UNLIKELY(g_checkIndexHazard) && chainHoldsIndexLatched(arr)) {
             fatal("internal: an array's chain holds an index but the array index hazard is clear");
         }
         return false;

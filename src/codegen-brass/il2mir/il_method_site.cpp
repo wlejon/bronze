@@ -347,13 +347,20 @@ Value* lower_method_fn_recv(IlLowering* lowering, Builder& b, Value* recv, const
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site, Value* row, bool way1) {
-    Value* argv = lowering->stage_argv(b, boxed_args);
-    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
     // The inline arm calls through a register, which a block with a handler
     // cannot invoke, and is only size in code that runs once.
     if (direct_entry_here(lowering)) {
+        Value* argv = lowering->stage_argv(b, boxed_args);
+        const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
         return lower_method_way0_direct(lowering, b, recv, key_id, argc, argv, site, row, way1);
     }
+    return lower_method_stub_call(lowering, b, recv, key_id, boxed_args, site, row);
+}
+
+Value* lower_method_stub_call(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
+                              const std::vector<Value*>& boxed_args, Value* site, Value* row) {
+    Value* argv = lowering->stage_argv(b, boxed_args);
+    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
     return b.build_call(kMethodCallStub, Type::i64(),
                         {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site,
                          row ? row : b.build_iconst_i64(0)});

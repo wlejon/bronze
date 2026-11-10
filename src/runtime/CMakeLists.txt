@@ -78,6 +78,7 @@ bronze_add_module(runtime
         builtin_array_sort.cpp
         builtin_array_iterator.cpp
         builtin_string.cpp
+        builtin_string_search.cpp
         unicode_case.cpp
         unicode_case_data_simple.cpp
         unicode_case_data_full.cpp

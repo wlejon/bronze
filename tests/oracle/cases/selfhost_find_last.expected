@@ -1,0 +1,39 @@
+plain 1 "1,4"
+plain 2 "2,3"
+plain 3 "3,2"
+plain 4 ",-1"
+plain 1 "1,4"
+plain 2 "2,3"
+plain 3 "3,2"
+plain 4 ",-1"
+plain 1 "1,4"
+plain 2 "2,3"
+plain 3 "3,2"
+plain 4 ",-1"
+empty ",-1"
+empty ",-1"
+args undefined
+seen "30@2/3:ctx 20@1/3:ctx 10@0/3:ctx"
+thisArg undefined strict 0
+holes "1 undefined"
+holes chain "inherited"
+array-like 2
+string "y"
+boxed "6,1"
+subclass "4,2"
+proxy "8,2"
+length getter 1
+shrink 2
+grow "-1 4"
+not callable "TypeError: undefined is not a function"
+not callable "TypeError: object null is not a function"
+not callable "TypeError: number 1 is not a function"
+not callable "TypeError: string \"f\" is not a function"
+not callable "TypeError: object is not a function"
+null this "TypeError"
+callback throw "cb true"
+name/length "findLast 1 findLastIndex 1"
+toString true
+no prototype true
+construct "TypeError"
+hot 142323

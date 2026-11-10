@@ -3,7 +3,7 @@
 Builtins written in JavaScript and compiled by bronze itself, in place of C++
 in `src/runtime`. `builtins.js` is the library; today it holds
 `Array.prototype.{forEach, map, filter, some, every, find, findIndex,
-reduce}`. There is one implementation of each: the C++ bodies they replace are
+findLast, findLastIndex, reduce}`. There is one implementation of each: the C++ bodies they replace are
 deleted, and nothing selects between the two. A builtin moves here only when
 its JavaScript is at least as fast as the C++ it replaces: `indexOf` (a dense
 scan with `===` per element) and `Object.assign` (a keyed store per key) were

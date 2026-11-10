@@ -213,6 +213,10 @@ public:
     bool in_loads_element(uint32_t in_id) const;
     void note_in_element(uint32_t in_id, Value* elem) { in_elements_[in_id] = elem; }
     Value* in_element_for(uint32_t get_id) const;
+    // The paired read's element flags (il_pin.h): an Array receiver proven
+    // for the read is one for the `in` too, whose edge it is entered by and
+    // whose operand it reads (a heap kind never changes).
+    int64_t in_element_flags(uint32_t in_id) const;
 
     // 0/1 values (il_lowering_bool.cpp): a result the dynamic compare and
     // ToBoolean lowerings merge from comparisons, noted where it is made, so
@@ -449,6 +453,7 @@ private:
     // id, and each lowered `in`'s element (il_in_elem_fuse.cpp).
     std::unordered_map<uint32_t, uint32_t> in_element_reads_;
     std::unordered_map<uint32_t, Value*> in_elements_;
+    std::unordered_map<uint32_t, int64_t> in_element_flags_;
     void pair_in_element_reads(const BronzeFunction& fn_ast);
 };
 
