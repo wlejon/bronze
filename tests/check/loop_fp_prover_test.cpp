@@ -415,6 +415,9 @@ TEST_CASE("IEEE-754 double semantics: NaN, Infinity, -0, division, and Math buil
         )";
         ProveEquivReport repNZ = proveSourceEquiv(negZeroA, negZeroB, "isNegZero");
         REQUIRE(repNZ.functions.size() == 1);
+        // What an Unknown gives as its reason: this proof has come back
+        // Unknown on the macOS runners and nowhere else.
+        INFO(repNZ.functions[0].detail);
         CHECK(repNZ.functions[0].status == EquivStatus::Equivalent);
 
         const char* minA = R"(
