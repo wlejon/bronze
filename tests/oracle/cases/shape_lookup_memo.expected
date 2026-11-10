@@ -1,0 +1,21 @@
+0,1,,,false,false,true
+1,2,odd,,true,false,true
+2,3,,two,false,true,true
+3,4,odd,two,true,true,true
+4,5,,,false,false,true
+5,6,odd,,true,false,true
+6,7,,two,false,true,true
+7,8,odd,two,true,true,true
+nonwritable 3,4,odd,two,true,true,false 4
+accessor getter a,b,c
+frozen 1,2,odd,,true,false,false undefined true
+sealed 7,3,,two,false,true,true
+deleted undefined false b,c
+readded back b,c,a
+runtime keys odd,4,3 true,true,true
+long key 1 true undefined
+before undefined false
+after now true
+getter got
+numeric zero ten undefined sci undefined 0,10,1e3
+many 4504500

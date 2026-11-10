@@ -108,21 +108,12 @@ void PropertyLoweringHelper::lower_elem_set_array(Builder& b, Value* obj, Value*
     emit_elem_index_guard(b, index, idx, ok, (flags & bronze::il::kElemFlagProvenIntegralIndex) != 0);
     b.build_br_if(ok, bb_array, bb_slow);
 
-    // In bounds of length and capacity, and no properties object.
+    // An element in bounds or the append at `length`, and no properties
+    // object (il_number_array.cpp, branch_on_array_store).
     b.position_at_end(bb_array);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* slot = b.build_add(idx, head);
-    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    Value* in_bounds = b.build_and(b.build_ult(idx, length), b.build_ult(slot, capacity));
-    BasicBlock* bb_slot = append_block_keeping_position(b, prefix + "_slot");
-    b.build_br_if(b.build_and(in_bounds, no_props), bb_slot, bb_slow);
-
-    b.position_at_end(bb_slot);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    branch_on_hole_store(b, block, slot, bb_store, bb_slow, prefix);
+    Value* block = nullptr;
+    Value* slot = nullptr;
+    branch_on_array_store(b, ptr, idx, bb_store, bb_slow, prefix, block, slot);
 
     b.position_at_end(bb_store);
     with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val),

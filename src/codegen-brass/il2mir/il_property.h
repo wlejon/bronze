@@ -464,6 +464,12 @@ public:
     // hazard is clear and to `slow` otherwise.
     void branch_on_hole_store(Builder& b, Value* block, Value* slot, BasicBlock* store, BasicBlock* slow,
                               const std::string& prefix);
+    // The Array arm of an inline element store, from the header loads to
+    // `store` (il_number_array.cpp): emitted where `ptr` is known an Array and
+    // `idx` (an i64) a valid index. Sets the elements block and the slot the
+    // store writes; every refusal branches to `slow`.
+    void branch_on_array_store(Builder& b, Value* ptr, Value* idx, BasicBlock* store, BasicBlock* slow,
+                               const std::string& prefix, Value*& out_block, Value*& out_slot);
     // Whether `val` is a Number in double form by construction: an f64, a box
     // of one, or a constant at or below the Number range.
     bool is_known_number(Value* val) const;

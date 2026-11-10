@@ -68,6 +68,18 @@ public:
         return isSymbol() ? reinterpret_cast<SymbolHeader*>(ptr_) : nullptr;
     }
 
+    // The key's address, and whether that address names it for good: a symbol
+    // (always in the arena) or an arena string (StringHeader::kArenaFlag). An
+    // immortal key's address can never come to name another key while the
+    // thread's arena lives, so a cache may key on it; a heap string's can.
+    const void* identity() const noexcept { return ptr_; }
+    bool immortal() const noexcept {
+        if (!ptr_) return false;
+        if (ptr_->tag == static_cast<uint16_t>(Tag::Symbol)) return true;
+        return ptr_->tag == static_cast<uint16_t>(Tag::String) &&
+               reinterpret_cast<const StringHeader*>(ptr_)->isArena();
+    }
+
     Value toValue() const noexcept {
         if (isSymbol()) return Value::fromSymbol(ptr_);
         if (isString()) return Value::fromString(ptr_);

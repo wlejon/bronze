@@ -1,0 +1,35 @@
+plain "a" true true true
+plain "1" true true true
+plain 1 true true true
+plain "g" true true true
+plain "hidden" true false true
+plain "missing" false false false
+plain "toString" false false true
+plain Symbol(s) true true true
+plain Symbol(s) false false false
+plain "__proto__" false false true
+built idden true true
+true,true,true,true,true false
+wrapper "0" true true true
+wrapper "2" true true true
+wrapper "3" false false false
+wrapper "length" true false true
+wrapper 1 true true true
+wrapper "x" false false false
+array false true true false false true
+function true false true
+null proto true true false
+frozen true true true
+dict false true true false true true
+dict nonenum false true
+class true false true true
+proxy true true false true
+proxy chain true true false
+gopd t|has t|has u|gopd t|has t|has zz
+round 0 true true true true
+round 1 false false false true
+round 2 true false true true
+true false
+true true
+TypeError
+TypeError

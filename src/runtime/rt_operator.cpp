@@ -835,6 +835,17 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     // throw rather than answer. A symbol is arena-allocated and never moves
     // (runtime/symbol.h), so holding these bits across the calls below is safe.
     if (Value(keyBits).isSymbol()) return hasSymbolProperty(objRoot, Value(keyBits));
+    // A STRING key on a plain object that is no String wrapper: the key is
+    // already its own ToPropertyKey, and the Plain arm below would only copy
+    // its characters out and back into a fresh string to make the same walk.
+    // The walk compares keys by content and allocates nothing before it
+    // returns (a proxy link hands the key on as a value, rooted there).
+    if (Value(keyBits).isString() && objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+        if (Value data; !rtStringWrapperData(objRoot.get(), data)) {
+            return plainObjectHas(objRoot.get().asObject<ObjectHeader>(),
+                                  PropertyKey::forString(Value(keyBits).asString<StringHeader>()));
+        }
+    }
     // keyText allocates a string, so every header below is derived afterwards,
     // from the root the collector updates.
     return hasNamedProperty(objRoot, keyText(Value(keyBits)));

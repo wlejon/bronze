@@ -25,6 +25,15 @@ struct StringHeader {
     // field nothing else writes — `Heap::allocate` zeroes it and only a
     // `Tag::Object` ever spends it, on a HeapKind.
     static constexpr uint16_t kBuilderFlag = 1U << 0;
+    // An ARENA string (the *InArena constructors and the interning pair below):
+    // immortal and never moved, so its address is its identity for as long as
+    // the thread's arena lives — which is what lets a cache key on it
+    // (Shape::lookupProperty's memo). In the same word as kBuilderFlag for the
+    // same reason; a heap string never carries it, since only the arena's
+    // constructors set it and nothing copies an arena string's header onto
+    // the heap.
+    static constexpr uint16_t kArenaFlag = 1U << 1;
+    bool isArena() const noexcept { return (header.flags & kArenaFlag) != 0; }
 
     static StringHeader* createLatin1(Heap& heap, const char* str, uint32_t len);
     static StringHeader* createUTF16(Heap& heap, const uint16_t* str, uint32_t len);

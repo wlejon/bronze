@@ -348,8 +348,35 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
     }
 }
 
+// The common receiver of both members, answered without the general path's
+// key interning and character copy: a PLAIN object that is no String wrapper,
+// asked about a key that is already a property key (a string or a symbol, so
+// 7.1.19 ToPropertyKey is the identity and runs no user code). Its own
+// properties are exactly its shape's (the Plain arm of ownProperty above,
+// minus the wrapper's synthesised ones), and a shape lookup compares keys by
+// content, so an unintern'd string finds what its interned copy would.
+// Nothing here allocates. Returns false when the receiver or key is not that
+// case, leaving `found` unset.
+static bool plainOwnLookup(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bool& found,
+                           PropertyInfo& info) {
+    if (argc == 0) return false;
+    const Value self(thisBits);
+    const Value key(argv[0]);
+    if (!self.isObject() || (!key.isString() && !key.isSymbol())) return false;
+    auto* obj = self.asObject<ObjectHeader>();
+    if (obj->header.flags != HeapKind::Plain || obj->shape == nullptr) return false;
+    if (Value data; rtStringWrapperData(self, data)) return false;  // its characters: the general path
+    const PropertyKey name = key.isString() ? PropertyKey::forString(key.asString<StringHeader>())
+                                            : PropertyKey::fromValue(key);
+    found = obj->shape->lookupProperty(name, info);
+    return true;
+}
+
 uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
                                    const uint64_t* argv) {
+    bool hit = false;
+    PropertyInfo hitInfo;
+    if (plainOwnLookup(thisBits, argc, argv, hit, hitInfo)) return Value::fromBool(hit).rawBits();
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireNonNullish(self.get(), "hasOwnProperty")) {
@@ -364,6 +391,11 @@ uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
 // non-enumerable) answers false where `hasOwnProperty` answers true.
 uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t argc,
                                          const uint64_t* argv) {
+    bool hit = false;
+    PropertyInfo hitInfo;
+    if (plainOwnLookup(thisBits, argc, argv, hit, hitInfo)) {
+        return Value::fromBool(hit && hitInfo.enumerable).rawBits();
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireNonNullish(self.get(), "propertyIsEnumerable")) {

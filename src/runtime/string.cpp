@@ -426,6 +426,7 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     // still claimed to be an appendable builder would offer room that this
     // allocation does not have.
     out->sealBuilder();
+    out->header.flags = static_cast<uint16_t>(out->header.flags | kArenaFlag);
     table->strings.insert(out);
     return out;
 }
@@ -446,7 +447,7 @@ StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const cha
     void* mem = arena.allocate(total, alignof(StringHeader));
     auto* hdr = static_cast<StringHeader*>(mem);
     hdr->header.tag = static_cast<uint16_t>(Tag::String);
-    hdr->header.flags = 0;
+    hdr->header.flags = kArenaFlag;
     hdr->header.size = static_cast<uint32_t>(total);
     hdr->length = len;
     hdr->flags = 0;
@@ -463,7 +464,7 @@ StringHeader* StringHeader::createUTF16InArena(NonMovingArena& arena, const uint
     void* mem = arena.allocate(total, alignof(StringHeader));
     auto* hdr = static_cast<StringHeader*>(mem);
     hdr->header.tag = static_cast<uint16_t>(Tag::String);
-    hdr->header.flags = 0;
+    hdr->header.flags = kArenaFlag;
     hdr->header.size = static_cast<uint32_t>(total);
     hdr->length = len;
     hdr->flags = kUTF16Flag;

@@ -207,6 +207,58 @@ void PropertyLoweringHelper::branch_on_hole_store(Builder& b, Value* block, Valu
     b.build_br_if(index_hazard_clear(b), store, slow);
 }
 
+// The two stores an Array takes inline, both what the helper would do
+// (rt_prop_array.cpp rtArrayIndexSet):
+//  - an index below `length`: its own element, or a hole while the hazard is
+//    clear (branch_on_hole_store);
+//  - the APPEND, an index equal to `length` inside the block, while the hazard
+//    is clear. The array owns no such element, so 10.1.9.2 asks the chain,
+//    which with the hazard clear holds no index anywhere; the write is then
+//    CreateDataProperty on an extensible array (no properties object means no
+//    integrity level, runtime/integrity.h) and moves `length` by one — what
+//    the inline push does (il_array_method.cpp), for `a[a.length] = v` and the
+//    `a[n++] = v` fill loops that spell a push that way. The slot past
+//    `length` is a hole (the block is hole-filled there), so nothing is
+//    overwritten, and `length` is stored before the element with no call or
+//    allocation between them.
+// Both need no properties object: frozen, sealed and accessor elements live
+// behind it.
+void PropertyLoweringHelper::branch_on_array_store(Builder& b, Value* ptr, Value* idx, BasicBlock* store,
+                                                   BasicBlock* slow, const std::string& prefix, Value*& out_block,
+                                                   Value*& out_slot) {
+    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* slot = b.build_add(idx, head);
+    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    Value* in_bounds = b.build_and(b.build_ult(idx, length), b.build_ult(slot, capacity));
+    // The block word is loaded here, where it dominates both stores; with no
+    // properties object an Array always has one once its capacity is nonzero,
+    // and a capacity of zero passes neither bound below.
+    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    BasicBlock* bb_slot = append_block_keeping_position(b, prefix + "_array_slot");
+    BasicBlock* bb_not_own = append_block_keeping_position(b, prefix + "_array_notown");
+    BasicBlock* bb_append = append_block_keeping_position(b, prefix + "_array_append");
+    b.build_br_if(b.build_and(in_bounds, no_props), bb_slot, bb_not_own);
+
+    b.position_at_end(bb_slot);
+    branch_on_hole_store(b, block, slot, store, slow, prefix);
+
+    // The hazard word folds into the capacity bound, as the push's does: a
+    // slot OR'd with it is below no capacity once it is set.
+    b.position_at_end(bb_not_own);
+    Value* at_end = b.build_eq(idx, length);
+    Value* fits = b.build_ult(b.build_or(slot, index_hazard_word(b)), capacity);
+    b.build_br_if(b.build_and(b.build_and(at_end, fits), no_props), bb_append, slow);
+
+    b.position_at_end(bb_append);
+    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(b.build_add(idx, iconst(b, 1))));
+    b.build_br(store);
+    out_block = block;
+    out_slot = slot;
+}
+
 bool PropertyLoweringHelper::is_known_number(Value* val) const {
     if (!val) return false;
     if (val->type() == Type::f64()) return true;

@@ -1,15 +1,12 @@
 // The WRITE half of the property path: `o.k = v` and `o[i] = v`, plus the three
 // DEFINITION forms a class body and an object literal lower to.
 //
-// The seam is the one rt_prop_primitive.cpp already took — a receiver kind and
-// not a line count — read from the other side. A read asks every receiver the
-// same question and each kind answers it from different storage; a write asks
-// whether the receiver can hold the property AT ALL, and for some kinds the
-// answer is no. So part of this file is refusals, one per storage story: a
-// regular expression's named writes have nowhere to go, a module namespace is
-// frozen. None of them may be quietly discarded — a discarded write leaves the
-// program believing it stored something, which is the silent-wrong-answer shape
-// the house rules rank below process death.
+// The seam is rt_prop_primitive.cpp's (a receiver kind, not a line count) read
+// from the other side: a write asks whether the receiver can hold the property
+// AT ALL, and for some kinds the answer is no. So part of this file is refusals
+// (a regular expression's named writes, a frozen module namespace), never quiet
+// discards: a discarded write is the silent wrong answer the house rules rank
+// below process death.
 //
 // An ARRAY is the receiver that stopped being one of them. It is an object, so
 // `a.foo = 1` and `a.length = 0` are ordinary JavaScript; both arms live in
@@ -20,15 +17,12 @@
 // special, and 10.4.5.5 answers those (an element store, or a discard for a
 // canonical numeric string that is no valid index) before the tail is reached.
 //
-// The definition forms are here rather than beside the literal that spells
-// them because what separates each from an ordinary assignment is an ATTRIBUTE
-// on the write: a class method is `enumerable: false` (15.7.14) and a
-// DefineOwnProperty rather than a Set, so a base class's `set m(v)` cannot
-// swallow a derived class's `m() {}`. That is a fact about the write path.
+// The definition forms are here because what separates each from an assignment
+// is an ATTRIBUTE of the write: a class method is `enumerable: false` (15.7.14)
+// and a DefineOwnProperty, so a base's `set m(v)` cannot swallow `m() {}`.
 //
-// The key decoding both halves share — is this key an element index, what
-// string does a computed key name — stays in rt_prop.cpp and is reached through
-// rt_property.h, because a key means the same thing in either direction.
+// The key decoding both halves share stays in rt_prop.cpp (via rt_property.h):
+// a key means the same thing in either direction.
 
 #include <string>
 
@@ -693,13 +687,19 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                 auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
                 // A hole is no own element, so a store into one asks the chain
                 // (rtArrayIndexSet below) unless the hazard says no chain can
-                // answer (object.h).
+                // answer (object.h). So may an append at `length`: hazard clear,
+                // extensible, in block = setElem's arm (branch_on_array_store).
+                const bool clear = rtTls()->array_index_hazard == 0;
                 if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject() &&
-                    (rtTls()->array_index_hazard == 0 || !arr->elementsKeepingNumbers()[idx].isHole())) {
+                    (clear || !arr->elementsKeepingNumbers()[idx].isHole())) {
                     // In bounds, so NUMBERS survives a Number (runtime/array.h).
                     if (valBits > kNumberMaxBits) arr->forgetNumbers();
                     arr->elementsKeepingNumbers()[idx] = Value(valBits);
                     return;
+                }
+                if (clear && idx == arr->length && arr->head_offset + idx < arr->capacity &&
+                    !arr->properties.isObject()) {
+                    return arr->setElem(rtHeap(), idx, Value(valBits));
                 }
             } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {
                 auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);

@@ -348,35 +348,82 @@ std::vector<PropertyKey> Shape::ownKeysInInsertionOrder(bool enumerableOnly) con
     return keys;
 }
 
+// THE LOOKUP MEMO. A transition-tree shape's answer for a key never changes:
+// a node's key, slot and four attributes are fixed when the node is made (a
+// representation change or a prototype's private chain builds NEW nodes,
+// withSlotBoxed above), and nodes live in the arena for the thread's life. So
+// (shape, key) -> answer is a pure function, and a lookup that misses every IC
+// — the runtime's own property paths, `in`, hasOwnProperty, a computed store
+// adding a key — need not walk a chain as long as the object's key count each
+// time it asks. The memo is direct-mapped and per thread (shapes are), and it
+// remembers absences as well as hits: an add first asks whether the key is
+// there.
+//
+// The key half is compared by ADDRESS, so only an IMMORTAL key is memoized
+// (PropertyKey::immortal: a symbol, or an arena string). A heap string's
+// address can be reused by another string after a collection, and a memo
+// keyed on it could answer for the wrong name; such a lookup walks, as before.
+// A dictionary shape is mutable and is never memoized. The arena's teardown
+// (rtTeardownThreadState) empties the memo, since its addresses go with it.
+namespace {
+struct LookupMemo {
+    const Shape* shape;
+    const void* key;
+    PropertyInfo info;
+    bool found;
+};
+constexpr uint32_t kLookupMemoBits = 11;
+thread_local LookupMemo g_lookupMemo[1u << kLookupMemoBits];
+
+inline LookupMemo& lookupMemoFor(const Shape* shape, const void* key) noexcept {
+    const uint64_t h = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) * 0x9E3779B97F4A7C15ULL +
+                       static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)) * 0xC2B2AE3D27D4EB4FULL;
+    return g_lookupMemo[h >> (64 - kLookupMemoBits)];
+}
+}  // namespace
+
+void Shape::forgetLookupMemo() noexcept {
+    for (LookupMemo& m : g_lookupMemo) m = LookupMemo{};
+}
+
 bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
     if (!name.valid()) return false;
 
-    if (isDictionary()) {
-        const DictEntry* e = dict->find(name);
-        if (!e) return false;
-        out.slot = e->slot;
-        out.enumerable = e->enumerable;
-        out.accessor = e->accessor;
-        out.writable = e->writable;
-        out.configurable = e->configurable;
-        out.repr = SlotRepr::Boxed;
-        return true;
+    if (!isDictionary()) {
+        const bool memoize = name.immortal();
+        LookupMemo* memo = memoize ? &lookupMemoFor(this, name.identity()) : nullptr;
+        if (memo && memo->shape == this && memo->key == name.identity()) {
+            if (memo->found) out = memo->info;
+            return memo->found;
+        }
+        bool found = false;
+        PropertyInfo info;
+        for (const Shape* curr = this; curr != nullptr; curr = curr->parent) {
+            if (curr->key.matches(name)) {
+                info.slot = curr->slot_index;
+                info.enumerable = curr->enumerable;
+                info.accessor = curr->accessor;
+                info.writable = curr->writable;
+                info.configurable = curr->configurable;
+                info.repr = curr->repr;
+                found = true;
+                break;
+            }
+        }
+        if (memo) *memo = LookupMemo{this, name.identity(), info, found};
+        if (found) out = info;
+        return found;
     }
 
-    const Shape* curr = this;
-    while (curr != nullptr) {
-        if (curr->key.matches(name)) {
-            out.slot = curr->slot_index;
-            out.enumerable = curr->enumerable;
-            out.accessor = curr->accessor;
-            out.writable = curr->writable;
-            out.configurable = curr->configurable;
-            out.repr = curr->repr;
-            return true;
-        }
-        curr = curr->parent;
-    }
-    return false;
+    const DictEntry* e = dict->find(name);
+    if (!e) return false;
+    out.slot = e->slot;
+    out.enumerable = e->enumerable;
+    out.accessor = e->accessor;
+    out.writable = e->writable;
+    out.configurable = e->configurable;
+    out.repr = SlotRepr::Boxed;
+    return true;
 }
 
 bool Shape::lookupProperty(PropertyKey name, uint32_t& out_slot) const noexcept {

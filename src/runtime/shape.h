@@ -373,6 +373,9 @@ public:
     // unit tests that pin the transition tree.
     bool lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept;
     bool lookupProperty(PropertyKey name, uint32_t& out_slot) const noexcept;
+    // The thread's lookup memo (shape.cpp), emptied when the arena that owns
+    // every shape and immortal key it names is destroyed.
+    static void forgetLookupMemo() noexcept;
 
     // Own property names in INSERTION order. For a transition-tree shape the
     // chain already IS that order, newest first, so this walks to the root and

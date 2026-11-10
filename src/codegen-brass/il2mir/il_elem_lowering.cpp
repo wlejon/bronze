@@ -475,7 +475,9 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
 // The inline stores are exactly the helper's own fast path
 // (rt_prop_write.cpp bronze_elem_set), so they decide nothing it does not:
 //
-//  - An Array element at an index below both its length and capacity, on an
+//  - An Array element at an index below both its length and capacity, or the
+//    append at `length` inside the capacity while the array index hazard is
+//    clear (branch_on_array_store), on an
 //    array with no named-properties object. Frozen, sealed and non-writable
 //    elements and accessor elements all live behind that object, so an array
 //    without one has none of them. The store is followed by the write barrier
@@ -532,22 +534,12 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check);
 
-    // An Array: in bounds of length and capacity, and no properties object.
+    // An Array: an element in bounds or the append at `length`, and no
+    // properties object (il_number_array.cpp, branch_on_array_store).
     b.position_at_end(bb_array);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* slot = b.build_add(idx.i64, head);
-    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
-    BasicBlock* bb_array_slot = append_block_keeping_position(b, prefix + "_array_slot");
-    b.build_br_if(b.build_and(in_bounds, no_props), bb_array_slot, bb_slow);
-
-    // A hole by the hole rule (il_number_array.cpp).
-    b.position_at_end(bb_array_slot);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    branch_on_hole_store(b, block, slot, bb_array_store, bb_slow, prefix);
+    Value* block = nullptr;
+    Value* slot = nullptr;
+    branch_on_array_store(b, ptr, idx.i64, bb_array_store, bb_slow, prefix, block, slot);
 
     b.position_at_end(bb_array_store);
     with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
@@ -670,19 +662,9 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
 
         b.position_at_end(bb_array);
-        Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-        Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-        Value* slot = b.build_add(idx.i64, head);
-        Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-        Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-        Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
-        BasicBlock* bb_array_slot = append_block_keeping_position(b, prefix + "_array_slot");
-        b.build_br_if(b.build_and(in_bounds, no_props), bb_array_slot, bb_slow);
-
-        b.position_at_end(bb_array_slot);
-        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-        branch_on_hole_store(b, block, slot, bb_array_store, bb_slow, prefix);
+        Value* block = nullptr;
+        Value* slot = nullptr;
+        branch_on_array_store(b, ptr, idx.i64, bb_array_store, bb_slow, prefix, block, slot);
 
         b.position_at_end(bb_array_store);
         // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
