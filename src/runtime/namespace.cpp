@@ -212,10 +212,10 @@ uint64_t bronze_module_namespace(uint64_t sourceBits) {
     }
     Rooted<Value> source{sourceVal};
 
-    // Phase one reads the shape only. The keys are arena-interned and immortal,
-    // so they survive the allocation in phase two; the getters are ordinary
+    // Phase one reads the shape only. The list roots the keys, so they survive
+    // the allocation in phase two; the getters are ordinary
     // heap values and are therefore read AFTER it, off the re-derived object.
-    std::vector<StringHeader*> keys =
+    StringKeyList keys =
         rtOwnStringKeysOrdered(source.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
     // 10.4.6.2, and the whole reason this object exists rather than the literal.
     std::sort(keys.begin(), keys.end(),

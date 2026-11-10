@@ -50,7 +50,7 @@ bool rtArrayOwnNamed(Value arrVal, PropertyKey name, PropertyInfo& out) {
     return holder->shape && holder->shape->lookupProperty(name, out);
 }
 
-std::vector<StringHeader*> rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly) {
+StringKeyList rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly) {
     const Value props = arrVal.asObject<ArrayHeader>()->properties;
     if (!props.isObject()) return {};
     return rtOwnStringKeysOrdered(props.asObject<ObjectHeader>(), enumerableOnly);

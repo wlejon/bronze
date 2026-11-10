@@ -406,7 +406,7 @@ void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value) {
         // A lazy name's accessor (host_globals.h) gives way to the value:
         // setProp will not turn an accessor into a data property.
         {
-            const PropertyKey pkey = runtime::rtInternPropertyKey(key.get());
+            const PropertyKey pkey = PropertyKey::fromValue(key.get());
             auto* obj = glob.get().asObject<ObjectHeader>();
             PropertyInfo own;
             if (obj->shape && obj->shape->lookupProperty(pkey, own) && own.accessor) {

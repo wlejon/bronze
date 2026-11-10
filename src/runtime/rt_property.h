@@ -25,11 +25,11 @@ namespace bronze::runtime {
 
 // A plain object's own keys in ECMA-262 6.1.7.1 OwnPropertyKeys order:
 // integer-like keys ascending, then the remaining STRING keys in insertion
-// order, then the SYMBOL keys in insertion order. The keys are arena-interned
-// or arena-allocated, so they are immortal and non-moving and stay valid across
-// the allocations a caller makes while walking them.
-std::vector<PropertyKey> rtOwnKeysOrdered(const struct ObjectHeader* obj,
-                                          bool enumerableOnly = true);
+// order, then the SYMBOL keys in insertion order. The list roots its keys
+// (key_list.h): a transition node's are arena strings, but a dictionary's are
+// heap strings that live only while their entries do, and a getter or a trap
+// the caller runs while walking the list may delete them.
+PropertyKeyList rtOwnKeysOrdered(const struct ObjectHeader* obj, bool enumerableOnly = true);
 
 // The same walk with the symbol keys dropped, which is what every ENUMERATION
 // caller wants: `Object.keys`, `Object.entries`, `for-in`, `JSON.stringify` and
@@ -37,8 +37,7 @@ std::vector<PropertyKey> rtOwnKeysOrdered(const struct ObjectHeader* obj,
 // EnumerableOwnProperties takes `key-of-type-String` as a filter). Its own
 // function rather than a flag, so that a caller reading the result as strings
 // cannot have got a symbol.
-std::vector<StringHeader*> rtOwnStringKeysOrdered(const struct ObjectHeader* obj,
-                                                  bool enumerableOnly = true);
+StringKeyList rtOwnStringKeysOrdered(const struct ObjectHeader* obj, bool enumerableOnly = true);
 
 // An arena-interned key as an ordinary JS value — the arena object ITSELF,
 // not a copy. A JS string has no observable identity (`===` is content
@@ -89,12 +88,12 @@ void rtCheckStringMember(const std::string& key);
 // name is the hard error above.
 bool rtArrayMemberUnimplemented(const std::string& key);
 
-// ToPropertyKey (7.1.19) into the immortal arena form a DictEntry can hold, and
-// own-property existence over it. Both are shared by the `Object` statics and
-// the `Object.prototype` methods, which are the same operations with the
+// ToPropertyKey (7.1.19) as a string or symbol Value, which the caller roots,
+// and own-property existence over it. Both are shared by the `Object` statics
+// and the `Object.prototype` methods, which are the same operations with the
 // receiver in a different position (20.1.2.13 and 20.1.3.2) — writing either
 // twice is how the two would come to disagree about a dictionary-mode object.
-PropertyKey rtInternPropertyKey(Value keyVal);
+Value rtPropertyKeyValue(Value keyVal);
 bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key);
 
 // 7.3.7 CreateDataPropertyOrThrow (rt_prop_define.cpp): the store of every
@@ -267,7 +266,7 @@ bool rtArrayOwnNamed(Value arrVal, PropertyKey name, PropertyInfo& out);
 // This array's own named keys in insertion order. They come AFTER the indices
 // in every own-key answer, which is 6.1.7.1's order and needs no sort here: an
 // integer-like key names an element and can never reach the named storage.
-std::vector<StringHeader*> rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly = true);
+StringKeyList rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly = true);
 
 // `a.foo = v`, creating the side object on first use. Allocates and may run an
 // inherited setter, so the array arrives through a root.

@@ -1,0 +1,35 @@
+size 39 1 39 undefined
+in true false false
+own true true false
+enum true false
+same first first 1
+same2 second 1
+forin ["0","2","10","4294967294","w_1","","01","-1"]
+keys ["0","2","10","4294967294","w_1","","01","-1"]
+names ["0","2","10","4294967294","w_1","","01","-1"]
+syms 1 symbol
+empty empty true
+long 1 2 1 10
+long2 false 2
+utf16 latin1 pi
+entries [["e_0",0],["e_1",10],["e_2",20],["e_3",30],["e_4",40]]
+values [0,10,20,30,40]
+assign {"e_0":0,"e_1":10,"e_2":20,"e_3":30,"e_4":40}
+spread {"e_0":0,"e_1":10,"e_2":20,"e_3":30,"e_4":40,"extra":1}
+rest 0 {"e_1":10,"e_2":20,"e_3":30,"e_4":40}
+json {"e_0":0,"e_1":10,"e_2":20,"e_3":30,"e_4":40} 61
+fromEntries {"e_0!":0,"e_1!":10,"e_2!":20,"e_3!":30,"e_4!":40}
+define fixed got 77 e_0,e_1,e_2,e_3,e_4,acc_1
+ro fixed {"value":"fixed","writable":false,"enumerable":false,"configurable":false}
+descs e_0,e_1,e_2,e_3,e_4,ro_1,acc_1 function 20
+defineProperties 1 2 false
+forin-delete f_0=0,f_1=1,f_2=2,f_3=3,f_4=4,f_5=5,f_6=6,f_7=7 f_2,f_3,f_4,f_5,f_6,f_7
+frozen true 0 false fr_0,fr_1,fr_2,fr_3
+frozen-read 0 6 3
+frozen-read 1 6 3
+frozen-read 2 6 3
+sealed true 2 false
+prevented false false
+numeric n2 n3 n5 0,7,14,21,28,35
+numeric2 false true 0,7,21,28,35
+big 374250 1000 1 undefined

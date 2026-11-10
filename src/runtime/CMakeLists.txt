@@ -41,6 +41,7 @@ bronze_add_module(runtime
         builtin_bigint.cpp
         shape.cpp
         dictionary.cpp
+        key_list.cpp
         accessor.cpp
         integrity.cpp
         exception.cpp

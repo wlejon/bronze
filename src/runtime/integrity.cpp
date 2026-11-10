@@ -245,6 +245,19 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
     // difference `cases/object_prototype_statics` pins by deleting one
     // afterwards.
     if (want != IntegrityLevel::Open) stampEntries(d, want == IntegrityLevel::Frozen);
+    // A frozen dictionary is read-cacheable (Shape::readCacheable): inline
+    // caches, the element cache and the for-in cache may name its shape and
+    // keep its keys by address from here on, for as long as they like. So its
+    // shape outlives the object (releaseDictionaryShape) and its keys move to
+    // the arena, as a transition node's are. Nothing can be added to it again,
+    // so this happens once per key.
+    if (want == IntegrityLevel::Frozen) {
+        for (DictEntry& e : d.entries) {
+            if (StringHeader* key = e.key.string(); key && !key->isArena()) {
+                e.key = PropertyKey::forString(StringHeader::internToArena(rtArena(), key));
+            }
+        }
+    }
     d.extensible = false;
     if (static_cast<uint8_t>(want) > static_cast<uint8_t>(d.level)) d.level = want;
     return self.get().rawBits();

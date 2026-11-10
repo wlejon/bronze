@@ -1,0 +1,12 @@
+fresh 18000 121486500
+ kept {"fresh_0":0,"after":0} fresh_0,after
+ kept {"fresh_3000":3000,"after":6000} fresh_3000,after
+ kept {"fresh_6000":6000,"after":12000} fresh_6000,after
+shared 25010000 {"kind":"rec","field_0":0,"second_0":0} {"kind":"rec","field_4999":4999,"second_4999":-4999}
+shared-delete {"field_5":5,"second_5":-5} false rec
+define 0 0 1 acc_0 false false
+define 1500 1500 1501 acc_1500 false false
+define 3000 3000 3001 acc_3000 false false
+constants 4000
+json 1415 12502500 u4999,v {"id":49,"name":"n49","tags":["a"]}
+merge {"p_1":1,"q_4999":4999,"z":0} {"q_0":0,"q_4999":4999} p_1,q_4999,z

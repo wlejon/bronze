@@ -56,20 +56,19 @@
 
 namespace bronze::runtime {
 
-// ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
-// is not an optimization here: a DictEntry outlives every collection, so a heap
-// key would dangle.
+// ToPropertyKey (7.1.19) as a Value — a string or a symbol — for the caller to
+// root and read a PropertyKey off. Not interned: a lookup matches string keys
+// by content, and a store makes the copy its storage needs (a transition node
+// an arena one, a dictionary entry an old-generation one), so a query for a
+// name the object never had leaves nothing behind.
 //
-// A SYMBOL is returned as it stands and never converted: it already lives in
-// the arena, and running ToString on one is the TypeError this whole type
-// exists to raise. That is also what lets `Object.defineProperty`,
-// `getOwnPropertyDescriptor` and `hasOwn` take a symbol key without a branch of
-// their own.
-PropertyKey rtInternPropertyKey(Value keyVal) {
-    if (keyVal.isSymbol()) return PropertyKey::fromValue(keyVal);
-    Rooted<Value> str{rtValueToString(keyVal)};
-    return PropertyKey::forString(
-        StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>()));
+// A SYMBOL is returned as it stands and never converted: running ToString on
+// one is the TypeError this whole type exists to raise. That is also what lets
+// `Object.defineProperty`, `getOwnPropertyDescriptor` and `hasOwn` take a
+// symbol key without a branch of their own.
+Value rtPropertyKeyValue(Value keyVal) {
+    if (keyVal.isSymbol() || keyVal.isString()) return keyVal;
+    return rtValueToString(keyVal);
 }
 
 // Own-property existence, shared by `Object.prototype.hasOwnProperty` and
@@ -447,7 +446,7 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
     // 20.1.2.10 is the STRING half of OwnPropertyKeys — the symbol half is
     // `getOwnPropertySymbols`, and the two are separate functions in the
     // language precisely so that neither ever reports the other's keys.
-    const std::vector<StringHeader*> ordered =
+    const StringKeyList ordered =
         rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
     // 10.4.5.7: a typed array's elements come first, every index within the
     // length ascending, ahead of the string keys its shape holds.

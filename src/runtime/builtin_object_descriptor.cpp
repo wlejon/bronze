@@ -521,7 +521,8 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
     }
     Rooted<Value> self{args[0]};
     rtCheckStringExoticOwnKeys(self.get(), "describing");
-    PropertyKey name = rtInternPropertyKey(args[1]);
+    Rooted<Value> keyRoot{rtPropertyKeyValue(args[1])};
+    PropertyKey name = PropertyKey::fromValue(keyRoot.get());
 
     PropertyInfo info;
     auto* obj = self.get().asObject<ObjectHeader>();

@@ -93,8 +93,8 @@ Chars keyChars(Key key) noexcept {
 Key internKey(const void* data, uint32_t length, bool utf16) {
     ShadowStackFrame frame;
     Rooted<Value> str{makeString(data, length, utf16)};
-    PropertyKey k = runtime::rtInternPropertyKey(str.get());
-    return k.string();
+    // A host's key is kept for as long as the host likes: an arena string.
+    return StringHeader::internToArena(runtime::rtArena(), str.get().asString<StringHeader>());
 }
 
 Value keyValue(Key key) noexcept {
@@ -158,6 +158,10 @@ bool ownDataLayout(Value plain, std::vector<PropSlot>& out) {
     for (const Entry& e : inserted) {
         if (!e.enumerable || e.key.isSymbol()) continue;
         if (e.accessor) return false;
+        // A dictionary's computed key is a heap string that lives only while
+        // its entry does (dictionary.h), which a `Key` must outlive: the host
+        // reads such an object by name instead.
+        if (!e.key.immortal()) return false;
         StringHeader* s = e.key.string();
         uint32_t idx = 0;
         if (integerLike(s, idx)) {

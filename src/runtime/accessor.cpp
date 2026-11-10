@@ -107,7 +107,8 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
     } else if (obj->shape->isDictionary()) {
         obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
-    } else if (hasOwn || obj->shape->slotsUsedAfterAdd(2) > Shape::kDictionaryThreshold) {
+    } else if (hasOwn || obj->shape->slotsUsedAfterAdd(2) > Shape::kDictionaryThreshold ||
+               obj->shape->refusesNewTransition(name)) {
         // A redefinition the chain cannot express, or the map-sized object
         // `setProp` moves for the same reason (a pair is two slots, so the
         // test is on the second).

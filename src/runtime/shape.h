@@ -10,6 +10,7 @@
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/key_list.h"
 #include "runtime/property_key.h"
 #include "runtime/slot_repr.h"
 #include "runtime/string.h"
@@ -200,6 +201,11 @@ public:
     // such objects took 10 s. Only the runtime's two scans in shape.cpp read
     // it; generated code follows IC entries, never this list.
     std::unique_ptr<std::unordered_map<uint32_t, std::vector<uint32_t>>> transition_index;
+    // How many of `transitions` were minted for a COMPUTED key: a heap string
+    // the program built at run time (`o['id' + n] = v`, a parsed name), as
+    // against a key constant or a name already in the arena. What bounds the
+    // tree (`refusesNewTransition`).
+    uint32_t computed_transitions{0};
 
     // The slot-number split (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT): a slot
     // below it is an inline Value, slot kOverflowSlot + i is Value i of the
@@ -402,7 +408,10 @@ public:
     // caller builds, and `rtOwnKeysOrdered` is where it is applied. A caller
     // that only wants string keys says so there rather than trusting this to
     // have filtered for it.
-    std::vector<PropertyKey> ownKeysInInsertionOrder(bool enumerableOnly = false) const;
+    //
+    // A KeyList, which roots its keys: a dictionary's are heap strings that a
+    // delete during the caller's walk could otherwise free (key_list.h).
+    PropertyKeyList ownKeysInInsertionOrder(bool enumerableOnly = false) const;
 
     // Past this many own properties an object is a map, not a record, and
     // the transition tree is the wrong structure for it: a lookup walks the
@@ -416,6 +425,38 @@ public:
     // few dozen names, a builtin prototype a few hundred at most — so the
     // objects the inline caches are for never convert.
     static constexpr uint32_t kDictionaryThreshold = 1024;
+
+    // THE TRANSITION BOUND. Shape nodes are immortal, so every edge the tree
+    // grows is kept for the life of the thread — which is right for a key the
+    // program names in its text (bounded by the text) and wrong for one it
+    // computes: an object per request keyed by fresh ids, a cache of paths
+    // dropped and rebuilt, `{}` given one new name each, grew the tree by a
+    // node per key, without end. So a computed key may extend the tree only
+    // while
+    //   - the node it would hang from has minted fewer than
+    //     `kComputedTransitionLimit` computed edges (a node that keeps being
+    //     handed names nobody else has is a map's root, not a record's), and
+    //   - the thread has minted fewer than `kComputedTransitionBudget` such
+    //     nodes in all (fresh keys spread over many nodes, each under the
+    //     limit, still end);
+    // past either, an add that would MINT an edge for a computed key moves the
+    // object to dictionary mode instead, whose keys and table the collector
+    // frees with the object (dictionary.h). An edge that already exists is
+    // always taken — the hundredth JSON record of one layout follows the first
+    // one's nodes — and a key constant is never refused, so class instances,
+    // literals and constructors keep their shapes.
+    //
+    // The limit is wide because the busiest node is `{}`'s root, where a map
+    // keyed by ids and a program's singletons — a texture-unit cache keyed by
+    // 33984, a uniform map keyed by names read out of shader text — both start.
+    // At 256, three.js's 410 mixers (an object keyed by each mesh's uuid) used
+    // the root up before the renderer's first frame, and its per-frame caches
+    // were dictionaries the inline caches could not hold (+6.5% a frame).
+    static constexpr uint32_t kComputedTransitionLimit = 4096;
+    static constexpr uint32_t kComputedTransitionBudget = 1u << 16;
+    // Would adding `key` (with any attributes) have to mint an edge the bound
+    // refuses? Cheap unless a limit is reached: a key constant answers at once.
+    bool refusesNewTransition(PropertyKey key) const noexcept;
 
     Value prototypeValue() const noexcept { return root ? root->prototype : Value::fromUndefined(); }
 };

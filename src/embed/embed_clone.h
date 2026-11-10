@@ -87,7 +87,9 @@ BRONZE_EMBED_API const void* layoutToken(Value plain) noexcept;
 // The object's own ENUMERABLE STRING-keyed properties in OwnPropertyKeys
 // order (integer-like keys ascending first, then insertion order), each with
 // the slot that holds its value. False — `out` then unspecified — when one of
-// them is an accessor: the host takes its generic path, which runs the getter.
+// them is an accessor, or has a key that is not immortal (a dictionary-mode
+// object's computed key, which lives only as long as its property): the host
+// takes its generic path, which runs the getter and reads keys as values.
 // Allocates nothing.
 BRONZE_EMBED_API bool ownDataLayout(Value plain, std::vector<PropSlot>& out);
 

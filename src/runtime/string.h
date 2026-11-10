@@ -51,6 +51,11 @@ struct StringHeader {
     // internToArena for a string already in `arena`: the table's copy when it
     // has one, else `owned` itself, now the copy every later intern answers.
     static StringHeader* adoptIntoArena(NonMovingArena& arena, StringHeader* owned);
+    // An exact-fit copy of the string `src` holds in the heap's OLD generation,
+    // which never moves it (a dictionary's key, dictionary.h). The cached hash
+    // comes with it; a builder's slack and mark do not. `src` is a root
+    // because the allocation can collect.
+    static StringHeader* copyToOld(Heap& heap, Rooted<Value>& src);
     static StringHeader* createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len);
     static StringHeader* createUTF16InArena(NonMovingArena& arena, const uint16_t* str, uint32_t len);
     static StringHeader* createFromUTF8InArena(NonMovingArena& arena, const char* str, uint32_t utf8_len);

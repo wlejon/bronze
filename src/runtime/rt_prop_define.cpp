@@ -171,7 +171,8 @@ void bronze_elem_define(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
     Rooted<Value> value{Value(valBits)};
     Rooted<Value> keyRoot{Value(keyBits)};
     keyRoot.set(rtToPropertyKey(keyRoot));
-    const PropertyKey name = rtInternPropertyKey(keyRoot.get());
+    keyRoot.set(rtPropertyKeyValue(keyRoot.get()));
+    const PropertyKey name = PropertyKey::fromValue(keyRoot.get());
     rtCreateDataPropertyOrThrow(target, name, value, /*ic=*/nullptr);
 }
 

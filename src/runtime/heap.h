@@ -334,6 +334,10 @@ public:
     // A zeroed object of `bytes` payload bytes after its header, the header's
     // tag set to `tag`, flags 0 and size the total. May collect first.
     HeapObjectHeader* allocate(size_t bytes, Tag tag, GcLayout layout = GcLayout::Auto);
+    // The same, in the OLD generation: an object that never moves, freed only
+    // by a full collection. For what a non-moving off-heap table names and a
+    // full collection's trace reaches (a dictionary's keys, dictionary.h).
+    HeapObjectHeader* allocateOld(size_t bytes, Tag tag);
 
     // A full collection: every unreachable object is reclaimed.
     void collect();
@@ -434,6 +438,7 @@ public:
 
 private:
     void registerFrameRoots();
+    HeapObjectHeader* allocateWith(size_t bytes, Tag tag, GcLayout layout, uint32_t gcFlags);
 
     std::unique_ptr<brass::gc::Heap> gc_;
     bool poison_{false};

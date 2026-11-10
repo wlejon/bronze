@@ -48,7 +48,7 @@ namespace {
 // it, exactly as the property path's own walk would; bounded, and named.
 constexpr uint32_t kMaxPrototypeDepth = 1000;
 
-bool alreadySeen(const std::vector<StringHeader*>& seen, const StringHeader* key) {
+bool alreadySeen(const StringKeyList& seen, const StringHeader* key) {
     for (const StringHeader* s : seen) {
         if (s->equals(*key)) return true;
     }
@@ -143,15 +143,15 @@ Value nextLinkOf(ObjectHeader* holder) {
 }
 
 // The string keys of `holder` and every ordinary link above it, nearest level
-// first, each name once. Arena-interned shape keys only, which are immortal and
-// non-moving, so the walk allocates nothing and no raw pointer here has to
-// survive a collection.
-void collectChainStringKeys(ObjectHeader* holder, std::vector<StringHeader*>& keys) {
+// first, each name once. Shape keys and dictionary keys, which never move and
+// which the lists root (key_list.h), so the walk allocates nothing and no raw
+// pointer here has to survive a collection.
+void collectChainStringKeys(ObjectHeader* holder, StringKeyList& keys) {
     // Every own name a level reports, enumerable or not: 14.7.5.6's `visited`
     // set, which is what lets a NON-enumerable own property shadow an
     // enumerable inherited one of the same name (proxyChainForInKeys below
     // keeps the same two lists for the same reason).
-    std::vector<StringHeader*> visited;
+    StringKeyList visited;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
         // String keys only: 14.7.5.6 EnumerateObjectProperties yields
         // property names, and a symbol key is not one. It is the same filter
@@ -230,10 +230,10 @@ uint64_t proxyChainForInKeys(Value receiver) {
         // in it — asked here for both enumerabilities so the shadowing rule
         // above still holds across the boundary. Keys and flags are read
         // before a single allocation, which is what lets `holder` stay a raw
-        // pointer: the keys are arena-interned and immortal.
+        // pointer; the list roots the keys across the allocations after.
         ObjectHeader* holder = namedPropertyHolder(level.get());
         if (!holder) break;
-        const std::vector<StringHeader*> levelKeys =
+        const StringKeyList levelKeys =
             rtOwnStringKeysOrdered(holder, /*enumerableOnly=*/false);
         std::vector<bool> levelEnumerable;
         levelEnumerable.reserve(levelKeys.size());
@@ -311,7 +311,10 @@ uint64_t emptyKeyArray() {
 //
 // What the cache holds is the ordered key LIST — arena-interned StringHeader
 // pointers, immortal and non-moving — so the entry contains no heap pointer at
-// all and the collector never needs to know the cache exists. A hit skips the
+// all and the collector never needs to know the cache exists. Only a chain of
+// transition nodes and FROZEN dictionaries is cached (chainIsCacheable), and
+// both keep arena keys: a dictionary's heap keys move to the arena when it
+// freezes (integrity.cpp), which is what lets a plain vector hold them here. A hit skips the
 // chain walk, the per-level key-vector allocations, and the O(keys^2)
 // cross-level dedup that made three.js's per-mesh-per-frame enumerations (1.8M
 // a run on `many_meshes`) the third-largest helper cost. The result ARRAY is
@@ -362,7 +365,8 @@ ArrayCache& arrayCache() { return t_arrayCache; }
 
 // The result array for a key list: the arena keys THEMSELVES, for the same
 // identity-latch reason the walk's own foot states below.
-uint64_t keyListToArray(const std::vector<StringHeader*>& keys) {
+template <typename List>
+uint64_t keyListToArray(const List& keys) {
     const auto total = static_cast<uint32_t>(keys.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
     uint32_t at = 0;
@@ -523,9 +527,9 @@ uint64_t forInKeys(uint64_t objBits) {
         // by an object with enumerable properties, and 22.1.3 puts nothing
         // enumerable on a string's.
         if (isArray) {
-            // The keys are arena-interned and immortal, so the vector survives
-            // the allocations `setElem` makes — and the array is handed the
-            // arena keys THEMSELVES (rtKeyAsValue), which is what keeps the
+            // The list roots the keys, so it survives the allocations
+            // `setElem` makes — and the array is handed the keys THEMSELVES
+            // (rtKeyAsValue), which is what keeps the
             // computed-read cache's identity latch hitting for keys a program
             // reads back through `a[k]`.
             for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
@@ -540,7 +544,7 @@ uint64_t forInKeys(uint64_t objBits) {
             // is there, a named property, the non-enumerable `length` — and a
             // hole does not. The walk reads arena keys only, so it allocates
             // nothing; the appends below do, through the root.
-            std::vector<StringHeader*> inherited;
+            StringKeyList inherited;
             {
                 const uint64_t call[1] = {src.get().rawBits()};
                 const Value proto(objectGetPrototypeOf(0, 0, 1, call));
@@ -572,7 +576,7 @@ uint64_t forInKeys(uint64_t objBits) {
         // well as of the shape.
         if (src.get().isObject() &&
             src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
-            std::vector<StringHeader*> named;
+            StringKeyList named;
             collectChainStringKeys(src.get().asObject<ObjectHeader>(), named);
             for (StringHeader* key : named) {
                 Rooted<Value> keyVal{rtKeyAsValue(key)};
@@ -628,10 +632,10 @@ uint64_t forInKeys(uint64_t objBits) {
         }
     }
 
-    // Phase one collects only arena-interned shape keys, which are immortal and
-    // non-moving. That is what lets the whole chain be walked before a single
-    // allocation happens: no raw object pointer here has to survive one.
-    std::vector<StringHeader*> keys;
+    // Phase one collects keys only, which never move and which the list roots.
+    // That is what lets the whole chain be walked before a single allocation
+    // happens: no raw object pointer here has to survive one.
+    StringKeyList keys;
     collectChainStringKeys(holder, keys);
 
     // The fill: exactly what the walk just proved, under the decision taken
@@ -641,7 +645,7 @@ uint64_t forInKeys(uint64_t objBits) {
     if (cacheShape) {
         EnumCacheEntry& entry = enumCache()[cacheShape];
         entry.epoch = epochNow;
-        entry.keys = keys;
+        entry.keys.assign(keys.begin(), keys.end());
     }
 
     // The result array holds the arena keys THEMSELVES (rtKeyAsValue), not

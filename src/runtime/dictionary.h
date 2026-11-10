@@ -21,9 +21,15 @@ class Shape;
 // object that ever took that path. An entry vector owned by ONE object
 // renumbers nobody.
 struct DictEntry {
-    // Arena-interned (a string) or arena-allocated (a symbol) either way, so
-    // it is immortal and non-moving — which it has to be, since a dictionary
-    // outlives every collection. INVALID on a removed entry: a delete leaves
+    // A symbol, an arena string, or a string of the heap's OLD generation
+    // (ObjectHeader::dictKeyToStore): never one a collection moves, but not
+    // necessarily immortal — an old string lives because this entry names it,
+    // through the owning object's full trace (heap_trace.cpp), and dies at the
+    // next full collection after the entry is removed. So nothing may keep a
+    // dictionary key past the entry without a root of its own: an own-key
+    // snapshot is a KeyList (key_list.h), and a frozen dictionary — whose
+    // shape caches may hold — moves its keys to the arena when it freezes
+    // (integrity.cpp). INVALID on a removed entry: a delete leaves
     // the entry in place as a tombstone so that nothing after it renumbers
     // (the hash index below names entries by position), and a walk over the
     // vector skips it by asking `live()`.
@@ -63,9 +69,11 @@ enum class IntegrityLevel : uint8_t {
 };
 
 // The own-property table of one object, hung off that object's own private
-// Shape. It lives in the non-moving arena beside the shape, so nothing here
-// is a GC root: `name` points into the arena and the VALUES stay in the
-// object's ordinary slot storage, where the collector already scans them.
+// Shape. Both are C++ allocations that live exactly as long as the object (a
+// finalizer frees them, dictionary.cpp releaseDictionaryShape). Nothing here is
+// a GC root: the keys are reached through the object's full trace, and the
+// VALUES stay in the object's ordinary slot storage, where the collector
+// already scans them.
 //
 // Two structures, one table. `entries` is the insertion order, which is what
 // enumeration reads; `index_` is an open-addressed hash over it, which is what
@@ -125,7 +133,8 @@ public:
     DictEntry* find(PropertyKey name) noexcept;
 
     // Appends a property the caller has already found absent, and indexes it.
-    // The key must already be arena-resident (interned string or symbol).
+    // The key must already be in a form an entry may keep
+    // (ObjectHeader::dictKeyToStore).
     DictEntry& add(PropertyKey stored, uint32_t slot, bool enumerable, bool accessor,
                    bool writable = true, bool configurable = true);
 

@@ -14,6 +14,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap_trace.h"
+#include "runtime/key_list.h"
 #include "runtime/stack_locals.h"
 #include "runtime/tls_block.h"
 
@@ -295,12 +296,24 @@ void Heap::registerFrameRoots() {
         runtime::forEachSwitchedStackLocal(shadowStackLocalIndex(), [&walk](void* top) {
             walk(static_cast<ShadowStackFrame*>(top));
         });
+        // The live own-key snapshots (key_list.h): a dictionary's keys are
+        // heap strings, kept only by the entry that a program may delete
+        // while a snapshot of them is being walked.
+        KeyListLink::visitAll(t);
         // Compiled frames' Values are tagged stack-map roots, which brass
         // visits itself (bronzeHeapConfig, walk_stack_on_host_collection).
     });
 }
 
 HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag, GcLayout layout) {
+    return allocateWith(bytes, tag, layout, 0);
+}
+
+HeapObjectHeader* Heap::allocateOld(size_t bytes, Tag tag) {
+    return allocateWith(bytes, tag, GcLayout::Auto, brass::gc::kAllocOld);
+}
+
+HeapObjectHeader* Heap::allocateWith(size_t bytes, Tag tag, GcLayout layout, uint32_t gcFlags) {
     const size_t total = (sizeof(HeapObjectHeader) + bytes + 7) & ~static_cast<size_t>(7);
     if (total > UINT32_MAX) throw std::bad_alloc();
     const gc_detail::LayoutIds& ids = gc_detail::layoutIds();
@@ -317,7 +330,7 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag, GcLayout layout) {
     uintptr_t object = 0;
     bool outOfMemory = false;
     try {
-        object = gc_->allocate(total, id);
+        object = gc_->allocate(total, id, gcFlags);
     } catch (const std::bad_alloc&) {
         outOfMemory = true;
     }

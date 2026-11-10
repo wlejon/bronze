@@ -269,10 +269,14 @@ std::string shapeText(const Shape* sh, std::unordered_map<const Shape*, std::str
     return name;
 }
 
-// Cached by the shape, which is immortal and non-moving.
+// Cached by the shape, which is immortal and non-moving — except a dictionary
+// shape that is not frozen, which is freed with its object (dictionary.cpp) and
+// whose address another shape may take; its name is cheap (`{dict}`) and is
+// not cached.
 uint32_t shapeName(State& s, const ObjectHeader* obj) {
     const Shape* sh = obj->shape;
     if (sh == nullptr) return internName(s, "object{?}");
+    if (sh->isDictionary() && !sh->readCacheable()) return internName(s, shapeText(sh, s.protoNames));
     auto it = s.shapeNames.find(sh);
     if (it != s.shapeNames.end()) return it->second;
     const uint32_t id = internName(s, shapeText(sh, s.protoNames));

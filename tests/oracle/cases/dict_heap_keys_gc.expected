@@ -1,0 +1,10 @@
+entries [["en_0","g"],["en_2",2],["en_4",4],["en_6",6],["en_8",8],["en_10",10]]
+after en_0,en_2,en_4,en_6,en_8,en_10
+assign {"as_0":0,"as_1":"g","as_3":3,"as_4":4,"as_6":6,"as_7":7,"as_9":9}
+spread {"sp_0":"g","sp_1":1,"sp_2":2,"sp_3":3,"sp_4":4}
+json {"js_0":0,"js_1":1,"js_2":"J"}
+forin 30 fi_0:0 fi_29:29 0
+kept 20 kp_0 kp_19 kp_7 7 90
+proxy px_0,px_2,px_4,px_6,px_8
+refill 50 rf_49 147 30 true
+churned 11110 64 63

@@ -15,6 +15,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_census.h"
 #include "runtime/shape_leave.h"
 
 namespace bronze {
@@ -147,10 +148,26 @@ void Dictionary::releaseMemory() noexcept {
     live_ = 0;
 }
 
-// A dictionary's shape lives in the arena and outlives its object; what the
-// object's death releases is the dictionary's own C++ storage, through a
-// collector finalizer on the object.
-void releaseDictionary(void* dict) { static_cast<Dictionary*>(dict)->releaseMemory(); }
+// What the object's death releases, through a collector finalizer on it: the
+// dictionary and its private shape, which nothing else names once the object
+// is gone — no inline cache, enumeration cache or prototype walk ever keeps a
+// dictionary shape that is not frozen (Shape::readCacheable). A FROZEN one may
+// be in any of those, keyed by its address, so it stays allocated for the
+// thread's life (an address reused by another shape could be answered for);
+// only its tables go. Its keys were moved to the arena when it froze
+// (integrity.cpp), for the same reason. The shape census keeps every shape it
+// saw for its report at exit, so while it runs nothing is freed either.
+void releaseDictionaryShape(void* shapePtr) {
+    auto* shape = static_cast<Shape*>(shapePtr);
+    Dictionary* d = shape->dict;
+    if (d->level == IntegrityLevel::Frozen || runtime::g_shapeCensusEnabled) {
+        d->releaseMemory();
+        return;
+    }
+    shape->dict = nullptr;
+    delete d;
+    delete shape;
+}
 
 // A dictionary object's shape is PRIVATE to that object: minted fresh here,
 // never a transition target, never shared. Two consequences the rest of the
@@ -159,10 +176,15 @@ void releaseDictionary(void* dict) { static_cast<Dictionary*>(dict)->releaseMemo
 // `prototypeValue()` still reads a prototype slot the collector already walks
 // (rt_state.cpp's root source) — a fresh root would need registering, which the
 // arena's owner, not this function, knows how to do.
-static Shape* createDictionaryShape(NonMovingArena& arena, Shape* from) {
-    Shape* dict = arena.create<Shape>();
+//
+// Unlike a transition node it is not an arena object: it lives exactly as long
+// as its object (releaseDictionaryShape), so a program that makes and drops
+// dictionary objects — a map per request, a record that had a key deleted —
+// does not grow the arena by one shape and one table each.
+static Shape* createDictionaryShape(Shape* from) {
+    Shape* dict = new Shape();
     dict->root = from->root;
-    dict->dict = arena.create<Dictionary>();
+    dict->dict = new Dictionary();
     // The object keeps its storage, and with it its inline capacity.
     dict->setInlineSlots(from->inline_slots);
     dict->dict->inlineSlots = from->inline_slots;
@@ -171,6 +193,7 @@ static Shape* createDictionaryShape(NonMovingArena& arena, Shape* from) {
 }
 
 void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
+    (void)arena;
     auto* obj = self.get().asObject<ObjectHeader>();
     if (!obj->shape || obj->shape->isDictionary()) return;
 
@@ -178,7 +201,7 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     // If this object is used as a prototype anywhere, demoting it to dictionary
     // mode invalidates IC entries that walk through or target it.
     if (old->used_as_prototype) bumpProtoMutationEpoch();
-    Shape* dictShape = createDictionaryShape(arena, old);
+    Shape* dictShape = createDictionaryShape(old);
     Dictionary& d = *dictShape->dict;
 
     // Walk the chain root-ward, then reverse: the same insertion order
@@ -208,10 +231,10 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     runtime::noteShapeLeave(old, dictShape, runtime::currentDictionaryReason());
     obj->shape = dictShape;
     // An object of a heap other than the thread's (a test's own) keeps its
-    // storage for the life of the arena.
+    // shape and table for the life of the process.
     Heap& heap = runtime::rtHeap();
     if (heap.contains(obj)) {
-        heap.gc().add_finalizer(reinterpret_cast<uintptr_t>(obj), &releaseDictionary, dictShape->dict);
+        heap.gc().add_finalizer(reinterpret_cast<uintptr_t>(obj), &releaseDictionaryShape, dictShape);
     }
 }
 
@@ -252,6 +275,39 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     return removed;
 }
 
+// The form of `name` a dictionary entry holds. A transition node's key is an
+// arena string, immortal; an entry's is not, because a dictionary is where a
+// program's MAP lives (`cache[path] = v; delete cache[path]`), and an arena
+// copy per key ever stored grew the process by every key it had ever seen. So
+// an entry names an ordinary string of the OLD generation: it never moves, the
+// object's trace keeps it alive while the entry does (heap_trace.cpp), and the
+// next full collection after a delete frees it.
+//
+//  - a symbol, or an arena string of this thread, is stored as it stands: both
+//    are immortal already, and a symbol is matched by identity, so a copy
+//    would be another key;
+//  - an old string of this heap is stored as it stands (not a builder, whose
+//    slack a later append could still write into);
+//  - anything else — a young string, which a minor collection would move, or
+//    another heap's — is copied into this heap's old generation.
+//
+// While a marking cycle is open the object may already be marked, and the
+// entry is an edge only its full trace follows, so the key is shaded (an old
+// allocation inside a cycle is marked already; a reused string may not be).
+PropertyKey ObjectHeader::dictKeyToStore(Heap& heap, NonMovingArena& arena, PropertyKey name) {
+    if (name.isSymbol()) return name;
+    StringHeader* s = name.string();
+    if (s->isArena()) return PropertyKey::forString(StringHeader::internToArena(arena, s));
+    if (heap.contains(s) && !heap.is_movable(s) && !s->isBuilder()) {
+        gcShadeEdge(Value::fromString(s));
+        return name;
+    }
+    Rooted<Value> src{Value::fromString(s)};
+    StringHeader* copy = StringHeader::copyToOld(heap, src);
+    gcShadeEdge(Value::fromString(copy));
+    return PropertyKey::forString(copy);
+}
+
 ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                        PropertyKey name, bool enumerable, bool accessor,
                                        uint32_t& out_slot) {
@@ -276,16 +332,12 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         out_slot = existing->slot;
         bumpProtoMutationEpoch();
     } else {
-        // The entry lives in the arena and outlives every collection, so the
-        // name it holds must too — the same rule shape nodes follow, and the
-        // reason a computed key (`o[k] = v`, whose key is a fresh heap
-        // string) cannot simply be pointed at. A SYMBOL key is already in the
-        // arena and is stored as it stands: interning a copy would mint a key
-        // that is no longer the symbol the program holds (Shape::addProperty
-        // says the same thing for the transition tree).
-        PropertyKey stored =
-            name.isSymbol() ? name
-                            : PropertyKey::forString(StringHeader::internToArena(arena, name.string()));
+        // The key the entry keeps (dictKeyToStore): never a young string,
+        // which the next minor collection would move under it. Storing may
+        // allocate, so the object is re-read from its root afterwards; the
+        // table itself is off the heap and does not move.
+        PropertyKey stored = dictKeyToStore(heap, arena, name);
+        obj = self.get().asObject<ObjectHeader>();
         out_slot = d.allocateSlots(accessor ? 2u : 1u);
         d.add(stored, out_slot, enumerable, accessor);
         // A depth > 0 entry can never be walking THROUGH this object — a

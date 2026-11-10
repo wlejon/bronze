@@ -163,6 +163,24 @@ void forEachTransitionFor(const Shape& shape, PropertyKey key, F&& visit) {
 
 }  // namespace
 
+namespace {
+// The thread's computed-key nodes so far (Shape::kComputedTransitionBudget).
+thread_local uint32_t t_computedTransitions = 0;
+}  // namespace
+
+bool Shape::refusesNewTransition(PropertyKey key) const noexcept {
+    if (!key.isString() || key.immortal()) return false;
+    if (computed_transitions < kComputedTransitionLimit &&
+        t_computedTransitions < kComputedTransitionBudget) {
+        return false;
+    }
+    bool exists = false;
+    forEachTransitionFor(*this, key, [&](const ShapeTransition& trans) {
+        if (!exists && trans.key.matches(key)) exists = true;
+    });
+    return !exists;
+}
+
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
                           uint32_t& out_slot, bool is_enumerable, bool is_accessor,
                           bool is_writable, bool is_configurable, SlotRepr desired) {
@@ -193,8 +211,15 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
         });
         if (!stored.valid()) stored = PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
     }
-    return addPropertyKey(arena, stored, out_slot, is_enumerable, is_accessor, is_writable,
-                          is_configurable, desired);
+    const size_t edgesBefore = transitions.size();
+    Shape* next = addPropertyKey(arena, stored, out_slot, is_enumerable, is_accessor, is_writable,
+                                 is_configurable, desired);
+    // A minted edge for a computed key counts against the bound (shape.h).
+    if (transitions.size() != edgesBefore && incoming.isString() && !incoming.immortal()) {
+        ++computed_transitions;
+        ++t_computedTransitions;
+    }
+    return next;
 }
 
 Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t& out_slot,
@@ -369,8 +394,8 @@ Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index)
     return rebuilt;
 }
 
-std::vector<PropertyKey> Shape::ownKeysInInsertionOrder(bool enumerableOnly) const {
-    std::vector<PropertyKey> keys;
+PropertyKeyList Shape::ownKeysInInsertionOrder(bool enumerableOnly) const {
+    PropertyKeyList keys;
     if (isDictionary()) {
         for (const DictEntry& e : dict->entries) {
             if (!e.live()) continue;

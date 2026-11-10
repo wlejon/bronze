@@ -80,6 +80,11 @@ public:
                reinterpret_cast<const StringHeader*>(ptr_)->isArena();
     }
 
+    // The key's word as the collector's raw-address slot (Tracer::
+    // visit_address): how a dictionary's full trace and an own-key snapshot
+    // keep a heap-string key alive. Null and out-of-heap words are passed over.
+    uintptr_t* traceSlot() noexcept { return reinterpret_cast<uintptr_t*>(&ptr_); }
+
     Value toValue() const noexcept {
         if (isSymbol()) return Value::fromSymbol(ptr_);
         if (isString()) return Value::fromString(ptr_);
@@ -113,5 +118,6 @@ private:
 
     HeapObjectHeader* ptr_{nullptr};
 };
+static_assert(sizeof(PropertyKey) == sizeof(uintptr_t), "a key is one pointer word");
 
 }  // namespace bronze

@@ -189,7 +189,7 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
 // stored — a symbol-keyed property sits in the transition chain wherever it was
 // added, and this is where 6.1.7.1's grouping is applied. Nothing here consults
 // a hash table, so the order is a function of the program and not of an address.
-std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
+PropertyKeyList rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
     // A String exotic object's own keys begin with the index properties
     // 10.4.3.4 synthesised from the wrapped characters, and bronze answers
     // those on the property path only. Minting a key for one here would have to
@@ -199,11 +199,12 @@ std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerab
     // name; reporting a String object as having no indices is the wrong answer
     // rather than the missing one.
     rtCheckStringExoticOwnKeys(Value::fromObject(obj), "enumerating");
-    // Shape keys are arena-interned and immortal, so collecting them up front
-    // is safe across whatever the caller allocates while walking them.
+    // The lists root their keys (key_list.h), so collecting them up front is
+    // safe across whatever the caller allocates — or runs — while walking
+    // them. The sorting vectors below live only until nothing has allocated.
     Shape* shape = obj->shape;
-    std::vector<PropertyKey> inserted =
-        shape ? shape->ownKeysInInsertionOrder(enumerableOnly) : std::vector<PropertyKey>{};
+    PropertyKeyList inserted =
+        shape ? shape->ownKeysInInsertionOrder(enumerableOnly) : PropertyKeyList{};
 
     std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
     std::vector<PropertyKey> strKeys;
@@ -224,7 +225,7 @@ std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerab
     std::sort(intKeys.begin(), intKeys.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    std::vector<PropertyKey> ordered;
+    PropertyKeyList ordered;
     ordered.reserve(intKeys.size() + strKeys.size() + symKeys.size());
     for (const auto& [idx, name] : intKeys) ordered.push_back(name);
     for (PropertyKey name : strKeys) ordered.push_back(name);
@@ -232,8 +233,8 @@ std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerab
     return ordered;
 }
 
-std::vector<StringHeader*> rtOwnStringKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
-    std::vector<StringHeader*> names;
+StringKeyList rtOwnStringKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
+    StringKeyList names;
     for (PropertyKey k : rtOwnKeysOrdered(obj, enumerableOnly)) {
         // Symbols are last, so this could stop at the first one — it does not,
         // because "the order happens to make the loop right" is how an

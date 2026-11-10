@@ -336,9 +336,9 @@ private:
         // unchanged.
         if (arr->properties.isObject()) {
             auto* props = arr->properties.asObject<ObjectHeader>();
-            const std::vector<PropertyKey> keys =
+            const PropertyKeyList keys =
                 props->shape ? props->shape->ownKeysInInsertionOrder()
-                             : std::vector<PropertyKey>{};
+                             : PropertyKeyList{};
             for (PropertyKey k : keys) {
                 PropertyInfo info;
                 if (!props->shape->lookupProperty(k, info) || info.accessor) continue;
@@ -434,10 +434,10 @@ private:
 
     std::string extraOwnProps(ObjectHeader* obj, int depth) {
         if (!obj->shape) return "";
-        std::vector<PropertyKey> keys = obj->shape->ownKeysInInsertionOrder();
+        PropertyKeyList keys = obj->shape->ownKeysInInsertionOrder();
         std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
-        std::vector<PropertyKey> strKeys;
-        std::vector<PropertyKey> symKeys;
+        PropertyKeyList strKeys;
+        PropertyKeyList symKeys;
         for (PropertyKey k : keys) {
             PropertyInfo info;
             if (!obj->shape->lookupProperty(k, info) || !info.enumerable) continue;
@@ -491,13 +491,13 @@ private:
         std::string out;
         // Own keys in the language's order — the same order Object.keys
         // reports, because they are the same question.
-        std::vector<PropertyKey> keys =
-            obj->shape ? obj->shape->ownKeysInInsertionOrder() : std::vector<PropertyKey>{};
+        PropertyKeyList keys =
+            obj->shape ? obj->shape->ownKeysInInsertionOrder() : PropertyKeyList{};
         std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
-        std::vector<PropertyKey> strKeys;
+        PropertyKeyList strKeys;
         // Symbol keys print LAST, after every string key, which is the order
         // 6.1.7.1 gives them and the order node shows them in.
-        std::vector<PropertyKey> symKeys;
+        PropertyKeyList symKeys;
         for (PropertyKey k : keys) {
             if (k.isSymbol()) {
                 symKeys.push_back(k);

@@ -67,7 +67,7 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     }
     if (!holder) return bronze_create_array(0);
 
-    const std::vector<PropertyKey> ordered =
+    const PropertyKeyList ordered =
         rtOwnKeysOrdered(holder, /*enumerableOnly=*/false);
     Rooted<Value> out{Value(bronze_create_array(0))};
     uint32_t at = 0;
@@ -98,6 +98,15 @@ static uint64_t enumerableOwn(Value source, bool wantEntries) {
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
+        // 7.3.23 step 4.a: each key's descriptor is asked again as it comes
+        // up, so a property an earlier getter deleted (or made
+        // non-enumerable) is left out rather than read as undefined. Asked of
+        // a plain object, the receiver whose getters can do that.
+        if (i > 0 && src.get().isObject() &&
+            src.get().asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+            bool enumerable = false;
+            if (!rtOwnPropertyOf(src, key.get(), enumerable) || !enumerable) continue;
+        }
         Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
         Rooted<Value> item;
         if (wantEntries) {

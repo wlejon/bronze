@@ -507,7 +507,7 @@ namespace {
 // hands over as computed keys): the name is the evaluated key — a symbol's
 // as "[description]" — behind the accessor's "get " / "set ". Only known
 // here, so the function the closure made carries the parser's placeholder
-// until now. A value that is not one of bronze's own closures is left alone.
+// until now, and it is an arena string (fn.h). Not bronze's closure: left alone.
 void nameComputedMethod(Value fnVal, Value key, const char* prefix) {
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return;
     std::string name;
@@ -522,8 +522,8 @@ void nameComputedMethod(Value fnVal, Value key, const char* prefix) {
     if (prefix) name = std::string(prefix) + " " + name;
     Rooted<Value> fnRoot{fnVal};
     Rooted<Value> nameVal{rtMakeString(name)};
-    const PropertyKey interned = rtInternPropertyKey(nameVal.get());
-    fnRoot.get().asObject<FunctionHeader>()->name = interned.string();
+    fnRoot.get().asObject<FunctionHeader>()->name =
+        StringHeader::internToArena(rtArena(), nameVal.get().asString<StringHeader>());
 }
 
 }  // namespace

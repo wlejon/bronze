@@ -17,6 +17,7 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/property_key.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -195,11 +196,101 @@ TEST_CASE("an object crossing the threshold becomes a dictionary in place") {
         CHECK(info.slot == slotOfIndex(i));
         CHECK(obj->getSlot(info.slot).asNumber() == static_cast<double>(i));
     }
-    std::vector<PropertyKey> keys = obj->shape->ownKeysInInsertionOrder();
+    PropertyKeyList keys = obj->shape->ownKeysInInsertionOrder();
     REQUIRE(keys.size() == n);
     key.set(Value::fromString(StringHeader::createFromUTF8(heap, "k0")));
     CHECK(keys.front().matches(PropertyKey::fromValue(key.get())));
     key.set(Value::fromString(
         StringHeader::createFromUTF8(heap, ("k" + std::to_string(n - 1)).c_str())));
     CHECK(keys.back().matches(PropertyKey::fromValue(key.get())));
+}
+
+// THE LEAK this file's last two cases close. A dictionary keeps a computed key
+// as an old-generation heap string, not an arena copy, so a map that keeps
+// taking new keys and deleting them (`m[k] = v; delete m[k]`) holds only what
+// it has; and an object given a fresh name each time is past the transition
+// bound soon and a dictionary freed with its object. Both are measured where
+// a regression would show: the arena (immortal) and the old generation's live
+// bytes after a full collection.
+namespace {
+
+void setKey(Heap& heap, NonMovingArena& arena, Rooted<Value>& self, Rooted<Value>& key, uint32_t i,
+            const char* prefix) {
+    Rooted<Value> val{Value::fromDouble(static_cast<double>(i))};
+    key.set(Value::fromString(
+        StringHeader::createFromUTF8(heap, (prefix + std::to_string(i)).c_str())));
+    self.set(Value::fromObject(self.get().asObject<ObjectHeader>()->setProp(
+        heap, arena, key, val, /*ic=*/nullptr, /*enumerable=*/true)));
+}
+
+}  // namespace
+
+TEST_CASE("keys added to a dictionary and deleted leave memory flat") {
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
+    Rooted<Value> self{Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena)))};
+    Rooted<Value> key{Value::fromUndefined()};
+    setKey(heap, arena, self, key, 0, "first_");
+    self.get().asObject<ObjectHeader>()->deleteProperty(arena, PropertyKey::fromValue(key.get()));
+    REQUIRE(self.get().asObject<ObjectHeader>()->shape->isDictionary());
+
+    auto round = [&](uint32_t from, uint32_t to) {
+        for (uint32_t i = from; i < to; ++i) {
+            setKey(heap, arena, self, key, i, "key_");
+            CHECK(self.get().asObject<ObjectHeader>()->deleteProperty(
+                arena, PropertyKey::fromValue(key.get())));
+        }
+    };
+    round(0, 20000);
+    heap.collect();
+    const size_t arenaBefore = arena.total_allocated_bytes();
+    const uint64_t liveBefore = heap.gc().stats().old_live_bytes;
+    round(20000, 220000);
+    heap.collect();
+    CHECK(arena.total_allocated_bytes() == arenaBefore);
+    // 200k keys of about 32 bytes each would be 6 MB; what remains is the
+    // table (compacted) and whatever a stack word happened to keep.
+    CHECK(heap.gc().stats().old_live_bytes < liveBefore + (256u << 10));
+    CHECK(self.get().asObject<ObjectHeader>()->shape->dict->liveCount() == 0);
+}
+
+TEST_CASE("objects given a fresh name each stop growing the transition tree") {
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
+    Shape* root = Shape::createRoot(arena);
+    Rooted<Value> self{Value::fromUndefined()};
+    Rooted<Value> key{Value::fromUndefined()};
+    auto round = [&](uint32_t from, uint32_t to) {
+        for (uint32_t i = from; i < to; ++i) {
+            self.set(Value::fromObject(ObjectHeader::create(heap, arena, root)));
+            setKey(heap, arena, self, key, i, "fresh_");
+            PropertyInfo info;
+            CHECK(self.get().asObject<ObjectHeader>()->shape->lookupProperty(
+                PropertyKey::fromValue(key.get()), info));
+        }
+    };
+    round(0, Shape::kComputedTransitionLimit + 10);
+    CHECK(root->transitions.size() == Shape::kComputedTransitionLimit);
+    CHECK(self.get().asObject<ObjectHeader>()->shape->isDictionary());
+    heap.collect();
+    const size_t arenaBefore = arena.total_allocated_bytes();
+    const uint64_t liveBefore = heap.gc().stats().old_live_bytes;
+    round(1000, 101000);
+    self.set(Value::fromUndefined());
+    heap.collect();
+    CHECK(root->transitions.size() == Shape::kComputedTransitionLimit);
+    CHECK(arena.total_allocated_bytes() == arenaBefore);
+    CHECK(heap.gc().stats().old_live_bytes < liveBefore + (256u << 10));
+
+    // A key constant still extends the tree past the bound.
+    self.set(Value::fromObject(ObjectHeader::create(heap, arena, root)));
+    key.set(Value::fromString(StringHeader::internToArena(
+        arena, StringHeader::createFromUTF8(heap, "a_constant_name"))));
+    Rooted<Value> val{Value::fromDouble(1.0)};
+    self.set(Value::fromObject(self.get().asObject<ObjectHeader>()->setProp(
+        heap, arena, key, val, /*ic=*/nullptr, /*enumerable=*/true)));
+    CHECK(!self.get().asObject<ObjectHeader>()->shape->isDictionary());
+    CHECK(root->transitions.size() == Shape::kComputedTransitionLimit + 1);
 }

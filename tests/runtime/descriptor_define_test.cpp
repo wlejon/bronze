@@ -106,7 +106,7 @@ struct Own {
 Own own(Value objVal, const char* key) {
     Own out;
     Rooted<Value> k{text(key)};
-    const PropertyKey name = rtInternPropertyKey(k.get());
+    const PropertyKey name = PropertyKey::fromValue(k.get());
     auto* obj = objVal.asObject<ObjectHeader>();
     PropertyInfo info;
     if (!obj->shape || !obj->shape->lookupProperty(name, info)) return out;
@@ -173,8 +173,8 @@ TEST_CASE("a partial define leaves the value in the slot it was in") {
     Rooted<Value> dictObj{object()};
     put(dictObj, "p", Value::fromDouble(7.0));
     put(dictObj, "q", Value::fromDouble(8.0));
-    dictObj.get().asObject<ObjectHeader>()->deleteProperty(rtArena(),
-                                                           rtInternPropertyKey(text("q")));
+    Rooted<Value> q{text("q")};
+    dictObj.get().asObject<ObjectHeader>()->deleteProperty(rtArena(), PropertyKey::fromValue(q.get()));
     REQUIRE(isDictionary(dictObj.get()));
 
     Rooted<Value> d2 = descriptor();

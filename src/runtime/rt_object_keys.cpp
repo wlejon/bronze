@@ -56,7 +56,7 @@ Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
     // walk `Object.getOwnPropertyNames(String.prototype)` was `["length"]`
     // while `String.prototype.hasOwnProperty("slice")` was true: the keys were
     // in the shape and the listing never looked at it.
-    std::vector<StringHeader*> named;
+    StringKeyList named;
     if (self.get().isObject()) {
         named = rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), enumerableOnly);
     }
@@ -188,7 +188,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // %TypedArray%.prototype and own properties of nothing.
     if (hdr->flags == TypedArrayHeader::kFlags) {
         const uint32_t length = reinterpret_cast<TypedArrayHeader*>(hdr)->length;
-        const std::vector<StringHeader*> named =
+        const StringKeyList named =
             rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
         Rooted<Value> out{Value(bronze_create_array(length + static_cast<uint32_t>(named.size())))};
         for (uint32_t i = 0; i < length; ++i) {
@@ -228,7 +228,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         Value props = objVal.asObject<FunctionHeader>()->properties;
         if (!props.isObject()) return bronze_create_array(0);
         Rooted<Value> propsRoot{props};
-        const std::vector<StringHeader*> named =
+        const StringKeyList named =
             rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
         Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
         uint32_t at = 0;
@@ -277,7 +277,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // here — which is how a symbol-keyed property becomes invisible to
     // `Object.keys`, `Object.entries` and `JSON.stringify` at once, by BEING a
     // symbol rather than by any rule about its spelling.
-    const std::vector<StringHeader*> ordered =
+    const StringKeyList ordered =
         rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
 
     const uint32_t total = static_cast<uint32_t>(ordered.size());

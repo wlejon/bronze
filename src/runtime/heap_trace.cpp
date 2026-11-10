@@ -39,11 +39,22 @@ static_assert(offsetof(ObjectHeader, shape) == 8 && offsetof(ObjectHeader, overf
 // A minor collection visits every root shape's prototype from rt_state.cpp's
 // root source instead (an old instance is not rescanned by one), and
 // verification checks only heap slots.
+//
+// A DICTIONARY object's keys are reached the same way: the table hangs off the
+// object's private shape, off the heap, and a string key there is an old one
+// (ObjectHeader::dictKeyToStore), alive for as long as its entry is. Old keys
+// are never moved and a minor collection decides nothing old, so only a full
+// collection visits them; the table belongs to this one object, so no other
+// trace reads it at the same time. A key stored while a marking cycle is open
+// is shaded where it is stored.
 void traceShapePrototype(const uint64_t* words, Tracer& t) {
     if (t.purpose() != Tracer::Purpose::Full) return;
     auto* shape = reinterpret_cast<Shape*>(static_cast<uintptr_t>(words[1]));
     if (!shape || !shape->root) return;
     t.visit(reinterpret_cast<uint64_t*>(&shape->root->prototype));
+    if (Dictionary* d = shape->dict) {
+        for (DictEntry& e : d->entries) t.visit_address(e.key.traceSlot());
+    }
 }
 
 void traceDynamicModuleFromWord(uint64_t bits, Tracer& t) {

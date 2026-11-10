@@ -105,7 +105,7 @@ Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot) {
         // be: a PropertyKey names an arena-interned shape string, which is
         // immortal and never moves, and each key is copied into the heap
         // straight into the rooted result one at a time.
-        const std::vector<PropertyKey> names =
+        const PropertyKeyList names =
             rtOwnKeysOrdered(t.asObject<ObjectHeader>(), /*enumerableOnly=*/false);
         Rooted<Value> out{Value(bronze_create_array(0))};
         uint32_t at = 0;

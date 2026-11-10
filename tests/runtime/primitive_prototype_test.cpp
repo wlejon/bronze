@@ -137,7 +137,7 @@ TEST_CASE("every member of the four intrinsic prototypes is non-enumerable") {
         Rooted<Value>{runtime::rtSymbolPrototype()},
     };
     for (Rooted<Value>& proto : protos) {
-        const std::vector<StringHeader*> keys =
+        const StringKeyList keys =
             runtime::rtOwnStringKeysOrdered(proto.get().asObject<ObjectHeader>());
         CHECK(keys.empty());
     }

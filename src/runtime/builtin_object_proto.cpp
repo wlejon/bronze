@@ -116,10 +116,11 @@ void fillFromShape(ObjectHeader* obj, const PropertyInfo& info, OwnPropertyDetai
 bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
     out = OwnPropertyDetail{};
     // ToPropertyKey (7.1.19) FIRST: it runs ToString, which allocates, so no
-    // header below may be read across it. What it hands back is arena-interned
-    // and immortal, which is what lets the string be read again after the
-    // allocations further down.
-    PropertyKey name = rtInternPropertyKey(keyVal);
+    // header below may be read across it. The key is rooted, and `name` (a
+    // local, which pins what it names, gc_contract.md 2.5) stays current
+    // across the allocations further down.
+    Rooted<Value> keyRoot{rtPropertyKeyValue(keyVal)};
+    PropertyKey name = PropertyKey::fromValue(keyRoot.get());
     const std::string key = name.isString() ? rtAsciiChars(name.string()) : std::string();
     uint32_t index = 0;
 

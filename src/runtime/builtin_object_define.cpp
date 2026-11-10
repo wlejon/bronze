@@ -639,9 +639,10 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     Rooted<Value> setter{Value::fromUndefined()};
     if (!decodeDescriptor(desc, d, value, getter, setter)) return false;
 
-    // The key is built before the object is disturbed, and interned so the
-    // entry can hold it forever.
-    PropertyKey name = rtInternPropertyKey(args[1]);
+    // The key is built before the object is disturbed, and rooted: a store
+    // makes whatever copy its storage keeps.
+    Rooted<Value> keyRoot{rtPropertyKeyValue(args[1])};
+    PropertyKey name = PropertyKey::fromValue(keyRoot.get());
     return applyToReceiver(self, name, d, value, getter, setter, throwOnRefusal);
 }
 
@@ -675,7 +676,8 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
     // rooted block, because the remaining descriptors' getters run and
     // allocate between a decode and its apply.
     std::vector<DecodedDescriptor> decoded(count);
-    std::vector<PropertyKey> names(count);
+    // The keys stay in `keys`, which is rooted; the apply loop reads each
+    // back from there, since a vector of them would be no root.
     RootedBlock payloads(count * 3);
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
@@ -688,7 +690,6 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         payloads.set(i * 3, value.get());
         payloads.set(i * 3 + 1, getter.get());
         payloads.set(i * 3 + 2, setter.get());
-        names[i] = rtInternPropertyKey(key.get());
     }
     for (uint32_t i = 0; i < count; ++i) {
         // Re-read from the block each turn: the collector keeps those slots
@@ -696,8 +697,10 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         Rooted<Value> value{Value(payloads.data()[i * 3])};
         Rooted<Value> getter{Value(payloads.data()[i * 3 + 1])};
         Rooted<Value> setter{Value(payloads.data()[i * 3 + 2])};
+        Rooted<Value> key{rtPropertyKeyValue(keys.get().asObject<ArrayHeader>()->getElem(i))};
         // DefinePropertyOrThrow: 20.1.2.3.1 step 5.b.
-        if (!applyToReceiver(target, names[i], decoded[i], value, getter, setter,
+        if (!applyToReceiver(target, PropertyKey::fromValue(key.get()), decoded[i], value, getter,
+                             setter,
                              /*throwOnRefusal=*/true)) {
             return false;
         }

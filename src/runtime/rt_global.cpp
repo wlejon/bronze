@@ -145,7 +145,7 @@ bool rtGlobalThisOwnLookup(const std::string& name, Value& out) {
     Rooted<Value> globRoot{rtGlobalThisObject()};
     if (!globRoot.get().isObject()) return false;
     Rooted<Value> key{rtMakeString(name)};
-    PropertyKey pkey = rtInternPropertyKey(key.get());
+    PropertyKey pkey = PropertyKey::fromValue(key.get());
     auto* obj = globRoot.get().asObject<ObjectHeader>();
     uint32_t slot = 0;
     if (!obj->shape || !obj->shape->lookupProperty(pkey, slot)) return false;
@@ -165,7 +165,7 @@ bool rtGlobalObjectBinding(const std::string& name, Value& out, bool& cacheable)
     Rooted<Value> globRoot{rtGlobalThisObject()};
     if (!globRoot.get().isObject()) return false;
     Rooted<Value> key{rtMakeString(name)};
-    const PropertyKey pkey = rtInternPropertyKey(key.get());
+    const PropertyKey pkey = PropertyKey::fromValue(key.get());
     auto* obj = globRoot.get().asObject<ObjectHeader>();
     PropertyInfo info;
     if (!obj->shape || !obj->shape->lookupProperty(pkey, info)) return false;

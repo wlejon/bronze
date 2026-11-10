@@ -680,7 +680,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // transition tree is the wrong structure for it: every lookup that misses
     // its cache walks a chain as long as the key count. The table it moves to
     // is hashed (dictionary.h), and the move is one-way, exactly as a delete's.
-    if (!shape->isDictionary() && shape->slotsUsedAfterAdd() > Shape::kDictionaryThreshold) {
+    // The same move for a computed key the transition tree will not grow for
+    // (Shape::refusesNewTransition): a map keyed by names nobody else has.
+    if (!shape->isDictionary() && (shape->slotsUsedAfterAdd() > Shape::kDictionaryThreshold ||
+                                   shape->refusesNewTransition(prop_name))) {
         runtime::ShapeLeaveReason why(ShapeLeave::Threshold);
         toDictionary(arena, self);
     }

@@ -431,6 +431,19 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     return out;
 }
 
+StringHeader* StringHeader::copyToOld(Heap& heap, Rooted<Value>& src) {
+    const size_t units = unitBytes(src.get().asString<StringHeader>());
+    const bool utf16 = src.get().asString<StringHeader>()->isUTF16();
+    // The units and the terminator every reader of the data may rely on.
+    const size_t payload = sizeof(uint32_t) * 2 + units + (utf16 ? sizeof(uint16_t) : 1);
+    auto* out = reinterpret_cast<StringHeader*>(heap.allocateOld(payload, Tag::String));
+    const StringHeader* from = src.get().asString<StringHeader>();
+    out->length = from->length;
+    out->flags = from->flags;
+    std::memcpy(out + 1, from + 1, payload - sizeof(uint32_t) * 2);
+    return out;
+}
+
 StringHeader* StringHeader::adoptIntoArena(NonMovingArena& arena, StringHeader* owned) {
     auto* table = static_cast<ArenaStringTable*>(arena.string_table());
     if (table == nullptr) {

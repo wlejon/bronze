@@ -500,6 +500,10 @@ struct ObjectHeader {
     static ObjectHeader* dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                     PropertyKey name, bool enumerable, bool accessor,
                                     uint32_t& out_slot);
+    // The form of `name` a dictionary entry keeps (dictionary.cpp): a symbol
+    // or an arena string as it is, else a string of the old generation. May
+    // allocate.
+    static PropertyKey dictKeyToStore(Heap& heap, NonMovingArena& arena, PropertyKey name);
 
     // Grow the out-of-line block so that `needed` overflow slots — or, for
     // ensureSlots, slot indices [0, count) — are addressable. Allocates, so
