@@ -4,6 +4,7 @@
 #include <map>
 
 #include "il/feedback_site.h"
+#include "il/il_pin.h"
 
 namespace bronze::il {
 
@@ -240,6 +241,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         if (inst.icMonomorphic) out += ", mono";
                         if (inst.icPolymorphic) out += ", poly";
                         if (inst.icAbsent) out += ", absent";
+                        if (inst.immI32 & kPropGetArrayLength) out += ", array-length";
                         if (inst.icChain != 0) {
                             out += ", chain " + std::to_string(inst.icChain & Instruction::kChainWaysMask);
                             if (inst.icChain & Instruction::kChainProto) out += "+proto";

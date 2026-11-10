@@ -686,7 +686,7 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             if (b == plan.header || plan.splitsOf[b].empty()) continue;
             if (!dominatesReachable(cfg, plan, b)) plan.repairNames = true;
         }
-    } else if (feedback != nullptr) {
+    } else if (feedback != nullptr || plan.repairLoopNames) {
         // A LOOP region's slow copy keeps its back edge, but a split below a
         // join is just as unable to name, through its dominator chain, what a
         // trampoline's path and the header's path both reach: after inlining,
@@ -732,7 +732,7 @@ bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& 
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
-                                      const RegionFeedback* feedback) {
+                                      const RegionFeedback* feedback, bool afterInlining) {
     std::vector<RegionPlan> plans;
     if (fn.blocks.empty()) return plans;
 
@@ -781,6 +781,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
         if (!innermost[li]) continue;
         RegionPlan plan;
         plan.header = loopHeaders[li];
+        plan.repairLoopNames = afterInlining;
         plan.blocks = loopBlocks[li];
         plan.inRegion.assign(fn.blocks.size(), false);
         for (il::BlockId b : plan.blocks) plan.inRegion[b] = true;
@@ -796,6 +797,21 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
         ++stats.regions;
 
         if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats, feedback)) continue;
+        // After inlining, a loop is taken for what it CARRIES: a header
+        // parameter the fast copy holds as a double (a `reduce`'s
+        // accumulator). A region that only trades a checked unbox for a
+        // guard splits an inlined body's joins for nothing (`some`'s
+        // `x === n - 1`, measured slower).
+        if (afterInlining) {
+            bool carries = false;
+            for (const il::BlockParam& p : fn.blocks[plan.header].params) {
+                if (p.id < plan.isCandidate.size() && plan.isCandidate[p.id] != 0) carries = true;
+            }
+            if (!carries) {
+                ++stats.refusedTooFew;
+                continue;
+            }
+        }
         // The region's single outside predecessor is where the entry chain is
         // spliced, and the chain RE-PASSES that edge's arguments — on the fast
         // edge as doubles, on a failed guard as the boxes they were. A

@@ -533,9 +533,11 @@ private:
             const std::unordered_map<il::ValueId, il::ValueId> none;
             typedSites_.clear();
             numCompares_ = &numCompares;
+            arrayReceivers_ = &arrayReceivers;
             const il::BlockId header =
                 copy(copiedBlocks, copied, loop.header, kKindArray, noGets, noSets, noSetOk, none, none, &arrayOps);
             numCompares_ = nullptr;
+            arrayReceivers_ = nullptr;
             copies.push_back({header, {}, typedSites_, true});
             il::Instruction jump = fn_.blocks[loop.preheader].instructions.back();
             jump.target.block = header;
@@ -738,6 +740,11 @@ private:
                 if (arrayOps && std::find(arrayOps->begin(), arrayOps->end(), std::make_pair(b, i)) != arrayOps->end()) {
                     inst.immI32 |= il::kElemFlagArrayReceiver;
                     typedSites_.push_back({out.id, static_cast<uint32_t>(out.instructions.size())});
+                } else if (arrayReceivers_ != nullptr && orig.op == il::Op::PropGet && orig.operands.size() == 1 &&
+                           orig.keyIndex < keys_.size() && keys_[orig.keyIndex] == "length" &&
+                           std::find(arrayReceivers_->begin(), arrayReceivers_->end(), orig.operands[0]) !=
+                               arrayReceivers_->end()) {
+                    inst.immI32 |= il::kPropGetArrayLength;
                 } else if (cmp != nullptr) {
                     il::Instruction c;
                     c.op = orig.op == il::Op::RelLt   ? il::Op::CmpLt
@@ -914,6 +921,9 @@ private:
     il::Function& fn_;
     const std::vector<std::string>& keys_;
     const std::vector<NumCompare>* numCompares_ = nullptr;
+    // The plain Array copy's tested receivers, whose `length` reads in it are
+    // the header's (il_pin.h kPropGetArrayLength).
+    const std::vector<il::ValueId>* arrayReceivers_ = nullptr;
     std::vector<il::BlockId> cold_;
     // The typed ops the last copy() made, by position in the copy.
     std::vector<std::pair<il::BlockId, uint32_t>> typedSites_;

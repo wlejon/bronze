@@ -910,7 +910,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         }
         // A loop region's repair can put a join's parameter in a block
         // numbered after the latch that reads it.
-        if (plan.feedback && !plan.entryRegion) orderAfterDominators(rewritten, built);
+        if ((plan.feedback || plan.repairLoopNames) && !plan.entryRegion) orderAfterDominators(rewritten, built);
     }
     if (!dominanceHolds(rewritten)) {
         ++stats.refusedSsa;

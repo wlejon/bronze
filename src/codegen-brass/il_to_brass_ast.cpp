@@ -223,6 +223,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PropGet:
             out.op = il2mir::BronzeOp::PropGet;
             out.index = inst.keyIndex;
+            out.imm_i64 = inst.immI32;  // il_pin.h kPropGetArrayLength
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
             out.is_mono = inst.icMonomorphic;

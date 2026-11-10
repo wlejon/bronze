@@ -146,6 +146,10 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         inlineGuardedMethods(mod, diags, &inlinedInto, &guesses, &coldLoops);
         if (diags.hasErrors()) return false;
         foldInlinedCallers(mod, inlinedInto);
+        // The loops inlined bodies brought (guard_region.h, `only`).
+        GuardRegionStats inlinedRegions;
+        applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto);
+        if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
     }
     // The own-slot calls inlining left: a direct entry behind the slot's
     // closure's code word.

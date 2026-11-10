@@ -408,10 +408,18 @@ public:
     void lower_elem_set_array(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict, int64_t flags);
     Value* lower_is_array(Builder& b, Value* obj);
     Value* lower_is_plain_array(Builder& b, Value* obj);
-    // `key in obj` (il_elem_array.cpp): an Array's own element answered inline.
     // CreateDataPropertyOrThrow (elem.define) on an open Array, inline (il_elem_array.cpp).
     void lower_elem_define_array(Builder& b, Value* obj, Value* key, Value* val);
-    Value* lower_has_index_array(Builder& b, Value* key, Value* obj);
+    // `key in obj` (il_elem_array.cpp): an Array's own element answered inline,
+    // and with `elem_out` the slot it loaded (the hole on every other arm).
+    Value* lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out = nullptr);
+    // A proven Array's `length` (il_pin.h kPropGetArrayLength), its box.
+    Value* lower_array_length(Builder& b, Value* obj);
+    // `$LengthOfArrayLike(O)` with an Array's header length inline.
+    Value* lower_length_of_array_like(Builder& b, Value* obj);
+    // A read whose `in` loaded its element (il_in_elem_fuse.cpp): `loaded`
+    // when no hole, else `full`, the read's own lowering, laid out cold.
+    Value* lower_elem_get_loaded(Builder& b, Value* loaded, const std::function<Value*(Builder&)>& full);
     // The proven word-view forms (il_elem_word_view.cpp).
     static bool elem_word_view_receiver(int64_t flags);
     Value* lower_elem_get_word_view(Builder& b, Value* obj, Value* index, int64_t flags);

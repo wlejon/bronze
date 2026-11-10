@@ -78,6 +78,15 @@ inline constexpr int32_t kElemFlagProvenInBounds = 1 << 17;
 inline constexpr int32_t kElemFlagArrayReceiver = 1 << 18;
 inline constexpr int32_t kElemFlagWordViewReceiver = 1 << 19;
 
+// `prop.get r, "length"` `immI32` (unused otherwise by a `prop.get`):
+// `r` is an Array, tested by a dominating `is.array` (the plain Array copy of
+// typed_loop_version.h), so the read is the header's length and nothing
+// else: an Array's `length` is its own non-configurable data property, which
+// no prototype, getter or proxy can answer in its place (10.4.2), and the
+// heap kind is fixed for the object's life. The backend loads it as the
+// Number it is, with no receiver test and no other arm.
+inline constexpr int32_t kPropGetArrayLength = 1;
+
 // `is.typed_array`'s kind selector for "a word view" (Int32Array,
 // Uint32Array, Float32Array or Float64Array, the element kinds 5..8 of
 // abi/bronze_abi_layout.h): outside every element kind's number, below

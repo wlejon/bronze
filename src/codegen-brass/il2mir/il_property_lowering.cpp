@@ -3,6 +3,7 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_property.h"
+#include "il/il_pin.h"
 #include "il/key.h"
 #include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
@@ -500,89 +501,6 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     return result;
 }
 
-// `obj.length` read inline for the three receivers whose length is not a slot:
-// a String, from its header; an Array, from its header (10.4.2's exotic `length`, which the runtime's
-// read answers the same way for every array, `arguments` included), and a
-// typed array, from its view header — but only when the runtime's own read
-// would answer from it (rtTypedArrayChainPristine): the view's shape is its
-// kind's intrinsic instance shape (no own property, its own prototype) and
-// the family was verified pristine at the current prototype-mutation epoch
-// (TLS ta_length_tbl). The header's length IS the getter's answer, 0 for a
-// detached or out-of-bounds view (typed_array.h keeps the truth in the
-// field). Any other object takes the site's way-0 guard when `mono`, and
-// everything else the helper.
-Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
-                                                     bool mono, bool is_family) {
-    Value* ptr = nullptr;
-    Value* is_obj = nullptr;
-    object_payload(b, obj, ptr, is_obj);
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "len_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_not_obj = b.append_block(prefix + "_not_obj");
-    BasicBlock* bb_str = b.append_block(prefix + "_str");
-    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
-    BasicBlock* bb_not_arr = b.append_block(prefix + "_not_arr");
-    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
-    BasicBlock* bb_ta_hit = b.append_block(prefix + "_ta_hit");
-    BasicBlock* bb_other = b.append_block(prefix + "_other");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(bb_merge, Type::i64());
-
-    b.position_at_end(cur);
-    b.build_br_if(is_obj, bb_obj, bb_not_obj);
-
-    // A String's `length` is its code-unit count, which nothing can redefine
-    // (22.1.4.1: an own, non-writable, non-configurable property of every
-    // String exotic object), and the header holds it for every string,
-    // a `+`-chain builder included (string.h).
-    b.position_at_end(bb_not_obj);
-    Value* tag = b.build_lshr(obj, b.build_iconst_i64(48));
-    b.build_br_if(b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), bb_str, bb_slow);
-
-    b.position_at_end(bb_str);
-    Value* str = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(0x0000FFFFFFFFFFFFULL)));
-    Value* str_len = b.build_zext_i64(b.build_load(Type::i32(), str, BRONZE_ABI_STRING_LENGTH_OFFSET));
-    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(str_len))});
-
-    b.position_at_end(bb_obj);
-    constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
-    constexpr int32_t kViewHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
-    Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr);
-
-    b.position_at_end(bb_arr);
-    Value* arr_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(arr_len))});
-
-    b.position_at_end(bb_not_arr);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kViewHeaderLow)), bb_ta, bb_other);
-
-    b.position_at_end(bb_ta);
-    Value* kind = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET));
-    b.build_br_if(typed_array_chain_pristine(b, ptr, kind), bb_ta_hit, bb_slow);
-
-    b.position_at_end(bb_ta_hit);
-    Value* ta_len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(ta_len))});
-
-    // A plain object's `length` is an ordinary property: the site's way 0
-    // when the IL calls it monomorphic, the helper otherwise.
-    b.position_at_end(bb_other);
-    if (mono) {
-        b.build_br(bb_merge, {lower_prop_get_mono(b, obj, key_index, site, is_family)});
-    } else {
-        b.build_br(bb_slow);
-    }
-
-    b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
-
-    b.position_at_end(bb_merge);
-    return result;
-}
-
 void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
                                                   uint32_t elem_index, Value* val, uint32_t strict,
                                                   const IcSite& site, bool val_is_primitive) {
@@ -694,6 +612,10 @@ bool lower_property_instruction(
                 Value* ta_len = nullptr;
                 if (get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len)) {
                     res_val = prop_lowering.box_number(b, b.build_sitofp_f64_i64(ta_len));
+                    return true;
+                }
+                if ((inst_ast.imm_i64 & bronze::il::kPropGetArrayLength) != 0) {  // il_pin.h
+                    res_val = prop_lowering.lower_array_length(b, ensure_type(get_opd(0), Type::i64()));
                     return true;
                 }
             }
@@ -907,8 +829,13 @@ bool lower_property_instruction(
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
-            res_val = lowering->run_once() ? prop_lowering.lower_elem_get_call(b, obj_val, idx_val)
-                                           : prop_lowering.lower_elem_get(b, obj_val, idx_val, inst_ast.imm_i64);
+            auto full = [&](Builder& fb) {
+                return lowering->run_once() ? prop_lowering.lower_elem_get_call(fb, obj_val, idx_val)
+                                            : prop_lowering.lower_elem_get(fb, obj_val, idx_val, inst_ast.imm_i64);
+            };
+            // Or the element the `in` before it loaded (il_in_elem_fuse.cpp).
+            Value* loaded = lowering->in_element_for(inst_ast.result_id);
+            res_val = loaded ? prop_lowering.lower_elem_get_loaded(b, loaded, full) : full(b);
             return true;
         }
 

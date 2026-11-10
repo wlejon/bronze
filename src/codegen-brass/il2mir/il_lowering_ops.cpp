@@ -619,7 +619,14 @@ bool lower_ops_instruction(
         }
 
         case BronzeOp::IsNumber: {
-            Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
+            // A double, or a box of one made here (an array's header length,
+            // a typed element), is a Number without a test.
+            Value* opd = get_opd(0);
+            if (opd != nullptr && (opd->type() == Type::f64() || boxed_f64_source(opd) != nullptr)) {
+                res_val = b.build_iconst_i32(1);
+                return true;
+            }
+            Value* src = lowering->ensure_type(opd, Type::i64(), b);
             Value* limit = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
             res_val = b.build_ule(src, limit);
             return true;
@@ -725,6 +732,14 @@ bool lower_ops_instruction(
             // The inline Array-element arm (il_elem_array.cpp); a key that is
             // not an index takes its helper.
             if (lowering->prop_lowering().enable_inlined_fastpaths()) {
+                // A read of the same element on the true edge takes the slot
+                // this loads (il_in_elem_fuse.cpp).
+                if (lowering->in_loads_element(inst_ast.result_id)) {
+                    Value* elem = nullptr;
+                    res_val = lowering->prop_lowering().lower_has_index_array(b, get_opd(0), op1, &elem);
+                    lowering->note_in_element(inst_ast.result_id, elem);
+                    return true;
+                }
                 res_val = lowering->prop_lowering().lower_has_index_array(b, get_opd(0), op1);
                 return true;
             }

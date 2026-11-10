@@ -357,8 +357,15 @@ inline constexpr uint64_t kFeedbackHotExecutions = 256;
 //
 // With `feedback`, the profile-guided run (above): only blocks no earlier
 // rewrite made a copy of are considered, and only profiled seeds count.
+//
+// With `only`, just those functions (by index) are examined. The static run
+// is made a second time that way after guarded inlining, over the functions
+// it changed: a loop that arrives in an inlined body (a self-hosted
+// `reduce`'s, with the callback's `a + x` inlined into it) is a region the
+// first run could not see, and like the profile-guided run it skips the
+// blocks an earlier rewrite made copies of.
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr,
-                         const RegionFeedback* feedback = nullptr);
+                         const RegionFeedback* feedback = nullptr, const std::vector<uint32_t>* only = nullptr);
 
 // Prints the counters to stderr under `BRONZE_GUARDED_REGION_STATS=1`, and does
 // nothing otherwise. `label` names the run (`guard`, `guard-fb`).
@@ -452,6 +459,11 @@ struct RegionPlan {
     // block reachable from it: the slow copy's names are re-derived after the
     // rewrite rather than read off the dominator chain alone.
     bool repairNames = false;
+    // A LOOP region whose slow copy's names may be repaired as the
+    // profile-guided run's are: set for the static run after inlining
+    // (`applyGuardedRegions`' `only`), whose loops come from inlined bodies
+    // with guards below a join (a self-hosted `reduce`'s `k in O` arm).
+    bool repairLoopNames = false;
     il::BlockId header = il::kNoBlock;
     // The region's blocks, ascending. `inRegion` is the same set by block id.
     std::vector<il::BlockId> blocks;
@@ -681,7 +693,7 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
-                                      const RegionFeedback* feedback = nullptr);
+                                      const RegionFeedback* feedback = nullptr, bool afterInlining = false);
 
 // Applies one plan to `fn`. Returns false when the rewrite would not have been
 // dominance-correct, in which case `fn` is untouched. `alreadyBuilt` is

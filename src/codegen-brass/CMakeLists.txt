@@ -34,6 +34,8 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_bridge_verifier.cpp
     il2mir/il_elem_lowering.cpp
     il2mir/il_elem_array.cpp
+    il2mir/il_in_elem_fuse.cpp
+    il2mir/il_prop_length.cpp
     il2mir/il_elem_word_view.cpp
     il2mir/il_elem_stub.cpp
     il2mir/il_iter_lowering.cpp

@@ -638,6 +638,10 @@ bool IlLowering::lower_instruction(
                 number_bits_ids_.count(inst_ast.operands[0])) {
                 // The read was loaded as the double these bits are.
                 res_val = val_map.at(inst_ast.operands[0]);
+            } else if (inst_ast.result_type == BronzeType::F64 && boxed_f64_source(op0) != nullptr) {
+                // A box made here of a double (an array's header length, a
+                // typed element): that double, whichever unbox this is.
+                res_val = boxed_f64_source(op0);
             } else if (inst_ast.result_type == BronzeType::F64) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 if (inst_ast.raw_unbox) {
@@ -673,6 +677,11 @@ bool IlLowering::lower_instruction(
             std::string callee_name = resolve_callee(inst_ast.callee_name);
             if (inst_ast.callee_name.rfind("__bronze_global_read_k", 0) == 0) {
                 if ((res_val = lower_global_read(this, b, inst_ast, callee_name))) break;
+            }
+            if (callee_name == "bronze_sh_length_of_array_like" && inst_ast.operands.size() == 1 &&
+                prop_lowering().enable_inlined_fastpaths()) {
+                res_val = prop_lowering().lower_length_of_array_like(b, ensure_type(get_opd(0), Type::i64(), b));
+                break;
             }
             Function* callee = fn->parent()->get_function(callee_name);
             Type callee_ret = callee ? callee->return_type() : lower_type(inst_ast.result_type);

@@ -89,7 +89,9 @@ Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
 // an index, out of bounds, a hole — is the helper's: those are the cases
 // where the prototype chain (a proxy on it included) is the answer. The loops
 // of the self-hosted Array builtins (src/selfhost) ask this once per index.
-Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Value* obj) {
+// With `elem_out`, the slot the inline arm loaded is handed out too, the hole
+// on every other arm (il_in_elem_fuse.cpp).
+Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Value* obj, Value** elem_out) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "in_a_" + std::to_string(fn->next_block_id());
@@ -100,6 +102,13 @@ Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Val
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i32());
+    Value* loaded = elem_out != nullptr ? b.add_block_param(bb_merge, Type::i64()) : nullptr;
+    // A Number key asks about an element, which the array arm answers: its
+    // helper is the exception (a hole, another receiver), so it is laid out
+    // and allocated as one. A string key's usual answer is the helper's.
+    if (key->type() == Type::f64() || key->type() == Type::i32() || boxed_f64_source(key) != nullptr) {
+        bb_slow->set_cold();
+    }
 
     b.position_at_end(cur);
     Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
@@ -125,12 +134,44 @@ Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Val
     Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx, head), 8,
                                        static_cast<int32_t>(kBronzeHdrBytes));
-    b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_slow, {}, bb_merge,
-                  {b.build_iconst_i32(1)});
+    std::vector<Value*> hit = {b.build_iconst_i32(1)};
+    if (loaded != nullptr) hit.push_back(elem);
+    b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_slow, {}, bb_merge, hit);
 
     b.position_at_end(bb_slow);
     Value* has = b.build_call("bronze_has_property", Type::i32(), {boxed_elem_key(b, key), obj});
-    b.build_br(bb_merge, {b.build_and(has, b.build_iconst_i32(1))});
+    std::vector<Value*> asked = {b.build_and(has, b.build_iconst_i32(1))};
+    if (loaded != nullptr) asked.push_back(iconst(b, BRONZE_ABI_HOLE_BITS));
+    b.build_br(bb_merge, asked);
+
+    b.position_at_end(bb_merge);
+    if (elem_out != nullptr) *elem_out = loaded;
+    return result;
+}
+
+// An element read the `in` before it loaded (il_in_elem_fuse.cpp): its slot
+// when the `in`'s inline arm answered, else the read's own lowering, `full`,
+// laid out cold.
+Value* PropertyLoweringHelper::lower_elem_get_loaded(Builder& b, Value* loaded,
+                                                     const std::function<Value*(Builder&)>& full) {
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "elem_get_in_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_full = b.append_block(prefix + "_full");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_ne(loaded, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_merge, {loaded}, bb_full, {});
+
+    b.position_at_end(bb_full);
+    const size_t first = fn->block_count();
+    Value* read = full(b);
+    b.build_br(bb_merge, {read});
+    bb_full->set_cold();
+    for (size_t i = first; i < fn->block_count(); ++i) {
+        if (fn->blocks()[i] != bb_merge) fn->blocks()[i]->set_cold();
+    }
 
     b.position_at_end(bb_merge);
     return result;
@@ -145,6 +186,9 @@ Value* PropertyLoweringHelper::lower_elem_get_array(Builder& b, Value* obj, Valu
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i64());
+    // The receiver is an Array: the helper is a hole, an index past the end
+    // or one that is no index, never the loop's usual element.
+    bb_slow->set_cold();
 
     b.position_at_end(cur);
     Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
@@ -181,6 +225,7 @@ void PropertyLoweringHelper::lower_elem_set_array(Builder& b, Value* obj, Value*
     BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    bb_slow->set_cold();
 
     b.position_at_end(cur);
     Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
@@ -236,6 +281,9 @@ void PropertyLoweringHelper::lower_elem_define_array(Builder& b, Value* obj, Val
     BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    // Only the self-hosted builtins define elements this way, into the array
+    // they created: the helper is the exception.
+    bb_slow->set_cold();
 
     b.position_at_end(cur);
     Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));

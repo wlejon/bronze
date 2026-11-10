@@ -353,6 +353,50 @@ uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) 
     return dropped;
 }
 
+uint32_t threadForwardingBlocks(il::Function& fn) {
+    uint32_t threaded = 0;
+    for (;;) {
+        const Cfg cfg = buildCfg(fn);
+        const size_t n = fn.blocks.size();
+        std::vector<uint32_t> incoming(n, 0);
+        std::vector<uint8_t> isHandler(n, 0);
+        for (const auto& block : fn.blocks) {
+            if (block.handler != il::kNoBlock && block.handler < n) isHandler[block.handler] = 1;
+            if (cfg.rpoIndex[block.id] == UINT32_MAX) continue;
+            for (const auto& inst : block.instructions) {
+                for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                    if (t->block < n) ++incoming[t->block];
+                }
+            }
+        }
+        auto forwards = [&](il::BlockId t) {
+            if (t >= n || incoming[t] != 1 || isHandler[t] != 0) return false;
+            const il::Block& block = fn.blocks[t];
+            return block.params.empty() && block.instructions.size() == 1 &&
+                   block.instructions[0].op == il::Op::Jump && block.instructions[0].target.block != t;
+        };
+        uint32_t round = 0;
+        for (auto& block : fn.blocks) {
+            if (cfg.rpoIndex[block.id] == UINT32_MAX) continue;
+            for (auto& inst : block.instructions) {
+                for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                    if (t->block == block.id || !forwards(t->block)) continue;
+                    // One incoming edge, so `t->args` is empty (no params).
+                    *t = fn.blocks[t->block].instructions[0].target;
+                    ++round;
+                }
+            }
+        }
+        if (round == 0) break;
+        threaded += round;
+    }
+    if (threaded != 0) {
+        std::vector<uint8_t> unused(fn.blocks.size(), 0);
+        pruneUnreachable(fn, unused);
+    }
+    return threaded;
+}
+
 void cseFastElemGetTyped(il::Function& fn) {
     struct CachedRead {
         il::ValueId obj = il::kNoValue;

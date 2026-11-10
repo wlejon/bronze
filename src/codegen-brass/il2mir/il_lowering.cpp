@@ -641,6 +641,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     current_module_delta_ = nullptr;
     begin_hoisting(nullptr);
     analyze_function(fn_ast);
+    pair_in_element_reads(fn_ast);
 
     // The argv block a call stages its arguments in (il_lowering_calls.h).
     const uint32_t widest_method_argc = argv_block_words(this, fn_ast);

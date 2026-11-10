@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "lower/guard_region.h"
+#include "lower/guard_region_cfg.h"
 
 namespace bronze::lower {
 
@@ -134,7 +135,7 @@ namespace {
 // per-function trace is the difference between the counters before and after
 // this call, which a body full of `continue` could not report.
 bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
-                     GuardRegionStats& stats, const RegionFeedback* feedback) {
+                     GuardRegionStats& stats, const RegionFeedback* feedback, bool afterInlining) {
     size_t originalInsts = 0;
     for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
     size_t added = 0;
@@ -161,7 +162,7 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         // counting those again would report one loop as several.
         GuardRegionStats discard;
         std::vector<RegionPlan> plans =
-            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback);
+            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining);
         if (plans.empty()) break;
 
         const RegionPlan& plan = plans.front();
@@ -213,7 +214,8 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
 
 }  // namespace
 
-bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const RegionFeedback* feedback) {
+bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const RegionFeedback* feedback,
+                         const std::vector<uint32_t>* only) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
     // A `--census` build is an INSTRUMENT: what it measures is where lowering
@@ -222,11 +224,23 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const R
     // census run is counts and never times.
     if (!module.censusOutPath.empty()) return false;
 
+    std::vector<uint8_t> selected;
+    if (only != nullptr) {
+        selected.assign(module.functions.size(), 0);
+        for (uint32_t f : *only) {
+            if (f < selected.size()) selected[f] = 1;
+        }
+    }
     bool changed = false;
-    for (il::Function& fn : module.functions) {
+    for (size_t f = 0; f < module.functions.size(); ++f) {
+        if (only != nullptr && selected[f] == 0) continue;
+        il::Function& fn = module.functions[f];
+        // An inlined body's loop exits through forwarding blocks
+        // (guard_region_cfg.h); threaded, its exit edges carry its values.
+        if (only != nullptr && threadForwardingBlocks(fn) != 0) changed = true;
         ++stats.functions;
         const GuardRegionStats before = stats;
-        if (examineFunction(fn, module.keyConstants, stats, feedback)) changed = true;
+        if (examineFunction(fn, module.keyConstants, stats, feedback, only != nullptr)) changed = true;
         if (!guardRegionTraceOn()) continue;
         const std::string delta = traceDelta(before, stats);
         if (!delta.empty()) {

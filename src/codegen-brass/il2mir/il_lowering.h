@@ -203,6 +203,17 @@ public:
     void memo_restore(std::vector<std::pair<uint32_t, Value*>> m) { shape_memo_ = std::move(m); }
     void memo_kill() { shape_memo_.clear(); }
 
+    // `k in O` FUSED WITH `O[k]` (il_in_elem_fuse.cpp): an element read the
+    // `in` before it already loaded, on the true edge with nothing between
+    // that can write or collect. `in_loads_element(in_id)` says whether a
+    // paired read wants the `in`'s element; the `in` hands it over with
+    // `note_in_element` (the element's bits, or the hole when its inline arm
+    // did not answer); `in_element_for(get_id)` is that value for a paired
+    // read, else null.
+    bool in_loads_element(uint32_t in_id) const;
+    void note_in_element(uint32_t in_id, Value* elem) { in_elements_[in_id] = elem; }
+    Value* in_element_for(uint32_t get_id) const;
+
     // 0/1 values (il_lowering_bool.cpp): a result the dynamic compare and
     // ToBoolean lowerings merge from comparisons, noted where it is made, so
     // a branch on its negation can branch on it with its targets swapped.
@@ -434,6 +445,11 @@ private:
     bool shape_memo_off_ = false;
     void memo_begin_function(const BronzeFunction& fn_ast);
     std::unordered_set<const Value*> boolean_values_;
+    // The current function's fused `in` / element read pairs: read id -> in
+    // id, and each lowered `in`'s element (il_in_elem_fuse.cpp).
+    std::unordered_map<uint32_t, uint32_t> in_element_reads_;
+    std::unordered_map<uint32_t, Value*> in_elements_;
+    void pair_in_element_reads(const BronzeFunction& fn_ast);
 };
 
 } // namespace il2mir

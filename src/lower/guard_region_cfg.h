@@ -88,6 +88,17 @@ uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
 // block must be reachable (run after `pruneUnreachable`).
 void orderAfterDominators(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
 
+// Retargets each edge into a FORWARDING block — no parameters, nothing but
+// `jump U(args)`, one incoming edge, no block's handler — to U(args), and
+// prunes what that orphans. The args are defined above the forwarding block,
+// so they dominate the edge's source as well. Returns the edges retargeted.
+//
+// What it is for: an inlined body leaves its loop's exit as a chain of such
+// blocks whose last one reads the loop-carried value by dominance, where a
+// region needs it on the exit edge as an argument (the edge is where the fast
+// copy re-boxes it). Threaded, the header's exit edge carries the value.
+uint32_t threadForwardingBlocks(il::Function& fn);
+
 // A list of renames, and the name a value has under it.
 using Rename = std::vector<std::pair<il::ValueId, il::ValueId>>;
 inline il::ValueId renamed(const Rename& map, il::ValueId v) {

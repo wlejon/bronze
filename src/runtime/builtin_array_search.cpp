@@ -2,26 +2,84 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace bronze::runtime {
 
+namespace {
+
+// IsStrictlyEqual (7.2.15) of each element of an Array's block in [from, end)
+// against `needle`, split by the needle's type so the walk is a compare per
+// element: a Number matches a Number of the same value (NaN nothing, so the
+// walk is skipped); a String or a BigInt asks bronze_strict_eq only of
+// elements of its own tag; anything else is equal exactly when the bits are.
+// A hole is a tag no needle carries, so it matches nothing and needs no test
+// of its own. Returns the index, or -1.
+//
+// A needle that is no String or BigInt compares without a call, so nothing
+// here allocates and the block may be walked through a bare pointer.
+int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value needle) {
+    end = std::min(end, arr->length);  // a fromIndex valueOf may have shrunk it
+    if (needle.isNumber()) {
+        const double n = needle.asNumber();
+        if (std::isnan(n)) return -1;
+        const Value* elems = arr->elementsData();
+        for (uint32_t i = from; i < end; ++i) {
+            if (elems[i].isNumber() && elems[i].asNumber() == n) return i;
+        }
+        return -1;
+    }
+    const Value* elems = arr->elementsData();
+    for (uint32_t i = from; i < end; ++i) {
+        if (elems[i].rawBits() == needle.rawBits()) return i;
+    }
+    return -1;
+}
+
+int64_t strictSearchBlock(Rooted<Value>& self, uint32_t from, uint32_t end, Value needle) {
+    if (!needle.isString() && !needle.isBigInt()) {
+        return strictSearchPlain(self.get().asObject<ArrayHeader>(), from, end, needle);
+    }
+    const uint16_t tag = needle.tag();
+    Rooted<Value> rootedNeedle{needle};
+    for (uint32_t i = from; i < end; ++i) {
+        // Re-read through the roots: a String compare may flatten a rope.
+        const ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+        if (i >= arr->length) return -1;
+        const Value elem = arr->elementsData()[i];
+        if (elem.tag() == tag && bronze_strict_eq(elem.rawBits(), rootedNeedle.get().rawBits())) return i;
+    }
+    return -1;
+}
+
+}  // namespace
+
 uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // `array.indexOf(x)` with no fromIndex, x no String or BigInt: nothing
+    // converts or allocates, so the walk needs no roots (what the steps below
+    // compute for this case, without their bookkeeping).
+    if (argc < 2 && isArray(Value(thisBits))) {
+        const Value needle = argc > 0 ? Value(argv[0]) : Value::fromUndefined();
+        if (!needle.isString() && !needle.isBigInt() && !rtArrayChainHoldsIndex(Value(thisBits))) {
+            const ArrayHeader* arr = Value(thisBits).asObject<ArrayHeader>();
+            return Value::fromDouble(static_cast<double>(strictSearchPlain(arr, 0, arr->length, needle))).rawBits();
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> self{toObject(Value(thisBits), "indexOf")};
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
+    // 23.1.3.17 step 3: an empty object answers before fromIndex is converted.
+    if (len == 0) return Value::fromDouble(-1.0).rawBits();
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
     const Value needle = args[0];
     // The block walk answers a hole as absent, which is the chain's answer too
     // unless the chain holds an index; the generic walk reads through it.
     if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
-        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
-        for (uint32_t i = from; i < len; ++i) {
-            if (!arr->hasElem(i)) continue;
-            if (bronze_strict_eq(arr->getElem(i).rawBits(), needle.rawBits())) {
-                return Value::fromDouble(i).rawBits();
-            }
-        }
+        const int64_t found = strictSearchBlock(self, from, len, needle);
+        return Value::fromDouble(static_cast<double>(found)).rawBits();
     } else {
         for (uint32_t i = from; i < len; ++i) {
             if (!rtArrayLikeHasElement(self, i)) continue;
@@ -77,6 +135,8 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
+    // 23.1.3.16 step 3: an empty object answers before fromIndex is converted.
+    if (len == 0) return Value::fromBool(false).rawBits();
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
     // 23.1.3.16 reads every index with Get, so a hole is `undefined` only when
     // the chain has nothing for it.
