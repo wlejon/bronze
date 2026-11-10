@@ -880,6 +880,40 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
     // kind the probe checks for itself.
     const ElemProbe probe = elemCacheProbe(objVal, Value(idxBits));
     if (probe.hit) return probe.value.rawBits();
+    // Fast path for computed string reads on ordinary plain objects (such as
+    // `cache = Object.create(null)` maps in dictionary or transition-tree mode),
+    // avoiding `Rooted` setup and `rtUtf8Chars` heap `std::string` allocation.
+    if (objVal.isObject() && Value(idxBits).isString()) {
+        HeapObjectHeader* plainHdr = objVal.asObject<HeapObjectHeader>();
+        if (plainHdr->flags == HeapKind::Plain) {
+            auto* plainObj = reinterpret_cast<ObjectHeader*>(plainHdr);
+            Shape* sh = plainObj->shape;
+            if (sh && plainObj->internalSlotCount() == 0) {
+                StringHeader* strKey = Value(idxBits).asString<StringHeader>();
+                if (sh->isDictionary()) {
+                    if (const DictEntry* de = sh->dict->find(PropertyKey::forString(strKey))) {
+                        if (!de->accessor) return plainObj->getSlot(de->slot).rawBits();
+                    } else if (sh->prototypeValue().isNull()) {
+                        return BRONZE_ABI_UNDEFINED_BITS;
+                    }
+                } else if (sh->prototypeValue().isNull()) {
+                    PropertyInfo info;
+                    if (sh->lookupProperty(PropertyKey::forString(strKey), info)) {
+                        if (!info.accessor) {
+                            if (probe.entry && !censusFillsSuppressed()) {
+                                InlineCacheSite site{};
+                                site.ways[0].fill(sh, info.slot, 0);
+                                elemCacheFill(probe, strKey, site);
+                            }
+                            return plainObj->getSlot(info.slot).rawBits();
+                        }
+                    } else if (!strKey->isArena()) {
+                        return BRONZE_ABI_UNDEFINED_BITS;
+                    }
+                }
+            }
+        }
+    }
     {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};

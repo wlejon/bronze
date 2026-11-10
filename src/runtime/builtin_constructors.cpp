@@ -158,6 +158,56 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> ctor{Value(thisBits)};
     const bool constructed = buildsThroughThis(ctor.get());
 
+    if (!constructed && mapFn.get().isUndefined() && src.get().isString() &&
+        rtStringIteratorPristine()) {
+        const uint32_t srcLen = src.get().asString<StringHeader>()->getLength();
+        StringHeader* const* latin1Chars = StringHeader::latin1CharTableInArena(rtArena());
+        if (src.get().asString<StringHeader>()->isLatin1()) {
+            if (!arrayLengthFits(srcLen)) return Value::fromUndefined().rawBits();
+            ArrayHeader* arr = ArrayHeader::create(rtHeap(), srcLen);
+            arr->length = srcLen;
+            if (srcLen > 0) {
+                const auto* bytes = reinterpret_cast<const uint8_t*>(
+                    src.get().asString<StringHeader>()->latin1Data());
+                auto* dst = reinterpret_cast<Value*>(arr->elementsData());
+                for (uint32_t i = 0; i < srcLen; ++i) {
+                    dst[i] = Value::fromString(latin1Chars[bytes[i]]);
+                }
+            }
+            return Value::fromObject(arr).rawBits();
+        }
+        const uint16_t* u0 = src.get().asString<StringHeader>()->utf16Data();
+        uint32_t cpCount = 0;
+        for (uint32_t i = 0; i < srcLen; ++i) {
+            ++cpCount;
+            if (u0[i] >= 0xD800 && u0[i] <= 0xDBFF && i + 1 < srcLen &&
+                u0[i + 1] >= 0xDC00 && u0[i + 1] <= 0xDFFF) {
+                ++i;
+            }
+        }
+        if (!arrayLengthFits(cpCount)) return Value::fromUndefined().rawBits();
+        Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), cpCount))};
+        out.get().asObject<ArrayHeader>()->length = cpCount;
+        uint32_t writeAt = 0;
+        for (uint32_t i = 0; i < srcLen; ++i) {
+            const uint16_t* u = src.get().asString<StringHeader>()->utf16Data();
+            const uint16_t first = u[i];
+            Value piece;
+            if (first <= 0xFF) {
+                piece = Value::fromString(latin1Chars[first]);
+            } else if (first >= 0xD800 && first <= 0xDBFF && i + 1 < srcLen &&
+                       u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF) {
+                const uint16_t pair[2] = {first, u[i + 1]};
+                ++i;
+                piece = Value::fromString(StringHeader::createUTF16(rtHeap(), pair, 2));
+            } else {
+                piece = Value::fromString(StringHeader::createUTF16(rtHeap(), &first, 1));
+            }
+            out.get().asObject<ArrayHeader>()->elementsData()[writeAt++] = piece;
+        }
+        return out.get().rawBits();
+    }
+
     // Step 4: `GetMethod(items, @@iterator)` — evaluated once, and opened
     // through `rtGetIteratorFromMethod` when a callable method was read so
     // an accessor or Proxy `get` trap never runs a second time.
@@ -230,6 +280,22 @@ uint64_t stringConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
 // "AB" and a value outside the range wraps rather than being clamped or
 // rejected — the truncation ECMA-262 7.1.7 specifies.
 uint64_t stringFromCharCode(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return Value::fromString(StringHeader::emptyInArena(rtArena())).rawBits();
+    if (argc == 1 && Value(argv[0]).isNumber()) {
+        const double n = Value(argv[0]).asNumber();
+        uint16_t code = 0;
+        if (!std::isnan(n) && !std::isinf(n)) {
+            const double wrapped = std::fmod(std::trunc(n), 65536.0);
+            code = static_cast<uint16_t>(
+                static_cast<int32_t>(wrapped < 0 ? wrapped + 65536.0 : wrapped));
+        }
+        if (code <= 0xFF) {
+            return Value::fromString(
+                       StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(code)))
+                .rawBits();
+        }
+        return Value::fromString(StringHeader::createUTF16(rtHeap(), &code, 1)).rawBits();
+    }
     RootedArgs args(argc, argv);
     std::vector<uint16_t> units;
     units.reserve(args.count());
@@ -260,6 +326,15 @@ uint64_t stringFromCharCode(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
 // code point out of range names a bug in the caller where a code UNIT out of
 // range is the defined truncation.
 uint64_t stringFromCodePoint(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return Value::fromString(StringHeader::emptyInArena(rtArena())).rawBits();
+    if (argc == 1 && Value(argv[0]).isNumber()) {
+        const double n = Value(argv[0]).asNumber();
+        if (std::isfinite(n) && std::trunc(n) == n && n >= 0.0 && n <= 0xFF) {
+            return Value::fromString(
+                       StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(n)))
+                .rawBits();
+        }
+    }
     RootedArgs args(argc, argv);
     std::vector<uint16_t> units;
     units.reserve(args.count());
@@ -512,16 +587,18 @@ Value ctorObject(const CtorEntry& entry) {
 // decides between the iterator path and the array-like one and getting it
 // wrong turns `Array.from(userIterable)` into an empty array.
 bool rtHasIteratorMethod(Rooted<Value>& src, Rooted<Value>* methodOut) {
-    if (src.get().isString()) return true;
-    if (!src.get().isObject()) return false;
-    const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
-    if (flags == HeapKind::Array &&
-        !src.get().asObject<ArrayHeader>()->properties.isObject()) {
-        return true;
-    }
-    if (flags == TypedArrayHeader::kFlags &&
-        rtTypedArrayIteratorPristine(src.get().asObject<TypedArrayHeader>())) {
-        return true;
+    if (src.get().isString() && rtStringIteratorPristine()) return true;
+    if (!src.get().isObject() && !src.get().isString()) return false;
+    if (src.get().isObject()) {
+        const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
+        if (flags == HeapKind::Array &&
+            !src.get().asObject<ArrayHeader>()->properties.isObject()) {
+            return true;
+        }
+        if (flags == TypedArrayHeader::kFlags &&
+            rtTypedArrayIteratorPristine(src.get().asObject<TypedArrayHeader>())) {
+            return true;
+        }
     }
     Rooted<Value> key{rtIteratorKey()};
     Rooted<Value> method{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};

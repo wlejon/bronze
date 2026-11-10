@@ -910,6 +910,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
         memo_end_block(blk_ast, bb, fn, first_new_block);
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
+        if (blk_ast.cold) {
+            for (size_t bi = first_new_block; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
+        }
     }
     run_once_ = false;
     in_loop_ = false;

@@ -295,6 +295,53 @@ std::string escapeRegExpPattern(const std::string& pattern) {
     return out;
 }
 
+struct MatchPropsShapes {
+    Shape* nullRoot{nullptr};
+    Shape* match3{nullptr};
+    Shape* matchWithIdx{nullptr};
+    Shape* indices1{nullptr};
+    uint32_t indexSlot{0};
+    uint32_t inputSlot{0};
+    uint32_t groupsSlot{0};
+    uint32_t indicesSlot{0};
+    uint32_t idxGroupsSlot{0};
+};
+
+// Cached per-thread hidden classes for the null-prototype `properties` bucket of
+// match arrays (`index`, `input`, `groups`, optional `indices`) and `/d` index
+// arrays (`groups`), keyed on the current thread's null-prototype root shape so
+// thread-state teardown/recreation rebuilds cleanly.
+const MatchPropsShapes& matchPropsShapes() {
+    static thread_local MatchPropsShapes cached;
+    Shape* root = rtRootShapeForPrototype(Value::fromNull());
+    if (BRONZE_LIKELY(cached.nullRoot == root)) return cached;
+
+    NonMovingArena& arena = rtArena();
+    auto internAscii = [&](std::string_view sv) {
+        StringHeader* s = StringHeader::adoptIntoArena(
+            arena, StringHeader::createLatin1InArena(arena, sv.data(),
+                                                     static_cast<uint32_t>(sv.size())));
+        return PropertyKey::forString(s);
+    };
+
+    MatchPropsShapes built;
+    built.nullRoot = root;
+    Shape* s1 = root->addPropertyKey(arena, internAscii("index"), built.indexSlot,
+                                     /*is_enumerable=*/true, /*is_accessor=*/false,
+                                     /*is_writable=*/true, /*is_configurable=*/true,
+                                     SlotRepr::Boxed);
+    Shape* s2 = s1->addPropertyKey(arena, internAscii("input"), built.inputSlot,
+                                   true, false, true, true, SlotRepr::Boxed);
+    built.match3 = s2->addPropertyKey(arena, internAscii("groups"), built.groupsSlot,
+                                      true, false, true, true, SlotRepr::Boxed);
+    built.matchWithIdx = built.match3->addPropertyKey(
+        arena, internAscii("indices"), built.indicesSlot, true, false, true, true, SlotRepr::Boxed);
+    built.indices1 = root->addPropertyKey(arena, internAscii("groups"), built.idxGroupsSlot,
+                                          true, false, true, true, SlotRepr::Boxed);
+    cached = built;
+    return cached;
+}
+
 // 22.2.7.8 MakeMatchIndicesIndexPairArray: the same captures as POSITIONS.
 // Entry i is the two-element array `[start, end]` — half-open, like every other
 // range in the language — or `undefined` for a group that did not participate,
@@ -307,46 +354,60 @@ std::string escapeRegExpPattern(const std::string& pattern) {
 // `groups` here is OrdinaryObjectCreate(NULL) (step 4), which is why it is
 // built from a null root shape rather than with `bronze_create_object`.
 Value buildMatchIndices(const regex::Pattern& pattern, const regex::MatchResult& match) {
+    Heap& heap = rtHeap();
+    NonMovingArena& arena = rtArena();
     const uint32_t groups = regex::captureCount(pattern);
-    Rooted<Value> array{Value(bronze_create_array(groups + 1))};
+    ArrayHeader* rawArr = ArrayHeader::create(heap, groups + 1);
+    rawArr->length = groups + 1;
+    Rooted<Value> array{Value::fromObject(rawArr)};
 
     Rooted<Value> groupsObject;
     if (regex::hasNamedGroups(pattern)) {
-        Rooted<Value> noPrototype{Value::fromNull()};
-        Value fresh = Value::fromObject(ObjectHeader::create(
-            rtHeap(), rtArena(), rtRootShapeForPrototype(noPrototype.get())));
-        fresh.asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
-        groupsObject.set(fresh);
+        ObjectHeader* fresh = ObjectHeader::create(
+            heap, arena, rtRootShapeForPrototype(Value::fromNull()));
+        fresh->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+        groupsObject.set(Value::fromObject(fresh));
     }
 
     // Step 5 puts `groups` on the array BEFORE the pairs, so it is the first
     // named property and the indices are the elements — the same shape the
     // match array itself has, and the order both enumerate in.
-    ArrayHeader::ensureProperties(rtHeap(), rtArena(), array);
+    const MatchPropsShapes& shapes = matchPropsShapes();
+    ObjectHeader* rawProps = ObjectHeader::create(heap, arena, shapes.indices1);
+    rawProps->header.flags = HeapKind::Plain;
+    Rooted<Value> propsRoot{Value::fromObject(rawProps)};
+    ObjectHeader* props = shapes.idxGroupsSlot >= ObjectHeader::kOverflowSlot
+                              ? ObjectHeader::ensureSlots(heap, propsRoot, shapes.idxGroupsSlot + 1)
+                              : rawProps;
+    props->rawSetSlot(shapes.idxGroupsSlot, groupsObject.get());
     {
-        Rooted<Value> propsRoot{array.get().asObject<ArrayHeader>()->properties};
-        Rooted<Value> key{rtMakeString("groups")};
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, groupsObject);
+        ArrayHeader* arr = array.get().asObject<ArrayHeader>();
+        arr->forgetNumbers();
+        arr->properties = propsRoot.get();
     }
 
+    const bool hasNamed = groupsObject.get().isObject();
+    Rooted<Value> pair;
     for (uint32_t i = 0; i <= groups; ++i) {
         const int64_t from = match.captures[static_cast<size_t>(i) * 2];
         const int64_t to = match.captures[static_cast<size_t>(i) * 2 + 1];
-        Rooted<Value> pair;
         if (from != regex::MatchResult::kUnset) {
-            pair.set(Value(bronze_create_array(2)));
-            auto* header = pair.get().asObject<ArrayHeader>();
-            Rooted<Value> start{Value::fromDouble(static_cast<double>(from))};
-            header->setElem(rtHeap(), 0, start);
-            Rooted<Value> end{Value::fromDouble(static_cast<double>(to))};
-            pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 1, end);
+            ArrayHeader* pairArr = ArrayHeader::create(heap, 2);
+            pairArr->length = 2;
+            HeapValue* pairSlots = pairArr->elementsKeepingNumbers();
+            pairSlots[0] = Value::fromDouble(static_cast<double>(from));
+            pairSlots[1] = Value::fromDouble(static_cast<double>(to));
+            pairArr->reserved |= ArrayHeader::kElementsAreNumbers;
+            pair.set(Value::fromObject(pairArr));
+        } else {
+            pair.set(Value::fromUndefined());
         }
-        array.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, pair);
-        if (i == 0 || !groupsObject.get().isObject()) continue;
+        array.get().asObject<ArrayHeader>()->elementsData()[i] = pair.get();
+        if (!hasNamed || i == 0) continue;
         const std::string& name = regex::groupName(pattern, i);
         if (name.empty()) continue;
         Rooted<Value> key{rtMakeString(name)};
-        groupsObject.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, pair);
+        groupsObject.get().asObject<ObjectHeader>()->setProp(heap, arena, key, pair);
     }
     return array.get();
 }
@@ -357,27 +418,14 @@ Value buildMatchIndices(const regex::Pattern& pattern, const regex::MatchResult&
 // print in.
 Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
                       const regex::MatchResult& match) {
-    const std::vector<uint16_t> input = rtStringUnits(inputStr.get().asString<StringHeader>());
+    Heap& heap = rtHeap();
+    NonMovingArena& arena = rtArena();
     const uint32_t groups = regex::captureCount(pattern);
+    const bool hasIndices = regex::patternFlags(pattern).hasIndices;
 
-    Rooted<Value> array{Value(bronze_create_array(groups + 1))};
-    auto slice = [&](int64_t from, int64_t to) {
-        std::vector<uint16_t> piece(input.begin() + static_cast<size_t>(from),
-                                    input.begin() + static_cast<size_t>(to));
-        return rtStringFromUnits(piece);
-    };
-
-    ObjectHeader* props = ArrayHeader::ensureProperties(rtHeap(), rtArena(), array);
-    (void)props;
-    auto defineNamed = [&](const char* name, Rooted<Value>& value) {
-        Rooted<Value> propsRoot{array.get().asObject<ArrayHeader>()->properties};
-        Rooted<Value> key{rtMakeString(name)};
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value);
-    };
-
-    Rooted<Value> indexValue{Value::fromDouble(static_cast<double>(match.start()))};
-    defineNamed("index", indexValue);
-    defineNamed("input", inputStr);
+    ArrayHeader* rawArr = ArrayHeader::create(heap, groups + 1);
+    rawArr->length = groups + 1;
+    Rooted<Value> array{Value::fromObject(rawArr)};
 
     // `groups` is an object only when the pattern has a named group, and
     // `undefined` otherwise (22.2.7.2 step 8) — which is why an ordinary match
@@ -386,27 +434,63 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
     if (regex::hasNamedGroups(pattern)) {
         groupsObject.set(Value(bronze_create_object()));
     }
-    defineNamed("groups", groupsObject);
 
-    for (uint32_t i = 0; i <= groups; ++i) {
-        const int64_t from = match.captures[static_cast<size_t>(i) * 2];
-        const int64_t to = match.captures[static_cast<size_t>(i) * 2 + 1];
+    const MatchPropsShapes& shapes = matchPropsShapes();
+    Shape* propsShape = hasIndices ? shapes.matchWithIdx : shapes.match3;
+    const uint32_t maxSlot = hasIndices ? shapes.indicesSlot : shapes.groupsSlot;
+    ObjectHeader* rawProps = ObjectHeader::create(heap, arena, propsShape);
+    rawProps->header.flags = HeapKind::Plain;
+    Rooted<Value> propsRoot{Value::fromObject(rawProps)};
+    ObjectHeader* props = maxSlot >= ObjectHeader::kOverflowSlot
+                              ? ObjectHeader::ensureSlots(heap, propsRoot, maxSlot + 1)
+                              : rawProps;
+    props->rawSetSlot(shapes.indexSlot, Value::fromDouble(static_cast<double>(match.start())));
+    props->rawSetSlot(shapes.inputSlot, inputStr.get());
+    props->rawSetSlot(shapes.groupsSlot, groupsObject.get());
+    {
+        ArrayHeader* arr = array.get().asObject<ArrayHeader>();
+        arr->forgetNumbers();
+        arr->properties = propsRoot.get();
+    }
+
+    if (!groupsObject.get().isObject()) {
+        for (uint32_t i = 0; i <= groups; ++i) {
+            const int64_t from = match.captures[static_cast<size_t>(i) * 2];
+            const int64_t to = match.captures[static_cast<size_t>(i) * 2 + 1];
+            const Value elem =
+                from != regex::MatchResult::kUnset
+                    ? Value::fromString(StringHeader::slice(heap, arena, inputStr,
+                                                            static_cast<uint32_t>(from),
+                                                            static_cast<uint32_t>(to)))
+                    : Value::fromUndefined();
+            array.get().asObject<ArrayHeader>()->elementsData()[i] = elem;
+        }
+    } else {
         Rooted<Value> element;
-        if (from != regex::MatchResult::kUnset) element.set(slice(from, to));
-        array.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, element);
-        if (i == 0 || !groupsObject.get().isObject()) continue;
-        const std::string& name = regex::groupName(pattern, i);
-        if (name.empty()) continue;
-        Rooted<Value> key{rtMakeString(name)};
-        groupsObject.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, element);
+        for (uint32_t i = 0; i <= groups; ++i) {
+            const int64_t from = match.captures[static_cast<size_t>(i) * 2];
+            const int64_t to = match.captures[static_cast<size_t>(i) * 2 + 1];
+            if (from != regex::MatchResult::kUnset) {
+                element.set(Value::fromString(StringHeader::slice(
+                    heap, arena, inputStr, static_cast<uint32_t>(from), static_cast<uint32_t>(to))));
+            } else {
+                element.set(Value::fromUndefined());
+            }
+            array.get().asObject<ArrayHeader>()->elementsData()[i] = element.get();
+            if (i == 0) continue;
+            const std::string& name = regex::groupName(pattern, i);
+            if (name.empty()) continue;
+            Rooted<Value> key{rtMakeString(name)};
+            groupsObject.get().asObject<ObjectHeader>()->setProp(heap, arena, key, element);
+        }
     }
 
     // Step 35, and last for the reason the other three are in their order: the
     // pair array is built from the captures the loop above has just walked, so
     // `indices` is the final named property and prints after `groups`.
-    if (regex::patternFlags(pattern).hasIndices) {
+    if (hasIndices) {
         Rooted<Value> indices{buildMatchIndices(pattern, match)};
-        defineNamed("indices", indices);
+        propsRoot.get().asObject<ObjectHeader>()->rawSetSlot(shapes.indicesSlot, indices.get());
     }
     return array.get();
 }
@@ -559,15 +643,16 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
     std::shared_ptr<const regex::Pattern> patternPtr = programSharedOf(re.get());
     const regex::Pattern& pattern = *patternPtr;
     const regex::Flags& flags = regex::patternFlags(pattern);
-    const std::vector<uint16_t> raw = rtStringUnits(inputStr.get().asString<StringHeader>());
-    const regex::Units input(raw.begin(), raw.end());
 
-    regex::MatchResult match;
+    ScratchMatchResult scratch;
     std::string error;
     regex::ExecStatus status = regex::ExecStatus::NoMatch;
-    if (from <= input.size()) {
-        status = flags.sticky ? regex::matchAt(pattern, input, from, match, error)
-                              : regex::search(pattern, input, from, match, error);
+    {
+        ScopedRegexUnits input(inputStr.get().asString<StringHeader>());
+        if (from <= input.size()) {
+            status = flags.sticky ? regex::matchAt(pattern, input.view(), from, scratch.result, error)
+                                  : regex::search(pattern, input.view(), from, scratch.result, error);
+        }
     }
     if (status == regex::ExecStatus::Error) {
         return rtThrowRangeError(error);
@@ -576,10 +661,56 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
         if (tracksLastIndex && !storeLastIndex(re, 0.0)) return Value::fromUndefined();
         return Value::fromNull();
     }
-    if (tracksLastIndex && !storeLastIndex(re, static_cast<double>(match.end()))) {
+    if (tracksLastIndex && !storeLastIndex(re, static_cast<double>(scratch.result.end()))) {
         return Value::fromUndefined();
     }
-    return buildMatchArray(pattern, inputStr, match);
+    return buildMatchArray(pattern, inputStr, scratch.result);
+}
+
+bool rtRegExpExecTest(Rooted<Value>& re, Rooted<Value>& inputStr) {
+    if (!isRegExp(re.get()) || !re.get().asObject<RegExpHeader>()->programIndex.isNumber()) {
+        rtThrowTypeError("RegExp.prototype.test called on an incompatible receiver");
+        return false;
+    }
+    const bool tracksLastIndex = [&] {
+        const regex::Flags& f = regex::patternFlags(programOf(re.get()));
+        return f.global || f.sticky;
+    }();
+    size_t from = 0;
+    if (tracksLastIndex) {
+        bool ok = true;
+        from = lastIndexOf(re, ok);
+        if (!ok) return false;
+    }
+    std::shared_ptr<const regex::Pattern> patternPtr = programSharedOf(re.get());
+    const regex::Pattern& pattern = *patternPtr;
+    const regex::Flags& flags = regex::patternFlags(pattern);
+
+    ScratchMatchResult scratch;
+    std::string error;
+    regex::ExecStatus status = regex::ExecStatus::NoMatch;
+    {
+        ScopedRegexUnits input(inputStr.get().asString<StringHeader>());
+        if (from <= input.size()) {
+            status = flags.sticky
+                         ? regex::matchAt(pattern, input.view(), from, scratch.result, error,
+                                          /*extractCaptures=*/false)
+                         : regex::search(pattern, input.view(), from, scratch.result, error,
+                                         /*extractCaptures=*/false);
+        }
+    }
+    if (status == regex::ExecStatus::Error) {
+        rtThrowRangeError(error);
+        return false;
+    }
+    if (status != regex::ExecStatus::Match) {
+        if (tracksLastIndex && !storeLastIndex(re, 0.0)) return false;
+        return false;
+    }
+    if (tracksLastIndex && !storeLastIndex(re, static_cast<double>(scratch.result.end()))) {
+        return false;
+    }
+    return true;
 }
 
 const regex::Pattern& rtRegExpPattern(Value re) { return programOf(re); }

@@ -65,13 +65,14 @@ Value* PropertyLoweringHelper::lower_elem_get_word_view(Builder& b, Value* obj, 
     const std::string prefix = "elem_get_wv_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_load = b.append_block(prefix + "_load");
     BasicBlock* bb_float = b.append_block(prefix + "_float");
-    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
+    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_int = b.append_block(prefix + "_int");
     BasicBlock* bb_u32 = b.append_block(prefix + "_u32");
     BasicBlock* bb_i32 = b.append_block(prefix + "_i32");
     BasicBlock* bb_box = b.append_block(prefix + "_box");
     BasicBlock* bb_miss = b.append_block(prefix + "_miss");
+    bb_miss->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* number = b.add_block_param(bb_box, Type::f64());
     Value* result = b.add_block_param(bb_merge, Type::i64());
@@ -95,12 +96,12 @@ Value* PropertyLoweringHelper::lower_elem_get_word_view(Builder& b, Value* obj, 
     b.position_at_end(bb_load);
     b.build_br_if(is_float, bb_float, bb_int);
     b.position_at_end(bb_float);
-    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), bb_f64, bb_f32);
-    b.position_at_end(bb_f64);
-    b.build_br(bb_box, {with_alias_class(b.build_load_indexed(Type::f64(), data, idx, 8), kTypedElementAliasClass)});
+    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), bb_f32, bb_f64);
     b.position_at_end(bb_f32);
     Value* f32 = with_alias_class(b.build_load_indexed(Type::f32(), data, idx, 4), kTypedElementAliasClass);
     b.build_br(bb_box, {b.build_fpext_f64_f32(f32)});
+    b.position_at_end(bb_f64);
+    b.build_br(bb_box, {with_alias_class(b.build_load_indexed(Type::f64(), data, idx, 8), kTypedElementAliasClass)});
     b.position_at_end(bb_int);
     Value* word = with_alias_class(b.build_load_indexed(Type::i32(), data, idx, 4), kTypedElementAliasClass);
     b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_UINT32)), bb_u32, bb_i32);
@@ -121,6 +122,7 @@ Value* PropertyLoweringHelper::lower_elem_get_word_view(Builder& b, Value* obj, 
         b.build_br(bb_merge, {undef});
     } else {
         BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
         b.position_at_end(bb_miss);
         b.build_br_if(b.build_ule(index, iconst(b, kBronzeNumberMaxBits)), bb_merge, {undef}, bb_slow, {});
         b.position_at_end(bb_slow);
@@ -137,12 +139,12 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
     Function* fn = cur->parent();
     const std::string prefix = "elem_set_wv_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_valid = b.append_block(prefix + "_valid");
+    bb_valid->set_cold();
     BasicBlock* bb_store = b.append_block(prefix + "_store");
     BasicBlock* bb_float = b.append_block(prefix + "_float");
-    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
+    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
     BasicBlock* bb_int = b.append_block(prefix + "_int");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
     b.position_at_end(cur);
@@ -169,7 +171,8 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
 
     // A Number value at a Number key that is no valid integer index: the
     // store is dropped (10.4.5.5, TypedArraySetElement), with nothing to
-    // convert first. Anything else, the helper.
+    // convert first. Anything else, the helper; omitted altogether when both
+    // index and value are proven Numbers so no call block enters the CFG.
     b.position_at_end(bb_valid);
     Value* plain = num_ok;
     if (!known_number(index)) {
@@ -177,7 +180,14 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
         plain = plain ? b.build_and(plain, key_num) : key_num;
     }
     if (plain) {
+        BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
+        b.position_at_end(bb_valid);
         b.build_br_if(plain, bb_merge, bb_slow);
+        b.position_at_end(bb_slow);
+        b.build_call(elem_set_helper(), Type::void_type(),
+                     {obj, boxed_elem_key(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+        b.build_br(bb_merge);
     } else {
         b.build_br(bb_merge);
     }
@@ -185,13 +195,13 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
     b.position_at_end(bb_store);
     b.build_br_if(is_float, bb_float, bb_int);
     b.position_at_end(bb_float);
-    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), bb_f64, bb_f32);
-    b.position_at_end(bb_f64);
-    with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, num), kTypedElementAliasClass);
-    b.build_br(bb_merge);
+    b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), bb_f32, bb_f64);
     b.position_at_end(bb_f32);
     with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4, b.build_fptrunc_f32_f64(num)),
                      kTypedElementAliasClass);
+    b.build_br(bb_merge);
+    b.position_at_end(bb_f64);
+    with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, num), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     // Int32 and Uint32 store the same bits, ToInt32's, computed with no call
@@ -200,11 +210,6 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
     b.position_at_end(bb_int);
     Value* word = narrow_f64_to_i32_callfree(b, num);
     with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, word), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_slow);
-    b.build_call(elem_set_helper(), Type::void_type(),
-                 {obj, boxed_elem_key(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);

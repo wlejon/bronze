@@ -234,6 +234,7 @@ Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
     const std::string pfx = "ta_toi32_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(pfx + "_fast");
     BasicBlock* slow = b.append_block(pfx + "_slow");
+    slow->set_cold();
     BasicBlock* merge = b.append_block(pfx + "_merge");
     Value* res = b.add_block_param(merge, Type::i32());
     b.position_at_end(cur);
@@ -281,6 +282,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     BasicBlock* bb_u8 = b.append_block(prefix + "_u8");
     BasicBlock* bb_box = b.append_block(prefix + "_box");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    bb_slow->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* number = b.add_block_param(bb_box, Type::f64());
     Value* result = b.add_block_param(bb_merge, Type::i64());
@@ -354,9 +356,11 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.position_at_end(bb_slow);
     Value* key = boxed_elem_key(b, index);
     if (elem_stubs_) {
+        const size_t slow_base = fn->blocks().size();
         BasicBlock* bb_stub = b.append_block(prefix + "_stub");
         b.position_at_end(bb_slow);
         build_inline_elem_get_hit(*this, b, obj, key, bb_merge, bb_stub);
+        for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
         b.position_at_end(bb_stub);
     }
     b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
@@ -383,6 +387,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         BasicBlock* bb_array = b.append_block(prefix + "_array");
         BasicBlock* bb_array_load = b.append_block(prefix + "_array_load");
         BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
         Value* result = b.add_block_param(bb_merge, Type::i64());
 
@@ -416,6 +421,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         // undefined, an Int32 box, a string, an object — takes the coercion.
         b.position_at_end(bb_merge);
         BasicBlock* bb_coerce = b.append_block(prefix + "_coerce_cold");
+        bb_coerce->set_cold();
         BasicBlock* bb_done = b.append_block(prefix + "_done");
         Value* number = b.add_block_param(bb_done, Type::f64());
         b.position_at_end(bb_merge);
@@ -519,6 +525,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     BasicBlock* bb_clamp_check = b.append_block(prefix + "_clamp_check");
     BasicBlock* bb_clamp = b.append_block(prefix + "_clamp");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    bb_slow->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
     // An object and an integral index, or the helper.
@@ -647,6 +654,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         BasicBlock* bb_array = b.append_block(prefix + "_array");
         BasicBlock* bb_array_store = b.append_block(prefix + "_array_store");
         BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
         b.position_at_end(cur);

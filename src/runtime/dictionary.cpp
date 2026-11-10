@@ -364,4 +364,20 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
     return obj;
 }
 
+ObjectHeader* ObjectHeader::dictAddAbsent(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
+                                          PropertyKey name, bool enumerable, bool writable,
+                                          bool configurable, uint32_t& out_slot) {
+    PropertyKey stored = dictKeyToStore(heap, arena, name);
+    auto* obj = self.get().asObject<ObjectHeader>();
+    if (!obj->shape || !obj->shape->isDictionary()) {
+        fatal("internal: a dictionary insert on an object that is not in dictionary mode");
+    }
+    Dictionary& d = *obj->shape->dict;
+    out_slot = d.allocateSlots(1u);
+    d.add(stored, out_slot, enumerable, /*accessor=*/false, writable, configurable);
+    if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
+    noteKeyAddedToPrototype(obj->shape->used_as_prototype, stored);
+    return ensureSlots(heap, self, d.nextSlot);
+}
+
 }  // namespace bronze

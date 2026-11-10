@@ -76,10 +76,13 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
     const std::string prefix = "is_num_arr_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_obj = proven_dense ? nullptr : b.append_block(prefix + "_obj");
     BasicBlock* bb_arr = b.append_block(prefix + "_arr");
-    // Named cold so block layout moves them out of the kernel: they run when
-    // the bit is clear, which a numeric array leaves after its first claim.
+    // Cold so register allocation and block layout move them out of the
+    // kernel: they run when the bit is clear, which a numeric array leaves
+    // after its first claim.
     BasicBlock* bb_claim = b.append_block(prefix + "_claim_cold");
+    bb_claim->set_cold();
     BasicBlock* bb_call = b.append_block(prefix + "_call_cold");
+    bb_call->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i32());
 

@@ -171,9 +171,10 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     const std::string prefix = "static_run_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_entry = b.current_block();
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    // Named cold for brass's block layout, as a lone site's miss is
-    // (il_static_slot.cpp): the slow copy is its own trace.
+    // Cold for brass's register allocator and block layout, as a lone site's
+    // miss is (il_static_slot.cpp): the slow copy is its own trace.
     BasicBlock* bb_slow = b.append_block(prefix + "_slow_cold");
+    bb_slow->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     b.position_at_end(bb_entry);
     // The memo the slow copy starts from. A receiver the memo does not hold
@@ -243,6 +244,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     BasicBlock* fast_end = b.current_block();
 
     b.position_at_end(bb_slow);
+    const size_t slow_base = fn->blocks().size();
     memo_restore(memo_pre);
     for (size_t j = inst_idx; j < end; ++j) {
         const BronzeInstruction& inst = insts[j];
@@ -251,6 +253,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
             return false;
         }
     }
+    for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
     std::vector<Value*> slow_args;
     for (size_t k = 0; k < live_out.size(); ++k) {
         slow_args.push_back(ensure_type(slow_map.at(live_out[k]), fast_args[k]->type(), b));

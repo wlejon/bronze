@@ -57,7 +57,6 @@ using string_regexp::appendReplacement;
 using string_regexp::isCallable;
 using string_regexp::MatchPieces;
 using string_regexp::slice;
-using string_regexp::stringOf;
 using string_regexp::Units;
 using string_regexp::unitsOf;
 
@@ -85,12 +84,12 @@ MatchPieces piecesOf(const regex::Pattern& pattern, const Units& input,
 
 // The matcher, run with the exception machinery: a failure here throws a
 // catchable RangeError.
-regex::ExecStatus runMatch(const regex::Pattern& pattern, const regex::Units& input, size_t from,
-                           bool sticky, regex::MatchResult& match) {
+regex::ExecStatus runMatch(const regex::Pattern& pattern, regex::UnitsView input, size_t from,
+                           bool sticky, regex::MatchResult& match, bool extractCaptures = true) {
     std::string error;
     const regex::ExecStatus status =
-        sticky ? regex::matchAt(pattern, input, from, match, error)
-               : regex::search(pattern, input, from, match, error);
+        sticky ? regex::matchAt(pattern, input, from, match, error, extractCaptures)
+               : regex::search(pattern, input, from, match, error, extractCaptures);
     if (status == regex::ExecStatus::Error) {
         rtThrowRangeError(error.empty() ? "regular expression execution limit exceeded"
                                         : error.c_str());
@@ -99,26 +98,29 @@ regex::ExecStatus runMatch(const regex::Pattern& pattern, const regex::Units& in
     return status;
 }
 
-regex::Units toRegexUnits(const Units& units) { return regex::Units(units.begin(), units.end()); }
-
 // 22.2.7.3 AdvanceStringIndex, as the cursor step every member here shares. An
 // empty match, a separator that matched nothing, and the walk `split` takes
 // over a position it could not match at are all the same operation — and under
 // `u` all three step over a whole CHARACTER, so a cursor never lands between
 // the halves of a surrogate pair.
-size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
+size_t advanceOver(regex::UnitsView haystack, size_t index, bool unicode) {
     return regex::advanceStringIndex(haystack, index, unicode);
 }
 
 // The same step applied to a RegExp's own `lastIndex`: ToLength of what was
 // assigned (which may run user code), then Set(R, "lastIndex", ..., true),
 // which a frozen RegExp refuses with a throw. Answers true when it returns.
-bool advanceLastIndex(Rooted<Value>& re, const regex::Units& haystack) {
+bool advanceLastIndex(Rooted<Value>& re, Rooted<Value>& inputStr) {
     const bool unicode = regex::patternFlags(rtRegExpPattern(re.get())).unicodeMode();
     bool ok = false;
     const auto index = static_cast<size_t>(rtRegExpLastIndexLength(re, ok));
     if (!ok) return false;
-    return rtRegExpSetLastIndex(re, static_cast<double>(advanceOver(haystack, index, unicode)));
+    size_t nextIndex = 0;
+    {
+        ScopedRegexUnits haystack(inputStr.get().asString<StringHeader>());
+        nextIndex = advanceOver(haystack.view(), index, unicode);
+    }
+    return rtRegExpSetLastIndex(re, static_cast<double>(nextIndex));
 }
 
 // ---- the matchAll iterator (22.2.9) -----------------------------------------
@@ -176,7 +178,7 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // AdvanceStringIndex, or the iterator would yield it for ever.
     Value first = match.get().asObject<ArrayHeader>()->getElem(0);
     if (first.isString() && first.asString<StringHeader>()->getLength() == 0) {
-        if (!advanceLastIndex(re, toRegexUnits(unitsOf(input.get())))) {
+        if (!advanceLastIndex(re, input)) {
             return Value::fromUndefined().rawBits();
         }
     }
@@ -188,7 +190,6 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 // ---- 22.2.6.12 [@@search] ---------------------------------------------------
 
 Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str) {
-    const Units input = unitsOf(str.get());
     // Steps 4-8: `search` SAVES and restores `lastIndex`, so it is the one
     // pattern member with no effect on the cursor. Restored as the VALUE it
     // held, not a number made from it. Step 5 is a real Set when the cursor is
@@ -197,42 +198,60 @@ Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str) {
     const bool atZero = saved.get().isNumber() && saved.get().asNumber() == 0.0 &&
                         !std::signbit(saved.get().asNumber());
     if (!atZero && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
-    regex::MatchResult match;
+    ScratchMatchResult scratch;
     const regex::Pattern& pattern = rtRegExpPattern(re.get());
-    const regex::ExecStatus status = runMatch(pattern, toRegexUnits(input), 0, false, match);
+    regex::ExecStatus status = regex::ExecStatus::NoMatch;
+    {
+        ScopedRegexUnits input(str.get().asString<StringHeader>());
+        status = runMatch(pattern, input.view(), 0, false, scratch.result,
+                          /*extractCaptures=*/false);
+    }
     rtRegExpRestoreLastIndex(re.get(), saved.get());
     if (status == regex::ExecStatus::Error) return Value::fromUndefined();
     if (status != regex::ExecStatus::Match) return Value::fromDouble(-1.0);
-    return Value::fromDouble(static_cast<double>(match.start()));
+    return Value::fromDouble(static_cast<double>(scratch.result.start()));
 }
 
 // ---- 22.2.6.8 [@@match] -----------------------------------------------------
 
 Value rtRegExpMatch(Rooted<Value>& re, Rooted<Value>& str) {
-    const regex::Flags& flags = regex::patternFlags(rtRegExpPattern(re.get()));
+    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
+    const regex::Pattern& pattern = *patternPtr;
+    const regex::Flags flags = regex::patternFlags(pattern);
     // Step 5: without `g`, `[@@match]` IS `exec` — the same match array,
     // captures and all. With `g` it is the list of matched TEXTS and nothing
     // else, which is why the two answers have different shapes.
     if (!flags.global) return rtRegExpExec(re, str);
 
     if (!rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
-    const regex::Units haystack = toRegexUnits(unitsOf(str.get()));
+    ScopedStableRegexUnits haystack(str.get().asString<StringHeader>());
+    ScratchMatchResult scratch;
+    Heap& heap = rtHeap();
+    NonMovingArena& arena = rtArena();
     // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
     // the length, so passing a capacity guess would leave trailing `undefined`
     // elements in the result.
     Rooted<Value> out{Value(bronze_create_array(0))};
+    Rooted<Value> matched;
     uint32_t count = 0;
-    for (;;) {
-        Value result = rtRegExpExec(re, str);
-        if (result.isNull()) break;
-        Rooted<Value> matched{result.asObject<ArrayHeader>()->getElem(0)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), count++, matched);
+    size_t from = 0;
+    while (from <= haystack.size()) {
+        const regex::ExecStatus status =
+            runMatch(pattern, haystack.view(), from, flags.sticky, scratch.result,
+                     /*extractCaptures=*/false);
+        if (status != regex::ExecStatus::Match) break;
+        const auto mStart = static_cast<size_t>(scratch.result.start());
+        const auto mEnd = static_cast<size_t>(scratch.result.end());
+        matched.set(Value::fromString(StringHeader::slice(
+            heap, arena, str, static_cast<uint32_t>(mStart), static_cast<uint32_t>(mEnd))));
+        out.get().asObject<ArrayHeader>()->setElem(heap, count++, matched);
         // An empty match would leave `lastIndex` where it is and loop for
         // ever; step 8.f.iii advances it by AdvanceStringIndex.
-        if (matched.get().asString<StringHeader>()->getLength() == 0) {
-            if (!advanceLastIndex(re, haystack)) return Value::fromUndefined();
-        }
+        from = (mEnd == mStart) ? advanceOver(haystack.view(), mEnd, flags.unicodeMode()) : mEnd;
+        re.get().asObject<RegExpHeader>()->lastIndex =
+            Value::fromDouble(static_cast<double>(from));
     }
+    re.get().asObject<RegExpHeader>()->lastIndex = Value::fromDouble(0.0);
     // Step 6.c: `null`, not an empty array, when nothing matched.
     if (count == 0) return Value::fromNull();
     return out.get();
@@ -291,7 +310,6 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     // the whole difference between `"aa".replace(/a/g, ...)` and
     // `"aa".replace(/a/, ...)`.
     const bool everyMatch = flags.global;
-    const regex::Units haystack = toRegexUnits(input);
     if (everyMatch && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
 
     Units out;
@@ -305,18 +323,20 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
         from = static_cast<size_t>(rtRegExpLastIndexLength(re, ok));
         if (!ok) return Value::fromUndefined();
     }
+    const regex::UnitsView haystack(reinterpret_cast<const char16_t*>(input.data()), input.size());
+    ScratchMatchResult scratch;
     // A `y` pattern's one exec (22.2.7.2 steps 12-15) leaves `lastIndex` at
     // the match's end, or at 0 when it failed — before the replacer runs,
     // because that is where step 11 of [@@replace] puts it: the exec is
     // finished before any replacement is computed.
     const bool stickyOnly = !everyMatch && flags.sticky;
     for (;;) {
-        regex::MatchResult match;
         if (from > input.size()) {
             if (stickyOnly && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
             break;
         }
-        const regex::ExecStatus status = runMatch(pattern, haystack, from, flags.sticky, match);
+        const regex::ExecStatus status =
+            runMatch(pattern, haystack, from, flags.sticky, scratch.result);
         if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
@@ -324,7 +344,7 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
             if (stickyOnly && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
             break;
         }
-        const MatchPieces pieces = piecesOf(pattern, input, match);
+        const MatchPieces pieces = piecesOf(pattern, input, scratch.result);
         if (stickyOnly && !rtRegExpSetLastIndex(re, static_cast<double>(pieces.end))) {
             return Value::fromUndefined();
         }
@@ -350,39 +370,43 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
 // ---- 22.2.6.14 [@@split] ----------------------------------------------------
 
 Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
-    const Units input = unitsOf(str.get());
-    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
-    const regex::Pattern& pattern = *patternPtr;
-    const regex::Units haystack = toRegexUnits(input);
-    const uint32_t groups = regex::captureCount(pattern);
-
     // Step 11: a limit of 0 answers an empty array whatever the separator,
-    // before anything is matched.
+    // before anything is matched. Coerce `limitArg` FIRST since `valueOf` can
+    // execute user code and trigger GC.
     double limit = limitArg.isUndefined() ? 4294967295.0 : rtToNumber(limitArg);
     if (std::isnan(limit) || limit < 0) limit = 0;
 
+    Heap& heap = rtHeap();
+    NonMovingArena& arena = rtArena();
     // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
     // the length, so passing a capacity guess would leave trailing `undefined`
     // elements in the result.
     Rooted<Value> out{Value(bronze_create_array(0))};
     uint32_t count = 0;
     auto push = [&](Rooted<Value>& piece) {
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), count++, piece);
+        out.get().asObject<ArrayHeader>()->setElem(heap, count++, piece);
     };
     if (limit == 0) return out.get();
 
+    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
+    const regex::Pattern& pattern = *patternPtr;
+    const uint32_t groups = regex::captureCount(pattern);
+    ScopedStableRegexUnits haystack(str.get().asString<StringHeader>());
+    ScratchMatchResult scratch;
+
     // Step 16: an EMPTY input either yields one empty string or, if the pattern
     // matches it, nothing at all.
-    if (input.empty()) {
-        regex::MatchResult match;
-        const regex::ExecStatus status = runMatch(pattern, haystack, 0, false, match);
+    if (haystack.empty()) {
+        const regex::ExecStatus status =
+            runMatch(pattern, haystack.view(), 0, false, scratch.result,
+                     /*extractCaptures=*/false);
         if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
         if (status == regex::ExecStatus::Match) {
             return out.get();
         }
-        Rooted<Value> whole{stringOf(input)};
+        Rooted<Value> whole{Value::fromString(StringHeader::emptyInArena(arena))};
         push(whole);
         return out.get();
     }
@@ -391,36 +415,41 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     // under `u` the separator is never tried between the halves of a surrogate
     // pair and a piece never ends inside one.
     const bool unicode = regex::patternFlags(pattern).unicodeMode();
+    const size_t inputLen = haystack.size();
     size_t sliceStart = 0;
     size_t at = 0;
-    while (at < input.size()) {
-        regex::MatchResult match;
-        const regex::ExecStatus status = runMatch(pattern, haystack, at, true, match);
+    Rooted<Value> piece;
+    Rooted<Value> captured;
+    while (at < inputLen) {
+        const regex::ExecStatus status =
+            runMatch(pattern, haystack.view(), at, true, scratch.result);
         if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
         if (status != regex::ExecStatus::Match) {
-            at = advanceOver(haystack, at, unicode);
+            at = advanceOver(haystack.view(), at, unicode);
             continue;
         }
-        const auto end = static_cast<size_t>(match.end());
+        const auto end = static_cast<size_t>(scratch.result.end());
         // A separator that matched EMPTY at the position the last piece ended
         // would produce an infinite run of empty strings; step 19.d steps past
         // it instead.
         if (end == sliceStart) {
-            at = advanceOver(haystack, at, unicode);
+            at = advanceOver(haystack.view(), at, unicode);
             continue;
         }
-        Rooted<Value> piece{stringOf(slice(input, sliceStart, at))};
+        piece.set(Value::fromString(StringHeader::slice(
+            heap, arena, str, static_cast<uint32_t>(sliceStart), static_cast<uint32_t>(at))));
         push(piece);
         if (static_cast<double>(count) == limit) return out.get();
         for (uint32_t g = 1; g <= groups; ++g) {
-            const int64_t from = match.captures[static_cast<size_t>(g) * 2];
-            const int64_t to = match.captures[static_cast<size_t>(g) * 2 + 1];
-            Rooted<Value> captured;
+            const int64_t from = scratch.result.captures[static_cast<size_t>(g) * 2];
+            const int64_t to = scratch.result.captures[static_cast<size_t>(g) * 2 + 1];
             if (from != regex::MatchResult::kUnset) {
-                captured.set(stringOf(slice(input, static_cast<size_t>(from),
-                                            static_cast<size_t>(to))));
+                captured.set(Value::fromString(StringHeader::slice(
+                    heap, arena, str, static_cast<uint32_t>(from), static_cast<uint32_t>(to))));
+            } else {
+                captured.set(Value::fromUndefined());
             }
             push(captured);
             if (static_cast<double>(count) == limit) return out.get();
@@ -429,8 +458,9 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
         at = end;
     }
     if (static_cast<double>(count) == limit) return out.get();
-    Rooted<Value> tail{stringOf(slice(input, sliceStart, input.size()))};
-    push(tail);
+    piece.set(Value::fromString(StringHeader::slice(
+        heap, arena, str, static_cast<uint32_t>(sliceStart), static_cast<uint32_t>(inputLen))));
+    push(piece);
     return out.get();
 }
 

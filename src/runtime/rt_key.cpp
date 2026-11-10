@@ -261,6 +261,10 @@ Value rtElemKeyAsString(Value idxVal) {
               "ToPrimitive at the ABI entry point, so every key reaching this conversion has "
               "already been through it)");
     }
+    if (len == 1 && static_cast<unsigned char>(buf[0]) < 0x80) {
+        return Value::fromString(
+            StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(buf[0])));
+    }
     return Value::fromString(
         StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
 }

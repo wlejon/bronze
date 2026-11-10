@@ -59,7 +59,7 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64, bool raw_unbox = false,
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
-    if (hot) slow->set_cold();
+    if (is_f64 || hot) slow->set_cold();
 
     b.position_at_end(cur);
     Value* bits = is_f64 ? b.build_bitcast_i64_f64(v) : v;

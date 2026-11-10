@@ -55,7 +55,7 @@ constexpr int64_t kStringPrimWord =
 const NativeFastRow kRows[] = {
     {"indexOf", NativeRecv::Array, 1, 1, "bronze_fast_array_index_of", 1, nullptr, nullptr},
     {"includes", NativeRecv::Array, 1, 1, "bronze_fast_array_includes", 1, nullptr, nullptr},
-    {"push", NativeRecv::Array, 1, 4, nullptr, 0, "bronze_array_push", &bronze_array_push},
+    {"push", NativeRecv::Array, 1, 8, nullptr, 0, "bronze_array_push", &bronze_array_push},
     {"pop", NativeRecv::Array, 0, 0, nullptr, 0, "bronze_array_pop", &bronze_array_pop},
     {"charCodeAt", NativeRecv::String, 0, 1, "bronze_fast_string_char_code_at", 1, "bronze_string_char_code_at",
      &bronze_string_char_code_at},
@@ -176,6 +176,7 @@ Value* lower_native_fast(IlLowering* lowering, Builder& b, const std::vector<con
                          const std::function<Value*(Builder&)>& slow) {
     const std::string prefix = block_prefix(b, "native");
     BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i64());
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -183,6 +184,7 @@ Value* lower_native_fast(IlLowering* lowering, Builder& b, const std::vector<con
         const std::string arm = prefix + "_" + std::to_string(i);
         BasicBlock* hit = b.append_block(arm + "_enter");
         BasicBlock* miss = b.append_block(arm + "_miss");
+        if (i + 1 == rows.size()) miss->set_cold();
         b.position_at_end(cur);
         if (row.recv == NativeRecv::Array) {
             array_guard(b, recv, hit, miss, arm);
@@ -194,7 +196,9 @@ Value* lower_native_fast(IlLowering* lowering, Builder& b, const std::vector<con
         b.position_at_end(miss);
         cur = miss;
     }
+    const size_t slow_base = fn->blocks().size();
     b.build_br(merge, {slow(b)});
+    for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
     b.position_at_end(merge);
     return result;
 }

@@ -75,8 +75,8 @@ uint64_t stringIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
         const uint16_t units[2] = {unit, str->charCodeAt(at + 1)};
         piece = Value::fromString(StringHeader::createUTF16(rtHeap(), units, 2));
     } else if (unit < 0x100) {
-        const char byte = static_cast<char>(unit);
-        piece = Value::fromString(StringHeader::createLatin1(rtHeap(), &byte, 1));
+        piece = Value::fromString(
+            StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(unit)));
     } else {
         piece = Value::fromString(StringHeader::createUTF16(rtHeap(), &unit, 1));
     }
@@ -109,6 +109,8 @@ uint64_t stringIterator(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
     return it.get().rawBits();
 }
 
+thread_local Value g_pristineStringIterator = Value::fromUndefined();
+
 }  // namespace
 
 // Installed by builtin_wrappers.cpp's one intrinsic initializer, beside the
@@ -117,8 +119,25 @@ uint64_t stringIterator(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
 void rtInstallStringIterator(Rooted<Value>& proto) {
     Rooted<Value> key{rtIteratorKey()};
     Rooted<Value> fn{rtNativeFunction(stringIterator, 0, "[Symbol.iterator]", 0)};
+    if (g_pristineStringIterator.isUndefined()) {
+        rtHeap().add_permanent_root(&g_pristineStringIterator);
+    }
+    g_pristineStringIterator = fn.get();
     proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                   /*enumerable=*/false, /*defineOwn=*/true);
+}
+
+bool rtStringIteratorPristine() {
+    const Value proto = rtStringPrototypeIfBuilt();
+    if (!proto.isObject()) return true;
+    const auto* obj = proto.asObject<ObjectHeader>();
+    PropertyInfo info;
+    if (!obj->shape ||
+        !obj->shape->lookupProperty(PropertyKey::forSymbol(rtSymbolIterator()), info) ||
+        info.accessor) {
+        return false;
+    }
+    return obj->getSlot(info.slot).rawBits() == g_pristineStringIterator.rawBits();
 }
 
 }  // namespace bronze::runtime

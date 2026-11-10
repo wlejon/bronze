@@ -61,6 +61,20 @@ struct StringHeader {
     static StringHeader* createFromUTF8InArena(NonMovingArena& arena, const char* str, uint32_t utf8_len);
     static StringHeader* createFromUTF8InArena(NonMovingArena& arena, std::string_view sv);
 
+    // Immortal empty and single-unit Latin-1 strings owned by `arena`, shared
+    // with its intern table and pre-hashed so charAt, string indexing, regex
+    // captures and `[...s]` allocate nothing and hit property caches by
+    // identity.
+    static StringHeader* emptyInArena(NonMovingArena& arena);
+    static StringHeader* latin1CharInArena(NonMovingArena& arena, uint8_t ch);
+    static StringHeader* const* latin1CharTableInArena(NonMovingArena& arena);
+
+    // Substring `[start, end)` of `strRoot`, narrowing an all-Latin-1 slice of
+    // a UTF-16 string and returning `arena`'s shared empty / 1-unit Latin-1
+    // string when applicable. Re-reads `strRoot` across any `heap` allocation.
+    static StringHeader* slice(Heap& heap, NonMovingArena& arena, const Rooted<Value>& strRoot,
+                               uint32_t start, uint32_t end);
+
     bool isLatin1() const noexcept { return (flags & kUTF16Flag) == 0; }
     bool isUTF16() const noexcept { return (flags & kUTF16Flag) != 0; }
 

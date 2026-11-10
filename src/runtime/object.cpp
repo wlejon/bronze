@@ -688,12 +688,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         toDictionary(arena, self);
     }
     if (self.get().asObject<ObjectHeader>()->shape->isDictionary()) {
-        live = dictDefine(heap, arena, self, prop_name, enumerable, /*accessor=*/false, new_slot);
-        DictEntry* entry = self.get().asObject<ObjectHeader>()->shape->dict->find(prop_name);
-        if (entry) {
-            entry->writable = writable;
-            entry->configurable = configurable;
-        }
+        live = dictAddAbsent(heap, arena, self, prop_name, enumerable, writable, configurable,
+                             new_slot);
     } else {
         // If this object is somebody's prototype, the property just created
         // shadows whatever the depth > 0 entries below it point at, and their

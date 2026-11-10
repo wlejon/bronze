@@ -82,15 +82,14 @@ bool requireRegExp(Value self, const char* member) {
     return false;
 }
 
-// 22.2.6.16: `test` is `exec` and a null check. Written as exactly that, so
-// the two can never disagree about `lastIndex`.
+// 22.2.6.16: `test` runs the exact `exec` `lastIndex` and match protocol
+// without materializing a match array.
 uint64_t regexpTest(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireRegExp(self.get(), "test")) return Value::fromUndefined().rawBits();
     Rooted<Value> input{rtValueToString(args[0])};
-    Value result = rtRegExpExec(self, input);
-    return Value::fromBool(!result.isNull()).rawBits();
+    return Value::fromBool(rtRegExpExecTest(self, input)).rawBits();
 }
 
 // 22.2.6.17: `/` + source + `/` + flags, both read as PROPERTIES so a

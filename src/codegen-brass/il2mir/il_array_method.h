@@ -1,6 +1,6 @@
 #pragma once
 
-// `arr.push(v)` and `arr.shift()` inline, for a method call whose receiver
+// `arr.push(v1, ...)` and `arr.shift()` inline, for a method call whose receiver
 // inference typed a dense JS Array (il.h `kMethodRecvArray`): the append or
 // the front removal that bronze_array_push / bronze_array_shift make on their
 // own fast path, done at the site, with the call through the method cache and
@@ -22,6 +22,7 @@
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
 #include <functional>
+#include <vector>
 
 namespace il2mir {
 
@@ -29,16 +30,23 @@ class IlLowering;
 
 enum class ArrayInline { None, Push, Shift, Sort };
 
+struct ArrayPushArg {
+    Value* bits = nullptr;
+    bool proven_number = false;
+};
+
 // Which inline arm this method call takes, if any: a hinted receiver, `push`
-// with one argument or `shift` with none, in an image build's code that runs
+// with 1..8 arguments or `shift` with none, in an image build's code that runs
 // more than once. `sort` with one argument needs no hint: its arm's test is
 // paid once per sort, and the arm is the runtime's sort with the merge run by
 // the module's stub (il_array_sort.h).
 ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& inst);
 
-// The arm in front of `slow` (the site's ordinary call). `val` is the pushed
-// value's bits, unused by shift. Returns the call's result as Value bits.
-Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv, Value* val,
+// The arm in front of `slow` (the site's ordinary call). `args` holds the
+// boxed arguments (1..8 for push, 1 for sort, empty for shift). Returns the
+// call's result as Value bits.
+Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv,
+                                 const std::vector<ArrayPushArg>& args,
                                  const std::function<Value*(Builder&)>& slow);
 
 }  // namespace il2mir

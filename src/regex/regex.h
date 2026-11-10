@@ -119,13 +119,15 @@ enum class ExecStatus {
 };
 
 // One attempt at exactly `at`, with no scan. This is `y`'s whole semantics and
-// the primitive the scanning form is built from.
+// the primitive the scanning form is built from. When `extractCaptures` is
+// false, only capture 0 (`[start, end]`) is populated on a match.
 ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResult& out,
-                   std::string& error);
+                   std::string& error, bool extractCaptures = true);
 
 // The first match at or after `from`, scanning forward. `sticky` is the
-// caller's to honour: `exec` on a sticky pattern uses `matchAt`.
+// caller's to honour: `exec` on a sticky pattern uses `matchAt`. When
+// `extractCaptures` is false, only capture 0 (`[start, end]`) is populated.
 ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchResult& out,
-                  std::string& error);
+                  std::string& error, bool extractCaptures = true);
 
 }  // namespace bronze::regex

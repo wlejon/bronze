@@ -43,6 +43,7 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     emitInst(ilFn, eqInst);
 
     il::BlockId bDefault = createBlock(ilFn);
+    ilFn.blocks[bDefault].cold = true;
     il::BlockId bJoin = createBlock(ilFn);
     const size_t entryBlockIdx = currentBlockIdx_;
     auto statePre = snapshotVarStates();
@@ -54,6 +55,9 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     auto defOpt = bindingName.empty() ? lowerExpr(defaultExpr, ilFn)
                                       : lowerNamedEvaluation(defaultExpr, sourceSpelling(bindingName), ilFn);
     if (!defOpt) return std::nullopt;
+    for (size_t bi = static_cast<size_t>(bJoin) + 1; bi < ilFn.blocks.size(); ++bi) {
+        ilFn.blocks[bi].cold = true;
+    }
     auto stateDefault = snapshotVarStates();
     const bool defaultReaches = !currentBlockIsTerminated(ilFn);
     const size_t defaultEndBlockIdx = currentBlockIdx_;

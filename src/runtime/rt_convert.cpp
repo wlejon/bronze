@@ -78,13 +78,11 @@ static Value valueToString(Value v) {
     char buf[64];
     if (v.isNumber()) {
         size_t len = formatJsNumber(v.asNumber(), buf);
-        return Value::fromString(
-            StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
+        return rtMakeString(std::string_view(buf, len));
     }
     if (v.isInt32()) {
         size_t len = formatJsNumber(static_cast<double>(static_cast<int32_t>(v.payload())), buf);
-        return Value::fromString(
-            StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
+        return rtMakeString(std::string_view(buf, len));
     }
     const char* literal = nullptr;
     if (v.isBool()) {
@@ -124,6 +122,13 @@ static Value valueToString(Value v) {
 }
 
 Value rtMakeString(std::string_view utf8) {
+    if (utf8.empty()) {
+        return Value::fromString(StringHeader::emptyInArena(rtArena()));
+    }
+    if (utf8.size() == 1 && static_cast<unsigned char>(utf8[0]) < 0x80) {
+        return Value::fromString(
+            StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(utf8[0])));
+    }
     return Value::fromString(StringHeader::createFromUTF8(rtHeap(), utf8));
 }
 
@@ -509,8 +514,7 @@ uint64_t bronze_box_bool(bool v) { return Value::fromBool(v).rawBits(); }
 
 uint64_t bronze_box_str(const char* s) {
     if (!s) return Value::fromUndefined().rawBits();
-    return Value::fromString(StringHeader::createFromUTF8(rtHeap(), std::string_view(s)))
-        .rawBits();
+    return rtMakeString(std::string_view(s)).rawBits();
 }
 
 uint64_t bronze_box_str_key(uint32_t keyIndex) {

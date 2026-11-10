@@ -228,3 +228,41 @@ TEST_CASE("brass regex DFA JIT: throughput benchmark vs backtracking interpreter
     std::cout << "[RegexJitBenchmark] brass DFA JIT: " << jit_us << " us vs Interpreter: "
               << interp_us << " us (speedup: " << speedup << "x)\n";
 }
+
+TEST_CASE("brass regex DFA JIT: fixed-offset capture groups resolve without interpreter") {
+    regex::RegexJitPlan::waitForKernels();
+    {
+        CompiledPair font = compilePair("(\\d+(?:\\.\\d+)?)px", "");
+        REQUIRE(font.with_jit->jitPlan != nullptr);
+        CHECK_FALSE(font.with_jit->jitPlan->requiresCaptureExtraction());
+        checkDifferentialEquivalence(font, u("italic bold 16.5px Arial"), "font_px");
+        checkDifferentialEquivalence(font, u("24px"), "font_int_px");
+        checkDifferentialEquivalence(font, u("12em"), "font_miss");
+    }
+    {
+        CompiledPair nl = compilePair("(\\r\\n|\\r|\\n)", "");
+        REQUIRE(nl.with_jit->jitPlan != nullptr);
+        CHECK_FALSE(nl.with_jit->jitPlan->requiresCaptureExtraction());
+        checkDifferentialEquivalence(nl, u("hello\r\nworld\nfoo\rbar"), "newline_capture");
+    }
+    {
+        CompiledPair multi = compilePair("^pre_(\\w+)_(\\d{2})px", "");
+        REQUIRE(multi.with_jit->jitPlan != nullptr);
+        CHECK_FALSE(multi.with_jit->jitPlan->requiresCaptureExtraction());
+        checkDifferentialEquivalence(multi, u("pre_sans_42px_extra"), "multi_fixed_capture");
+    }
+    {
+        CompiledPair opt = compilePair("(a)?b", "");
+        REQUIRE(opt.with_jit->jitPlan != nullptr);
+        CHECK(opt.with_jit->jitPlan->requiresCaptureExtraction());
+        checkDifferentialEquivalence(opt, u("b"), "optional_unset");
+        checkDifferentialEquivalence(opt, u("ab"), "optional_set");
+    }
+    {
+        CompiledPair alt = compilePair("(?:(a)|b)c", "");
+        REQUIRE(alt.with_jit->jitPlan != nullptr);
+        CHECK(alt.with_jit->jitPlan->requiresCaptureExtraction());
+        checkDifferentialEquivalence(alt, u("bc"), "alt_capture_miss");
+        checkDifferentialEquivalence(alt, u("ac"), "alt_capture_hit");
+    }
+}

@@ -66,9 +66,25 @@ struct RegexJitStats {
     uint32_t dfa_states = 0;
 };
 
+// Describes a capture boundary as a constant code-unit offset from either
+// `match_start` (`fromEnd == false`) or `match_end` (`fromEnd == true`).
+struct CaptureBoundExpr {
+    bool fromEnd = false;
+    int32_t delta = 0;
+
+    int64_t eval(int64_t matchStart, int64_t matchEnd) const noexcept {
+        return (fromEnd ? matchEnd : matchStart) + delta;
+    }
+};
+
+struct FixedCaptureSpec {
+    CaptureBoundExpr start{};
+    CaptureBoundExpr end{};
+};
+
 // Holds the deterministic state table (256 transitions per state, laid out for
 // `brass::codegen::GrammarBuilder::dfa_table_step`) and native JIT-compiled entry points
-// for a regular expression without backreferences, lookarounds, or capture groups.
+// for a regular expression without backreferences or lookarounds.
 class RegexJitPlan {
 public:
     static constexpr uint32_t kMaxNfaStates = 256;
@@ -134,6 +150,9 @@ private:
     //   1 = accepting (continue scanning for greedy longest match)
     //   2 = accepting and stop immediately (lazy quantifier / first-alternative priority cut)
     std::vector<int32_t> accept_table_;
+    // Populated when all `groupCount` capture groups have deterministic fixed
+    // offsets from `[match_start, match_end]`, avoiding interpreter fallback.
+    std::vector<FixedCaptureSpec> fixed_captures_;
     RegexJitStats stats_;
 };
 

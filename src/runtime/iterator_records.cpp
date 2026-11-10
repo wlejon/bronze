@@ -257,7 +257,7 @@ Value rtOpenIterator(Value source) {
     Rooted<Value> srcRoot{source};
     uint32_t kind = IterRecordHeader::Protocol;
     if (source.isString()) {
-        kind = IterRecordHeader::String;
+        if (rtStringIteratorPristine()) kind = IterRecordHeader::String;
     } else if (source.isObject()) {
         switch (source.asObject<HeapObjectHeader>()->flags) {
             case HeapKind::Array: {
@@ -483,8 +483,8 @@ bool bronze_iter_step(uint64_t recBits) {
             const uint16_t units[2] = {unit, str->charCodeAt(i + 1)};
             piece = Value::fromString(StringHeader::createUTF16(rtHeap(), units, 2));
         } else if (unit < 0x100) {
-            const char byte = static_cast<char>(unit);
-            piece = Value::fromString(StringHeader::createLatin1(rtHeap(), &byte, 1));
+            piece = Value::fromString(
+                StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(unit)));
         } else {
             piece = Value::fromString(StringHeader::createUTF16(rtHeap(), &unit, 1));
         }

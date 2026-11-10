@@ -415,12 +415,14 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         const std::string prefix = "elem_set_run_" + std::to_string(fn->next_block_id());
         BasicBlock* bb_src_load = b.append_block(prefix + "_src");
         BasicBlock* bb_ta_check = b.append_block(prefix + "_ta_check");
-        BasicBlock* bb_ta = b.append_block(prefix + "_ta");
-        BasicBlock* bb_ta_f32 = b.append_block(prefix + "_ta_f32");
-        BasicBlock* bb_ta_f64 = b.append_block(prefix + "_ta_f64");
         BasicBlock* bb_arr = b.append_block(prefix + "_arr");
         BasicBlock* bb_arr_store = b.append_block(prefix + "_arr_store");
+        BasicBlock* bb_ta = b.append_block(prefix + "_ta");
+        BasicBlock* bb_ta_f32 = b.append_block(prefix + "_ta_f32");
+        BasicBlock* bb_ta_f64_check = b.append_block(prefix + "_ta_f64_check");
+        BasicBlock* bb_ta_f64 = b.append_block(prefix + "_ta_f64");
         BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
         b.position_at_end(guard_bb);
@@ -538,8 +540,6 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* ta_in_bounds = b.build_and(is_ta, b.build_ult(max_end_idx, ta_len));
         Value* ta_kind = b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_KIND_OFFSET);
         Value* is_f32 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)));
-        BasicBlock* bb_ta_f64_check = b.append_block(prefix + "_ta_f64_check");
-        b.position_at_end(bb_ta);
         b.build_br_if(is_f32, bb_ta_f32, bb_ta_f64_check);
 
         b.position_at_end(bb_ta_f64_check);
@@ -590,6 +590,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         // Slow path: lower the slice in helper-only mode (`run_once_ = true`).
         b.position_at_end(bb_slow);
         invalidate_dense_array_proofs();
+        const size_t slow_base = fn->blocks().size();
         const bool saved_run_once = run_once_;
         run_once_ = true;
         for (size_t j = inst_idx; j < committed_end; ++j) {
@@ -600,6 +601,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             }
         }
         run_once_ = saved_run_once;
+        for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
         b.build_br(bb_merge);
 
         b.position_at_end(bb_merge);
@@ -738,9 +740,11 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         BasicBlock* bb_src_arr_load = b.append_block(prefix + "_src_arr_load");
         BasicBlock* bb_src_ta = b.append_block(prefix + "_src_ta");
         BasicBlock* bb_src_ta_f32 = b.append_block(prefix + "_src_ta_f32");
+        BasicBlock* bb_src_ta_f64_check = b.append_block(prefix + "_src_ta_f64_check");
         BasicBlock* bb_src_ta_f64 = b.append_block(prefix + "_src_ta_f64");
         BasicBlock* bb_store = b.append_block(prefix + "_store");
         BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        bb_slow->set_cold();
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
         std::vector<Value*> store_params(N, nullptr);
@@ -781,8 +785,6 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* ta_in_bounds = b.build_and(is_ta, b.build_ult(max_end_idx, ta_len));
         Value* ta_kind = b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_KIND_OFFSET);
         Value* is_f32 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)));
-        BasicBlock* bb_src_ta_f64_check = b.append_block(prefix + "_src_ta_f64_check");
-        b.position_at_end(bb_src_ta);
         b.build_br_if(is_f32, bb_src_ta_f32, bb_src_ta_f64_check);
 
         b.position_at_end(bb_src_ta_f64_check);
@@ -824,6 +826,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         // Slow path: lower the slice in helper-only mode (`run_once_ = true`).
         b.position_at_end(bb_slow);
         invalidate_dense_array_proofs();
+        const size_t slow_base = fn->blocks().size();
         const bool saved_run_once = run_once_;
         run_once_ = true;
         for (size_t j = inst_idx; j < committed_end; ++j) {
@@ -834,6 +837,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             }
         }
         run_once_ = saved_run_once;
+        for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
         b.build_br(bb_merge);
 
         b.position_at_end(bb_merge);

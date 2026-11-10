@@ -85,39 +85,7 @@ int64_t indexOfHeaders(const StringHeader* hay, const StringHeader* needle, uint
 }
 
 Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
-    if (end <= start) {
-        return rtMakeString("");
-    }
-    const uint32_t sliceLen = end - start;
-    const StringHeader* s = strRoot.get().asString<StringHeader>();
-    if (s->isLatin1()) {
-        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
-        const StringHeader* src = strRoot.get().asString<StringHeader>();
-        std::memcpy(res->latin1Data(), src->latin1Data() + start, sliceLen);
-        return Value::fromString(res);
-    }
-    const uint16_t* u16 = s->utf16Data() + start;
-    bool allLatin1 = true;
-    for (uint32_t i = 0; i < sliceLen; ++i) {
-        if (u16[i] > 0xFF) {
-            allLatin1 = false;
-            break;
-        }
-    }
-    if (allLatin1) {
-        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
-        const StringHeader* src = strRoot.get().asString<StringHeader>();
-        const uint16_t* srcU16 = src->utf16Data() + start;
-        char* dst = res->latin1Data();
-        for (uint32_t i = 0; i < sliceLen; ++i) {
-            dst[i] = static_cast<char>(srcU16[i]);
-        }
-        return Value::fromString(res);
-    }
-    StringHeader* res = StringHeader::createUTF16(rtHeap(), nullptr, sliceLen);
-    const StringHeader* src = strRoot.get().asString<StringHeader>();
-    std::memcpy(res->utf16Data(), src->utf16Data() + start, sliceLen * sizeof(uint16_t));
-    return Value::fromString(res);
+    return Value::fromString(StringHeader::slice(rtHeap(), rtArena(), strRoot, start, end));
 }
 
 }  // namespace
@@ -458,11 +426,17 @@ extern "C" uint64_t bronze_fast_string_char_at(uint64_t thisBits, uint64_t posBi
     const Value self(thisBits);
     double idx = 0.0;
     if (self.isString() && plainPosition(Value(posBits), idx)) {
-        const uint32_t len = self.asString<StringHeader>()->getLength();
-        if (idx < 0 || idx >= static_cast<double>(len)) return rtMakeString("").rawBits();
-        Rooted<Value> str{self};
-        const auto i = static_cast<uint32_t>(idx);
-        return directSlice(str, i, i + 1).rawBits();
+        const StringHeader* s = self.asString<StringHeader>();
+        if (idx < 0 || idx >= static_cast<double>(s->getLength())) {
+            return Value::fromString(StringHeader::emptyInArena(rtArena())).rawBits();
+        }
+        const uint16_t u = s->charCodeAt(static_cast<uint32_t>(idx));
+        if (u <= 0xFF) {
+            return Value::fromString(
+                       StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(u)))
+                .rawBits();
+        }
+        return Value::fromString(StringHeader::createUTF16(rtHeap(), &u, 1)).rawBits();
     }
     const uint64_t argv[1] = {posBits};
     return bronze_string_char_at(0, thisBits, 1, argv);

@@ -310,6 +310,7 @@ void rtInstallNumberMethods(Rooted<Value>& proto);
 // `Symbol.prototype` is the fourth and lives in symbol.h, because 20.4.3 makes
 // it an ordinary object rather than a wrapper.
 Value rtStringPrototype();
+Value rtStringPrototypeIfBuilt();
 Value rtBooleanPrototype();
 Value rtNumberPrototype();
 
@@ -597,6 +598,7 @@ bool rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key);
 // `String.prototype[Symbol.iterator]` (22.1.3.36), installed by
 // builtin_wrappers.cpp's intrinsic initializer beside the string methods.
 void rtInstallStringIterator(Rooted<Value>& proto);
+bool rtStringIteratorPristine();
 
 // `Function.prototype.bind` (20.2.3.2) and the bound function's brand
 // (builtin_function_bind.cpp). The state accessor is what `bronze_construct`

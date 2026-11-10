@@ -447,25 +447,58 @@ inline LookupMemo& lookupMemoFor(const Shape* shape, const void* key) noexcept {
                        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)) * 0xC2B2AE3D27D4EB4FULL;
     return g_lookupMemo[h >> (64 - kLookupMemoBits)];
 }
+
+// Hit memo for non-immortal heap strings (`!name.immortal()`): keyed by
+// `(shape, name->hash())` and validated by content equality against the matched
+// shape node's immortal arena `StringHeader*`, so no movable heap address is
+// ever retained across collections.
+struct StringLookupMemo {
+    const Shape* shape;
+    const StringHeader* arenaKey;
+    uint32_t keyHash;
+    PropertyInfo info;
+};
+constexpr uint32_t kStringLookupMemoBits = 11;
+thread_local StringLookupMemo g_stringLookupMemo[1u << kStringLookupMemoBits];
+
+inline StringLookupMemo& stringLookupMemoFor(const Shape* shape, uint32_t keyHash) noexcept {
+    const uint64_t h = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) * 0x9E3779B97F4A7C15ULL +
+                       static_cast<uint64_t>(keyHash) * 0xC2B2AE3D27D4EB4FULL;
+    return g_stringLookupMemo[h >> (64 - kStringLookupMemoBits)];
+}
 }  // namespace
 
 void Shape::forgetLookupMemo() noexcept {
     for (LookupMemo& m : g_lookupMemo) m = LookupMemo{};
+    for (StringLookupMemo& m : g_stringLookupMemo) m = StringLookupMemo{};
 }
 
 bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
     if (!name.valid()) return false;
 
     if (!isDictionary()) {
+        if (!key.valid()) return false;
         const bool memoize = name.immortal();
         LookupMemo* memo = memoize ? &lookupMemoFor(this, name.identity()) : nullptr;
         if (memo && memo->shape == this && memo->key == name.identity()) {
             if (memo->found) out = memo->info;
             return memo->found;
         }
+        StringLookupMemo* smemo = nullptr;
+        uint32_t strHash = 0;
+        if (!memoize && name.isString()) {
+            strHash = name.string()->hash();
+            smemo = &stringLookupMemoFor(this, strHash);
+            if (smemo->shape == this && smemo->keyHash == strHash &&
+                smemo->arenaKey != nullptr && smemo->arenaKey->equals(*name.string())) {
+                out = smemo->info;
+                return true;
+            }
+        }
         bool found = false;
         PropertyInfo info;
-        for (const Shape* curr = this; curr != nullptr; curr = curr->parent) {
+        const StringHeader* hitArenaKey = nullptr;
+        for (const Shape* curr = this; curr != nullptr && curr->key.valid(); curr = curr->parent) {
             if (curr->key.matches(name)) {
                 info.slot = curr->slot_index;
                 info.enumerable = curr->enumerable;
@@ -473,11 +506,16 @@ bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
                 info.writable = curr->writable;
                 info.configurable = curr->configurable;
                 info.repr = curr->repr;
+                hitArenaKey = curr->key.string();
                 found = true;
                 break;
             }
         }
-        if (memo) *memo = LookupMemo{this, name.identity(), info, found};
+        if (memo) {
+            *memo = LookupMemo{this, name.identity(), info, found};
+        } else if (found && smemo && hitArenaKey && hitArenaKey->isArena()) {
+            *smemo = StringLookupMemo{this, hitArenaKey, strHash, info};
+        }
         if (found) out = info;
         return found;
     }

@@ -477,8 +477,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             for (il::BlockId tail : slowTailId[b]) classify(tail, il::CopyClass::Slow);
             // A profiled region's slow copy is what a failed guard runs, and
             // the profile says the guards hold: it goes out of line.
-            out[slowHeadId[b]].cold = plan.feedback;
-            for (il::BlockId tail : slowTailId[b]) out[tail].cold = plan.feedback;
+            out[slowHeadId[b]].cold = plan.feedback || src.blocks[b].cold;
+            for (il::BlockId tail : slowTailId[b]) out[tail].cold = plan.feedback || src.blocks[b].cold;
         } else {
             // Outside this region, so it keeps whatever a PREVIOUS rewrite of
             // this function made it — the preheader, the exits and the blocks
@@ -493,7 +493,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     }
     if (entryConvId != il::kNoBlock) classify(entryConvId, il::CopyClass::Fast);
     for (il::BlockId b : plan.blocks) {
-        for (il::BlockId id : fastPartId[b]) classify(id, il::CopyClass::Fast);
+        for (il::BlockId id : fastPartId[b]) {
+            classify(id, il::CopyClass::Fast);
+            out[id].cold = src.blocks[b].cold;
+        }
         for (il::BlockId id : fastRunId[b]) {
             if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
         }

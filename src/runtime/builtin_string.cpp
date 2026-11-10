@@ -548,6 +548,17 @@ std::vector<uint16_t> rtStringUnits(const StringHeader* s) {
 // Latin-1 when every unit fits, so an ASCII result of an ASCII input stays
 // in the compact representation instead of doubling in size.
 Value rtStringFromUnits(const std::vector<uint16_t>& units) {
+    if (units.empty()) {
+        return Value::fromString(StringHeader::emptyInArena(rtArena()));
+    }
+    if (units.size() == 1) {
+        const uint16_t u = units[0];
+        if (u <= 0xFF) {
+            return Value::fromString(
+                StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(u)));
+        }
+        return Value::fromString(StringHeader::createUTF16(rtHeap(), &u, 1));
+    }
     bool latin1 = true;
     for (uint16_t u : units) {
         if (u > 0xFF) {
@@ -556,11 +567,11 @@ Value rtStringFromUnits(const std::vector<uint16_t>& units) {
         }
     }
     if (latin1) {
-        std::string bytes;
-        bytes.reserve(units.size());
-        for (uint16_t u : units) bytes.push_back(static_cast<char>(u));
-        return Value::fromString(StringHeader::createLatin1(rtHeap(), bytes.data(),
-                                                            static_cast<uint32_t>(bytes.size())));
+        StringHeader* res =
+            StringHeader::createLatin1(rtHeap(), nullptr, static_cast<uint32_t>(units.size()));
+        char* dst = res->latin1Data();
+        for (size_t i = 0; i < units.size(); ++i) dst[i] = static_cast<char>(units[i]);
+        return Value::fromString(res);
     }
     return Value::fromString(
         StringHeader::createUTF16(rtHeap(), units.data(), static_cast<uint32_t>(units.size())));

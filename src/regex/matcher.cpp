@@ -36,7 +36,9 @@
 // has to see a trailing surrogate at `pos - 1` and step over its LEAD — and
 // that meeting is why `codePointBefore` exists rather than a reversed loop.
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -90,16 +92,25 @@ struct Cont {
 
 class Matcher {
 public:
+    static constexpr size_t kInlineCaptureSlots = 16;
+
     Matcher(const Pattern& pattern, UnitsView input)
         : pattern_(pattern),
           input_(input),
           ignoreCase_(pattern.flags.ignoreCase),
-          unicode_(pattern.flags.unicodeMode()) {
-        captures_.assign(static_cast<size_t>(pattern.groupCount + 1) * 2, MatchResult::kUnset);
+          unicode_(pattern.flags.unicodeMode()),
+          captureSlots_(static_cast<size_t>(pattern.groupCount + 1) * 2) {
+        if (captureSlots_ <= kInlineCaptureSlots) {
+            captures_ = inlineCaptures_;
+        } else {
+            heapCaptures_.resize(captureSlots_);
+            captures_ = heapCaptures_.data();
+        }
+        std::fill_n(captures_, captureSlots_, MatchResult::kUnset);
     }
 
-    ExecStatus run(size_t at, MatchResult& out, std::string& error) {
-        captures_.assign(captures_.size(), MatchResult::kUnset);
+    ExecStatus run(size_t at, MatchResult& out, std::string& error, bool extractCaptures = true) {
+        std::fill_n(captures_, captureSlots_, MatchResult::kUnset);
         steps_ = 0;
         depth_ = 0;
         failed_ = false;
@@ -115,7 +126,9 @@ public:
         if (!ok) return ExecStatus::NoMatch;
         captures_[0] = static_cast<int64_t>(at);
         captures_[1] = static_cast<int64_t>(endPos_);
-        out.captures = captures_;
+        const size_t outSlots = extractCaptures ? captureSlots_ : 2;
+        out.captures.resize(outSlots);
+        std::memcpy(out.captures.data(), captures_, outSlots * sizeof(int64_t));
         return ExecStatus::Match;
     }
 
@@ -124,7 +137,10 @@ private:
     UnitsView input_;
     bool ignoreCase_;
     bool unicode_;
-    std::vector<int64_t> captures_;
+    size_t captureSlots_ = 0;
+    int64_t* captures_ = nullptr;
+    int64_t inlineCaptures_[kInlineCaptureSlots]{};
+    std::vector<int64_t> heapCaptures_;
     size_t endPos_ = 0;
     uint64_t steps_ = 0;
     uint32_t depth_ = 0;
@@ -301,28 +317,21 @@ private:
     // ---- the quantifier -----------------------------------------------------
 
     void clearRepeatCaptures(const Node& node) {
-        for (uint32_t i = 0; i < node.captureCount; ++i) {
-            const size_t slot = static_cast<size_t>(node.firstCapture + i) * 2;
-            captures_[slot] = MatchResult::kUnset;
-            captures_[slot + 1] = MatchResult::kUnset;
-        }
+        const size_t slot = static_cast<size_t>(node.firstCapture) * 2;
+        const size_t count = static_cast<size_t>(node.captureCount) * 2;
+        std::fill_n(captures_ + slot, count, MatchResult::kUnset);
     }
 
-    void saveRepeatCaptures(const Node& node, std::vector<int64_t>& into) {
-        into.clear();
-        for (uint32_t i = 0; i < node.captureCount; ++i) {
-            const size_t slot = static_cast<size_t>(node.firstCapture + i) * 2;
-            into.push_back(captures_[slot]);
-            into.push_back(captures_[slot + 1]);
-        }
+    void saveRepeatCaptures(const Node& node, int64_t* into) const {
+        const size_t slot = static_cast<size_t>(node.firstCapture) * 2;
+        const size_t count = static_cast<size_t>(node.captureCount) * 2;
+        std::memcpy(into, captures_ + slot, count * sizeof(int64_t));
     }
 
-    void restoreRepeatCaptures(const Node& node, const std::vector<int64_t>& from) {
-        for (uint32_t i = 0; i < node.captureCount; ++i) {
-            const size_t slot = static_cast<size_t>(node.firstCapture + i) * 2;
-            captures_[slot] = from[i * 2];
-            captures_[slot + 1] = from[i * 2 + 1];
-        }
+    void restoreRepeatCaptures(const Node& node, const int64_t* from) {
+        const size_t slot = static_cast<size_t>(node.firstCapture) * 2;
+        const size_t count = static_cast<size_t>(node.captureCount) * 2;
+        std::memcpy(captures_ + slot, from, count * sizeof(int64_t));
     }
 
     // A quantified atom that consumes exactly one character and captures
@@ -407,8 +416,17 @@ private:
         again.next = k;
 
         const Node& atom = *node.children[0];
-        std::vector<int64_t> saved;
+        int64_t savedInline[kInlineCaptureSlots];
+        std::vector<int64_t> savedHeap;
+        int64_t* saved = nullptr;
         if (node.captureCount != 0) {
+            const size_t slots = static_cast<size_t>(node.captureCount) * 2;
+            if (slots <= kInlineCaptureSlots) {
+                saved = savedInline;
+            } else {
+                savedHeap.resize(slots);
+                saved = savedHeap.data();
+            }
             saveRepeatCaptures(node, saved);
             clearRepeatCaptures(node);
         }
@@ -493,7 +511,14 @@ private:
     // ENCLOSING direction, which the continuation already carries.
     bool matchLookaround(const Node& node, size_t pos, const Cont* k) {
         const bool bodyBackward = node.kind == NodeKind::Lookbehind;
-        const std::vector<int64_t> saved = captures_;
+        int64_t savedInline[kInlineCaptureSlots];
+        std::vector<int64_t> savedHeap;
+        int64_t* saved = savedInline;
+        if (captureSlots_ > kInlineCaptureSlots) {
+            savedHeap.resize(captureSlots_);
+            saved = savedHeap.data();
+        }
+        std::memcpy(saved, captures_, captureSlots_ * sizeof(int64_t));
         const size_t savedEnd = endPos_;
         Cont done;
         done.kind = Cont::Kind::Done;
@@ -504,19 +529,19 @@ private:
         if (node.lookaroundNegative) {
             // 22.2.2.3: a negative lookaround discards whatever its body
             // captured, whether or not it matched.
-            captures_ = saved;
+            std::memcpy(captures_, saved, captureSlots_ * sizeof(int64_t));
             if (inner) return false;
             return runCont(k, pos);
         }
         if (!inner) {
-            captures_ = saved;
+            std::memcpy(captures_, saved, captureSlots_ * sizeof(int64_t));
             return false;
         }
         // Atomic: the body is matched once and never retried to satisfy what
         // follows, because the spec's continuation for a lookahead accepts
         // immediately. So a failure after this point fails the whole term.
         if (runCont(k, pos)) return true;
-        captures_ = saved;
+        std::memcpy(captures_, saved, captureSlots_ * sizeof(int64_t));
         return false;
     }
 
@@ -646,31 +671,33 @@ private:
 }  // namespace
 
 ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResult& out,
-                   std::string& error) {
+                   std::string& error, bool extractCaptures) {
     if (at > input.size()) return ExecStatus::NoMatch;
     if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
         ExecStatus jitStatus = ExecStatus::NoMatch;
         if (pattern.jitPlan->tryMatchAt(input, at, out, jitStatus)) {
-            if (jitStatus != ExecStatus::Match || !pattern.jitPlan->requiresCaptureExtraction()) {
+            if (jitStatus != ExecStatus::Match || !extractCaptures ||
+                !pattern.jitPlan->requiresCaptureExtraction()) {
                 return jitStatus;
             }
         }
     }
     Matcher matcher(pattern, input);
-    return matcher.run(at, out, error);
+    return matcher.run(at, out, error, extractCaptures);
 }
 
 ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchResult& out,
-                  std::string& error) {
+                  std::string& error, bool extractCaptures) {
     if (from > input.size()) return ExecStatus::NoMatch;
     if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
         ExecStatus jitStatus = ExecStatus::NoMatch;
         if (pattern.jitPlan->trySearch(input, from, out, jitStatus)) {
-            if (jitStatus != ExecStatus::Match || !pattern.jitPlan->requiresCaptureExtraction()) {
+            if (jitStatus != ExecStatus::Match || !extractCaptures ||
+                !pattern.jitPlan->requiresCaptureExtraction()) {
                 return jitStatus;
             }
             Matcher matcher(pattern, input);
-            return matcher.run(static_cast<size_t>(out.start()), out, error);
+            return matcher.run(static_cast<size_t>(out.start()), out, error, extractCaptures);
         }
     }
     Matcher matcher(pattern, input);
@@ -685,7 +712,7 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
     // position the scan visits.
     const bool unicode = pattern.flags.unicodeMode();
     for (size_t at = from; at <= input.size(); at = advanceStringIndex(input, at, unicode)) {
-        const ExecStatus status = matcher.run(at, out, error);
+        const ExecStatus status = matcher.run(at, out, error, extractCaptures);
         if (status != ExecStatus::NoMatch) return status;
     }
     return ExecStatus::NoMatch;

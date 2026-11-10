@@ -33,7 +33,19 @@ struct ArenaStringEq {
 
 struct ArenaStringTable {
     std::unordered_set<const StringHeader*, ArenaStringHash, ArenaStringEq> strings;
+    StringHeader* empty = nullptr;
+    StringHeader* latin1Chars[256] = {};
+    bool allLatin1Ready = false;
 };
+
+ArenaStringTable* ensureArenaStringTable(NonMovingArena& arena) {
+    auto* table = static_cast<ArenaStringTable*>(arena.string_table());
+    if (table == nullptr) {
+        table = arena.create<ArenaStringTable>();
+        arena.set_string_table(table);
+    }
+    return table;
+}
 
 // One step of the WHATWG UTF-8 decoder (Encoding Standard 4.3, Unicode's
 // maximal subparts): the code point at s[i] and the bytes it takes. A lead
@@ -410,23 +422,34 @@ void StringHeader::appendToBuilder(Heap& heap, Rooted<Value>& dst, Rooted<Value>
 // because an arena string is immutable (sealed, never a builder) and every
 // consumer matches string keys by content.
 StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHeader* src) {
-    auto* table = static_cast<ArenaStringTable*>(arena.string_table());
-    if (table == nullptr) {
-        table = arena.create<ArenaStringTable>();
-        arena.set_string_table(table);
+    if (src->isLatin1()) {
+        if (src->length == 0) return emptyInArena(arena);
+        if (src->length == 1) {
+            return latin1CharInArena(arena, static_cast<uint8_t>(src->latin1Data()[0]));
+        }
     }
+    ArenaStringTable* table = ensureArenaStringTable(arena);
     auto found = table->strings.find(src);
     if (found != table->strings.end()) return const_cast<StringHeader*>(*found);
-    const size_t total = sizeof(StringHeader) + unitBytes(src);
+    const size_t units = unitBytes(src);
+    const size_t term = src->isUTF16() ? sizeof(uint16_t) : 1;
+    const size_t total = sizeof(StringHeader) + units + term;
     void* mem = arena.allocate(total, alignof(StringHeader));
-    std::memcpy(mem, src, total);
+    std::memcpy(mem, src, sizeof(StringHeader) + units);
     auto* out = static_cast<StringHeader*>(mem);
+    if (out->isUTF16()) {
+        out->utf16Data()[out->length] = 0;
+    } else {
+        out->latin1Data()[out->length] = '\0';
+    }
     // The copy is exact-fit and immortal, so whatever slack the source had is
     // gone and the builder mark must not survive into it: an arena string that
     // still claimed to be an appendable builder would offer room that this
     // allocation does not have.
     out->sealBuilder();
     out->header.flags = static_cast<uint16_t>(out->header.flags | kArenaFlag);
+    out->header.size = static_cast<uint32_t>(total);
+    out->hash();
     table->strings.insert(out);
     return out;
 }
@@ -445,14 +468,86 @@ StringHeader* StringHeader::copyToOld(Heap& heap, Rooted<Value>& src) {
 }
 
 StringHeader* StringHeader::adoptIntoArena(NonMovingArena& arena, StringHeader* owned) {
-    auto* table = static_cast<ArenaStringTable*>(arena.string_table());
-    if (table == nullptr) {
-        table = arena.create<ArenaStringTable>();
-        arena.set_string_table(table);
-    }
+    ArenaStringTable* table = ensureArenaStringTable(arena);
     owned->sealBuilder();
     auto [it, inserted] = table->strings.insert(owned);
-    return inserted ? owned : const_cast<StringHeader*>(*it);
+    StringHeader* canon = inserted ? owned : const_cast<StringHeader*>(*it);
+    canon->hash();
+    if (canon->isLatin1()) {
+        if (canon->length == 0 && table->empty == nullptr) {
+            table->empty = canon;
+        } else if (canon->length == 1) {
+            const auto ch = static_cast<uint8_t>(canon->latin1Data()[0]);
+            if (table->latin1Chars[ch] == nullptr) table->latin1Chars[ch] = canon;
+        }
+    }
+    return canon;
+}
+
+StringHeader* StringHeader::emptyInArena(NonMovingArena& arena) {
+    ArenaStringTable* table = ensureArenaStringTable(arena);
+    if (table->empty != nullptr) return table->empty;
+    return adoptIntoArena(arena, createLatin1InArena(arena, "", 0));
+}
+
+StringHeader* StringHeader::latin1CharInArena(NonMovingArena& arena, uint8_t ch) {
+    ArenaStringTable* table = ensureArenaStringTable(arena);
+    if (StringHeader* cached = table->latin1Chars[ch]) return cached;
+    const char c = static_cast<char>(ch);
+    return adoptIntoArena(arena, createLatin1InArena(arena, &c, 1));
+}
+
+StringHeader* const* StringHeader::latin1CharTableInArena(NonMovingArena& arena) {
+    ArenaStringTable* table = ensureArenaStringTable(arena);
+    if (!table->allLatin1Ready) {
+        for (uint32_t i = 0; i < 256; ++i) {
+            if (table->latin1Chars[i] == nullptr) {
+                latin1CharInArena(arena, static_cast<uint8_t>(i));
+            }
+        }
+        table->allLatin1Ready = true;
+    }
+    return table->latin1Chars;
+}
+
+StringHeader* StringHeader::slice(Heap& heap, NonMovingArena& arena, const Rooted<Value>& strRoot,
+                                  uint32_t start, uint32_t end) {
+    if (end <= start) return emptyInArena(arena);
+    const uint32_t sliceLen = end - start;
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    if (sliceLen == 1) {
+        const uint16_t u = s->charCodeAt(start);
+        if (u <= 0xFF) return latin1CharInArena(arena, static_cast<uint8_t>(u));
+        return createUTF16(heap, &u, 1);
+    }
+    if (s->isLatin1()) {
+        StringHeader* res = createLatin1(heap, nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        std::memcpy(res->latin1Data(), src->latin1Data() + start, sliceLen);
+        return res;
+    }
+    const uint16_t* u16 = s->utf16Data() + start;
+    bool allLatin1 = true;
+    for (uint32_t i = 0; i < sliceLen; ++i) {
+        if (u16[i] > 0xFF) {
+            allLatin1 = false;
+            break;
+        }
+    }
+    if (allLatin1) {
+        StringHeader* res = createLatin1(heap, nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        const uint16_t* srcU16 = src->utf16Data() + start;
+        char* dst = res->latin1Data();
+        for (uint32_t i = 0; i < sliceLen; ++i) {
+            dst[i] = static_cast<char>(srcU16[i]);
+        }
+        return res;
+    }
+    StringHeader* res = createUTF16(heap, nullptr, sliceLen);
+    const StringHeader* src = strRoot.get().asString<StringHeader>();
+    std::memcpy(res->utf16Data(), src->utf16Data() + start, sliceLen * sizeof(uint16_t));
+    return res;
 }
 
 StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len) {

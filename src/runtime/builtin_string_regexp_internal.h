@@ -70,6 +70,11 @@ inline void appendStringUnits(Units& out, const StringHeader* s) {
 }
 
 inline Value stringOfSpan(const uint16_t* data, size_t len) {
+    if (len == 0) return Value::fromString(StringHeader::emptyInArena(rtArena()));
+    if (len == 1 && data[0] <= 0xFF) {
+        return Value::fromString(
+            StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(data[0])));
+    }
     bool latin1 = true;
     for (size_t i = 0; i < len; ++i) {
         if (data[i] > 0xFF) {

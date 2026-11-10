@@ -156,12 +156,64 @@ bool rtIsArgumentsObject(Value v) {
 
 namespace {
 
+void appendStringCodePoints(Rooted<Value>& out, Rooted<Value>& src) {
+    const uint32_t srcLen = src.get().asString<StringHeader>()->getLength();
+    if (srcLen == 0) return;
+    StringHeader* const* latin1Chars = StringHeader::latin1CharTableInArena(rtArena());
+    if (src.get().asString<StringHeader>()->isLatin1()) {
+        const uint32_t base = out.get().asObject<ArrayHeader>()->length;
+        ArrayHeader::setLength(rtHeap(), out, base + srcLen);
+        ArrayHeader* arr = out.get().asObject<ArrayHeader>();
+        const auto* bytes =
+            reinterpret_cast<const uint8_t*>(src.get().asString<StringHeader>()->latin1Data());
+        // Every Latin-1 unit resolves to an immortal arena string outside the GC
+        // heap, so neither generational remembering nor SATB shading applies.
+        auto* dst = reinterpret_cast<Value*>(arr->elementsData() + base);
+        for (uint32_t i = 0; i < srcLen; ++i) {
+            dst[i] = Value::fromString(latin1Chars[bytes[i]]);
+        }
+        return;
+    }
+    const uint16_t* u0 = src.get().asString<StringHeader>()->utf16Data();
+    uint32_t cpCount = 0;
+    for (uint32_t i = 0; i < srcLen; ++i) {
+        ++cpCount;
+        if (u0[i] >= 0xD800 && u0[i] <= 0xDBFF && i + 1 < srcLen &&
+            u0[i + 1] >= 0xDC00 && u0[i + 1] <= 0xDFFF) {
+            ++i;
+        }
+    }
+    const uint32_t base = out.get().asObject<ArrayHeader>()->length;
+    ArrayHeader::setLength(rtHeap(), out, base + cpCount);
+    uint32_t writeAt = base;
+    for (uint32_t i = 0; i < srcLen; ++i) {
+        const uint16_t* u = src.get().asString<StringHeader>()->utf16Data();
+        const uint16_t first = u[i];
+        Value piece;
+        if (first <= 0xFF) {
+            piece = Value::fromString(latin1Chars[first]);
+        } else if (first >= 0xD800 && first <= 0xDBFF && i + 1 < srcLen &&
+                   u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF) {
+            const uint16_t pair[2] = {first, u[i + 1]};
+            ++i;
+            piece = Value::fromString(StringHeader::createUTF16(rtHeap(), pair, 2));
+        } else {
+            piece = Value::fromString(StringHeader::createUTF16(rtHeap(), &first, 1));
+        }
+        out.get().asObject<ArrayHeader>()->elementsData()[writeAt++] = piece;
+    }
+}
+
 // Every element of `src`, appended to `out`, through the iterator protocol — so
 // `[...someSet]` and `f(...someMap)` walk the same way `for-of` does, which is
 // the whole reason spread stopped being an index walk. A value with no
 // @@iterator method raises the TypeError 7.4.2 defines rather than producing an
 // empty result.
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
+    if (src.get().isString() && rtStringIteratorPristine()) {
+        appendStringCodePoints(out, src);
+        return;
+    }
     Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> elem{Value(bronze_iter_value(rec.get().rawBits()))};

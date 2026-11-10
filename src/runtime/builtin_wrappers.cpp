@@ -285,6 +285,10 @@ Value rtStringPrototype() {
     return g_stringPrototype;
 }
 
+Value rtStringPrototypeIfBuilt() {
+    return g_stringPrototype;
+}
+
 Value rtBooleanPrototype() {
     ensureWrapperIntrinsics();
     return g_booleanPrototype;
@@ -451,8 +455,12 @@ Value rtStringCharAsString(Value str, uint32_t index) {
     // of UTF-16 code units, so indexing the second half of a surrogate pair
     // answers that half. `codePointAt` is the member that pairs them, and the
     // difference between the two is the whole reason both exist.
-    const std::vector<uint16_t> one{s->charCodeAt(index)};
-    return rtStringFromUnits(one);
+    const uint16_t u = s->charCodeAt(index);
+    if (u <= 0xFF) {
+        return Value::fromString(
+            StringHeader::latin1CharInArena(rtArena(), static_cast<uint8_t>(u)));
+    }
+    return Value::fromString(StringHeader::createUTF16(rtHeap(), &u, 1));
 }
 
 bool rtWrapperPrimitive(Value v, Value& out) {

@@ -94,6 +94,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             const std::string prefix = "prop_idx_get_run_" + std::to_string(fn->next_block_id());
             BasicBlock* bb_fast = b.append_block(prefix + "_fast");
             BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+            bb_slow->set_cold();
             BasicBlock* bb_merge = b.append_block(prefix + "_merge");
             b.position_at_end(guard_entry);
             // Every receiver's bits where the slow path is still entered
@@ -177,6 +178,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             b.build_br(bb_merge, fast_args);
 
             b.position_at_end(bb_slow);
+            const size_t get_slow_base = fn->blocks().size();
             std::vector<Value*> slow_args;
             slow_args.reserve(get_count);
             for (size_t j = inst_idx; j < run_end; ++j) {
@@ -196,6 +198,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                     arg = b.build_bitcast_f64_i64(ensure_type(arg, Type::i64(), b));
                 }
             }
+            for (size_t bi = get_slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
             b.build_br(bb_merge, slow_args);
 
             b.position_at_end(bb_merge);
@@ -367,6 +370,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     const std::string prefix = "prop_idx_run_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    bb_slow->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     b.position_at_end(guard_entry);
     // Every receiver's bits, and the static receiver's keyed shape, where
@@ -588,6 +592,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
 
     // 4. Slow path: runtime helper calls in program order.
     b.position_at_end(bb_slow);
+    const size_t slow_base = fn->blocks().size();
     std::unordered_map<uint32_t, Value*> slow_get_vals;
     for (size_t j = inst_idx; j < committed_end; ++j) {
         const BronzeInstruction& inst = blk_ast.instructions[j];
@@ -626,6 +631,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             }
         }
     }
+    for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);

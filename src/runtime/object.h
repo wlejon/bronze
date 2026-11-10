@@ -500,6 +500,11 @@ struct ObjectHeader {
     static ObjectHeader* dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                     PropertyKey name, bool enumerable, bool accessor,
                                     uint32_t& out_slot);
+    // Insert a data property already proven absent from `self`'s dictionary,
+    // stamping `writable` and `configurable` directly without re-probing `find`.
+    static ObjectHeader* dictAddAbsent(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
+                                       PropertyKey name, bool enumerable, bool writable,
+                                       bool configurable, uint32_t& out_slot);
     // The form of `name` a dictionary entry keeps (dictionary.cpp): a symbol
     // or an arena string as it is, else a string of the old generation. May
     // allocate.
