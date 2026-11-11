@@ -82,6 +82,18 @@ namespace bronze::lower {
 // typed op anywhere names one of the receivers: then it is a view.
 // `three.js`'s uniform cache (`copyArray`, `arraysEqual`) is what it is for.
 //
+// VIEWS FILLED FROM ARRAYS. When some of those receivers are only stored into
+// in the loop (no read, no named read of them), one more copy stands in front
+// of the Array copy: it tests each of them `is.typed_array r,
+// kTypedArrayWordView` and flags its stores kElemFlagWordViewReceiver (the
+// loop-free pass's protocol, typed_body_version.h: the store asks which of
+// the four word kinds at the access, so one copy serves a Float32Array and a
+// Uint32Array over one buffer), and takes the rest as Arrays. pixi's batcher
+// is the case: `packAttributes` writes four floats and two words a vertex
+// from two plain Arrays, `packIndex` an index buffer from one. Stored-to
+// receivers that are Arrays, or views of another width, fail that entry and
+// take the Array copy or the original loop.
+//
 // `BRONZE_TYPED_LOOP_VERSION_TRACE=1` prints one line per loop versioned.
 // `cold` receives the blocks of each original loop versioned, by function
 // name (applyTypedEntries, which runs in between, adds functions): the

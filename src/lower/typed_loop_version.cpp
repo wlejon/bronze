@@ -509,9 +509,16 @@ private:
             fn_.blocks[entry].instructions.push_back(std::move(jump));
             entries.push_back({kind, entry, receivers, pristine});
         }
-        if (arrayPlan) {
+        // The Array copy, and before it one for the loop that fills views
+        // from Arrays (`buf[index++] = a * xs[i] + ...`, pixi's batcher): the
+        // receivers the loop only stores into are tested as word views
+        // there, their stores flagged kElemFlagWordViewReceiver, and the rest
+        // as Arrays. A loop whose stored-to receivers are Arrays after all
+        // fails that entry and takes the Array copy.
+        const auto arrayCopy = [&](const std::vector<il::ValueId>& views) {
             const il::BlockId entry = appendBlockLike(loop.preheader);
             std::vector<il::ValueId> numbers;
+            for (NumCompare& c : numCompares) c.unboxed = il::kNoValue;
             for (NumCompare& c : numCompares) {
                 for (const NumCompare& d : numCompares) {
                     if (d.entry == c.entry && d.unboxed != il::kNoValue) c.unboxed = d.unboxed;
@@ -533,16 +540,42 @@ private:
             const std::unordered_map<il::ValueId, il::ValueId> none;
             typedSites_.clear();
             numCompares_ = &numCompares;
-            arrayReceivers_ = &arrayReceivers;
+            std::vector<il::ValueId> arrays;
+            for (il::ValueId r : arrayReceivers) {
+                if (!std::binary_search(views.begin(), views.end(), r)) arrays.push_back(r);
+            }
+            arrayReceivers_ = &arrays;
+            viewReceivers_ = &views;
             const il::BlockId header =
                 copy(copiedBlocks, copied, loop.header, kKindArray, noGets, noSets, noSetOk, none, none, &arrayOps);
             numCompares_ = nullptr;
             arrayReceivers_ = nullptr;
+            viewReceivers_ = nullptr;
             copies.push_back({header, {}, typedSites_, true});
             il::Instruction jump = fn_.blocks[loop.preheader].instructions.back();
             jump.target.block = header;
             fn_.blocks[entry].instructions.push_back(std::move(jump));
-            entries.push_back({kKindArray, entry, arrayReceivers, {}, numbers});
+            entries.push_back({kKindArray, entry, arrayReceivers, {}, numbers, views});
+        };
+        if (arrayPlan) {
+            std::vector<il::ValueId> views;
+            for (il::ValueId r : arrayReceivers) {
+                bool storedOnly = true;
+                for (const auto& [b, i] : arrayOps) {
+                    const il::Instruction& op = fn_.blocks[b].instructions[i];
+                    if (op.operands[0] == r && op.op != il::Op::ElemSet) storedOnly = false;
+                }
+                for (il::BlockId b : loop.blocks) {
+                    for (const auto& inst : fn_.blocks[b].instructions) {
+                        if (inst.op == il::Op::PropGet && !inst.operands.empty() && inst.operands[0] == r) {
+                            storedOnly = false;
+                        }
+                    }
+                }
+                if (storedOnly) views.push_back(r);
+            }
+            if (!views.empty()) arrayCopy(views);
+            arrayCopy({});
         }
         enterThrough(loop, entries);
         size_t integral = 0;
@@ -738,7 +771,9 @@ private:
                     if ((*numCompares_)[n].block == b && (*numCompares_)[n].index == i) cmp = &(*numCompares_)[n];
                 }
                 if (arrayOps && std::find(arrayOps->begin(), arrayOps->end(), std::make_pair(b, i)) != arrayOps->end()) {
-                    inst.immI32 |= il::kElemFlagArrayReceiver;
+                    const bool view = viewReceivers_ != nullptr &&
+                                      std::binary_search(viewReceivers_->begin(), viewReceivers_->end(), orig.operands[0]);
+                    inst.immI32 |= view ? il::kElemFlagWordViewReceiver : il::kElemFlagArrayReceiver;
                     typedSites_.push_back({out.id, static_cast<uint32_t>(out.instructions.size())});
                 } else if (arrayReceivers_ != nullptr && orig.op == il::Op::PropGet && orig.operands.size() == 1 &&
                            orig.keyIndex < keys_.size() && keys_[orig.keyIndex] == "length" &&
@@ -812,6 +847,7 @@ private:
         std::vector<il::ValueId> receivers;
         std::vector<il::ValueId> pristine;
         std::vector<il::ValueId> numbers;  // tested is.number after the receivers
+        std::vector<il::ValueId> views;    // the Array copy's receivers tested as word views
     };
 
     // The preheader's `jump h(args)` becomes a chain of tests, one block per
@@ -850,11 +886,13 @@ private:
                 il::Instruction t = jump;
                 const bool number = r >= en.receivers.size();
                 const il::ValueId v = number ? en.numbers[r - en.receivers.size()] : en.receivers[r];
-                t.op = number ? il::Op::IsNumber : en.kind == kKindArray ? il::Op::IsArray : il::Op::IsTypedArray;
+                const bool view = !number && std::binary_search(en.views.begin(), en.views.end(), v);
+                const bool array = en.kind == kKindArray && !view;
+                t.op = number ? il::Op::IsNumber : array ? il::Op::IsArray : il::Op::IsTypedArray;
                 t.type = il::Type::Bool;
                 t.result = static_cast<il::ValueId>(fn_.valueCount++);
                 t.operands = {v};
-                t.immI32 = number || en.kind == kKindArray ? 0 : en.kind;
+                t.immI32 = number || array ? 0 : view ? il::kTypedArrayWordView : en.kind;
                 if (!number && std::find(en.pristine.begin(), en.pristine.end(), v) != en.pristine.end()) {
                     t.immI32 |= il::kTypedArrayPristineLength;
                 }
@@ -924,6 +962,8 @@ private:
     // The plain Array copy's tested receivers, whose `length` reads in it are
     // the header's (il_pin.h kPropGetArrayLength).
     const std::vector<il::ValueId>* arrayReceivers_ = nullptr;
+    // Those of the copy being made that it tests as word views.
+    const std::vector<il::ValueId>* viewReceivers_ = nullptr;
     std::vector<il::BlockId> cold_;
     // The typed ops the last copy() made, by position in the copy.
     std::vector<std::pair<il::BlockId, uint32_t>> typedSites_;
