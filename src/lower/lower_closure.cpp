@@ -138,6 +138,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // enclosing function's through the environment.
     if (!isArrow && ast::usesArguments(params, body)) {
         newFn.needsArguments = true;
+        newFn.argumentsIsList = ast::readsArgumentsAsList(params, body);
         newFn.params.push_back({"__arguments", il::Type::Dynamic});
     }
     // A closure's parameters and return are always the uniform dynamic

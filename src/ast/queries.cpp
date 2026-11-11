@@ -319,6 +319,72 @@ bool returnsAValue(const std::vector<StmtPtr>& stmts) {
     return v.found;
 }
 
+namespace {
+// ArgumentsVisitor's walk, counting the mentions and the ones that are reads
+// of the length or of an element.
+class ArgumentsListVisitor final : public CaptureVisitor {
+public:
+    size_t mentions = 0;
+    size_t reads = 0;
+    bool written = false;
+    static bool isArguments(const Expr* e) {
+        const auto* id = dynamic_cast<const Ident*>(e);
+        return id != nullptr && id->name == "arguments";
+    }
+    static bool isElementOf(const Expr* e) {
+        if (const auto* m = dynamic_cast<const MemberAccess*>(e)) return isArguments(m->object.get());
+        if (const auto* i = dynamic_cast<const IndexAccess*>(e)) return isArguments(i->object.get());
+        return false;
+    }
+    void visit(const Ident& i) override {
+        if (i.name == "arguments") ++mentions;
+    }
+    void visit(const MemberAccess& m) override {
+        if (isArguments(m.object.get()) && m.property == "length") ++reads;
+        CaptureVisitor::visit(m);
+    }
+    void visit(const IndexAccess& i) override {
+        if (isArguments(i.object.get())) ++reads;
+        CaptureVisitor::visit(i);
+    }
+    void visit(const Binary& b) override {
+        if (isAssignOp(b.op) && isElementOf(b.lhs.get())) written = true;
+        CaptureVisitor::visit(b);
+    }
+    void visit(const Unary& u) override {
+        const bool writes = u.op == UnaryOp::PreInc || u.op == UnaryOp::PreDec || u.op == UnaryOp::PostInc ||
+                            u.op == UnaryOp::PostDec || u.op == UnaryOp::Delete;
+        if (writes && isElementOf(u.operand.get())) written = true;
+        CaptureVisitor::visit(u);
+    }
+    void visit(const Call& c) override {
+        // `arguments[i](...)` calls with the object as `this`.
+        if (isElementOf(c.callee.get())) written = true;
+        CaptureVisitor::visit(c);
+    }
+    void visit(const FunctionExpr& f) override {
+        if (!f.isArrow) return;
+        visitParamExprs(f.params, *this);
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
+    void visit(const FunctionDecl&) override {}
+    void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
+};
+}  // namespace
+
+bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
+    if (!usesArguments(params, body)) return false;
+    ArgumentsListVisitor v;
+    visitParamExprs(params, v);
+    for (const auto& s : body) {
+        if (s) s->accept(v);
+    }
+    return !v.written && v.mentions == v.reads;
+}
+
 bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
     // A declaration of the name wins over the arguments object, and there is
     // no object at all in that case (10.2.11 CreateMappedArgumentsObject runs

@@ -525,6 +525,7 @@ enum FnBits : uint32_t {
     kIsStrict = 1u << 7,
     kIsGenerator = 1u << 8,
     kHasRestParam = 1u << 9,
+    kArgumentsIsList = 1u << 10,
 };
 
 void writeFunction(Writer& w, const Function& fn) {
@@ -539,6 +540,7 @@ void writeFunction(Writer& w, const Function& fn) {
     if (fn.isStrict) bits |= kIsStrict;
     if (fn.isGenerator) bits |= kIsGenerator;
     if (fn.hasRestParam) bits |= kHasRestParam;
+    if (fn.argumentsIsList) bits |= kArgumentsIsList;
     w.str(fn.name);
     w.var(bits);
     w.var(fn.params.size());
@@ -588,6 +590,7 @@ void readFunction(Reader& r, Function& fn) {
     fn.isStrict = (bits & kIsStrict) != 0;
     fn.isGenerator = (bits & kIsGenerator) != 0;
     fn.hasRestParam = (bits & kHasRestParam) != 0;
+    fn.argumentsIsList = (bits & kArgumentsIsList) != 0;
     fn.params.resize(r.count());
     for (auto& p : fn.params) {
         p.name = r.str();

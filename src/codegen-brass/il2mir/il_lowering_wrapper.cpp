@@ -29,6 +29,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     bool needs_env = false;
     bool needs_this = false;
     bool needs_arguments = false;
+    bool arguments_is_list = false;
     bool has_rest = false;
     bool is_strict = false;
     size_t first_source_param = 0;
@@ -41,6 +42,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
         needs_env = it_meta->second.needs_env;
         needs_this = it_meta->second.needs_this;
         needs_arguments = it_meta->second.needs_arguments;
+        arguments_is_list = it_meta->second.arguments_is_list;
         has_rest = it_meta->second.has_rest_param;
         is_strict = it_meta->second.is_strict;
         first_source_param = it_meta->second.first_source_param;
@@ -124,7 +126,12 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     }
 
     Value* arguments_arg = nullptr;
-    if (needs_arguments) {
+    if (needs_arguments && arguments_is_list) {
+        // Read only as a list (il.h argumentsIsList): the rest array from 0.
+        arguments_arg = ensure_type(
+            b.build_call("bronze_rest_args", Type::i64(), {val_argc, val_argv, b.build_iconst_i32(0)}),
+            Type::tagged(), b);
+    } else if (needs_arguments) {
         Value* callee_val = is_strict ? b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))
                                       : ensure_type(val_env, Type::i64(), b);
         Value* is_strict_val = b.build_iconst_i32(is_strict ? 1 : 0);

@@ -569,6 +569,9 @@ struct Function {
     // never a direct-call target, the same restriction `needsEnv` carries and
     // for a related reason.
     bool needsArguments = false;
+    // The body only reads `arguments.length` and `arguments[i]`
+    // (ast::readsArgumentsAsList): the wrapper passes a plain Array.
+    bool argumentsIsList = false;
     bool isStrict = false;
     bool isGenerator = false;
     // The BODY of a generator, async function or async generator: a coroutine

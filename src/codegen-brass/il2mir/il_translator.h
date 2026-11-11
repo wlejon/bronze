@@ -27,6 +27,7 @@ struct FunctionMeta {
     bool needs_env = false;
     bool needs_this = false;
     bool needs_arguments = false;
+    bool arguments_is_list = false;
     bool has_rest_param = false;
     bool is_strict = false;
     uint32_t first_source_param = 0;

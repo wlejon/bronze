@@ -207,6 +207,17 @@ bool usesNewTarget(const std::vector<Param>& params, const std::vector<StmtPtr>&
 // and appears nowhere in its body.
 bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
 
+// Whether a function that uses `arguments` only READS it as a list: every
+// mention is `arguments.length` or `arguments[i]` as a value (not assigned,
+// updated, deleted or called). eventemitter3's `emit` is the case: it
+// switches on the count and copies the tail. Such a function is handed the
+// arguments the caller passed as a plain Array, which answers both the same
+// and costs an array where the arguments object is an exotic object with its
+// own properties defined one by one. A sloppy function's mapped object would
+// also show an assignment to a parameter through `arguments[i]`; the list
+// does not, which is the one difference.
+bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
+
 // Does this function body contain a `return <expr>;`? Like `usesThis`, it
 // does NOT descend into nested functions: an inner `return` returns from
 // that function.

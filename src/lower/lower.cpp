@@ -83,6 +83,7 @@ std::optional<il::Module> Lowerer::lower() {
             // too, and the function stops being a direct-call target.
             if (ast::usesArguments(fnDecl->params, fnDecl->body)) {
                 fn.needsArguments = true;
+                fn.argumentsIsList = ast::readsArgumentsAsList(fnDecl->params, fnDecl->body);
                 fn.params.push_back({"__arguments", il::Type::Dynamic});
             }
             // Every source parameter starts on the uniform dynamic convention
