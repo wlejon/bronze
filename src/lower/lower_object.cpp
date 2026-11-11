@@ -2,6 +2,7 @@
 // forms — the expressions that go through the runtime's shapes, prototypes and
 // inline caches.
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -65,6 +66,58 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         Lowerer* self;
         ~EnvGuard() { if (self) self->exitScope(); }
     } envGuard{needsHomeEnv ? this : nullptr};
+
+    // A literal of nothing but spelled data properties (`{ text: t.text,
+    // style: t.style }`) has its values evaluated first, in source order, and
+    // is made and filled after the last one. Nothing can tell: no value
+    // expression can reach an object that has no name yet. What it buys is
+    // the writes standing together, which is what a transition run needs
+    // (transition_runs.h): made first, a literal whose values call anything
+    // (a getter is enough) was filled one runtime define at a time.
+    if (!needsHomeEnv && !objLit->isModuleNamespace && !objLit->props.empty() &&
+        std::all_of(objLit->props.begin(), objLit->props.end(), [](const auto& prop) {
+            return !prop.coverInitialized && !prop.computed() && prop.accessor == ast::AccessorKind::None &&
+                   dynamic_cast<const ast::SpreadElement*>(prop.value.get()) == nullptr &&
+                   (prop.shorthand || prop.isMethod || prop.key != "__proto__");
+        })) {
+        std::vector<il::ValueId> values;
+        values.reserve(objLit->props.size());
+        for (const auto& prop : objLit->props) {
+            std::optional<Value> valOpt;
+            if (prop.isMethod) {
+                const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
+                valOpt = lowerClosure(fn, fn.name, prop.key, fn.params, fn.returnType, fn.body, fn.span, ilFn,
+                                      fn.isArrow);
+                if (valOpt && lastClosureFnIndex_ < ilModule_.functions.size()) {
+                    ilModule_.functions[lastClosureFnIndex_].displayName = "Object." + prop.key;
+                    ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
+                }
+            } else {
+                valOpt = lowerNamedEvaluation(*prop.value, prop.key, ilFn);
+            }
+            if (!valOpt) return std::nullopt;
+            values.push_back(boxValueIfNeeded(*valOpt, ilFn).id);
+        }
+        const il::ValueId obj = ilFn.valueCount++;
+        il::Instruction make;
+        make.op = il::Op::CreateObject;
+        make.type = il::Type::Dynamic;
+        make.result = obj;
+        make.immI32 = static_cast<int32_t>(literalInlineSlots(*objLit));
+        emitInst(ilFn, make);
+        for (size_t i = 0; i < values.size(); ++i) {
+            il::Instruction setInst;
+            setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {obj, values[i]};
+            setInst.keyIndex = getKeyConstantIndex(objLit->props[i].key);
+            setInst.icIndex = icSiteCounter_++;
+            setInst.immI32 = il::kWriteDefine;  // 13.2.5.5: CreateDataPropertyOrThrow
+            emitInst(ilFn, setInst);
+        }
+        return Value{obj, il::Type::Dynamic};
+    }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
