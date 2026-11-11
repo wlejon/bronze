@@ -116,20 +116,20 @@ Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     Value* cells = pl.static_cells_addr(b);
     const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
-    Value* want = b.build_load(Type::i64(), cells, off);
-    Value* at = b.build_load(Type::i64(), cells, off + 8);
+    // The receiver's keyed shape: the shape memo's word when it has one, else
+    // read here (its tests are branches, so the builder leaves in their
+    // join). A plain object's shape, else the stand-in (not_plain_shape); a
+    // cell's first word is 0, kRefused (1) or a shape
+    // (runtime/accessor_cell.cpp), so `keyed == cell[0]` already says "plain
+    // and that shape".
+    //
+    // Each cell word is loaded right in front of its one compare, so the
+    // compare takes it as a memory operand.
+    if (!keyed) keyed = pl.keyed_shape(b, recv);
+    Value* same_shape = b.build_eq(keyed, b.build_load(Type::i64(), cells, off));
     Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* same_epoch = b.build_eq(at, epoch);
-    if (keyed) {
-        // The receiver's keyed shape (the shape memo's word): a plain
-        // object's shape, else the stand-in (not_plain_shape). A cell's first
-        // word is 0, kRefused (1) or a shape (runtime/accessor_cell.cpp), so
-        // `keyed == cell[0]` already says "plain and that shape".
-        return b.build_and(b.build_eq(keyed, want), same_epoch);
-    }
-    // Without the memo's word, the keyed shape read here (its tests are
-    // branches, so the builder leaves in their join).
-    return b.build_and(b.build_eq(pl.keyed_shape(b, recv), want), same_epoch);
+    Value* same_epoch = b.build_eq(epoch, b.build_load(Type::i64(), cells, off + 8));
+    return b.build_and(same_shape, same_epoch);
 }
 
 Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* obj,
@@ -137,6 +137,11 @@ Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, B
     Function* target = accessor_target(lowering, inst, b, /*setter=*/false);
     if (!target) return b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
     const std::string callee = lowering->resolve_callee(inst.callee_name);
+    if (lowering->guard_missed(inst)) {
+        Value* slow = miss.get(b);
+        emit_accessor_fill(lowering, b, miss.receiver(b), inst, callee, /*setter=*/false);
+        return slow;
+    }
     BasicBlock* cur = b.current_block();
     const std::string prefix = block_prefix(b, "accessor_get");
     BasicBlock* hit = b.append_block(prefix + "_hit");
@@ -169,6 +174,11 @@ void lower_accessor_set(IlLowering* lowering, const BronzeInstruction& inst, Bui
     Function* target = accessor_target(lowering, inst, b, /*setter=*/true);
     if (!target) return;
     const std::string callee = lowering->resolve_callee(inst.callee_name);
+    if (lowering->guard_missed(inst)) {
+        miss.set(b);
+        emit_accessor_fill(lowering, b, miss.receiver(b), inst, callee, /*setter=*/true);
+        return;
+    }
     BasicBlock* cur = b.current_block();
     const std::string prefix = block_prefix(b, "accessor_set");
     BasicBlock* hit = b.append_block(prefix + "_hit");

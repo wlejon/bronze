@@ -72,7 +72,12 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, Value* row, c
     Module* mod = b.current_block()->parent()->parent();
     Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
                                                      : b.build_call("bronze_tls_block_addr", Type::i64(), {});
-    Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+    // Read in the way that compares it, in front of the compare, which then
+    // takes the entry's word as a memory operand.
+    auto epoch_is = [&](Value* base, int32_t off) {
+        Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+        return b.build_eq(epoch, b.build_load(Type::i64(), base, off));
+    };
 
     BasicBlock* cur = b.current_block();
     const std::string prefix = "mic_" + std::to_string(cur->parent()->next_block_id());
@@ -91,7 +96,7 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, Value* row, c
     Value* way0 = b.build_and(
         b.build_ult(b.build_load(Type::i64(), w.base, w.arity), b.build_iconst_i64(kDirectFormLimit)),
         b.build_and(b.build_eq(b.build_load(Type::ptr(), w.base, w.code), target),
-                    b.build_eq(b.build_load(Type::i64(), w.base, w.epoch), epoch)));
+                    epoch_is(w.base, w.epoch)));
     b.build_br_if(way0, merge, {b.build_iconst_i32(1)}, way1_bb, {});
 
     // Way 0 did not answer, so way 1 is the whole answer; at most one way
@@ -101,7 +106,7 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, Value* row, c
         b.build_and(
             b.build_eq(keyed, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
             b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target)),
-        b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch));
+        epoch_is(site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord));
     b.build_br(merge, {way1});
     way1_bb->set_cold();
 
@@ -122,25 +127,31 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
                                 const std::vector<Value*>& args, Value* site, const std::string& callee,
                                 const std::string& entry_name, Function* direct_fn, bool this_param) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
+    // The miss of an inlined body's guard (IlLowering::find_guard_misses):
+    // the generic call alone.
+    const bool missed = lowering->guard_missed(inst);
 
     BasicBlock* cur = b.current_block();
     const std::string prefix = "direct_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
+    BasicBlock* fast = missed ? nullptr : b.append_block(prefix + "_fast");
+    BasicBlock* slow = missed ? cur : b.append_block(prefix + "_slow");
+    BasicBlock* merge = missed ? nullptr : b.append_block(prefix + "_merge");
+    Value* result = missed ? nullptr : b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
     // The site's method row, which the miss's stub call takes too: computed
     // here, ahead of the receiver test that may branch to it.
     Value* row = pl.method_row(b, inst.ic_index);
-    // A receiver the memo does not hold is tested on a path only a plain
-    // receiver reaches, the rest going to the generic call; the call ends
-    // the memo, so its shape word is not remembered.
-    Value* keyed = lowering->memo_lookup(inst.operands[0]);
-    if (!keyed) keyed = pl.plain_shape_or_miss(b, recv, slow);
-    Value* hit = direct_method_ic_hit(b, keyed, site, row, callee);
-    lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
+    if (!missed) {
+        // A receiver the memo does not hold is tested on a path only a plain
+        // receiver reaches, the rest going to the generic call; the call ends
+        // the memo, so its shape word is not remembered.
+        Value* keyed = lowering->memo_lookup(inst.operands[0]);
+        if (!keyed) keyed = pl.plain_shape_or_miss(b, recv, slow);
+        Value* hit = direct_method_ic_hit(b, keyed, site, row, callee);
+        lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property,
+                                     "()" + std::string(pl.key_tag(inst.index)));
+    }
     // The generic dispatch takes every argument boxed. A typed edge's
     // unboxed operands are boxed here, on the path that needs them.
     std::vector<Value*> boxed_args;
@@ -157,12 +168,12 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     // The guard's miss is the method stub where the module has one: the
     // receivers a polymorphic site's two DIRECT ways do not hold are still
     // answered from the thread's table or a SLOT entry without the runtime.
-    if (direct_method_ic_here(lowering)) {
-        b.build_br(merge, {b.build_call("__bronze_method_call_ic", Type::i64(),
-                                        {recv, key_id, argc_val, argv, site, row ? row : b.build_iconst_i64(0)})});
-    } else {
-        b.build_br(merge, {b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site})});
-    }
+    Value* generic = direct_method_ic_here(lowering)
+                         ? b.build_call("__bronze_method_call_ic", Type::i64(),
+                                        {recv, key_id, argc_val, argv, site, row ? row : b.build_iconst_i64(0)})
+                         : b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site});
+    if (missed) return generic;
+    b.build_br(merge, {generic});
 
     b.position_at_end(fast);
     std::vector<Value*> call_args;

@@ -115,7 +115,46 @@ bool moves_no_shape(const BronzeInstruction& inst) {
 
 }  // namespace
 
+void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
+    guard_missed_.clear();
+    std::unordered_map<uint32_t, uint32_t> entries;
+    std::unordered_map<uint32_t, const BronzeBlock*> by_id;
+    for (const BronzeBlock& blk : fn_ast.blocks) {
+        by_id[blk.id] = &blk;
+        if (blk.handler_id != UINT32_MAX) ++entries[blk.handler_id];
+        if (blk.instructions.empty()) continue;
+        const BronzeInstruction& term = blk.instructions.back();
+        if (term.op == BronzeOp::Jump) {
+            ++entries[term.target.block_id];
+        } else if (term.op == BronzeOp::Branch) {
+            ++entries[term.target.block_id];
+            ++entries[term.else_target.block_id];
+        }
+    }
+    for (const BronzeBlock& blk : fn_ast.blocks) {
+        if (blk.instructions.size() < 2) continue;
+        const BronzeInstruction& term = blk.instructions.back();
+        const BronzeInstruction& guard = blk.instructions[blk.instructions.size() - 2];
+        if (term.op != BronzeOp::Branch || term.operands.size() != 1 || term.operands[0] != guard.result_id) continue;
+        if (guard.op != BronzeOp::MethodIcIs && guard.op != BronzeOp::AccessorIcIs) continue;
+        if (guard.operands.empty() || term.target.block_id == term.else_target.block_id) continue;
+        const auto miss = by_id.find(term.else_target.block_id);
+        if (miss == by_id.end() || entries[term.else_target.block_id] != 1 || miss->second->instructions.empty()) {
+            continue;
+        }
+        const BronzeInstruction& site = miss->second->instructions.front();
+        if (site.operands.empty() || site.operands[0] != guard.operands[0]) continue;
+        const bool method = guard.op == BronzeOp::MethodIcIs && site.op == BronzeOp::MethodCall &&
+                            site.ic_index == guard.ic_index;
+        const bool accessor = guard.op == BronzeOp::AccessorIcIs &&
+                              (site.op == BronzeOp::PropGet || site.op == BronzeOp::PropSet) &&
+                              site.static_cell == guard.static_cell;
+        if (method || accessor) guard_missed_.insert(&site);
+    }
+}
+
 void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
+    find_guard_misses(fn_ast);
     shape_memo_.clear();
     shape_memo_kept_ = false;
     shape_memo_at_end_.clear();

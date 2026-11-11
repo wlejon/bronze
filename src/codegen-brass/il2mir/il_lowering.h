@@ -188,6 +188,9 @@ public:
     // The memo's keyed shape for a receiver, or null; and a receiver's
     // keyed shape remembered (a shape word read where the receiver is known
     // plain is its keyed shape there).
+    // Whether `inst` is a direct site standing as the miss of the guard just
+    // tested (find_guard_misses).
+    bool guard_missed(const BronzeInstruction& inst) const { return guard_missed_.count(&inst) != 0; }
     Value* memo_lookup(uint32_t recv_id) const;
     // The memo's key for a receiver's FAMILY ID (PropertyLoweringHelper::
     // family_id), held beside its keyed shape and carried the same way: an
@@ -471,6 +474,13 @@ private:
     std::unordered_set<uint32_t> memo_handler_blocks_;
     bool shape_memo_off_ = false;
     void memo_begin_function(const BronzeFunction& fn_ast);
+    // A direct site that is the miss of an inlined body's guard: the first
+    // instruction of the block only that guard's false edge enters, on the
+    // guard's receiver and its cell or cache. Its own guard would ask what
+    // was just answered no, so it lowers as its miss alone; and the guard's
+    // cell words, then read nowhere else, fold into the guard's compares.
+    void find_guard_misses(const BronzeFunction& fn_ast);
+    std::unordered_set<const BronzeInstruction*> guard_missed_;
     std::unordered_set<const Value*> boolean_values_;
     // The current function's fused `in` / element read pairs: read id -> in
     // id, and each lowered `in`'s element (il_in_elem_fuse.cpp).
