@@ -55,6 +55,8 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"unboxFolded", {before.unboxFolded, after.unboxFolded}},
         {"shapeTests", {before.shapeTests, after.shapeTests}},
         {"shapeGuarded", {before.shapeGuarded, after.shapeGuarded}},
+        {"icExits", {before.icExits, after.icExits}},
+        {"icExitsDropped", {before.icExitsDropped, after.icExitsDropped}},
         {"handler", {before.refusedHandler, after.refusedHandler}},
         {"singleEntry", {before.refusedSingleEntry, after.refusedSingleEntry}},
         {"nonNumeric", {before.refusedNonNumeric, after.refusedNonNumeric}},
@@ -94,12 +96,13 @@ void guardRegionStatsReport(const GuardRegionStats& s, const char* label) {
     std::fprintf(stderr,
                  "[%s] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
                  "numberClaims=%u numberSkipped=%u elidedBox=%u "
-                 "elidedPin=%u unboxFolded=%u promoted=%u shapeTests=%u shapeGuarded=%u blocks=+%u pruned=%u "
+                 "elidedPin=%u unboxFolded=%u promoted=%u shapeTests=%u shapeGuarded=%u icExits=%u icExitsDropped=%u "
+                 "blocks=+%u pruned=%u "
                  "compares=%u slowCold=%u refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
                  "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u, cold %u)\n",
                  label, s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
                  s.runGuards, s.numberClaims, s.numberSkipped, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted,
-                 s.shapeTests, s.shapeGuarded, s.blocksAdded, s.blocksPruned, s.comparesPromoted, s.slowCopiesCold, refused, s.refusedHandler, s.refusedSingleEntry,
+                 s.shapeTests, s.shapeGuarded, s.icExits, s.icExitsDropped, s.blocksAdded, s.blocksPruned, s.comparesPromoted, s.slowCopiesCold, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
                  s.refusedEntrySplit, s.refusedConcatSplit, s.refusedSsa, s.refusedMachine,
                  s.refusedCopyPred, s.refusedCold);
@@ -165,7 +168,7 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
             selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining);
         if (plans.empty()) break;
 
-        const RegionPlan& plan = plans.front();
+        RegionPlan plan = std::move(plans.front());
         size_t regionInsts = 0;
         for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
         // The per-FUNCTION budget: the copies may not add more than was
@@ -183,7 +186,17 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         }
 
         const size_t blocksBefore = fn.blocks.size();
-        if (!buildGuardedRegion(fn, plan, stats, alreadyBuilt)) break;
+        if (!buildGuardedRegion(fn, plan, stats, alreadyBuilt)) {
+            // A rewrite refused with IC exits in it is tried again as the
+            // region is without them, when that region is still worth taking.
+            if (plan.icExitCount == 0) break;
+            const il::BlockId header = plan.header;
+            plans = selectRegions(fn, keys, discard, alreadyBuilt, feedback, afterInlining, /*icExits=*/false);
+            const auto again = std::find_if(plans.begin(), plans.end(),
+                                            [&](const RegionPlan& p) { return p.header == header; });
+            if (again == plans.end() || !buildGuardedRegion(fn, *again, stats, alreadyBuilt)) break;
+            ++stats.icExitsDropped;
+        }
         added += estimate;
         if (fn.blocks.size() > blocksBefore) {
             stats.blocksAdded += static_cast<uint32_t>(fn.blocks.size() - blocksBefore);
@@ -204,7 +217,16 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
     if (!selectEntryRegion(prepped, keys, stats, plan, feedback)) return false;
     std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
     const size_t blocksBefore = prepped.blocks.size();
-    if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) return false;
+    if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) {
+        // As for a loop region: once more without the IC exits.
+        GuardRegionStats discard;
+        if (plan.icExitCount == 0 ||
+            !selectEntryRegion(prepped, keys, discard, plan, feedback, /*icExits=*/false) ||
+            !buildGuardedRegion(prepped, plan, stats, entryBuilt)) {
+            return false;
+        }
+        ++stats.icExitsDropped;
+    }
     if (prepped.blocks.size() > blocksBefore) {
         stats.blocksAdded += static_cast<uint32_t>(prepped.blocks.size() - blocksBefore);
     }

@@ -121,6 +121,7 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
     method_cells_filled_.clear();
     std::unordered_map<uint32_t, uint32_t> entries;
     std::unordered_map<uint32_t, const BronzeBlock*> by_id;
+    std::unordered_set<uint32_t> filled_cells;
     for (const BronzeBlock& blk : fn_ast.blocks) {
         by_id[blk.id] = &blk;
         if (blk.handler_id != UINT32_MAX) ++entries[blk.handler_id];
@@ -155,6 +156,18 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
         if (method && guard.static_cell != 0) {
             method_cell_guards_.emplace(&site, &guard);
             method_cells_filled_.insert(&guard);
+            filled_cells.insert(guard.static_cell);
+        }
+    }
+    // A guard on a filled pair whose own miss is not the site: a guarded
+    // region's fast copy leaves for the slow copy there (lower/guard_region.h,
+    // "IC EXITS"), and the slow copy's guard is the one whose miss fills. A
+    // pair is one site and one callee, so both ask it the same question.
+    for (const BronzeBlock& blk : fn_ast.blocks) {
+        for (const BronzeInstruction& inst : blk.instructions) {
+            if (inst.op == BronzeOp::MethodIcIs && filled_cells.count(inst.static_cell) != 0) {
+                method_cells_filled_.insert(&inst);
+            }
         }
     }
 }

@@ -26,6 +26,12 @@ constexpr uint32_t kMinArith = 1;
 // the ratio alone — and it duplicates the WHOLE FUNCTION rather than a loop
 // body. Two says: a copy has to answer at least two coercions.
 constexpr uint32_t kMinEntryUses = 2;
+// The IC exits (guard_region.h) a LOOP region is taken for when it has no
+// numeric work to offer, or after inlining carries no double. What an exit
+// buys is what stays known and unrooted up to the next guard, so one alone
+// buys nothing. An entry region is never taken for its exits: each runs once
+// a call, and the copy is the whole function.
+constexpr uint32_t kMinIcExitsAlone = 2;
 // AN ENTRY REGION HAS NO SPLIT BUDGET, and that is a measured decision rather
 // than an omission.
 //
@@ -78,6 +84,13 @@ constexpr size_t kMaxRegionBlocks = 64;
 // coercions are its. Above it there is nothing but module top level, which runs
 // once.
 constexpr size_t kMaxRegionInsts = 700;
+// The block cap of a LOOP looked at after inlining. Each inlined site is a
+// guard block, a miss block, the body's blocks and a join, so such a loop runs
+// to four instructions a block where lowering's own runs to eleven, and the
+// instruction cap is the bound that still means what it meant. pixi's
+// per-sprite `step`, a loop over objects whose every statement is an inlined
+// accessor, is 273 blocks for 1127 instructions.
+constexpr size_t kMaxInlinedLoopBlocks = 320;
 
 bool isBinaryArithOp(il::Op op) {
     return op == il::Op::Add || op == il::Op::Sub || op == il::Op::Mul || op == il::Op::Div ||
@@ -218,7 +231,7 @@ struct Pending {
 // ---------------------------------------------------------------------------
 bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys, const Cfg& cfg,
                    const std::vector<il::Type>& types, const std::vector<DefSite>& defs,
-                   RegionPlan& plan, GuardRegionStats& stats, const RegionFeedback* feedback) {
+                   RegionPlan& plan, GuardRegionStats& stats, const RegionFeedback* feedback, bool icExits) {
     plan.feedback = feedback != nullptr;
     // 1. A handler inside the region, or a region block that IS a handler.
     // Refused both ways: a handler takes no parameters, so there is nowhere for
@@ -266,9 +279,13 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     size_t regionInsts = 0;
     for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
     // A profiled region may be twice the size: what it costs is code, and the
-    // profile says the code runs.
-    const size_t capScale = feedback != nullptr ? 2 : 1;
-    if (plan.blocks.size() > capScale * kMaxRegionBlocks || regionInsts > capScale * kMaxRegionInsts) {
+    // profile says the code runs. So may a loop looked at after inlining, whose
+    // size is the bodies inlined into it, and its blocks are counted against a
+    // cap of their own.
+    const bool inlinedLoop = !plan.entryRegion && (feedback != nullptr || plan.repairLoopNames);
+    const size_t capScale = feedback != nullptr || inlinedLoop ? 2 : 1;
+    const size_t maxBlocks = inlinedLoop ? kMaxInlinedLoopBlocks : capScale * kMaxRegionBlocks;
+    if (plan.blocks.size() > maxBlocks || regionInsts > capScale * kMaxRegionInsts) {
         ++stats.refusedGrowth;
         return false;
     }
@@ -447,11 +464,15 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             }
         }
     }
-    if (useCount == 0) {
+    // A loop with enough guards that could be IC exits goes on without numeric
+    // work: every step below is then over no candidates at all.
+    const uint32_t minUses = plan.entryRegion ? kMinEntryUses : kMinArith;
+    const bool forExits = icExits && !plan.entryRegion && countIcExitSites(fn, plan) >= kMinIcExitsAlone;
+    if (useCount == 0 && !forExits) {
         ++stats.refusedNonNumeric;
         return false;
     }
-    if (useCount < (plan.entryRegion ? kMinEntryUses : kMinArith)) {
+    if (useCount < minUses && !forExits) {
         ++stats.refusedTooFew;
         return false;
     }
@@ -674,10 +695,27 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     for (il::BlockId b : plan.blocks) {
         for (const auto& tests : plan.shapeTestsOf[b]) shapeTests += static_cast<uint32_t>(tests.size());
     }
+    // IC EXITS, as points of their own once every other point is settled. A
+    // loop region outside the runs that repair names takes one only in a block
+    // that dominates what it reaches before the back edge: the dominator chain
+    // then names everything the slow copy reads past the split.
+    plan.icExitOf.assign(fn.blocks.size(), 0);
+    if (icExits) {
+        const bool repaired = plan.entryRegion || feedback != nullptr || plan.repairLoopNames;
+        planIcExits(
+            fn,
+            [&](il::BlockId b) {
+                return repaired || b == plan.header || dominatesReachable(cfg, plan, b, /*stopAtHeader=*/true);
+            },
+            plan);
+    }
     // A covered site is work licensed as well: its own guard and its miss's
-    // rejoin are what a shape test replaces.
-    if ((plan.guardCount == 0 && shapeTests == 0) ||
-        inRegionGuards - std::min(inRegionGuards, foldedReads) > plan.promotedUseCount + plan.shapeGuardedCount) {
+    // rejoin are what a shape test replaces. So is an IC exit: the miss arm
+    // and its join are gone from the fast copy.
+    if ((plan.guardCount == 0 && shapeTests == 0 && plan.icExitCount == 0) ||
+        (plan.promotedUseCount < minUses && plan.icExitCount < kMinIcExitsAlone) ||
+        inRegionGuards - std::min(inRegionGuards, foldedReads) >
+            plan.promotedUseCount + plan.shapeGuardedCount + plan.icExitCount) {
         ++stats.refusedTooFew;
         return false;
     }
@@ -729,10 +767,36 @@ bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& 
 
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Whether the region holds a block an earlier rewrite made or was made from,
+// and so is that rewrite's own output. The one exception is a fast/slow pair
+// that lies WHOLLY inside the region: the copies of a region an inlined callee
+// brought with it, which are part of this loop's body like any other blocks.
+// The rewrite makes every block of the region one of this region's two
+// copies, as inlining into a copy does (inline_guarded_emit.cpp). A copy of
+// this function's own earlier region never passes: the loop it forms holds one
+// copy and not the other.
+bool overlapsBuilt(const il::Function& fn, const RegionPlan& plan, const std::vector<uint8_t>& alreadyBuilt) {
+    std::vector<uint32_t> inner;
+    for (il::BlockId b : plan.blocks) {
+        if (b >= alreadyBuilt.size() || !alreadyBuilt[b]) continue;
+        if (fn.blocks[b].copyRegion == il::kNoCopyRegion) return true;
+        inner.push_back(fn.blocks[b].copyRegion);
+    }
+    for (size_t b = 0; b < fn.blocks.size() && !inner.empty(); ++b) {
+        if (plan.inRegion[b] || fn.blocks[b].copyRegion == il::kNoCopyRegion) continue;
+        if (std::find(inner.begin(), inner.end(), fn.blocks[b].copyRegion) != inner.end()) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
-                                      const RegionFeedback* feedback, bool afterInlining) {
+                                      const RegionFeedback* feedback, bool afterInlining, bool icExits) {
     std::vector<RegionPlan> plans;
     if (fn.blocks.empty()) return plans;
 
@@ -789,17 +853,14 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
         // A region this pass already built, or built out of. Skipped BEFORE it
         // is counted: it is not an opportunity the pass declined, it is the
         // pass's own output looking like one.
-        bool overlapsBuilt = false;
-        for (il::BlockId b : plan.blocks) {
-            if (b < alreadyBuilt.size() && alreadyBuilt[b]) overlapsBuilt = true;
-        }
-        if (overlapsBuilt) continue;
+        if (overlapsBuilt(fn, plan, alreadyBuilt)) continue;
         ++stats.regions;
 
-        if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats, feedback)) continue;
+        if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats, feedback, icExits)) continue;
         // After inlining, a loop is taken for what it CARRIES: a header
         // parameter the fast copy holds as a double (a `reduce`'s
-        // accumulator). A region that only trades a checked unbox for a
+        // accumulator), or for the IC exits of the bodies inlined into it.
+        // A region that only trades a checked unbox for a
         // guard splits an inlined body's joins for nothing (`some`'s
         // `x === n - 1`, measured slower).
         if (afterInlining) {
@@ -807,7 +868,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
             for (const il::BlockParam& p : fn.blocks[plan.header].params) {
                 if (p.id < plan.isCandidate.size() && plan.isCandidate[p.id] != 0) carries = true;
             }
-            if (!carries) {
+            if (!carries && plan.icExitCount < kMinIcExitsAlone) {
                 ++stats.refusedTooFew;
                 continue;
             }
@@ -837,7 +898,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
 // ---------------------------------------------------------------------------
 
 bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
-                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback) {
+                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback, bool icExits) {
     if (prepped.blocks.size() < 2) return false;
     // Refused by NAME: a coroutine body's every value that crosses a
     // suspension is spilled to its frame and reloaded, so a promoted double
@@ -874,7 +935,7 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 
     const std::vector<il::Type> types = valueTypes(prepped);
     const std::vector<DefSite> defs = computeDefSites(prepped);
-    return analyzeRegion(prepped, keys, cfg, types, defs, plan, stats, feedback);
+    return analyzeRegion(prepped, keys, cfg, types, defs, plan, stats, feedback, icExits);
 }
 
 }  // namespace bronze::lower

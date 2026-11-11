@@ -249,6 +249,10 @@ struct GuardRegionStats {
     // copy they made a bare load or store.
     uint32_t shapeTests = 0;
     uint32_t shapeGuarded = 0;
+    // IC EXITS: inlined bodies' guards whose miss leaves the fast copy, and the
+    // regions rebuilt without theirs because the rewrite with them was refused.
+    uint32_t icExits = 0;
+    uint32_t icExitsDropped = 0;
 
     // Refusals, by the thing that refused. `handler` and `singleEntry` are
     // properties of the CFG, `nonNumeric` and `tooFew` of the candidate
@@ -363,7 +367,8 @@ inline constexpr uint64_t kFeedbackHotExecutions = 256;
 // it changed: a loop that arrives in an inlined body (a self-hosted
 // `reduce`'s, with the callback's `a + x` inlined into it) is a region the
 // first run could not see, and like the profile-guided run it skips the
-// blocks an earlier rewrite made copies of.
+// blocks an earlier rewrite made copies of. It is also the first run to see an
+// inlined body's guard, so the first whose regions have IC EXITS (below).
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr,
                          const RegionFeedback* feedback = nullptr, const std::vector<uint32_t>* only = nullptr);
 
@@ -538,6 +543,12 @@ struct RegionPlan {
     std::vector<std::vector<uint8_t>> shapeGuardedOf;
     uint32_t shapeGuardedCount = 0;
 
+    // By block id: the block ends in an inlined body's guard that is an IC
+    // EXIT, with a point of its own in `splitsOf` in front of the guard (the
+    // block's last instruction but one).
+    std::vector<uint8_t> icExitOf;
+    uint32_t icExitCount = 0;
+
     // Everything a guard licenses: promotable arithmetic whose result is a
     // candidate, plus every checked `unbox.f64` of one. It is the numerator of
     // the profitability ratio, and counting the unboxes is what makes a
@@ -651,6 +662,42 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
 // False when a shape run's read could not be covered, which refuses the region.
 bool planShapeGuards(const il::Function& fn, const std::vector<il::Type>& types, RegionPlan& plan);
 
+// ---------------------------------------------------------------------------
+// IC EXITS
+//
+// An inlined method or accessor body stands behind its site's guard
+// (inline_guarded.cpp): `g = method.ic.is recv` or `g = accessor.ic.is recv`,
+// then `br g, body, miss`, where the miss block holds the original call or
+// access and both ways meet again at the block the rest of the caller went to.
+// The miss can run any code, so past that join nothing the hit knew about any
+// object is still known, and no value live across the diamond can stay out of
+// a frame slot: the join is where a loop over objects loses what its guards
+// established, once per inlined site.
+//
+// In the fast copy the miss does not rejoin. The guard keeps its test and its
+// false edge leaves for the slow copy through a point IN FRONT OF THE GUARD, so
+// the slow copy asks the same question again, gets the same answer (the test
+// is loads and compares, and nothing runs between the two askings) and takes
+// its ordinary miss, which is also what publishes the site's cell. The fast
+// copy's miss block has no way in and is pruned; its join has one.
+//
+// Only the guard whose miss IS the original site is an exit. A bimorphic
+// site's first guard misses into its second, and leaving there would send
+// every receiver of the second kind to the slow copy.
+//
+// An exit is a split like any other, so it is taken only where the slow
+// copy's names can be served (`served` below) and where a split may stand at
+// all; a guard that fails either stays the diamond it was.
+
+// The guards of the region that could be IC exits, by their shape alone.
+uint32_t countIcExitSites(const il::Function& fn, const RegionPlan& plan);
+
+// Fills `plan.icExitOf`, adding each exit's point to `plan.splitsOf` (and the
+// arrays parallel to it). `served(b)` says whether a split in block `b` leaves
+// the slow copy's names derivable. Run after the shape guards, before the
+// number windows.
+void planIcExits(const il::Function& fn, const std::function<bool(il::BlockId)>& served, RegionPlan& plan);
+
 // Fills `plan.numberWindowsOf` for every region block, from the points and
 // candidates the selection settled. Writes nothing else.
 void planNumberWindows(const il::Function& fn, const std::vector<std::string>& keys,
@@ -679,7 +726,8 @@ il::Function withPreheader(const il::Function& fn);
 // has already been applied to. False when there is none to take, with the
 // reason counted in `stats`.
 bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
-                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback = nullptr);
+                       GuardRegionStats& stats, RegionPlan& plan, const RegionFeedback* feedback = nullptr,
+                       bool icExits = true);
 
 // Selects the regions of one function, innermost-first, and returns them in
 // header order. Empty when the function has none. Counts its own refusals.
@@ -690,10 +738,18 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 // several nests: without it the second look at the function finds the natural
 // loop the trampoline edge made out of the SLOW copy and duplicates that, which
 // is the region this pass just built, a second time.
+//
+// A fast/slow pair lying wholly inside a loop does not make the loop touch
+// one: it is a region an inlined callee brought with it, part of the loop's
+// body, and the rewrite makes its blocks blocks of this region's two copies.
+//
+// `icExits` false plans no IC exits: the second look at a region whose
+// rewrite with them was refused.
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
-                                      const RegionFeedback* feedback = nullptr, bool afterInlining = false);
+                                      const RegionFeedback* feedback = nullptr, bool afterInlining = false,
+                                      bool icExits = true);
 
 // Applies one plan to `fn`. Returns false when the rewrite would not have been
 // dominance-correct, in which case `fn` is untouched. `alreadyBuilt` is

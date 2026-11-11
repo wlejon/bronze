@@ -128,6 +128,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // statistics saying nothing happened, because nothing did.
     uint32_t emittedGuards = 0;
     uint32_t emittedShapeTests = 0;
+    // The blocks whose guard is an IC EXIT (guard_region.h): the point in
+    // front of the guard is the exit's own.
+    auto icExitBlock = [&](il::BlockId b) { return b < plan.icExitOf.size() && plan.icExitOf[b] != 0; };
     uint32_t foldedCount = 0;
     uint32_t comparesPromoted = 0;
 
@@ -719,6 +722,12 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                     continue;
                 }
                 il::Instruction inst = source.instructions[i];
+                // Behind an IC exit the hit is the branch's only way left.
+                if (i + 1 == source.instructions.size() && icExitBlock(b)) {
+                    inst.op = il::Op::Jump;
+                    inst.operands.clear();
+                    inst.elseTarget = il::BlockTarget{};
+                }
                 // A candidate whose def is an INSTRUCTION and whose kind is
                 // `Promoted` is promotable arithmetic and nothing else: a box
                 // is `BoxElide` and everything else in the region needs a
@@ -854,8 +863,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 ++t;
             }
             for (il::ValueId v : point.skip) emitTest(v);
-            // A point of shape tests alone has no value chain to end its part.
-            if (length == 0) blockAt(0)->instructions.push_back(makeJump(done));
+            if (icExitBlock(b) && point.index + 2 == source.instructions.size()) {
+                // AN IC EXIT: the guard itself, its false edge the trampoline.
+                // The slow copy is entered in front of its own copy of the
+                // guard, which misses as this one did.
+                emitRange(*part, cursor, cursor + 1);
+                part->instructions.push_back(makeBranch(part->instructions.back().result, done, trampolineId[b][j]));
+                ++cursor;
+            } else if (length == 0) {
+                // A point of shape tests alone has no value chain to end its part.
+                blockAt(0)->instructions.push_back(makeJump(done));
+            }
 
             // The trampoline. Its arguments are the tail's parameters, in the
             // tail's order, each as the boxed value the slow copy expects.
@@ -935,6 +953,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     stats.comparesPromoted += comparesPromoted;
     stats.shapeTests += emittedShapeTests;
     stats.shapeGuarded += plan.shapeGuardedCount;
+    stats.icExits += plan.icExitCount;
     stats.blocksPruned += pruned;
     for (il::BlockId b : plan.blocks) {
         stats.guardPoints += static_cast<uint32_t>(plan.splitsOf[b].size());
