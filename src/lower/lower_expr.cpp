@@ -148,16 +148,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
 
-    // A template is left-to-right concatenation starting from its first
-    // piece. `add.dynamic` is exactly the operation the language specifies —
-    // ToString of whatever the substitution produced, because the left side
-    // is already a string — so no separate ToString op is needed.
-    //
-    // The leading piece is emitted even when it is empty, and that is not a
-    // missed optimization: `${a}${b}` without it would be `a + b`, which for
-    // two numbers is addition rather than concatenation. Every LATER empty
-    // piece is skipped, because by then the accumulator is a string and the
-    // operation cannot change meaning.
+    // A template: its quasis and the ToString of each substitution, joined.
     if (const auto* tmpl = dynamic_cast<const ast::TemplateLit*>(&expr)) {
         auto emitStr = [&](const std::string& text) {
             il::ValueId res = ilFn.valueCount++;
@@ -197,16 +188,46 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             return Value{res, il::Type::Dynamic};
         };
 
-        Value acc = emitStr(tmpl->quasis.empty() ? std::string() : tmpl->quasis[0]);
+        // The pieces in order, every one a String by the time it is one: a
+        // quasi is, and a substitution is converted where 13.2.8.6 converts
+        // it, straight after its own evaluation and before the next one's.
+        // Joining Strings is then observable by nobody, so it is done once,
+        // after the last piece, through the accumulator a `+` spine uses
+        // (lower_concat_chain.cpp) and with none of that spine's refusals:
+        // the substitutions may call and branch, because the appends stand
+        // together in the block the last one ends in. A fold of pairwise
+        // `add`s allocated and copied the whole prefix per piece.
+        std::vector<Value> pieces;
+        if (!tmpl->quasis.empty() && !tmpl->quasis[0].empty()) pieces.push_back(emitStr(tmpl->quasis[0]));
         for (size_t i = 0; i < tmpl->exprs.size(); ++i) {
             auto sub = lowerExpr(*tmpl->exprs[i], ilFn);
             if (!sub) return std::nullopt;
-            acc = emitConcat(acc, emitToString(boxValueIfNeeded(*sub, ilFn)));
+            pieces.push_back(emitToString(boxValueIfNeeded(*sub, ilFn)));
             if (i + 1 < tmpl->quasis.size() && !tmpl->quasis[i + 1].empty()) {
-                acc = emitConcat(acc, emitStr(tmpl->quasis[i + 1]));
+                pieces.push_back(emitStr(tmpl->quasis[i + 1]));
             }
         }
-        return acc;
+        if (pieces.empty()) return emitStr(std::string());
+        if (pieces.size() == 1) return pieces[0];
+        if (pieces.size() == 2) return emitConcat(pieces[0], pieces[1]);
+        Value acc = pieces[0];
+        for (size_t i = 1; i < pieces.size(); ++i) {
+            il::Instruction inst;
+            inst.op = i == 1 ? il::Op::ConcatBegin : il::Op::ConcatAppend;
+            inst.type = il::Type::Dynamic;
+            inst.result = ilFn.valueCount++;
+            inst.operands = {acc.id, pieces[i].id};
+            if (i == 1) inst.immI32 = static_cast<int32_t>(pieces.size() - 2);  // lowerAddChain's hint
+            emitInst(ilFn, inst);
+            acc = Value{inst.result, il::Type::Dynamic};
+        }
+        il::Instruction end;
+        end.op = il::Op::ConcatEnd;
+        end.type = il::Type::Dynamic;
+        end.result = ilFn.valueCount++;
+        end.operands = {acc.id};
+        emitInst(ilFn, end);
+        return Value{end.result, il::Type::Dynamic};
     }
 
     if (const auto* tagged = dynamic_cast<const ast::TaggedTemplate*>(&expr)) {
