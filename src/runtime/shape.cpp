@@ -509,7 +509,12 @@ uint32_t chainKeyHash(PropertyKey key) noexcept {
     return static_cast<uint32_t>(mixLookupHash(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key.symbol()))));
 }
 
-thread_local std::unordered_map<const Shape*, std::vector<const Shape*>> t_chainIndex;
+// A pointer, made at the first long walk and deleted with the memos: the
+// thread's teardown runs from another thread_local's destructor, and a map
+// with a destructor of its own may already be gone by then (bro-headless
+// aborted in free() at start-up on exactly that).
+using ChainIndex = std::unordered_map<const Shape*, std::vector<const Shape*>>;
+thread_local ChainIndex* t_chainIndex = nullptr;
 
 const Shape* chainIndexFind(const std::vector<const Shape*>& cells, PropertyKey name) noexcept {
     const uint32_t mask = static_cast<uint32_t>(cells.size()) - 1;
@@ -520,7 +525,8 @@ const Shape* chainIndexFind(const std::vector<const Shape*>& cells, PropertyKey 
 }
 
 const std::vector<const Shape*>& chainIndexFor(const Shape* checkpoint) {
-    auto [it, fresh] = t_chainIndex.try_emplace(checkpoint);
+    if (t_chainIndex == nullptr) t_chainIndex = new ChainIndex;
+    auto [it, fresh] = t_chainIndex->try_emplace(checkpoint);
     std::vector<const Shape*>& cells = it->second;
     if (!fresh) return cells;
     uint32_t count = 0;
@@ -540,7 +546,8 @@ const std::vector<const Shape*>& chainIndexFor(const Shape* checkpoint) {
 }  // namespace
 
 void Shape::forgetLookupMemo() noexcept {
-    t_chainIndex.clear();
+    delete t_chainIndex;
+    t_chainIndex = nullptr;
     for (LookupMemo& m : g_lookupMemo) m.shape = nullptr;
     for (StringLookupMemo& m : g_stringLookupMemo) {
         m.shape = nullptr;

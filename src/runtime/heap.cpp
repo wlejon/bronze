@@ -421,6 +421,10 @@ void Heap::bind_thread() {
 NonMovingArena::NonMovingArena(size_t chunk_size) : chunk_size_(chunk_size) {}
 
 NonMovingArena::~NonMovingArena() {
+    // Its shapes and immortal keys are what the lookup memos and the chain
+    // index are keyed on, by address: the next arena on this thread may put
+    // another shape there.
+    Shape::forgetLookupMemo();
     for (auto& d : destructors_) {
         d.dtor(d.ptr);
     }

@@ -6,7 +6,7 @@
 //   - Every key pointer is a non-dictionary `Shape*` owned by the thread's
 //     `NonMovingArena` (dictionary shapes, whose lifetime is tied to one
 //     object, are refused on both probe and fill).
-//   - Arena teardown calls `Shape::forgetLookupMemo()`, which bumps
+//   - The arena's destructor calls `Shape::forgetLookupMemo()`, which bumps
 //     `proto_epoch`, invalidating every entry before any `Shape*` address can
 //     be reused.
 //   - Assigning or redefining `ctor.prototype` mints or updates

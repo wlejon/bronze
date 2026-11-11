@@ -77,13 +77,18 @@ namespace {
 // guard needs no extra test to treat a refusal as a miss.
 constexpr uint64_t kRefused = 1;
 
-// The cells that name a shape now.
-thread_local std::vector<uint64_t*> t_published;
+// The cells that name a shape now. A pointer, deleted when they are
+// forgotten: the thread's teardown forgets them from another thread_local's
+// destructor, after a vector with its own destructor may be gone.
+thread_local std::vector<uint64_t*>* t_published = nullptr;
 
 void publish(uint64_t* cell, uint64_t word, uint64_t epoch) {
     cell[0] = word;
     cell[1] = epoch;
-    if (word != kRefused) t_published.push_back(cell);
+    if (word != kRefused) {
+        if (t_published == nullptr) t_published = new std::vector<uint64_t*>;
+        t_published->push_back(cell);
+    }
 }
 
 // The function the key resolves to on `obj`'s prototype chain — an accessor's
@@ -121,11 +126,13 @@ const FunctionHeader* resolvedMember(ObjectHeader* obj, PropertyKey key, Member 
 }  // namespace
 
 void rtForgetPublishedCells() noexcept {
-    for (uint64_t* cell : t_published) {
+    if (t_published == nullptr) return;
+    for (uint64_t* cell : *t_published) {
         cell[0] = 0;
         cell[1] = 0;
     }
-    t_published.clear();
+    delete t_published;
+    t_published = nullptr;
 }
 
 extern "C" {
