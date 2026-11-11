@@ -28,7 +28,9 @@ inline constexpr size_t kMaxCalleeInstructions = 250;
 // cost very little code and eliminate hot IC/call overhead inside loops.
 inline constexpr size_t kTinyCalleeInstructions = 32;
 // Inline frames deep: a body inlined into a body inlined into the caller.
-inline constexpr size_t kMaxDepth = 3;
+// pixi's `sprite.x = v` is four (`Container.set x`, `ObservablePoint.set x`,
+// `_onUpdate`, `RenderGroup.onChildUpdate`).
+inline constexpr size_t kMaxDepth = 5;
 // A non-loop caller bigger than `kMaxCallerStart` takes no bodies: what is big
 // already without loops is mostly cold library code (parsers, loaders). Callers
 // with loops (often already versioned by `guardRegion` / `typedLoopVersion`)

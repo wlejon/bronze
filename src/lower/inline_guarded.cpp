@@ -623,6 +623,18 @@ void Inliner::markEnteredFromLoops() {
             for (const auto& inst : fn.blocks[b].instructions) {
                 const uint32_t origin = inst.directTarget;
                 if (origin == il::Instruction::kNoDirectTarget) {
+                    // A plain call of a module function (`updateTransformAndChildren(child, ...)`
+                    // per child, and from itself): entered once per iteration
+                    // unless its body is copied in here.
+                    if (inst.op == il::Op::Call && inst.callEnvHops == il::Instruction::kNoEnvHops &&
+                        inst.calleeIndex < exactCandidate_.size()) {
+                        const uint32_t to = originOf(inst.calleeIndex);
+                        if (callerSkipsCallee(inst.calleeIndex) || to == callerOrigin ||
+                            !exactCandidate_[inst.calleeIndex]) {
+                            mark(to, fn);
+                        }
+                        continue;
+                    }
                     if (inst.op != il::Op::MethodCall) continue;
                     if (fn.needsThis && inst.keyIndex == fn.nameKeyIndex) mark(callerOrigin, fn);
                     const auto markUninlined = [&](const ClosureGuesses* map, const std::vector<uint8_t>& ok) {
