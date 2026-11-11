@@ -67,9 +67,14 @@ InlineCache* rtMegaPropSetProbe(const Shape* shape, uint32_t keyIndex) noexcept 
     return probe(shape, keyIndex | BRONZE_ABI_MEGA_PROP_SET_KEY_BIT);
 }
 
-void rtMegaPropSetFill(const InlineCache* way0, const Shape* shape, uint32_t keyIndex) noexcept {
-    if (way0->isRealShape() && way0->cached_shape == shape) {
-        record(*way0, shape, keyIndex | BRONZE_ABI_MEGA_PROP_SET_KEY_BIT);
+void rtMegaPropSetFill(const InlineCacheSite* site, const Shape* shape, uint32_t keyIndex) noexcept {
+    if (!site) return;
+    for (uint32_t i = 0; i < BRONZE_ABI_IC_SET_WAYS; ++i) {
+        const InlineCache& way = site->ways[i];
+        if (way.isRealShape() && way.cached_shape == shape) {
+            record(way, shape, keyIndex | BRONZE_ABI_MEGA_PROP_SET_KEY_BIT);
+            return;
+        }
     }
 }
 

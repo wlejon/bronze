@@ -214,8 +214,8 @@ TEST_CASE("a double slot past the inline four lives in the overflow block") {
     for (uint32_t i = 0; i < 6; ++i) {
         setProp(heap, obj, names[i], Value::fromDouble(static_cast<double>(i) + 0.5));
     }
-    // e and f are past the four inline Values: slots 16 and 17, numbered
-    // from the overflow split (Shape::placeSlot).
+    // e and f are past the four inline Values: kOverflowSlot and
+    // kOverflowSlot + 1, numbered from the overflow split (Shape::placeSlot).
     constexpr uint64_t kInline = 0b1111u;
     constexpr uint64_t kE = uint64_t{1} << ObjectHeader::kOverflowSlot;
     constexpr uint64_t kF = uint64_t{1} << (ObjectHeader::kOverflowSlot + 1);
@@ -247,8 +247,8 @@ TEST_CASE("a collection over a mix of double and boxed slots keeps both") {
     Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(),
                                                              freshRoot()))};
     // Slots 0..2 are doubles, slot 3 is a heap STRING the collector must
-    // forward, slot 16 (the overflow block's first) is a double, slot 17 an
-    // object.
+    // forward, kOverflowSlot (the overflow block's first) is a double, and
+    // kOverflowSlot + 1 is an object.
     setProp(heap, obj, "x", Value::fromDouble(1.5));
     setProp(heap, obj, "y", Value::fromDouble(2.5));
     setProp(heap, obj, "z", Value::fromDouble(3.5));

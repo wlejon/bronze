@@ -284,6 +284,45 @@ struct InlineCacheSite {
         for (uint32_t i = ways_n - 1; i > first; --i) ways[i] = ways[i - 1];
         return &ways[first];
     }
+
+    // The entry describing `receiverShape` among a write site's ways, or null.
+    InlineCache* findForSet(const Shape* receiverShape) noexcept {
+        for (uint32_t i = 0; i < BRONZE_ABI_IC_SET_WAYS; ++i) {
+            if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
+        }
+        return nullptr;
+    }
+
+    // Where an overwrite or accessor entry for `receiverShape` goes on a write
+    // site (ways 0..BRONZE_ABI_IC_SET_WAYS-1, leaving way 3's shape word zero
+    // and word 11's mega counter intact). Empty ways fill in order 0..2 so the
+    // initial shape stays at way 0 for inline way-0 guards; once all three ways
+    // are occupied, MRU insertion shifts 2 <- 1 <- 0 and writes way 0 so hot
+    // steady-state shapes displace cold warm-up shapes on relatch.
+    InlineCache* slotForSetInstall(const Shape* receiverShape) noexcept {
+        constexpr uint32_t ways_n = BRONZE_ABI_IC_SET_WAYS;
+        for (uint32_t i = 0; i < ways_n; ++i) {
+            if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
+        }
+        for (uint32_t i = 0; i < ways_n; ++i) {
+            if (!ways[i].isRealShape()) return &ways[i];
+        }
+        for (uint32_t i = ways_n - 1; i > 0; --i) ways[i] = ways[i - 1];
+        return &ways[0];
+    }
+
+    // Where an adding transition entry (`nextShape`) goes on a write site:
+    // generated code's transition arm checks way 0 alone, so `nextShape` always
+    // lands at way 0 without duplicating an existing way.
+    InlineCache* slotForSetTransition(const Shape* nextShape) noexcept {
+        if (ways[0].isRealShape() && ways[0].cached_shape == nextShape) return &ways[0];
+        if (ways[1].isRealShape() && ways[1].cached_shape == nextShape) {
+            ways[1] = ways[0];
+            return &ways[0];
+        }
+        for (uint32_t i = BRONZE_ABI_IC_SET_WAYS - 1; i > 0; --i) ways[i] = ways[i - 1];
+        return &ways[0];
+    }
 };
 
 // The whole site is plain words the collector never touches, for the entry's
@@ -464,7 +503,8 @@ struct ObjectHeader {
                           Rooted<Value>& val, InlineCache* ic = nullptr,
                           bool enumerable = true, bool defineOwn = false,
                           const Value* receiver = nullptr, SetRefusal* refused = nullptr,
-                          bool writable = true, bool configurable = true);
+                          bool writable = true, bool configurable = true,
+                          InlineCacheSite* setSite = nullptr);
 
     // `delete o.k`, which removes an OWN property and answers true — also when
     // the property was never there, and when only a prototype has it (ECMA-262

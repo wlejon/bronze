@@ -1,8 +1,8 @@
 // The inline capacity an object is allocated with (shape.h `inline_slots`),
 // as the compiler predicted it: a class's instances get one Value per field
 // its layout names (bronze_abi.h BRONZE_ABI_FN_INLINE_SLOTS_SHIFT, carried in
-// the constructor's function flags), a class prototype the full sixteen, and
-// everything else the default four.
+// the constructor's function flags), a class prototype gets kOverflowSlot
+// inline slots, and everything else gets the default four.
 
 #include <cstdint>
 #include <unordered_map>

@@ -127,8 +127,9 @@ TEST_CASE("class family stamps the most specific matching layout") {
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, mid)) == mod.base + 1);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, leaf)) == mod.base + 2);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, root, sib)) == mod.base + 3);
-    // At four inline Values the leaf's fifth field is slot 16, not 4: the leaf
-    // is no longer a prefix, and the shape stamps as the deepest class that is.
+    // At four inline Values the leaf's fifth field is slot kOverflowSlot, not
+    // 4: the leaf is no longer a prefix, and the shape stamps as the deepest
+    // class that is.
     Shape* narrow = Shape::createRoot(arena);
     CHECK(classFamilyIdFor(shapeWith(arena, heap, narrow, leaf)) == mod.base + 1);
 

@@ -305,8 +305,13 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
     if (box->getSlot(probe.cached_slot).rawBits() != calleeVal.rawBits()) return false;
 
     const uint64_t shapeWord = reinterpret_cast<uint64_t>(box->shape);
+    const uint64_t codeWord =
+        (calleeVal.isObject() &&
+         calleeVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function)
+            ? reinterpret_cast<uint64_t>(calleeVal.asObject<FunctionHeader>()->code)
+            : 0;
     displaceMethodWay0(icEntry, shapeWord);
-    icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
+    icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = codeWord;
     icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
         (static_cast<uint64_t>(probe.cached_slot) + 1) << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
@@ -325,10 +330,11 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
 //
 // The installable forms, and why each is sound, are the ABI header's
 // METHOD-CALL site contract (bronze_abi.h); the short version:
-//   depth 0  -> SLOT form: cache only the slot index. Same-shape receivers
-//               can hold different functions there (host functions,
+//   depth 0  -> SLOT form: dispatch caches only the slot index. Same-shape
+//               receivers can hold different functions there (host functions,
 //               per-instance closures), so the callee is re-derived from the
-//               receiver at every hit and nothing about it is cached.
+//               receiver at every hit; CODE_WORD records the latched closure's
+//               code pointer solely as a feedback-harvesting hint.
 //   depth >= 1 -> DIRECT form, env included when the callee carries one,
 //               guarded by shape AND the prototype-mutation epoch: the shape
 //               fixes the holder chain, and the epoch moves on every change to
@@ -405,7 +411,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     }
     if (probe.realDepth() == 0) {
         displaceMethodWay0(icEntry, shapeWord);
-        icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
+        icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
         icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
             (static_cast<uint64_t>(probe.cached_slot) + 1) << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
         icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;

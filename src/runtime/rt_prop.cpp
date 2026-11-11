@@ -679,8 +679,8 @@ uint64_t bronze_super_elem_get(uint64_t protoBits, uint64_t keyBits, uint64_t th
             }
         }
         if (keyRoot.get().isString()) {
-            StringHeader* sh = keyRoot.get().asObject<StringHeader>();
-            return rtFunctionMember(protoRoot.get(), rtUtf8Chars(sh), sh, nullptr);
+            StringHeader* sh = keyRoot.get().asString<StringHeader>();
+            return rtFunctionMember(protoRoot.get(), sh, nullptr);
         }
         return Value::fromUndefined().rawBits();
     }
@@ -912,6 +912,8 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                     }
                 }
             }
+        } else if (plainHdr->flags == HeapKind::Function) {
+            return rtFunctionMember(objVal, Value(idxBits).asString<StringHeader>(), /*site=*/nullptr);
         }
     }
     {

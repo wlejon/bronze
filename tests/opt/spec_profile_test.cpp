@@ -14,6 +14,7 @@
 #include "il/print.h"
 #include "il/verifier.h"
 #include "lower/lower_feedback.h"
+#include "opt/spec/feedback_plan.h"
 #include "opt/spec/profile.h"
 
 using namespace bronze;
@@ -313,4 +314,166 @@ TEST_CASE("instrumentation: one verified record per site, registered through the
 
     // A second instrument on the same channel is refused.
     CHECK_FALSE(lower::instrumentFeedback(mod, "/tmp/y.tfb", &err));
+}
+
+TEST_CASE("feedback apply: polymorphic class-family reads and writes get family claims") {
+    const std::string src =
+        "class Base {\n"
+        "  x: any; y: any;\n"
+        "  constructor(x: any, y: any) { this.x = x; this.y = y; }\n"
+        "  readX() { return this.x; }\n"
+        "}\n"
+        "class Sub extends Base {\n"
+        "  z: any;\n"
+        "  constructor(x: any, y: any, z: any) { super(x, y); this.z = z; }\n"
+        "}\n"
+        "function step(o: any) { o.x = o.y; }\n"
+        "const list: any = [new Base(1, 2), new Sub(3, 4, 5)];\n"
+        "step(list[0]); step(list[1]);\n";
+    il::Module mod = lowered(src);
+    REQUIRE(mod.classFamilies.size() >= 2);
+
+    const il::Function* stepFn = nullptr;
+    for (const auto& fn : mod.functions) {
+        if (fn.name.size() >= 4 && fn.name.compare(fn.name.size() - 4, 4, "step") == 0) stepFn = &fn;
+    }
+    REQUIRE(stepFn != nullptr);
+
+    const size_t xKey = lower_test::keyIndex(mod, "x");
+    const size_t yKey = lower_test::keyIndex(mod, "y");
+    uint32_t getIc = UINT32_MAX, setIc = UINT32_MAX;
+    for (const auto& b : stepFn->blocks) {
+        for (const auto& inst : b.instructions) {
+            if (inst.op == il::Op::PropGet && inst.keyIndex == yKey) getIc = inst.icIndex;
+            if (inst.op == il::Op::PropSet && inst.keyIndex == xKey) setIc = inst.icIndex;
+        }
+    }
+    REQUIRE(getIc != UINT32_MAX);
+    REQUIRE(setIc != UINT32_MAX);
+
+    spec::FeedbackPlan plan;
+    for (uint32_t ic : {getIc, setIc}) {
+        spec::NameCounts& nc = plan.shapesByIc[ic];
+        nc.counts["Base#16{x,y}"] = 512;
+        nc.counts["Sub#16{x,y,z}"] = 512;
+        nc.total = 1024;
+    }
+
+    spec::FeedbackApplyStats stats;
+    spec::applyFeedbackClaimsAndHints(mod, plan, &stats);
+    CHECK(stats.shapeFamily == 2);
+    CHECK(stats.shapeIdentity == 0);
+    CHECK(stats.chainReads == 0);
+
+    for (const auto& b : stepFn->blocks) {
+        for (const auto& inst : b.instructions) {
+            if (inst.icIndex == getIc && inst.op == il::Op::PropGet) {
+                CHECK(inst.staticSlot == 1);
+                CHECK(inst.staticSlotGuessed);
+                CHECK(inst.familyLo != il::Instruction::kNoFamily);
+                CHECK(inst.familySpan >= 1);
+                CHECK(inst.icChain == 0);
+            }
+            if (inst.icIndex == setIc && inst.op == il::Op::PropSet) {
+                CHECK(inst.staticSlot == 0);
+                CHECK(inst.staticSlotGuessed);
+                CHECK(inst.familyLo != il::Instruction::kNoFamily);
+                CHECK(inst.familySpan >= 1);
+            }
+        }
+    }
+    DiagnosticSink diags;
+    CHECK(il::verify(mod, diags));
+
+    // A non-writable field in the family range or a prototype-like shape must
+    // not receive a family write claim.
+    il::Module nonWritable = lowered(src);
+    for (auto& fam : nonWritable.classFamilies) {
+        if (!fam.fields.empty()) fam.fields[0].writable = false;
+    }
+    spec::FeedbackApplyStats nwStats;
+    spec::applyFeedbackClaimsAndHints(nonWritable, plan, &nwStats);
+    CHECK(nwStats.shapeFamily == 1);  // read of y still claimed; write of x refused
+
+    il::Module protoWrite = lowered(src);
+    spec::FeedbackPlan protoPlan;
+    protoPlan.shapesByIc[setIc].counts["Base.prototype{constructor,x,y}"] = 1024;
+    protoPlan.shapesByIc[setIc].total = 1024;
+    spec::FeedbackApplyStats protoStats;
+    spec::applyFeedbackClaimsAndHints(protoWrite, protoPlan, &protoStats);
+    CHECK(protoStats.shapeFamily == 0);
+    CHECK(protoStats.shapeRefused == 1);
+}
+
+TEST_CASE("feedback apply: bimorphic method calls classify inherited vs own-slot targets") {
+    const std::string src =
+        "class A { m(v: any) { return v + 1; } }\n"
+        "class B { m(v: any) { return v + 2; } }\n"
+        "function invoke(o: any, x: any) { return o.m(x); }\n"
+        "invoke(new A(), 1); invoke(new B(), 2);\n";
+    il::Module mod = lowered(src);
+
+    uint32_t fnA = UINT32_MAX, fnB = UINT32_MAX, callIc = UINT32_MAX;
+    for (uint32_t i = 0; i < mod.functions.size(); ++i) {
+        const std::string& n = mod.functions[i].name;
+        if (n.find("A.m") != std::string::npos) fnA = i;
+        if (n.find("B.m") != std::string::npos) fnB = i;
+        if (n.find("invoke") != std::string::npos) {
+            for (const auto& b : mod.functions[i].blocks) {
+                for (const auto& inst : b.instructions) {
+                    if (inst.op == il::Op::MethodCall) callIc = inst.icIndex;
+                }
+            }
+        }
+    }
+    REQUIRE(fnA != UINT32_MAX);
+    REQUIRE(fnB != UINT32_MAX);
+    REQUIRE(callIc != UINT32_MAX);
+
+    spec::FeedbackPlan protoPlan;
+    protoPlan.callees["B.m@1"] = fnB;
+    protoPlan.callees["A.m@2"] = fnA;
+    protoPlan.methodsByIc[callIc].counts["A.m@2"] = 400;
+    protoPlan.methodsByIc[callIc].counts["B.m@1"] = 600;
+    protoPlan.methodsByIc[callIc].total = 1000;
+    protoPlan.methodShapesByIc[callIc].counts["A#16{x}"] = 400;
+    protoPlan.methodShapesByIc[callIc].counts["B#16{x}"] = 600;
+    protoPlan.methodShapesByIc[callIc].total = 1000;
+
+    il::Module m1 = mod;
+    std::unordered_map<uint32_t, uint32_t> ownCallees;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> polyMethods, polyOwn;
+    spec::FeedbackApplyStats stats;
+    spec::applyFeedbackDirectMethods(m1, protoPlan, ownCallees, &stats, &polyMethods, &polyOwn);
+    REQUIRE(polyMethods.count(callIc) == 1);
+    CHECK(polyMethods[callIc] == std::vector<uint32_t>{fnB, fnA});
+    CHECK(polyOwn.empty());
+
+    // Own-slot receivers populate polyOwnCallees and set kMethodOwnCallee.
+    spec::FeedbackPlan ownPlan = protoPlan;
+    ownPlan.methodShapesByIc.clear();
+    ownPlan.methodShapesByIc[callIc].counts["Mixer#16{m,buf}"] = 1000;
+    ownPlan.methodShapesByIc[callIc].total = 1000;
+
+    il::Module m2 = mod;
+    polyMethods.clear();
+    polyOwn.clear();
+    spec::applyFeedbackDirectMethods(m2, ownPlan, ownCallees, &stats, &polyMethods, &polyOwn);
+    CHECK(polyMethods.empty());
+    REQUIRE(polyOwn.count(callIc) == 1);
+    CHECK(polyOwn[callIc] == std::vector<uint32_t>{fnB, fnA});
+
+    // Mixed own + inherited receivers populate neither.
+    spec::FeedbackPlan mixedPlan = protoPlan;
+    mixedPlan.methodShapesByIc.clear();
+    mixedPlan.methodShapesByIc[callIc].counts["Mixer#16{m}"] = 500;
+    mixedPlan.methodShapesByIc[callIc].counts["B#16{x}"] = 500;
+    mixedPlan.methodShapesByIc[callIc].total = 1000;
+
+    il::Module m3 = mod;
+    polyMethods.clear();
+    polyOwn.clear();
+    spec::applyFeedbackDirectMethods(m3, mixedPlan, ownCallees, &stats, &polyMethods, &polyOwn);
+    CHECK(polyMethods.empty());
+    CHECK(polyOwn.empty());
 }

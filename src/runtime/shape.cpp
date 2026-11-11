@@ -471,6 +471,7 @@ inline StringLookupMemo& stringLookupMemoFor(const Shape* shape, uint32_t keyHas
 void Shape::forgetLookupMemo() noexcept {
     for (LookupMemo& m : g_lookupMemo) m = LookupMemo{};
     for (StringLookupMemo& m : g_stringLookupMemo) m = StringLookupMemo{};
+    bumpProtoMutationEpoch();
 }
 
 bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {

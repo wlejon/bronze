@@ -174,14 +174,36 @@ void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* 
 
 // The keys a function's ladder answers between its own box and the boxes
 // `extends` linked in: an inherited entry for one would skip that answer.
-bool keyAnsweredBeforeInheritedStatics(const std::string& keyStr) {
-    return keyStr == "prototype" || keyStr == "length" || keyStr == "name" || keyStr == "constructor";
+bool keyAnsweredBeforeInheritedStatics(const StringHeader* keyHeader) {
+    return keyHeader->equalsASCII("prototype") || keyHeader->equalsASCII("length") ||
+           keyHeader->equalsASCII("name") || keyHeader->equalsASCII("constructor");
 }
 
-}  // namespace
+uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHeader* keyHeader,
+                            InlineCacheSite* site) {
+    // Non-native functions never appear in `kCtors`, never have
+    // `statics_materialized`, and are never the `%Function%` constructor, so a
+    // materialized `prototype` (or an arrow/method/async's permanent absence of
+    // one) answers immediately without rooting or UTF-8 string conversion.
+    if (const auto* fastFn = objVal.asObject<FunctionHeader>();
+        !fastFn->isNativeCode() && keyHeader->equalsASCII("prototype")) {
+        if (!fastFn->hasPrototypeProperty()) {
+            return Value::fromUndefined().rawBits();
+        }
+        if (fastFn->prototype.isObject()) {
+            return fastFn->prototype.rawBits();
+        }
+    }
 
-uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                          InlineCacheSite* site) {
+    std::string lazyKeyStr;
+    auto keyText = [&]() -> const std::string& {
+        if (optKeyStr) return *optKeyStr;
+        if (lazyKeyStr.empty() && keyHeader->getLength() != 0) {
+            lazyKeyStr = rtUtf8Chars(keyHeader);
+        }
+        return lazyKeyStr;
+    };
+
     // Rooted for the same reason the array branch is: the tail below walks
     // `Object.prototype`, and everything between here and there allocates.
     Rooted<Value> recv{objVal};
@@ -197,24 +219,28 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // them. A name the program put in the box is then found by the box block
     // below BEFORE the table's unimplemented-member diagnosis can refuse it —
     // a polyfill for a member bronze has not built is the program's to add.
-    bool boxFirst = false;
-    if (recv.get().asObject<FunctionHeader>()->statics_materialized) {
-        const Value box = recv.get().asObject<FunctionHeader>()->properties;
-        PropertyInfo own;
-        boxFirst = box.isObject() && box.asObject<ObjectHeader>()->shape &&
-                   box.asObject<ObjectHeader>()->shape->lookupProperty(
-                       PropertyKey::forString(keyHeader), own);
-    }
-    if (Value ctorMember;
-        !boxFirst && rtGlobalConstructorMember(recv.get(), keyStr, ctorMember)) {
-        return ctorMember.rawBits();
+    // Every entry in `kCtors` is a native function, so source functions skip
+    // both the box pre-probe and the table lookup.
+    if (recv.get().asObject<FunctionHeader>()->isNativeCode()) {
+        bool boxFirst = false;
+        if (recv.get().asObject<FunctionHeader>()->statics_materialized) {
+            const Value box = recv.get().asObject<FunctionHeader>()->properties;
+            PropertyInfo own;
+            boxFirst = box.isObject() && box.asObject<ObjectHeader>()->shape &&
+                       box.asObject<ObjectHeader>()->shape->lookupProperty(
+                           PropertyKey::forString(keyHeader), own);
+        }
+        if (Value ctorMember;
+            !boxFirst && rtGlobalConstructorMember(recv.get(), keyText(), ctorMember)) {
+            return ctorMember.rawBits();
+        }
     }
     // `prototype` lives in its own slot; every other own property lives in
     // the function's property object and is found through ITS prototype
     // chain, which `extends` linked to the base class's. Reading
     // `prototype` first is what keeps `call`, `bind` and `name` answered
     // or diagnosed rather than read as undefined.
-    if (keyStr == "prototype") {
+    if (keyHeader->equalsASCII("prototype")) {
         if (rtIsFunctionConstructor(recv.get())) {
             return rtFunctionPrototypeObject().rawBits();
         }
@@ -277,26 +303,28 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // only thing this order can find first is a definition that really did
     // replace the property.
     if (const FunctionHeader* fn = recv.get().asObject<FunctionHeader>(); fn->name) {
-        if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
-        if (keyStr == "name") return rtKeyAsValue(fn->name).rawBits();
-    } else if (keyStr == "name") {
+        if (keyHeader->equalsASCII("length")) return Value::fromDouble(fn->length).rawBits();
+        if (keyHeader->equalsASCII("name")) return rtKeyAsValue(fn->name).rawBits();
+    } else if (keyHeader->equalsASCII("name")) {
         return rtMakeString("").rawBits();
-    } else if (keyStr == "length") {
+    } else if (keyHeader->equalsASCII("length")) {
         return Value::fromDouble(0.0).rawBits();
     }
-    rtSymbolCheckMissingMember(recv.get(), keyStr);
-    // `Object` is a function object too (20.1.1), so its unimplemented-member
-    // table is consulted on THIS miss path and not on the plain object one
-    // below. Without this line a name 20.1.2 defines and bronze has not
-    // built read `undefined` from the moment `Object` stopped being a
-    // namespace.
-    rtObjectCheckMissingMember(recv.get(), keyStr);
+    if (recv.get().asObject<FunctionHeader>()->isNativeCode()) {
+        rtSymbolCheckMissingMember(recv.get(), keyText());
+        // `Object` is a function object too (20.1.1), so its unimplemented-member
+        // table is consulted on THIS miss path and not on the plain object one
+        // below. Without this line a name 20.1.2 defines and bronze has not
+        // built read `undefined` from the moment `Object` stopped being a
+        // namespace.
+        rtObjectCheckMissingMember(recv.get(), keyText());
+    }
     // `constructor` for the three forms that do not inherit it from
     // %Function.prototype%: a generator function's is %GeneratorFunction%,
     // not `Function`, and the table below cannot tell them apart because
     // it is asked by KEY and never sees the receiver. Answered `undefined`
     // for an ordinary function, which falls straight through to it.
-    if (keyStr == "constructor") {
+    if (keyHeader->equalsASCII("constructor")) {
         if (Value ctor = rtFunctionKindConstructor(recv.get()); !ctor.isUndefined()) {
             return ctor.rawBits();
         }
@@ -324,7 +352,8 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
                 // other function the arms serve they answer by key alone, so
                 // the entry is the answer for every box at this shape while
                 // the epoch holds.
-                if (!keyAnsweredBeforeInheritedStatics(keyStr) && statsChainMarked(propsObj, depth)) {
+                if (!keyAnsweredBeforeInheritedStatics(keyHeader) &&
+                    statsChainMarked(propsObj, depth)) {
                     installStaticsCacheEntry(recv.get(), site, propsObj, inherited, depth);
                 }
                 Rooted<Value> key(Value::fromString(keyHeader));
@@ -352,7 +381,18 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // `Function.prototype` has had its say, so what is left is the object
     // above it. That step is what makes `f.hasOwnProperty` a function rather
     // than `undefined`.
-    return rtObjectProtoMember(recv, keyStr).rawBits();
+    return rtObjectProtoMember(recv, keyText()).rawBits();
+}
+
+}  // namespace
+
+uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+                          InlineCacheSite* site) {
+    return functionMemberImpl(objVal, &keyStr, keyHeader, site);
+}
+
+uint64_t rtFunctionMember(Value objVal, StringHeader* keyHeader, InlineCacheSite* site) {
+    return functionMemberImpl(objVal, nullptr, keyHeader, site);
 }
 
 }  // namespace bronze::runtime

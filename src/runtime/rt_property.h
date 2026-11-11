@@ -132,6 +132,8 @@ void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string
 // IS a shape and a slot.
 uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                           struct InlineCacheSite* site);
+uint64_t rtFunctionMember(Value objVal, StringHeader* keyHeader,
+                          struct InlineCacheSite* site);
 
 // May a shape-keyed entry describe this (function receiver, statics box) pair?
 // The refusals — intrinsic constructor, dictionary box — and why each

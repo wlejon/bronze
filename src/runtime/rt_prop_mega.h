@@ -39,12 +39,12 @@ void rtMegaPropFill(const InlineCacheSite* site, const Shape* shape, uint32_t ke
 // again without the helper.
 void rtMegaPropFillOwnSlot(Shape* shape, uint32_t keyIndex, uint32_t slot) noexcept;
 
-// The WRITE half: a set site's one entry (way 0) for `shape`, under a key
-// space of its own — a read entry says nothing about writability, so the two
-// must never answer each other. An entry for an adding store names the shape
-// after the add and is not recorded.
+// The WRITE half: a set site's entry (among its BRONZE_ABI_IC_SET_WAYS ways)
+// for `shape`, under a key space of its own — a read entry says nothing about
+// writability, so the two must never answer each other. An entry for an adding
+// store names the shape after the add and is not recorded.
 InlineCache* rtMegaPropSetProbe(const Shape* shape, uint32_t keyIndex) noexcept;
-void rtMegaPropSetFill(const InlineCache* way0, const Shape* shape, uint32_t keyIndex) noexcept;
+void rtMegaPropSetFill(const InlineCacheSite* site, const Shape* shape, uint32_t keyIndex) noexcept;
 
 void rtResetMegaPropCache() noexcept;
 

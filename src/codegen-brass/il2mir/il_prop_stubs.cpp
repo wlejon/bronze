@@ -241,11 +241,10 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
 }
 
 // The write stub: kPropSetStub(obj, key, val, site, strict), bronze_prop_set's
-// operands. A write site uses way 0 only (bronze_abi.h), and the stub answers
-// from it what the helper's site-cache path answers:
+// operands. A write site uses BRONZE_ABI_IC_SET_WAYS ways (bronze_abi.h), and
+// the stub answers from them what the helper's site-cache path answers:
 //  - an own data slot: the store lower_prop_set_mono makes, with the barrier
-//    for a reference (the fill names only writable own data, and an f64 slot
-//    carries a flag that refuses it here);
+//    for a reference, or a finite IEEE double into an f64-represented slot;
 //  - an accessor on the receiver or on its prototype chain (to
 //    kMaxStubDepth links): its setter, entered
 //    directly when it may be, with the receiver as `this` and the value as
@@ -271,23 +270,34 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* not_own = b.append_block(prefix + "_notown");
     BasicBlock* depth1 = b.append_block(prefix + "_depth1");
     BasicBlock* not_depth1 = b.append_block(prefix + "_notdepth1");
+    BasicBlock* dbl_check = b.append_block(prefix + "_dblcheck");
+    BasicBlock* dbl_store = b.append_block(prefix + "_dblstore");
     BasicBlock* setter = b.append_block(prefix + "_setter");
     Value* holder = b.add_block_param(setter, Type::i64());
     BasicBlock* enter = b.append_block(prefix + "_enter");
     BasicBlock* slow = b.append_block(prefix + "_slow");
 
+    BasicBlock* rest = b.append_block(prefix + "_rest");
     BasicBlock* mega = b.append_block(prefix + "_mega");
     BasicBlock* hit = b.append_block(prefix + "_hit");
     Value* slot_word = b.add_block_param(hit, Type::i64());
     Value* entry_epoch = b.add_block_param(hit, Type::i64());
+    BasicBlock* transition = b.append_block(prefix + "_transition");
 
     b.position_at_end(cur);
     Value* argv = b.build_alloca_tagged(1);
     Value* tls = tls_block(b);
-    const PropEntry e = prop_entry(pl, b, obj, site, 1);
-    BasicBlock* scanned = b.current_block();
-    BasicBlock* transition = b.append_block(prefix + "_transition");
-    b.position_at_end(scanned);
+    PropEntry e;
+    keyed_receiver(pl, b, obj, e);
+    {
+        Value* match0 = b.build_eq(e.shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET));
+        Value* word0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* epoch0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_EPOCH_OFFSET);
+        b.build_br_if(match0, hit, {word0, epoch0}, rest, {});
+    }
+
+    b.position_at_end(rest);
+    scan_ways(b, e, site, 1, BRONZE_ABI_IC_SET_WAYS);
     b.build_br_if(e.hit, hit, {e.slot_word, e.epoch}, transition, {});
 
     // Way 0 names the shape one add of this key above the receiver's: the
@@ -309,20 +319,27 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
         b.build_br(mega);
     }
 
-    // Way 0 missed: the thread's table, in its write key space. A table
-    // answer latches nothing, so a site whose way 0 holds a shape that stopped
-    // coming kept missing it for good (three_skinned: ~2-5K table answers a
-    // frame at sites whose way 0 named a shape no frame wrote); every
-    // BRONZE_ABI_IC_SET_MEGA_RELATCH-th answer goes to the helper instead,
-    // which skips the table for it and so stores through way 0, whose fill puts
-    // the receiver's shape there (and in its row).
+    // All BRONZE_ABI_IC_SET_WAYS ways missed: when all three ways are full,
+    // probe the thread's table in its write key space; an incomplete site goes
+    // straight to the helper so the next empty way fills in place without
+    // marking the site megamorphic. Every BRONZE_ABI_IC_SET_MEGA_RELATCH-th
+    // table probe goes to the helper, which skips the table and shifts the
+    // active shape into way 0 (and its packed hot row).
     b.position_at_end(mega);
     {
-        static_assert(BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord >= BRONZE_ABI_IC_ENTRY_SIZE &&
+        static_assert(BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord >=
+                              BRONZE_ABI_IC_SET_WAYS * BRONZE_ABI_IC_ENTRY_SIZE &&
                           BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord < BRONZE_ABI_IC_SITE_SIZE,
-                      "the count is a word of the site past the way a write site uses");
+                      "the count is a word of the site past the ways a write site uses");
+        BasicBlock* mega_full = b.append_block(prefix + "_megafull");
         BasicBlock* probe = b.append_block(prefix + "_megaprobe");
         b.position_at_end(mega);
+        const int32_t last = (BRONZE_ABI_IC_SET_WAYS - 1) * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+        Value* full = b.build_ne(b.build_load(Type::i64(), site, last + BRONZE_ABI_IC_SHAPE_OFFSET),
+                                 b.build_iconst_i64(0));
+        b.build_br_if(full, mega_full, slow);
+
+        b.position_at_end(mega_full);
         Value* n = b.build_add(b.build_load(Type::i64(), site, BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord),
                                b.build_iconst_i64(1));
         Value* relatch = b.build_uge(n, b.build_iconst_i64(BRONZE_ABI_IC_SET_MEGA_RELATCH));
@@ -331,10 +348,10 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
         b.build_store(Type::i64(), site, BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * kWord, n);
         b.build_br_if(relatch, slow, probe);
         b.position_at_end(probe);
-        build_mega_probe(b, tls, e, site, 1,
-                         b.build_or(b.build_zext_i64(key_id),
-                                    b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_SET_KEY_BIT))),
-                         hit, slow);
+        build_mega_probe_if(b, tls, e, full,
+                            b.build_or(b.build_zext_i64(key_id),
+                                       b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_SET_KEY_BIT))),
+                            hit, slow);
     }
 
     b.position_at_end(hit);
@@ -371,7 +388,24 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.build_br(setter, {pptr});
 
     b.position_at_end(not_depth1);
-    b.build_br_if(b.build_eq(depth, b.build_iconst_i64(kAccessorDepth)), setter, {e.ptr}, slow, {});
+    b.build_br_if(b.build_eq(depth, b.build_iconst_i64(kAccessorDepth)), setter, {e.ptr}, dbl_check, {});
+
+    // An f64-represented own slot (BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG): any finite
+    // IEEE-754 double has exponent bits != 0x7FF, so its boxed Value bits are
+    // already canonical and need no barrier; NaN/Infinity, Tag::Int32, and
+    // non-numbers go to `slow` for canonicalization or slot generalization.
+    b.position_at_end(dbl_check);
+    Value* is_dbl_slot = b.build_eq(depth, b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
+    Value* is_finite_f64 = b.build_ne(b.build_and(val, b.build_iconst_i64(0x7FF0000000000000LL)),
+                                      b.build_iconst_i64(0x7FF0000000000000LL));
+    b.build_br_if(b.build_and(is_dbl_slot, is_finite_f64), dbl_store, slow);
+
+    b.position_at_end(dbl_store);
+    Value* dbl_base = pl.slot_base(b, e.ptr, slot);
+    Value* dbl_addr = b.build_add(b.build_add(dbl_base, b.build_shl(slot, b.build_iconst_i64(3))),
+                                  b.build_iconst_i64(kBronzeObjSlotsOffset));
+    b.build_store(Type::i64(), dbl_addr, 0, val);
+    b.build_br(done);
 
     // An accessor's setter is the slot after its getter.
     b.position_at_end(setter);

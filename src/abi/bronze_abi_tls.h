@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifndef BRONZE_ABI_OBJ_OVERFLOW_SLOT
+#include "abi/bronze_abi_layout.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -143,7 +147,7 @@ typedef struct bronze_tls_block {
      * for BRONZE_ABI_OBJ_INLINE_SLOTS is `plain_shape`), or 0 until the
      * runtime has made it. What a sized literal's inline allocation reads;
      * a 0 entry takes the helper, which makes it. */
-    uint64_t plain_shapes[17]; /* BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1 */
+    uint64_t plain_shapes[BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1];
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0

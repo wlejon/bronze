@@ -98,6 +98,15 @@ struct StringHeader {
     uint16_t charCodeAt(uint32_t index) const noexcept;
 
     bool equals(const StringHeader& other) const noexcept;
+    bool equalsASCII(std::string_view ascii) const noexcept {
+        if (length != ascii.size()) return false;
+        if (isLatin1()) return std::memcmp(latin1Data(), ascii.data(), length) == 0;
+        const uint16_t* u = utf16Data();
+        for (size_t i = 0; i < ascii.size(); ++i) {
+            if (u[i] != static_cast<unsigned char>(ascii[i])) return false;
+        }
+        return true;
+    }
     // ECMA-262 7.2.13 IsStringLessThan: the two strings are compared UTF-16
     // CODE UNIT by code unit, and a prefix is less than what extends it. Not a
     // collation and never to become one — `"Z" < "a"` is true because 0x5A

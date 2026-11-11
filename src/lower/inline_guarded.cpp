@@ -17,6 +17,10 @@
 // itself. Every new block takes B's handler, so a throw anywhere in the body
 // or in the slow call leaves to wherever a throw out of the call would have.
 //
+// A bimorphic site chains two guards over the same IC (`MethodIcIs` across the
+// site's two direct ways, or `MethodSlotFn` followed by two `ClosureIs` tests),
+// leaving S as the fallback call after the second miss.
+//
 // An ACCESSOR site (`prop.get` / `prop.set` naming its getter or setter, il.h
 // `directTarget`) is inlined the same way, as a call of that body with the
 // receiver as `this` and, for a setter, the stored value as its one argument.
@@ -25,73 +29,33 @@
 // publishes the cell. A setter's return value is discarded, as [[Set]]
 // discards it: a `prop.set` has no result for C to take.
 
-#include "lower/inline_guarded.h"
-#include "lower/guard_region_cfg.h"
-#include "lower/typed_entry.h"
+#include "lower/inline_guarded_internal.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "il/print.h"
 #include "il/verifier.h"
 
 namespace bronze::lower {
 
+namespace inline_guarded_detail {
+
 namespace {
 
-// The sizes below are in IL instructions of FINISHED bodies (guarded regions
-// and typed entries already built), and were set on the three.js benches
-// (docs/il2mir.md section 10 has the measurements).
-//
-// A callee's size: the body a site pays for in code and build time on top of
-// the call it keeps for the slow path. `Matrix4.compose` (209) is inside it;
-// leaving it out while its caller `Object3D.updateMatrix` came in measured
-// slower than inlining neither, since the call left behind sat in a loop body
-// that now held every other value live across it.
-constexpr size_t kMaxCalleeInstructions = 250;
-// Inline frames deep: a body inlined into a body inlined into the caller.
-constexpr size_t kMaxDepth = 3;
-// A caller bigger than this takes no bodies: what is big already is mostly
-// cold library code (parsers, loaders), and brass's analyses grow faster than
-// linearly in a function's size, so it is build time spent for nothing.
-constexpr size_t kMaxCallerStart = 800;
-// A caller grows to at most twice its size plus this, and never past the cap.
-constexpr size_t kCallerGrowthSlack = 200;
-// ...or by this much, whichever is more: room for one callee of the largest
-// size with its blocks' joins, so a small method's one big call (`updateMatrix`
-// calling `compose`) is not the one call it can never take.
-constexpr size_t kMinCallerGrowth = 320;
-constexpr size_t kMaxCallerInstructions = 1500;
-// The fixed-argument method.call form's widest list (il/verifier.cpp).
-constexpr size_t kMaxArgs = 16;
-
-bool trace() {
-    static const bool on = std::getenv("BRONZE_INLINE_GUARDED_TRACE") != nullptr;
-    return on;
+// The program's copy of a self-hosted builtin or of one of its helpers
+// (selfhost_merge.cpp): the library's frames are BUILTIN or HIDDEN, which no
+// function of the program's own is.
+bool selfHosted(const il::Function& fn) {
+    return (fn.descFlags & (BRONZE_FN_DESC_BUILTIN | BRONZE_FN_DESC_HIDDEN)) != 0;
 }
 
-size_t instructionCount(const il::Function& fn) {
-    size_t n = 0;
-    for (const auto& b : fn.blocks) n += b.instructions.size();
-    return n;
-}
-
-std::vector<il::Type> valueTypes(const il::Function& fn) {
-    std::vector<il::Type> t(fn.valueCount, il::Type::Void);
-    for (size_t i = 0; i < fn.params.size() && i < t.size(); ++i) t[i] = fn.params[i].type;
-    for (const auto& b : fn.blocks) {
-        for (const auto& p : b.params) {
-            if (p.id < t.size()) t[p.id] = p.type;
-        }
-        for (const auto& inst : b.instructions) {
-            if (inst.result != il::kNoValue && inst.result < t.size()) t[inst.result] = inst.type;
-        }
-    }
-    return t;
-}
+}  // namespace
 
 // Whether `fn`'s body means the same thing run at any method call that
 // would have entered it: it reads nothing of the activation a real call
@@ -100,7 +64,7 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
 // its function object closed over, which the inlined copy is handed.
 // An EXACT body (a direct `call`'s, "exact calls" below) is bound to the
 // call's operands one for one, whatever their types.
-bool isCandidate(const il::Function& fn, bool closure, bool exact = false) {
+bool isCandidate(const il::Function& fn, bool closure, bool exact) {
     if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
     // The environment, `arguments` and the rest array are built by the call
     // wrapper from the real call; a sloppy function's `this` is coerced there.
@@ -193,102 +157,103 @@ bool isCandidate(const il::Function& fn, bool closure, bool exact = false) {
     return true;
 }
 
-// How a body is entered (Inliner::inlineAt).
-enum class Form { Method, Closure, Exact, Literal };
-
-// The program's copy of a self-hosted builtin or of one of its helpers
-// (selfhost_merge.cpp): the library's frames are BUILTIN or HIDDEN, which no
-// function of the program's own is.
-bool selfHosted(const il::Function& fn) {
-    return (fn.descFlags & (BRONZE_FN_DESC_BUILTIN | BRONZE_FN_DESC_HIDDEN)) != 0;
+Inliner::Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBlocks* cold,
+                 const ClosureGuesses* polyMethods, const ClosureGuesses* polyOwnCallees)
+    : module_(module),
+      guesses_(guesses),
+      polyMethods_(polyMethods),
+      polyOwnCallees_(polyOwnCallees),
+      cold_(cold) {
+    originals_.resize(module.functions.size());
+    candidate_.assign(module.functions.size(), 0);
+    closureCandidate_.assign(module.functions.size(), 0);
+    std::vector<uint8_t> guessed(module.functions.size(), 0);
+    const auto noteGuessed = [&](const ClosureGuesses* map) {
+        if (!map) return;
+        for (const auto& [site, fns] : *map) {
+            (void)site;
+            for (uint32_t f : fns) {
+                if (f < guessed.size()) guessed[f] = 1;
+            }
+        }
+    };
+    noteGuessed(guesses_);
+    noteGuessed(polyOwnCallees_);
+    exactCandidate_.assign(module.functions.size(), 0);
+    literalCandidate_.assign(module.functions.size(), 0);
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        const il::Function& f = module.functions[i];
+        if (isCandidate(f, false)) candidate_[i] = 1;
+        if (guessed[i] && isCandidate(f, true)) closureCandidate_[i] = 1;
+        if (selfHosted(f) && isCandidate(f, false, /*exact=*/true)) exactCandidate_[i] = 1;
+        // A callback's `this` is whatever the caller passed, which a
+        // sloppy function would coerce; and a class constructor's [[Call]]
+        // throws.
+        if (isCandidate(f, true) && !(f.needsThis && !f.isStrict) &&
+            (f.fnFlags & (BRONZE_ABI_FN_FLAG_CLASS_CTOR | BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) ==
+                0) {
+            literalCandidate_[i] = 1;
+        }
+        if (candidate_[i] || closureCandidate_[i] || exactCandidate_[i] || literalCandidate_[i]) {
+            originals_[i] = f;
+        }
+    }
+    markEnteredFromLoops();
 }
 
-class Inliner {
-public:
-    Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBlocks* cold)
-        : module_(module), guesses_(guesses), cold_(cold) {
-        originals_.resize(module.functions.size());
-        candidate_.assign(module.functions.size(), 0);
-        closureCandidate_.assign(module.functions.size(), 0);
-        std::vector<uint8_t> guessed(module.functions.size(), 0);
-        if (guesses_) {
-            for (const auto& [site, fns] : *guesses_) {
-                for (uint32_t f : fns) {
-                    if (f < guessed.size()) guessed[f] = 1;
-                }
-            }
-        }
-        exactCandidate_.assign(module.functions.size(), 0);
-        literalCandidate_.assign(module.functions.size(), 0);
-        for (size_t i = 0; i < module.functions.size(); ++i) {
-            const il::Function& f = module.functions[i];
-            if (isCandidate(f, false)) candidate_[i] = 1;
-            if (guessed[i] && isCandidate(f, true)) closureCandidate_[i] = 1;
-            if (selfHosted(f) && isCandidate(f, false, /*exact=*/true)) exactCandidate_[i] = 1;
-            // A callback's `this` is whatever the caller passed, which a
-            // sloppy function would coerce; and a class constructor's [[Call]]
-            // throws.
-            if (isCandidate(f, true) && !(f.needsThis && !f.isStrict) &&
-                (f.fnFlags & (BRONZE_ABI_FN_FLAG_CLASS_CTOR | BRONZE_ABI_FN_FLAG_GENERATOR |
-                              BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
-                literalCandidate_[i] = 1;
-            }
-            if (candidate_[i] || closureCandidate_[i] || exactCandidate_[i] || literalCandidate_[i]) {
-                originals_[i] = f;
-            }
-        }
-        markEnteredFromLoops();
+size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlinedOwnIcs) {
+    il::Function& fn = module_.functions[fnIdx];
+    if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) return 0;
+    // The top level is module initialisation, which runs once; a script
+    // whose hot loop is there keeps its method calls, and takes only the
+    // bodies that need no guard of their own (exact and literal calls).
+    const bool entry = fn.isEntryPoint || fn.name == "main";
+    size_t count = instructionCount(fn);
+    if (count > kMaxCallerStart) {
+        if (trace()) std::fprintf(stderr, "[inline] %s: caller too big (%zu)\n", fn.name.c_str(), count);
+        return 0;
     }
-
-    // Inlines every eligible call in `fnIdx`, its copied bodies' calls
-    // included, within the depth and size bounds. Returns how many.
-    size_t inlineInto(uint32_t fnIdx) {
-        il::Function& fn = module_.functions[fnIdx];
-        if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) return 0;
-        // The top level is module initialisation, which runs once; a script
-        // whose hot loop is there keeps its method calls, and takes only the
-        // bodies that need no guard of their own (exact and literal calls).
-        const bool entry = fn.isEntryPoint || fn.name == "main";
-        size_t count = instructionCount(fn);
-        if (count > kMaxCallerStart) {
-            if (trace()) std::fprintf(stderr, "[inline] %s: caller too big (%zu)\n", fn.name.c_str(), count);
-            return 0;
-        }
-        types_ = valueTypes(fn);
-        literals_.clear();
-        for (const auto& blk : fn.blocks) {
-            for (const auto& inst : blk.instructions) noteLiteral(inst);
-        }
-        slowBlock_.assign(fn.blocks.size(), 0);
-        closureTried_.assign(fn.blocks.size(), 0);
-        // Second-pass blocks: a guarded region's slow copy, and the generic
-        // loop typed_loop_version.cpp copied per view kind, which runs only
-        // once every copy's entry test has failed.
-        lateBlock_.assign(fn.blocks.size(), 0);
-        for (size_t b = 0; b < fn.blocks.size(); ++b) {
-            if (fn.blocks[b].copyClass == il::CopyClass::Slow) lateBlock_[b] = 1;
-        }
-        if (cold_) {
-            if (const auto it = cold_->find(fn.name); it != cold_->end()) {
-                for (il::BlockId b : it->second) {
-                    if (b < lateBlock_.size()) lateBlock_[b] = 1;
-                }
+    types_ = valueTypes(fn);
+    literals_.clear();
+    for (const auto& blk : fn.blocks) {
+        for (const auto& inst : blk.instructions) noteLiteral(inst);
+    }
+    slowBlock_.assign(fn.blocks.size(), 0);
+    closureTried_.assign(fn.blocks.size(), 0);
+    methodTried_.assign(fn.blocks.size(), 0);
+    closureSlotFn_.assign(fn.blocks.size(), il::kNoValue);
+    reservedForBlock_.assign(fn.blocks.size(), 0);
+    // Second-pass blocks: a guarded region's slow copy, and the generic
+    // loop typed_loop_version.cpp copied per view kind, which runs only
+    // once every copy's entry test has failed.
+    lateBlock_.assign(fn.blocks.size(), 0);
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (fn.blocks[b].copyClass == il::CopyClass::Slow) lateBlock_[b] = 1;
+    }
+    if (cold_) {
+        if (const auto it = cold_->find(fn.name); it != cold_->end()) {
+            for (il::BlockId b : it->second) {
+                if (b < lateBlock_.size()) lateBlock_[b] = 1;
             }
         }
-        markLoops(fn);
-        const size_t limit =
-            std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
-        const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
-        size_t inlined = 0;
-        // The guarded regions' fast copies first: the room is one budget for
-        // the whole function, and a region's slow copy (its original blocks,
-        // so the lower numbers) runs only once a guard of the fast copy has
-        // failed. Taken in block order, the slow copy of instanced's loop got
-        // `compose` and the fast copy, the one that runs, was left with the
-        // calls of `compose` and `Matrix4.toArray` for want of room.
-        for (int pass = 0; pass < 2; ++pass)
+    }
+    markLoops(fn);
+    const size_t limit =
+        std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
+    const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
+    size_t inlined = 0;
+    // The guarded regions' fast copies first: the room is one budget for
+    // the whole function, and a region's slow copy (its original blocks,
+    // so the lower numbers) runs only once a guard of the fast copy has
+    // failed.
+    for (int pass = 0; pass < 2; ++pass) {
+        size_t reserved = 0;
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
             if ((b < lateBlock_.size() && lateBlock_[b]) != (pass == 1)) continue;
+            if (b < reservedForBlock_.size() && reservedForBlock_[b] != 0) {
+                reserved -= reservedForBlock_[b];
+                reservedForBlock_[b] = 0;
+            }
             if (slowBlock_[b]) continue;
             // Outside every loop of a function no loop enters, only an exact
             // call of a self-hosted builtin's copy is taken: its body is a
@@ -305,577 +270,317 @@ public:
                 if (inst.op == il::Op::ConcatBegin) ++openChains;
                 if (inst.op == il::Op::ConcatEnd && openChains > 0) --openChains;
                 if (openChains > 0) continue;
-                // An own callee's guessed closure first (its miss is a block
-                // holding the call, which takes the next guess, then the
-                // prototype's method as any call does), else the method.
-                uint32_t next = 0;
-                Form form = Form::Method;
-                const uint32_t unguarded = unguardedCallee(fn, fnIdx, inst, form);
-                if (onlyExact && form != Form::Exact) continue;
-                const uint32_t closure = unguarded != kNone || entry
-                                             ? kNone
-                                             : closureCallee(fn, fnIdx, static_cast<il::BlockId>(b), inst, next);
+                Form unguardedForm = Form::Method;
+                const uint32_t unguarded = unguardedCallee(fn, fnIdx, inst, unguardedForm);
+                if (onlyExact && unguardedForm != Form::Exact) continue;
+                const size_t available = count + reserved <= limit ? limit - count - reserved : 0;
                 const auto roomFor = [&](uint32_t callee, size_t extra) -> size_t {
-                    const size_t grows =
-                        originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4 + extra;
-                    if (count + grows <= limit) return grows;
+                    const size_t grows = growthOf(callee, extra);
+                    if (grows <= available) return grows;
                     if (trace()) {
                         std::fprintf(stderr, "[inline] %s: no room for %s (%zu + %zu > %zu)\n", fn.name.c_str(),
-                                     module_.functions[callee].name.c_str(), count, grows, limit);
+                                     module_.functions[callee].name.c_str(), count + reserved, grows, limit);
                     }
                     return 0;
                 };
+                SplicePlan splice{};
                 size_t grows = 0;
                 uint32_t callee = kNone;
                 if (unguarded != kNone) {
                     if ((grows = roomFor(unguarded, 0)) == 0) continue;
                     callee = unguarded;
+                    splice.form = unguardedForm;
                 } else if (entry) {
                     continue;
                 } else {
-                    grows = closure != kNone ? roomFor(closure, kClosureGuardInstructions) : 0;
-                    callee = closure;
-                    if (grows == 0) {
-                        callee = eligibleCallee(fn, fnIdx, inst);
-                        if (callee == kNone || (grows = roomFor(callee, 0)) == 0) continue;
-                    } else {
-                        form = Form::Closure;
+                    const il::BlockId bid = static_cast<il::BlockId>(b);
+                    const bool polyOwn = polyOwnCallees_ != nullptr && polyOwnCallees_->count(inst.icIndex) != 0;
+                    if (polyOwn) {
+                        callee = polyClosureCallee(fn, fnIdx, bid, i, inst, available, splice, grows);
                     }
+                    if (callee == kNone && !polyOwn) {
+                        uint32_t next = 0;
+                        const uint32_t c = closureCallee(fn, fnIdx, bid, inst, next);
+                        if (c != kNone) {
+                            const bool reuse =
+                                i == 0 && b < closureSlotFn_.size() && closureSlotFn_[b] != il::kNoValue;
+                            grows = roomFor(c, reuse ? kChainedClosureGuardInstructions : kClosureGuardInstructions);
+                            if (grows != 0) {
+                                callee = c;
+                                splice = SplicePlan{Form::Closure, next, /*moreTries=*/true, 0};
+                            }
+                        }
+                    }
+                    if (callee == kNone) {
+                        const uint32_t m = eligibleCallee(fn, fnIdx, inst);
+                        if (m != kNone && (grows = roomFor(m, 0)) != 0) {
+                            callee = m;
+                            splice = SplicePlan{Form::Method, 0, /*moreTries=*/false, 0};
+                        }
+                    }
+                    if (callee == kNone) {
+                        callee = polyMethodCallee(fn, fnIdx, bid, inst, available, splice, grows);
+                    }
+                    if (callee == kNone) continue;
                 }
                 if (trace()) {
                     static const char* const kForm[] = {"", "closure ", "exact ", "literal "};
                     std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s%s\n", fn.name.c_str(),
-                                 kForm[static_cast<int>(form)], module_.functions[callee].name.c_str(),
+                                 kForm[static_cast<int>(splice.form)], module_.functions[callee].name.c_str(),
                                  instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops",
                                  pass == 1 ? " late" : "");
                 }
+                const uint32_t callIc = inst.icIndex;
                 const uint8_t late = b < lateBlock_.size() ? lateBlock_[b] : 0;
-                inlineAt(fn, static_cast<il::BlockId>(b), i, callee, form == Form::Closure ? next : 0, form);
-                // The body's blocks are the call block's: the rest of block b
-                // is among them, and the pass that took b reaches it.
+                inlineAt(fn, static_cast<il::BlockId>(b), i, callee, splice);
+                if (splice.form == Form::Closure && inlinedOwnIcs != nullptr) inlinedOwnIcs->insert(callIc);
                 lateBlock_.resize(fn.blocks.size(), late);
                 count += grows;
+                reserved += splice.reserveSlow;
                 ++inlined;
-                // Block b now ends at the guard; the rest of it is the last
-                // blocks appended, which the loop reaches in turn.
                 break;
             }
         }
-        return inlined;
     }
+    return inlined;
+}
 
-private:
-    static constexpr uint32_t kNone = UINT32_MAX;
-
-    // EXACT CALLS and LITERAL CALLBACKS: bodies copied in with no guard,
-    // because the call names its callee outright.
-    //  - exact: a direct `call` of the program's copy of a self-hosted
-    //    builtin (selfhost_merge.cpp), its operands the callee's parameters
-    //    one for one. Its guard, `is.plain_array`, is the merge's, in front
-    //    of the call.
-    //  - literal: a `call.dynamic` whose callee is a `create.func @T` (or a
-    //    `func.ref @T`) of this same function: a closure of T, whose
-    //    environment is that instruction's operand. What a builtin's
-    //    `$Call(callbackfn, ...)` becomes once the builtin's body is copied
-    //    into the caller that wrote `arr.map(x => x * 2)`.
-    uint32_t unguardedCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst, Form& form) {
-        if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
-        uint32_t target = kNone;
-        if (inst.op == il::Op::Call && inst.callEnvHops == il::Instruction::kNoEnvHops &&
-            inst.calleeIndex < exactCandidate_.size() && exactCandidate_[inst.calleeIndex]) {
-            target = inst.calleeIndex;
-            form = Form::Exact;
-        } else if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2 &&
-                   inst.operands.size() - 2 <= kMaxArgs) {
-            const auto def = literals_.find(inst.operands[0]);
-            if (def == literals_.end() || def->second.first >= literalCandidate_.size() ||
-                !literalCandidate_[def->second.first]) {
-                return kNone;
-            }
-            target = def->second.first;
-            const il::Function& body = originals_[target];
-            if (body.needsEnv && def->second.second == il::kNoValue) return kNone;
-            for (size_t a = 1; a < inst.operands.size(); ++a) {
-                if (inst.operands[a] >= types_.size() || types_[inst.operands[a]] != il::Type::Dynamic) return kNone;
-            }
-            form = Form::Literal;
-        } else {
+// EXACT CALLS and LITERAL CALLBACKS: bodies copied in with no guard,
+// because the call names its callee outright.
+uint32_t Inliner::unguardedCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst, Form& form) {
+    if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
+    uint32_t target = kNone;
+    if (inst.op == il::Op::Call && inst.callEnvHops == il::Instruction::kNoEnvHops &&
+        inst.calleeIndex < exactCandidate_.size() && exactCandidate_[inst.calleeIndex]) {
+        target = inst.calleeIndex;
+        form = Form::Exact;
+    } else if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2 && inst.operands.size() - 2 <= kMaxArgs) {
+        const auto def = literals_.find(inst.operands[0]);
+        if (def == literals_.end() || def->second.first >= literalCandidate_.size() ||
+            !literalCandidate_[def->second.first]) {
             return kNone;
         }
-        const uint32_t origin = originOf(target);
-        if (origin == originOf(fnIdx)) return kNone;
-        size_t depth = 0;
-        for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
-            if (fn.inlineFrames[f - 1].callee == origin) return kNone;
-            ++depth;
-        }
-        return depth >= kMaxDepth ? kNone : target;
-    }
-
-    // The closures this function makes, by value: the function, and the
-    // environment it closed over (kNoValue for a `func.ref`).
-    void noteLiteral(const il::Instruction& inst) {
-        if (inst.result == il::kNoValue) return;
-        if (inst.op == il::Op::CreateFunction) {
-            literals_[inst.result] = {inst.calleeIndex, inst.operands.empty() ? il::kNoValue : inst.operands[0]};
-        } else if (inst.op == il::Op::FunctionRef) {
-            literals_[inst.result] = {inst.calleeIndex, il::kNoValue};
-        }
-    }
-
-    uint32_t eligibleCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst) const {
-        // An accessor site (il.h `directTarget` on PropGet/PropSet) is a call
-        // of its getter with no arguments, or of its setter with the value as
-        // its one, behind its accessor cell instead of a method cache.
-        const bool accessor = (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
-                              inst.directTarget != il::Instruction::kNoDirectTarget;
-        if ((inst.op != il::Op::MethodCall && !accessor) || inst.operands.empty()) return kNone;
-        const uint32_t origin = inst.directTarget;
-        if (origin == il::Instruction::kNoDirectTarget || origin >= candidate_.size()) return kNone;
-        // The body the call would run: the typed entry the site was pointed
-        // at, else the generic function.
-        const uint32_t callee = inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
-        if (callee >= candidate_.size() || !candidate_[callee]) return kNone;
-        if (origin == originOf(fnIdx) || inst.operands.size() - 1 > kMaxArgs) return kNone;
-        if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
-        if (types_[inst.operands[0]] != il::Type::Dynamic) return kNone;
-        const il::Function& body = originals_[callee];
-        const size_t firstSource = body.firstSourceParam();
-        for (size_t a = 1; a < inst.operands.size(); ++a) {
-            const il::ValueId v = inst.operands[a];
-            if (v >= types_.size()) return kNone;
-            const size_t p = firstSource + (a - 1);
-            // An argument past the declared parameters is dropped by the
-            // inlined body; a real call would have evaluated it the same.
-            const il::Type want = p < body.params.size() ? body.params[p].type : il::Type::Dynamic;
-            if (types_[v] != want) return kNone;
-        }
-        // Not into itself, however deep: a recursive method keeps its call.
-        size_t depth = 0;
-        for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
-            if (fn.inlineFrames[f - 1].callee == origin) return kNone;
-            ++depth;
-        }
-        if (depth >= kMaxDepth) return kNone;
-        return callee;
-    }
-
-    // OWN CALLEES. A `method.call` whose key the program stores closures
-    // under (direct_method_table.h, `closureGuesses`) may find its callee in
-    // the receiver's own slot rather than on its prototype: three.js's
-    // `this._onChangeCallback()`, where every Euler holds its own Object3D's
-    // `onRotationChange`. Each receiver's closure is a different object, so
-    // the method cache's DIRECT test never answers for it; what is the same
-    // across them is the function they are closures of. Such a site is
-    //
-    //     B:  f = method.slot.fn recv, <site>     ; the slot way 0 names, or undefined
-    //         g = closure.is f, @T                ; a closure of T, this realm, enterable
-    //         br g, E(), N()
-    //     E:  env = closure.env f                 ; what that closure closed over
-    //         jump T'0                            ; T's body, its __env `env`, `this` recv
-    //     N:  r2 = method.call recv, ...          ; the original call: the next guess,
-    //         jump C(r2)                          ;   or the prototype method's guard
-    //
-    // and T's body runs exactly when the call would have entered T's code
-    // with this receiver as `this` and that closure's environment as __env:
-    // the slot read is the call's own [[Get]] (a data property the shape
-    // fixes), and the test is the direct entry's. Which T: the guesses for
-    // the site, in turn; `next` is the index after the one returned, the
-    // count the miss block N starts from.
-    uint32_t closureCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, const il::Instruction& inst,
-                           uint32_t& next) const {
-        if (!guesses_ || inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
-        const auto it = guesses_->find(inst.icIndex);
-        if (it == guesses_->end()) return kNone;
-        if (inst.operands.size() - 1 > kMaxArgs) return kNone;
-        if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
-        if (types_[inst.operands[0]] != il::Type::Dynamic) return kNone;
+        target = def->second.first;
+        const il::Function& body = originals_[target];
+        if (body.needsEnv && def->second.second == il::kNoValue) return kNone;
         for (size_t a = 1; a < inst.operands.size(); ++a) {
             if (inst.operands[a] >= types_.size() || types_[inst.operands[a]] != il::Type::Dynamic) return kNone;
         }
-        size_t depth = 0;
-        for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) ++depth;
-        if (depth >= kMaxDepth) return kNone;
-        for (size_t k = closureTried_[b]; k < it->second.size(); ++k) {
-            const uint32_t t = it->second[k];
-            if (t >= closureCandidate_.size() || !closureCandidate_[t] || t == originOf(fnIdx)) continue;
-            bool recursive = false;
-            for (uint32_t f = inst.inlineFrame; f != 0 && !recursive; f = fn.inlineFrames[f - 1].parent) {
-                recursive = fn.inlineFrames[f - 1].callee == t;
-            }
-            if (recursive) continue;
-            // A body's parameters past the declared ones are dropped; a
-            // closure body is generic, so each is a dynamic value.
-            next = static_cast<uint32_t>(k + 1);
-            return t;
+        form = Form::Literal;
+    } else {
+        return kNone;
+    }
+    const uint32_t origin = originOf(target);
+    if (origin == originOf(fnIdx)) return kNone;
+    size_t depth = 0;
+    for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
+        if (fn.inlineFrames[f - 1].callee == origin) return kNone;
+        ++depth;
+    }
+    return depth >= kMaxDepth ? kNone : target;
+}
+
+bool Inliner::eligibleMethodTarget(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst,
+                                   uint32_t origin, uint32_t callee) const {
+    if (origin >= candidate_.size() || callee >= candidate_.size() || !candidate_[callee]) return false;
+    if (origin == originOf(fnIdx) || inst.operands.empty() || inst.operands.size() - 1 > kMaxArgs) return false;
+    if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return false;
+    if (inst.operands[0] >= types_.size() || types_[inst.operands[0]] != il::Type::Dynamic) return false;
+    const il::Function& body = originals_[callee];
+    const size_t firstSource = body.firstSourceParam();
+    for (size_t a = 1; a < inst.operands.size(); ++a) {
+        const il::ValueId v = inst.operands[a];
+        if (v >= types_.size()) return false;
+        const size_t p = firstSource + (a - 1);
+        const il::Type want = p < body.params.size() ? body.params[p].type : il::Type::Dynamic;
+        if (types_[v] != want) return false;
+    }
+    size_t depth = 0;
+    for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
+        if (fn.inlineFrames[f - 1].callee == origin) return false;
+        ++depth;
+    }
+    return depth < kMaxDepth;
+}
+
+uint32_t Inliner::eligibleCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst) const {
+    const bool accessor = (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                          inst.directTarget != il::Instruction::kNoDirectTarget;
+    if ((inst.op != il::Op::MethodCall && !accessor) || inst.operands.empty()) return kNone;
+    const uint32_t origin = inst.directTarget;
+    if (origin == il::Instruction::kNoDirectTarget) return kNone;
+    const uint32_t callee = inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
+    return eligibleMethodTarget(fn, fnIdx, inst, origin, callee) ? callee : kNone;
+}
+
+uint32_t Inliner::polyMethodCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, const il::Instruction& inst,
+                                   size_t available, SplicePlan& splice, size_t& grows) const {
+    if (!polyMethods_ || inst.op != il::Op::MethodCall || inst.directTarget != il::Instruction::kNoDirectTarget) {
+        return kNone;
+    }
+    const auto it = polyMethods_->find(inst.icIndex);
+    if (it == polyMethods_->end() || it->second.size() < 2) return kNone;
+    const auto& targets = it->second;
+    const uint32_t k = b < methodTried_.size() ? methodTried_[b] : 0;
+    if (k >= targets.size()) return kNone;
+    // At the first arm, require every arm of the bimorphic site to pass
+    // eligibility and fit together so a 50/50 split never leaves half its
+    // calls behind a guard miss.
+    const size_t start = k == 0 ? 0 : k;
+    size_t total = 0;
+    for (size_t j = start; j < targets.size(); ++j) {
+        const uint32_t t = targets[j];
+        if (!eligibleMethodTarget(fn, fnIdx, inst, originOf(t), t)) return kNone;
+        total += growthOf(t, 0);
+    }
+    if (total > available) {
+        if (trace()) {
+            std::fprintf(stderr, "[inline] %s: no room for bimorphic method site (%zu > %zu)\n", fn.name.c_str(),
+                         total, available);
         }
         return kNone;
     }
+    const uint32_t chosen = targets[k];
+    grows = growthOf(chosen, 0);
+    splice = SplicePlan{Form::Method, k + 1, k + 1 < targets.size(), total - grows};
+    return chosen;
+}
 
-    // Which blocks lie in a loop: the calls a body copied in saves more than
-    // once. A call outside every loop runs once per entry of its function, and
-    // copying a body there costs build time for the price of one call, unless
-    // a loop elsewhere is what enters the function (markEnteredFromLoops).
-    void markLoops(const il::Function& fn) { inLoop_ = loopBlocks(fn); }
-    static std::vector<uint8_t> loopBlocks(const il::Function& fn) {
-        std::vector<uint8_t> in(fn.blocks.size(), 0);
-        const Cfg cfg = buildCfg(fn);
+bool Inliner::eligibleClosureTarget(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst,
+                                    uint32_t target) const {
+    if (inst.op != il::Op::MethodCall || inst.operands.empty() || inst.operands.size() - 1 > kMaxArgs) return false;
+    if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return false;
+    if (inst.operands[0] >= types_.size() || types_[inst.operands[0]] != il::Type::Dynamic) return false;
+    for (size_t a = 1; a < inst.operands.size(); ++a) {
+        if (inst.operands[a] >= types_.size() || types_[inst.operands[a]] != il::Type::Dynamic) return false;
+    }
+    if (target >= closureCandidate_.size() || !closureCandidate_[target] || target == originOf(fnIdx)) return false;
+    size_t depth = 0;
+    for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
+        if (fn.inlineFrames[f - 1].callee == target) return false;
+        ++depth;
+    }
+    return depth < kMaxDepth;
+}
+
+uint32_t Inliner::polyClosureCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, size_t instIdx,
+                                    const il::Instruction& inst, size_t available, SplicePlan& splice,
+                                    size_t& grows) const {
+    if (!polyOwnCallees_ || inst.op != il::Op::MethodCall) return kNone;
+    const auto it = polyOwnCallees_->find(inst.icIndex);
+    if (it == polyOwnCallees_->end() || it->second.size() < 2) return kNone;
+    const auto& targets = it->second;
+    const uint32_t k = b < closureTried_.size() ? closureTried_[b] : 0;
+    if (k >= targets.size()) return kNone;
+    const bool reuseHere = instIdx == 0 && b < closureSlotFn_.size() && closureSlotFn_[b] != il::kNoValue;
+    size_t total = 0;
+    for (size_t j = k; j < targets.size(); ++j) {
+        const uint32_t t = targets[j];
+        if (!eligibleClosureTarget(fn, fnIdx, inst, t)) return kNone;
+        const size_t extra =
+            (j == k ? reuseHere : true) ? kChainedClosureGuardInstructions : kClosureGuardInstructions;
+        total += growthOf(t, extra);
+    }
+    if (total > available) {
+        if (trace()) {
+            std::fprintf(stderr, "[inline] %s: no room for bimorphic closure site (%zu > %zu)\n", fn.name.c_str(),
+                         total, available);
+        }
+        return kNone;
+    }
+    const uint32_t chosen = targets[k];
+    grows = growthOf(chosen, reuseHere ? kChainedClosureGuardInstructions : kClosureGuardInstructions);
+    splice = SplicePlan{Form::Closure, k + 1, k + 1 < targets.size(), total - grows};
+    return chosen;
+}
+
+// OWN CALLEES. A `method.call` whose key the program stores closures under
+// (`closureGuesses` or `ownCallees`) may find its callee in the receiver's own
+// slot rather than on its prototype: three.js's `this._onChangeCallback()`,
+// `PropertyMixer._mixBufferRegion`, `PropertyBinding.setValue`. Each receiver
+// may hold a distinct closure object of the same function T, tested via
+// `method.slot.fn` + `closure.is` and entered with `closure.env`.
+uint32_t Inliner::closureCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, const il::Instruction& inst,
+                                uint32_t& next) const {
+    if (!guesses_ || inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
+    const auto it = guesses_->find(inst.icIndex);
+    if (it == guesses_->end()) return kNone;
+    for (size_t k = closureTried_[b]; k < it->second.size(); ++k) {
+        const uint32_t t = it->second[k];
+        if (!eligibleClosureTarget(fn, fnIdx, inst, t)) continue;
+        next = static_cast<uint32_t>(k + 1);
+        return t;
+    }
+    return kNone;
+}
+
+// Which functions a loop enters by a real call, so that the calls outside
+// their own loops run once per iteration of that loop and are as hot as
+// its calls are.
+void Inliner::markEnteredFromLoops() {
+    enteredFromLoop_.assign(module_.functions.size(), 0);
+    const auto mark = [&](uint32_t f, const il::Function& from) {
+        if (f >= enteredFromLoop_.size()) return;
+        if (!enteredFromLoop_[f] && trace()) {
+            std::fprintf(stderr, "[inline] hot: %s (from a loop in %s)\n", module_.functions[f].name.c_str(),
+                         from.name.c_str());
+        }
+        enteredFromLoop_[f] = 1;
+    };
+    for (size_t g = 0; g < module_.functions.size(); ++g) {
+        const il::Function& fn = module_.functions[g];
+        if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
+        const bool callerSkipsGuarded =
+            fn.isEntryPoint || fn.name == "main" || instructionCount(fn) > kMaxCallerStart;
+        const uint32_t callerOrigin = originOf(static_cast<uint32_t>(g));
+        markLoops(fn);
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
-            if (cfg.rpoIndex[b] == UINT32_MAX) continue;
-            for (il::BlockId h : cfg.succs[b]) {
-                if (!cfg.dominates(h, static_cast<il::BlockId>(b))) continue;
-                for (il::BlockId m : naturalLoop(cfg, h, static_cast<il::BlockId>(b))) in[m] = 1;
-            }
-        }
-        return in;
-    }
-
-    // Which functions a loop enters by a real call, so that the calls outside
-    // their own loops run once per iteration of that loop and are as hot as
-    // its calls are:
-    // - the target of a resolved site in a loop that keeps its call, because
-    //   the target cannot be copied (too big, not self-contained) or is the
-    //   caller itself;
-    // - a method whose own loop calls a method of its own name on something
-    //   else (`updateMatrixWorld` over `children`, `traverse`): a walk down a
-    //   tree, which enters the method once per node. The site resolves to no
-    //   one function, as a tree holds subclasses, so the name is the signal.
-    // Only which calls are copied depends on this; each stays behind its guard.
-    void markEnteredFromLoops() {
-        enteredFromLoop_.assign(module_.functions.size(), 0);
-        const auto mark = [&](uint32_t f, const il::Function& from) {
-            if (!enteredFromLoop_[f] && trace()) {
-                std::fprintf(stderr, "[inline] hot: %s (from a loop in %s)\n", module_.functions[f].name.c_str(),
-                             from.name.c_str());
-            }
-            enteredFromLoop_[f] = 1;
-        };
-        for (size_t g = 0; g < module_.functions.size(); ++g) {
-            const il::Function& fn = module_.functions[g];
-            if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
-            markLoops(fn);
-            for (size_t b = 0; b < fn.blocks.size(); ++b) {
-                if (!inLoop_[b]) continue;
-                for (const auto& inst : fn.blocks[b].instructions) {
-                    const uint32_t origin = inst.directTarget;
-                    if (origin == il::Instruction::kNoDirectTarget) {
-                        if (inst.op == il::Op::MethodCall && fn.needsThis && inst.keyIndex == fn.nameKeyIndex) {
-                            mark(originOf(static_cast<uint32_t>(g)), fn);
+            if (!inLoop_[b]) continue;
+            for (const auto& inst : fn.blocks[b].instructions) {
+                const uint32_t origin = inst.directTarget;
+                if (origin == il::Instruction::kNoDirectTarget) {
+                    if (inst.op != il::Op::MethodCall) continue;
+                    if (fn.needsThis && inst.keyIndex == fn.nameKeyIndex) mark(callerOrigin, fn);
+                    const auto markUninlined = [&](const ClosureGuesses* map, const std::vector<uint8_t>& ok) {
+                        if (!map) return;
+                        const auto it = map->find(inst.icIndex);
+                        if (it == map->end()) return;
+                        for (uint32_t t : it->second) {
+                            const uint32_t to = originOf(t);
+                            if (callerSkipsGuarded || to == callerOrigin || t >= ok.size() || !ok[t]) mark(to, fn);
                         }
-                        continue;
-                    }
-                    const bool site = inst.op == il::Op::MethodCall || inst.op == il::Op::PropGet ||
-                                      inst.op == il::Op::PropSet;
-                    if (!site || origin >= candidate_.size()) continue;
-                    const uint32_t callee =
-                        inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
-                    if (origin == originOf(static_cast<uint32_t>(g)) || callee >= candidate_.size() ||
-                        !candidate_[callee]) {
-                        mark(origin, fn);
-                    }
-                }
-            }
-        }
-    }
-
-    uint32_t originOf(uint32_t f) const {
-        const uint32_t o = module_.functions[f].typedOrigin;
-        return o == il::Function::kNoTypedOrigin ? f : o;
-    }
-
-    il::ValueId fresh(il::Function& fn, il::Type type) {
-        const il::ValueId v = fn.valueCount++;
-        types_.push_back(type);
-        return v;
-    }
-
-    // `closureNext` is 0 for a method or accessor body behind its cache's
-    // test, else the body is the closure guess before guess `closureNext` of
-    // an own-callee site (closureCallee) and is entered behind `closure.is`.
-    void inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calleeIdx, uint32_t closureNext, Form form) {
-        const bool closure = closureNext != 0;
-        const bool unguarded = form == Form::Exact || form == Form::Literal;
-        const il::Function& callee = originals_[calleeIdx];
-        const il::Instruction call = fn.blocks[b].instructions[i];
-        const il::BlockId handler = fn.blocks[b].handler;
-        const il::CopyClass copyClass = fn.blocks[b].copyClass;
-        const uint32_t copyRegion = fn.blocks[b].copyRegion;
-
-        // The frame every copied instruction names.
-        // Frames and the guard name the generic function: its descriptor is
-        // the one a real call's frame reports, and its wrapper is the code
-        // word the site's cache latches (a typed entry is reached only behind
-        // that same test).
-        const uint32_t origin = closure || form == Form::Literal ? calleeIdx
-                                : form == Form::Exact          ? originOf(calleeIdx)
-                                                               : call.directTarget;
-        fn.inlineFrames.push_back(il::Function::InlineFrame{origin, call.span, call.inlineFrame});
-        const uint32_t frame = static_cast<uint32_t>(fn.inlineFrames.size());
-
-        const auto newBlock = [&]() -> il::BlockId {
-            il::Block blk;
-            blk.id = static_cast<il::BlockId>(fn.blocks.size());
-            blk.handler = handler;
-            blk.copyClass = copyClass;
-            blk.copyRegion = copyRegion;
-            fn.blocks.push_back(std::move(blk));
-            slowBlock_.push_back(0);
-            closureTried_.push_back(0);
-            inLoop_.push_back(inLoop_[b]);
-            return fn.blocks.back().id;
-        };
-        const auto callSiteInst = [&](il::Op op) {
-            il::Instruction inst;
-            inst.op = op;
-            inst.span = call.span;
-            inst.inlineFrame = call.inlineFrame;
-            return inst;
-        };
-
-        // C: the rest of B, entered with the call's result.
-        const il::BlockId tail = newBlock();
-        {
-            std::vector<il::Instruction> rest(fn.blocks[b].instructions.begin() + static_cast<std::ptrdiff_t>(i) + 1,
-                                              fn.blocks[b].instructions.end());
-            fn.blocks[b].instructions.resize(i);
-            fn.blocks[tail].instructions = std::move(rest);
-            if (call.result != il::kNoValue) fn.blocks[tail].params.push_back({call.result, il::Type::Dynamic});
-        }
-
-        // S: the original call, unchanged but for the id its result takes.
-        // A closure guess's miss is a call like any other, still open to the
-        // next guess and to the prototype method's body (N, closureCallee).
-        // An unguarded body has none.
-        const il::BlockId slow = unguarded ? il::kNoBlock : newBlock();
-        if (!unguarded) {
-            slowBlock_[slow] = closure ? 0 : 1;
-            if (closure) closureTried_[slow] = closureNext;
-        }
-        if (!unguarded) {
-            il::Instruction again = call;
-            il::Instruction jump = callSiteInst(il::Op::Jump);
-            jump.target.block = tail;
-            if (call.result != il::kNoValue) {
-                again.result = fresh(fn, il::Type::Dynamic);
-                jump.target.args.push_back(again.result);
-            }
-            fn.blocks[slow].instructions.push_back(std::move(again));
-            fn.blocks[slow].instructions.push_back(std::move(jump));
-        }
-
-        // E: a closure body's entry, where its environment is read.
-        const il::BlockId envBlock = closure ? newBlock() : il::kNoBlock;
-
-        // The callee's blocks, numbered after S, and every value it defines.
-        const il::BlockId base = static_cast<il::BlockId>(fn.blocks.size());
-        for (size_t k = 0; k < callee.blocks.size(); ++k) newBlock();
-        // A copied block in one of the callee's loops is in a loop here: a
-        // builtin's body brings its walk, and the callback's call in it is
-        // the call the walk makes per element.
-        {
-            const std::vector<uint8_t> calleeLoops = loopBlocks(callee);
-            for (size_t k = 0; k < callee.blocks.size(); ++k) inLoop_[base + k] |= calleeLoops[k];
-        }
-        // The callee's guarded regions keep their fast/slow identity under
-        // fresh region numbers, so their copies still overlay each other's
-        // frame slots. Inside one of the caller's own copies, every block is
-        // that copy: a block cannot name two regions, and the outer pairing is
-        // the one that is true of all of them.
-        if (copyClass == il::CopyClass::Shared) {
-            uint32_t regions = 0;
-            for (const auto& blk : fn.blocks) {
-                if (blk.copyRegion != il::kNoCopyRegion) regions = std::max(regions, blk.copyRegion + 1);
-            }
-            for (size_t k = 0; k < callee.blocks.size(); ++k) {
-                const il::Block& cb = callee.blocks[k];
-                if (cb.copyRegion == il::kNoCopyRegion) continue;
-                fn.blocks[base + k].copyClass = cb.copyClass;
-                fn.blocks[base + k].copyRegion = regions + cb.copyRegion;
-            }
-        }
-        std::vector<il::ValueId> vm(callee.valueCount, il::kNoValue);
-
-        // Parameters: `this`, then the source parameters in order; one the
-        // call does not pass is `undefined`, as the callee's frame holds it.
-        il::ValueId undef = il::kNoValue;
-        const auto undefinedAtHead = [&]() {
-            if (undef == il::kNoValue) {
-                il::Instruction u = callSiteInst(il::Op::ConstUndefined);
-                u.type = il::Type::Dynamic;
-                u.result = undef = fresh(fn, il::Type::Dynamic);
-                fn.blocks[b].instructions.push_back(std::move(u));
-            }
-            return undef;
-        };
-        const size_t firstSource = callee.firstSourceParam();
-        il::ValueId envValue = il::kNoValue;
-        if (form == Form::Exact) {
-            // A direct call's operands are its callee's parameters.
-            for (size_t p = 0; p < callee.params.size(); ++p) vm[p] = call.operands[p];
-        } else {
-            // A call.dynamic's callee and `this` come before its arguments.
-            const size_t self = form == Form::Literal ? 1 : 0;
-            if (callee.needsThis) vm[firstSource - 1] = call.operands[self];
-            if (closure && callee.needsEnv) vm[0] = envValue = fresh(fn, il::Type::Dynamic);
-            if (form == Form::Literal && callee.needsEnv) vm[0] = literals_.at(call.operands[0]).second;
-            for (size_t p = firstSource; p < callee.params.size(); ++p) {
-                const size_t arg = self + 1 + (p - firstSource);
-                vm[p] = arg < call.operands.size() ? call.operands[arg] : undefinedAtHead();
-            }
-        }
-        for (const auto& cb : callee.blocks) {
-            for (const auto& prm : cb.params) vm[prm.id] = fresh(fn, prm.type);
-            for (const auto& inst : cb.instructions) {
-                if (inst.result != il::kNoValue) vm[inst.result] = fresh(fn, inst.type);
-            }
-        }
-        const auto map = [&](il::ValueId v) { return v < vm.size() ? vm[v] : il::kNoValue; };
-        const auto mapTarget = [&](il::BlockTarget t) {
-            if (t.block != il::kNoBlock) t.block = base + t.block;
-            for (auto& a : t.args) a = map(a);
-            return t;
-        };
-
-        // B ends in the guard: the method cache's, or an accessor site's cell,
-        // or for a closure guess the slot's closure's code word; an unguarded
-        // body is entered outright.
-        if (unguarded) {
-            il::Instruction enter = callSiteInst(il::Op::Jump);
-            enter.target.block = base;
-            fn.blocks[b].instructions.push_back(std::move(enter));
-        } else if (closure) {
-            il::Instruction slotFn = callSiteInst(il::Op::MethodSlotFn);
-            slotFn.type = il::Type::Dynamic;
-            slotFn.result = fresh(fn, il::Type::Dynamic);
-            slotFn.operands = {call.operands[0]};
-            slotFn.icIndex = call.icIndex;
-            slotFn.keyIndex = call.keyIndex;
-            il::Instruction is = callSiteInst(il::Op::ClosureIs);
-            is.type = il::Type::Bool;
-            is.result = fresh(fn, il::Type::Bool);
-            is.operands = {slotFn.result};
-            is.calleeIndex = calleeIdx;
-            il::Instruction br = callSiteInst(il::Op::Branch);
-            br.operands = {is.result};
-            br.target.block = envBlock;
-            br.elseTarget.block = slow;
-            if (envValue != il::kNoValue) {
-                il::Instruction env = callSiteInst(il::Op::ClosureEnv);
-                env.type = il::Type::Dynamic;
-                env.result = envValue;
-                env.operands = {slotFn.result};
-                fn.blocks[envBlock].instructions.push_back(std::move(env));
-            }
-            il::Instruction enter = callSiteInst(il::Op::Jump);
-            enter.target.block = base;
-            fn.blocks[envBlock].instructions.push_back(std::move(enter));
-            fn.blocks[b].instructions.push_back(std::move(slotFn));
-            fn.blocks[b].instructions.push_back(std::move(is));
-            fn.blocks[b].instructions.push_back(std::move(br));
-        } else {
-            const bool accessor = call.op != il::Op::MethodCall;
-            il::Instruction guard = callSiteInst(accessor ? il::Op::AccessorIcIs : il::Op::MethodIcIs);
-            guard.type = il::Type::Bool;
-            guard.result = fresh(fn, il::Type::Bool);
-            guard.operands = {call.operands[0]};
-            if (accessor) {
-                guard.staticCellIndex = call.staticCellIndex;
-            } else {
-                guard.icIndex = call.icIndex;
-            }
-            guard.keyIndex = call.keyIndex;
-            guard.calleeIndex = origin;
-            il::Instruction br = callSiteInst(il::Op::Branch);
-            br.operands = {guard.result};
-            br.target.block = base;
-            br.elseTarget.block = slow;
-            fn.blocks[b].instructions.push_back(std::move(guard));
-            fn.blocks[b].instructions.push_back(std::move(br));
-        }
-
-        for (size_t k = 0; k < callee.blocks.size(); ++k) {
-            const il::Block& cb = callee.blocks[k];
-            il::Block& out = fn.blocks[base + k];
-            for (const auto& prm : cb.params) out.params.push_back({vm[prm.id], prm.type});
-            for (const auto& src : cb.instructions) {
-                if (src.op == il::Op::Ret) {
-                    il::Instruction jump = src;
-                    jump.op = il::Op::Jump;
-                    jump.type = il::Type::Void;
-                    jump.operands.clear();
-                    jump.inlineFrame = frame;
-                    jump.target = il::BlockTarget{tail, {}};
-                    jump.elseTarget = il::BlockTarget{};
-                    if (call.result != il::kNoValue) {
-                        il::ValueId v = (!src.operands.empty() && src.operands[0] != il::kNoValue)
-                                            ? map(src.operands[0])
-                                            : il::kNoValue;
-                        if (v == il::kNoValue) {
-                            il::Instruction u = src;
-                            u.op = il::Op::ConstUndefined;
-                            u.type = il::Type::Dynamic;
-                            u.operands.clear();
-                            u.inlineFrame = frame;
-                            u.result = v = fresh(fn, il::Type::Dynamic);
-                            out.instructions.push_back(std::move(u));
-                        }
-                        jump.target.args.push_back(v);
-                    }
-                    out.instructions.push_back(std::move(jump));
+                    };
+                    markUninlined(polyMethods_, candidate_);
+                    markUninlined(polyOwnCallees_, closureCandidate_);
+                    markUninlined(guesses_, closureCandidate_);
                     continue;
                 }
-                il::Instruction inst = src;
-                inst.inlineFrame = frame;
-                if (inst.result != il::kNoValue) inst.result = vm[src.result];
-                for (auto& o : inst.operands) o = map(o);
-                noteLiteral(inst);
-                if (inst.op == il::Op::Jump || inst.op == il::Op::Branch) {
-                    inst.target = mapTarget(src.target);
-                    if (inst.op == il::Op::Branch) inst.elseTarget = mapTarget(src.elseTarget);
+                const bool site =
+                    inst.op == il::Op::MethodCall || inst.op == il::Op::PropGet || inst.op == il::Op::PropSet;
+                if (!site || origin >= candidate_.size()) continue;
+                const uint32_t callee = inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
+                if (callerSkipsGuarded || origin == callerOrigin || callee >= candidate_.size() || !candidate_[callee]) {
+                    mark(origin, fn);
                 }
-                out.instructions.push_back(std::move(inst));
             }
         }
     }
+}
 
-    // What the closure guard adds to B and E beyond a method guard's two.
-    static constexpr size_t kClosureGuardInstructions = 3;
-
-    il::Module& module_;
-    const ClosureGuesses* guesses_ = nullptr;
-    std::vector<il::Function> originals_;
-    // The blocks holding a guard's original call, whose call stays a call.
-    std::vector<uint8_t> slowBlock_;
-    std::vector<uint8_t> lateBlock_;
-    const ColdBlocks* cold_ = nullptr;
-    std::vector<uint8_t> inLoop_;
-    std::vector<uint8_t> candidate_;
-    std::vector<uint8_t> closureCandidate_;
-    std::vector<uint8_t> exactCandidate_;
-    std::vector<uint8_t> literalCandidate_;
-    std::unordered_map<il::ValueId, std::pair<uint32_t, il::ValueId>> literals_;
-    // Per block: how many of its first call's closure guesses an earlier
-    // guard already took (the miss block of guess k holds the call with k+1).
-    std::vector<uint32_t> closureTried_;
-    std::vector<uint8_t> enteredFromLoop_;
-    std::vector<il::Type> types_;
-};
-
-}  // namespace
+}  // namespace inline_guarded_detail
 
 bool inlineGuardedEnabled(const InlineGuardedOptions& options) { return options.on; }
 
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector<uint32_t>* changed,
-                          const ClosureGuesses* guesses, const ColdBlocks* cold) {
-    Inliner inliner(module, guesses, cold);
+                          const ClosureGuesses* guesses, const ColdBlocks* cold, const ClosureGuesses* polyMethods,
+                          const ClosureGuesses* polyOwnCallees, std::unordered_set<uint32_t>* inlinedOwnIcs) {
+    inline_guarded_detail::Inliner inliner(module, guesses, cold, polyMethods, polyOwnCallees);
     bool any = false;
-    // BRONZE_INLINE_DUMP=<name>: the IL of the function so named, after
-    // inlining (a diagnostic, like BRONZE_INLINE_GUARDED_TRACE).
     const char* dump = std::getenv("BRONZE_INLINE_DUMP");
     for (size_t f = 0; f < module.functions.size(); ++f) {
-        // The caller as it stood: a copy the verifier refuses is undone.
         il::Function before = module.functions[f];
-        if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;
+        std::unordered_set<uint32_t> localOwnIcs;
+        if (inliner.inlineInto(static_cast<uint32_t>(f), inlinedOwnIcs ? &localOwnIcs : nullptr) == 0) continue;
         // A guessed callee can be one this site never calls (a profile that
         // is stale or wrong names it), and its body copied over this site's
         // arguments can hold an operation whose certificate they contradict:
@@ -892,6 +597,7 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
             module.functions[f] = std::move(before);
             continue;
         }
+        if (inlinedOwnIcs) inlinedOwnIcs->insert(localOwnIcs.begin(), localOwnIcs.end());
         any = true;
         if (dump && module.functions[f].name == dump) {
             il::Module one;
@@ -903,22 +609,6 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
     }
     (void)diags;
     return any;
-}
-
-void foldInlinedCallers(il::Module& module, const std::vector<uint32_t>& changed) {
-    for (uint32_t f : changed) {
-        il::Function folded = module.functions[f];
-        if (foldTypedEntry(folded, &module) == 0) continue;
-        // A forwarded block parameter can leave a value read in a block
-        // numbered above its definition's; dominance itself still holds, so
-        // the order is what is repaired.
-        if (!dominanceHolds(folded)) {
-            std::vector<uint8_t> built;
-            orderAfterDominators(folded, built);
-        }
-        if (!dominanceHolds(folded)) continue;
-        module.functions[f] = std::move(folded);
-    }
 }
 
 }  // namespace bronze::lower

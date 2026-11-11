@@ -94,7 +94,10 @@ public:
         const auto it = plan_.shapesByIc.find(inst.icIndex);
         if (it == plan_.shapesByIc.end()) return;
         const std::string* shape = it->second.dominant(kDominantPercent);
-        if (shape == nullptr) return;
+        if (shape == nullptr) {
+            claimPolyFamily(inst, it->second);
+            return;
+        }
         std::vector<std::string_view> keys;
         bool complete = false;
         const std::string& key = mod_.keyConstants[inst.keyIndex];
@@ -126,8 +129,9 @@ public:
         if (claimedIcs_.insert(inst.icIndex).second) stats_.shapeExecutions += it->second.total;
         uint32_t lo = 0, span = 0;
         // A family claims position i at slot i, which a shape whose capacity
-        // splits its keys earlier never has (class_family.cpp).
-        if (!write && complete && slot == index && familyOf(keys, slot, inst.keyIndex, &lo, &span)) {
+        // splits its keys earlier never has (class_family.cpp). For a write,
+        // every family in the range must also declare the slot writable.
+        if (complete && slot == index && familyOf(keys, inlineSlots, slot, inst.keyIndex, write, &lo, &span)) {
             inst.staticCellIndex = 0;
             inst.familyLo = lo;
             inst.familySpan = span;
@@ -209,6 +213,8 @@ public:
         // dictionary, holds no way and goes to the stub.
         uint32_t significant = 0, plain = 0;
         bool lacking = false;
+        bool allInFamily =
+            inst.staticSlot != il::Instruction::kNoStaticSlot && inst.familyLo != il::Instruction::kNoFamily;
         uint64_t ownReads = 0, lackingReads = 0;
         std::vector<std::string_view> keys;
         for (const auto& [name, count] : names.counts) {
@@ -216,9 +222,23 @@ public:
             bool complete = false;
             if (name == "*other*") {
                 if (major) return;
+                if (count != 0) allInFamily = false;
                 continue;
             }
-            if (!shapeKeys(name, keys, complete)) continue;
+            uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+            if (!shapeKeys(name, keys, complete, &inlineSlots)) {
+                if (count != 0) allInFamily = false;
+                continue;
+            }
+            if (allInFamily && count != 0) {
+                uint32_t shapeLo = 0, shapeSpan = 0;
+                if (!complete ||
+                    !familyOf(keys, inlineSlots, inst.staticSlot, inst.keyIndex, /*write=*/false, &shapeLo,
+                              &shapeSpan) ||
+                    shapeLo < inst.familyLo || shapeLo + shapeSpan > inst.familyLo + inst.familySpan) {
+                    allInFamily = false;
+                }
+            }
             ++plain;
             if (!major) continue;
             if (++significant > 4) return;
@@ -227,7 +247,9 @@ public:
             if (complete && !has) lacking = true;
             (complete && !has ? lackingReads : ownReads) += count;
         }
-        if (significant == 0 || (plain == 1 && inst.staticSlot != il::Instruction::kNoStaticSlot)) return;
+        if (significant == 0 || allInFamily || (plain == 1 && inst.staticSlot != il::Instruction::kNoStaticSlot)) {
+            return;
+        }
         uint8_t chain = static_cast<uint8_t>(std::min<uint32_t>(plain, 4));
         const auto rt = plan_.readResultsByIc.find(inst.icIndex);
         if (lacking && rt != plan_.readResultsByIc.end() && rt->second.undefineds < rt->second.total) {
@@ -266,16 +288,76 @@ public:
     }
 
 private:
-    bool familyOf(const std::vector<std::string_view>& keys, uint32_t slot, uint32_t keyIndex, uint32_t* lo,
-                  uint32_t* span) const {
-        std::vector<uint32_t> slots;
-        slots.reserve(keys.size());
-        for (std::string_view k : keys) {
-            const auto it = keyIndex_.find(std::string(k));
-            if (it == keyIndex_.end()) return false;
-            slots.push_back(it->second);
+    // A polymorphic site whose major shapes belong to one class-family range
+    // that agrees on the slot (and writability, for a store): one range test
+    // covers every subclass in `[lo, hi]` without pinning a single shape.
+    void claimPolyFamily(il::Instruction& inst, const NameCounts& names) {
+        if (names.total < kMinExecutions || mod_.classFamilies.empty()) return;
+        const bool write = inst.op == il::Op::PropSet;
+        const std::string& key = mod_.keyConstants[inst.keyIndex];
+        uint32_t commonSlot = kNone;
+        uint32_t lo = kNone, hi = 0;
+        uint64_t covered = 0;
+        std::vector<std::string_view> keys;
+        for (const auto& [name, count] : names.counts) {
+            if (count == 0 || count * 100 < names.total) continue;
+            if (name == "*other*") return;
+            bool complete = false;
+            uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+            if (!shapeKeys(name, keys, complete, &inlineSlots) || !complete) return;
+            uint32_t index = kNone;
+            bool prototypeLike = false;
+            for (uint32_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) index = index == kNone ? i : kNone - 1;
+                if (keys[i] == "constructor") prototypeLike = true;
+            }
+            if (index >= kNone - 1 || (write && prototypeLike)) return;
+            uint32_t slot = index;
+            if (index >= inlineSlots) slot = BRONZE_ABI_OBJ_OVERFLOW_SLOT + (index - inlineSlots);
+            if (slot != index) return;
+            if (commonSlot == kNone) {
+                commonSlot = slot;
+            } else if (slot != commonSlot) {
+                return;
+            }
+            uint32_t shapeLo = 0, shapeSpan = 0;
+            if (!familyOf(keys, inlineSlots, slot, inst.keyIndex, write, &shapeLo, &shapeSpan)) return;
+            lo = std::min(lo, shapeLo);
+            hi = std::max(hi, shapeLo + shapeSpan);
+            covered += count;
         }
-        return wpo::familyClaimFor(mod_, slots, slot, keyIndex, /*write=*/false, lo, span);
+        if (commonSlot == kNone || lo > hi || covered * 100 < names.total * kDominantPercent) return;
+        for (uint32_t c = lo; c <= hi; ++c) {
+            const auto& fields = mod_.classFamilies[c].fields;
+            if (commonSlot >= fields.size() || fields[commonSlot].keyIndex != inst.keyIndex ||
+                (write && !fields[commonSlot].writable)) {
+                return;
+            }
+        }
+        inst.staticSlot = commonSlot;
+        inst.staticSlotGuessed = true;
+        inst.staticCellIndex = 0;
+        inst.familyLo = lo;
+        inst.familySpan = hi - lo;
+        ++stats_.shapeFamily;
+        if (claimedIcs_.insert(inst.icIndex).second) stats_.shapeExecutions += names.total;
+    }
+
+    bool familyOf(const std::vector<std::string_view>& keys, uint32_t inlineSlots, uint32_t slot, uint32_t keyIndex,
+                  bool write, uint32_t* lo, uint32_t* span) const {
+        // When a shape's inline capacity is below the overflow split, its
+        // overflow keys jump to `BRONZE_ABI_OBJ_OVERFLOW_SLOT`, leaving slots
+        // `inlineSlots .. BRONZE_ABI_OBJ_OVERFLOW_SLOT - 1` empty
+        // (`ownNodesBySlot` in class_family.cpp).
+        const size_t prefix =
+            inlineSlots < BRONZE_ABI_OBJ_OVERFLOW_SLOT ? std::min<size_t>(keys.size(), inlineSlots) : keys.size();
+        std::vector<uint32_t> slots;
+        slots.reserve(prefix);
+        for (size_t i = 0; i < prefix; ++i) {
+            const auto it = keyIndex_.find(std::string(keys[i]));
+            slots.push_back(it == keyIndex_.end() ? kNone : it->second);
+        }
+        return wpo::familyClaimFor(mod_, slots, slot, keyIndex, write, lo, span);
     }
 
     il::Module& mod_;
@@ -293,6 +375,30 @@ uint32_t calleeOf(const FeedbackPlan& plan, const NameCounts& names) {
     if (name == nullptr) return kNone;
     const auto it = plan.callees.find(*name);
     return it == plan.callees.end() ? kNone : it->second;
+}
+
+// Two distinct compiled callees that together account for at least
+// `kDominantPercent` of `names`, ordered more frequent first.
+bool bimorphicCallees(const FeedbackPlan& plan, const NameCounts& names, uint32_t (&out)[2]) {
+    if (names.total < kMinExecutions) return false;
+    std::pair<uint64_t, const std::string*> top[2] = {{0, nullptr}, {0, nullptr}};
+    for (const auto& [name, count] : names.counts) {
+        if (count == 0 || name == "*other*") continue;
+        if (count > top[0].first) {
+            top[1] = top[0];
+            top[0] = {count, &name};
+        } else if (count > top[1].first) {
+            top[1] = {count, &name};
+        }
+    }
+    if (top[0].second == nullptr || top[1].second == nullptr) return false;
+    if ((top[0].first + top[1].first) * 100 < names.total * kDominantPercent) return false;
+    const auto c0 = plan.callees.find(*top[0].second);
+    const auto c1 = plan.callees.find(*top[1].second);
+    if (c0 == plan.callees.end() || c1 == plan.callees.end() || c0->second == c1->second) return false;
+    out[0] = c0->second;
+    out[1] = c1->second;
+    return true;
 }
 
 // Where a method site's receivers held its key, from the shapes the run saw
@@ -321,6 +427,43 @@ KeyHome methodKeyHome(const FeedbackPlan& plan, uint32_t ic, const std::string& 
     return all_lack ? KeyHome::Inherited : KeyHome::Unknown;
 }
 
+// For a bimorphic site, both guards must use the same dispatch form: either
+// every major receiver shape is plain and holds the key as its own (AllOwn ->
+// slot closure guards), or every major receiver shape is plain and lacks it
+// (AllInherited / InheritedOrTruncated -> method-cache direct guards). A site
+// mixing own and inherited receivers, or non-plain receivers, takes neither.
+enum class PolyShapeHome { NoShapes, AllInherited, InheritedOrTruncated, AllOwn, Mixed };
+
+PolyShapeHome polyMethodShapeHome(const FeedbackPlan& plan, uint32_t ic, const std::string& key) {
+    const auto it = plan.methodShapesByIc.find(ic);
+    if (it == plan.methodShapesByIc.end() || it->second.total == 0) return PolyShapeHome::NoShapes;
+    bool anyMajor = false;
+    bool anyOwn = false;
+    bool allOwn = true;
+    bool allCompleteLack = true;
+    std::vector<std::string_view> keys;
+    for (const auto& [name, count] : it->second.counts) {
+        if (count * 100 < it->second.total) continue;
+        anyMajor = true;
+        bool complete = false;
+        if (name == "*other*" || !shapeKeys(name, keys, complete)) return PolyShapeHome::Mixed;
+        bool has = false;
+        for (std::string_view k : keys) has = has || k == key;
+        if (has) {
+            anyOwn = true;
+            allCompleteLack = false;
+            if (!complete) allOwn = false;
+        } else {
+            allOwn = false;
+            if (!complete) allCompleteLack = false;
+        }
+    }
+    if (!anyMajor) return PolyShapeHome::NoShapes;
+    if (allOwn) return PolyShapeHome::AllOwn;
+    if (anyOwn) return PolyShapeHome::Mixed;
+    return allCompleteLack ? PolyShapeHome::AllInherited : PolyShapeHome::InheritedOrTruncated;
+}
+
 // Whether the run saw a method site meet two or more plain receiver shapes,
 // each at least 1% of its executions.
 bool polyReceivers(const FeedbackPlan& plan, uint32_t ic) {
@@ -335,10 +478,24 @@ bool polyReceivers(const FeedbackPlan& plan, uint32_t ic) {
     return n >= 2;
 }
 
+bool fitsDirectMethod(const il::Module& mod, const il::Instruction& inst, uint32_t target) {
+    if (target >= mod.functions.size()) return false;
+    const il::Function& callee = mod.functions[target];
+    const size_t argc = inst.operands.size() - 1;
+    bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam && !callee.isExternal;
+    const size_t base = callee.firstSourceParam();
+    for (size_t i = argc; fits && i < callee.callerParamCount(); ++i) {
+        if (callee.params[i + base].type != il::Type::Dynamic) fits = false;
+    }
+    return fits;
+}
+
 }  // namespace
 
 void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::unordered_map<uint32_t, uint32_t>& ownCallees,
-                                FeedbackApplyStats* stats) {
+                                FeedbackApplyStats* stats,
+                                std::unordered_map<uint32_t, std::vector<uint32_t>>* polyMethods,
+                                std::unordered_map<uint32_t, std::vector<uint32_t>>* polyOwnCallees) {
     std::unordered_set<uint32_t> planned;
     for (il::Function& fn : mod.functions) {
         for (il::Block& block : fn.blocks) {
@@ -364,18 +521,37 @@ void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::
                 const KeyHome home = inst.keyIndex < mod.keyConstants.size()
                                          ? methodKeyHome(plan, inst.icIndex, mod.keyConstants[inst.keyIndex])
                                          : KeyHome::Unknown;
+                const bool predicted = ownCallees.count(inst.icIndex) != 0;
+                const bool own_hint = (inst.immI32 & il::Instruction::kMethodOwnCallee) != 0;
                 const uint32_t target = calleeOf(plan, it->second);
                 if (target == kNone) {
                     // Receivers that hold the key in an own slot, with no one
                     // closure in it: the SLOT form is still dispatched at the
                     // site, entering whichever closure the slot holds.
-                    if (home == KeyHome::Own && (inst.immI32 & il::Instruction::kMethodOwnCallee) == 0) {
+                    if (home == KeyHome::Own && !own_hint) {
                         inst.immI32 |= il::Instruction::kMethodOwnCallee;
                         if (stats) ++stats->ownSlotSites;
                     }
+                    uint32_t pair[2];
+                    if (bimorphicCallees(plan, it->second, pair) && inst.keyIndex < mod.keyConstants.size()) {
+                        const PolyShapeHome polyHome =
+                            polyMethodShapeHome(plan, inst.icIndex, mod.keyConstants[inst.keyIndex]);
+                        if (polyHome == PolyShapeHome::AllOwn) {
+                            ownCallees.erase(inst.icIndex);
+                            if (polyOwnCallees) (*polyOwnCallees)[inst.icIndex] = {pair[0], pair[1]};
+                        } else if (polyHome == PolyShapeHome::AllInherited ||
+                                   ((polyHome == PolyShapeHome::InheritedOrTruncated ||
+                                     polyHome == PolyShapeHome::NoShapes) &&
+                                    !predicted && !own_hint)) {
+                            if (fitsDirectMethod(mod, inst, pair[0]) && fitsDirectMethod(mod, inst, pair[1])) {
+                                ownCallees.erase(inst.icIndex);
+                                inst.immI32 &= ~il::Instruction::kMethodOwnCallee;
+                                if (polyMethods) (*polyMethods)[inst.icIndex] = {pair[0], pair[1]};
+                            }
+                        }
+                    }
                     continue;
                 }
-                const bool predicted = ownCallees.count(inst.icIndex) != 0;
                 // The run's receivers held the callee in an own slot (a
                 // factory's returned literal, WebGLProperties' `get`): the
                 // method cache latches the SLOT form there, which no direct
@@ -392,7 +568,6 @@ void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::
                 // A site the prediction gave an own-slot callee, or marked as
                 // one whose key some object writes as its own, keeps that
                 // unless every receiver the run saw inherited the key.
-                const bool own_hint = (inst.immI32 & il::Instruction::kMethodOwnCallee) != 0;
                 if ((predicted || own_hint) && home != KeyHome::Inherited) continue;
                 // The terms of a whole-program direct target (wpo/stamp.cpp,
                 // planDirect): an entry a fixed operand list can fill. The
@@ -401,14 +576,7 @@ void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::
                 // Arguments past the parameters are dropped by the direct
                 // edge: with no `arguments` object and no rest parameter the
                 // callee cannot observe them, and they are evaluated already.
-                const il::Function& callee = mod.functions[target];
-                const size_t argc = inst.operands.size() - 1;
-                bool fits = !callee.needsEnv && !callee.needsArguments && !callee.hasRestParam && !callee.isExternal;
-                const size_t base = callee.firstSourceParam();
-                for (size_t i = argc; fits && i < callee.callerParamCount(); ++i) {
-                    if (callee.params[i + base].type != il::Type::Dynamic) fits = false;
-                }
-                if (!fits) {
+                if (!fitsDirectMethod(mod, inst, target)) {
                     if (stats) ++stats->methodRefused;
                     continue;
                 }

@@ -1,5 +1,7 @@
-// The WRITE half of the property path: `o.k = v` and `o[i] = v`, plus the three
-// DEFINITION forms a class body and an object literal lower to.
+// The named WRITE half of the property path (`o.k = v` and `super.k = v`),
+// plus the method and accessor DEFINITION forms a class body and an object
+// literal lower to; computed element writes (`o[i] = v`) live in
+// rt_elem_write.cpp.
 //
 // The seam is rt_prop_primitive.cpp's (a receiver kind, not a line count) read
 // from the other side: a write asks whether the receiver can hold the property
@@ -119,7 +121,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
     Value objVal(objBits);
     Value valVal(valBits);
-    InlineCache* ic = rtAsCache(icEntry);
+    InlineCacheSite* site = rtAsCacheSite(icEntry);
+    InlineCache* ic = nullptr;
     // Writing a property of null or undefined is the same TypeError as
     // reading one (ECMA-262 7.3.4), and discarding the write is worse than
     // reading `undefined`: the program believes it stored something.
@@ -152,19 +155,29 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // numeric keys are elements (10.4.5.5), never slots, and an entry filled by
     // a plain object sharing the view's root shape could otherwise answer a
     // `v[0]` store with a slot write. Its arm below sorts the key first.
-    // Past the site's one way, the thread's (shape, key) table (rt_prop_mega.h);
-    // an empty way installs instead. The RELATCH-th table answer the set stub
-    // counts comes here and skips the table, so way 0 refills (bronze_abi_layout.h).
+    // Past the site's BRONZE_ABI_IC_SET_WAYS ways, a full site probes the
+    // thread's (shape, key) table (rt_prop_mega.h); a site with an empty way
+    // installs directly into the site instead. The RELATCH-th table answer the
+    // set stub counts comes here and skips the table, so MRU insertion shifts
+    // the active shape into way 0 (bronze_abi_layout.h).
     const Shape* missShape = nullptr;
-    if (ic && HeapKind::carriesShape(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
+    if (site && HeapKind::carriesShape(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
         const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
-        if (ic->isRealShape() && ic->cached_shape != shape) {
-            uint64_t& tableAnswers = icEntry[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD];
-            InlineCache* mega = tableAnswers < BRONZE_ABI_IC_SET_MEGA_RELATCH ? rtMegaPropSetProbe(shape, keyIndex) : nullptr;
-            if (mega) {
-                ic = mega;
+        ic = site->findForSet(shape);
+        if (!ic) {
+            if (site->ways[BRONZE_ABI_IC_SET_WAYS - 1].isRealShape()) {
+                uint64_t& tableAnswers = icEntry[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD];
+                InlineCache* mega = tableAnswers < BRONZE_ABI_IC_SET_MEGA_RELATCH
+                                        ? rtMegaPropSetProbe(shape, keyIndex)
+                                        : nullptr;
+                if (mega) {
+                    ++tableAnswers;
+                    ic = mega;
+                } else {
+                    tableAnswers = 0;
+                    missShape = shape;
+                }
             } else {
-                tableAnswers = 0;
                 missShape = shape;
             }
         }
@@ -211,17 +224,17 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         }
     }
 
-    // Whatever the full store below installs in the site's way 0 for the
+    // Whatever the full store below installs in the site's write ways for the
     // shape the receiver had, recorded on every way out (a setter that throws
     // included: the entry is the site's, whatever the call did).
     struct MegaSetFill {
-        const InlineCache* way0;
+        const InlineCacheSite* site;
         const Shape* shape;
         uint32_t key;
         ~MegaSetFill() {
-            if (shape) rtMegaPropSetFill(way0, shape, key);
+            if (shape) rtMegaPropSetFill(site, shape, key);
         }
-    } megaFill{rtAsCache(icEntry), missShape, keyIndex};
+    } megaFill{site, missShape, keyIndex};
 
     const KeyInfo& ki = rtKeyInfo(keyIndex);
     const std::string& keyStr = rtKeyString(keyIndex);
@@ -370,9 +383,10 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     Rooted<Value> key(Value::fromString(keyHeader));
     Rooted<Value> val(valVal);
     SetRefusal refusal = SetRefusal::None;
-    objVal.asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, ic,
+    objVal.asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr,
                                              /*enumerable=*/true, /*defineOwn=*/false,
-                                             /*receiver=*/nullptr, &refusal);
+                                             /*receiver=*/nullptr, &refusal, /*writable=*/true,
+                                             /*configurable=*/true, site);
     rtReportSetRefusal(refusal, strict, keyStr);
 }
 
@@ -648,350 +662,6 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     }
     Rooted<Value> objRoot{objVal};
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
-}
-
-void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
-    recordElemCall("bronze_elem_set", objBits, idxBits);
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled) && !Value(idxBits).isObject()) {
-        // Object keys are skipped for elem_get's reason: ToPropertyKey runs
-        // user code and the helper re-enters itself with the primitive.
-        censusRecordAccess(CensusKind::ElemSet, objBits, /*keyIndex=*/0xFFFFFFFFu, idxBits,
-                           /*siteId=*/nullptr, BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true,
-                           valBits);
-    }
-    Value objVal(objBits);
-
-    // 7.1.19 ToPropertyKey for an OBJECT key, at the entry and nowhere below,
-    // for the reason `bronze_elem_get` does it here: the key's `toString` is
-    // user code, and every branch past this point holds a raw receiver header
-    // across the key conversion. The receiver AND the value are rooted, because
-    // the value is just as movable as the receiver and is not touched again
-    // until the write itself.
-    if (Value(idxBits).isObject()) {
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> valRoot{Value(valBits)};
-        Rooted<Value> keyRoot{Value(idxBits)};
-        keyRoot.set(rtToPropertyKey(keyRoot));
-        bronze_elem_set(objRoot.get().rawBits(), keyRoot.get().rawBits(),
-                        valRoot.get().rawBits(), strict);
-        return;
-    }
-
-    // Fast path: numeric index write on an Array or TypedArray without side-effects.
-    if (objVal.isObject() && idxBits <= kNumberMaxBits) {
-        const double d = std::bit_cast<double>(idxBits);
-        const uint32_t idx = static_cast<uint32_t>(d);
-        if (d >= 0.0 && static_cast<double>(idx) == d && d <= 4294967294.0) {
-            HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-            if (hdr->flags == HeapKind::Array) {
-                auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
-                // A hole is no own element, so a store into one asks the chain
-                // (rtArrayIndexSet below) unless the hazard says no chain can
-                // answer (object.h). So may an append at `length`: hazard clear,
-                // extensible, in block = setElem's arm (branch_on_array_store).
-                const bool clear = rtTls()->array_index_hazard == 0;
-                if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject() &&
-                    (clear || !arr->elementsKeepingNumbers()[idx].isHole())) {
-                    // In bounds, so NUMBERS survives a Number (runtime/array.h).
-                    if (valBits > kNumberMaxBits) arr->forgetNumbers();
-                    arr->elementsKeepingNumbers()[idx] = Value(valBits);
-                    return;
-                }
-                if (clear && idx == arr->length && arr->head_offset + idx < arr->capacity &&
-                    !arr->properties.isObject()) {
-                    return arr->setElem(rtHeap(), idx, Value(valBits));
-                }
-            } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {
-                auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-                // A NUMBER into a BIGINT view is the one store that throws
-                // (7.1.13), so this fast path — whose whole premise is that a
-                // Number needs no conversion — is not for those two kinds.
-                if (isBigIntElementKind(view->elementKind())) {
-                    Rooted<Value> viewRoot{objVal};
-                    rtTypedArraySetElement(viewRoot, idx, Value(valBits));
-                    return;
-                }
-                const double num = std::bit_cast<double>(valBits);
-                if (idx < view->length) {
-                    view->set(idx, num);
-                }
-                return;  // out-of-bounds typed-array writes are discarded, per spec —
-                         // including a view whose buffer was transferred or shrunk
-                         // away, whose window closeOrReopenViews zeroed
-            }
-        }
-    }
-
-    // The computed-STORE cache (elem_ic.h). Asked here — after the array and
-    // typed-array fast paths, before the receiver-kind ladder — because a
-    // non-null entry proves the receiver PLAIN and the key a name, which is
-    // every arm of that ladder answered at once. `elemSetCacheEntryFor`
-    // guarantees the entry is about THIS (shape, key) pair, so `describesOwn`
-    // has only the shape left to settle and a hit is the slot and nothing else:
-    // no key stringification, no `Rooted`, no `Shape::lookupProperty` walk.
-    //
-    // Nothing this skips is owed. A refusal a plain receiver can raise —
-    // frozen, sealed, non-writable, a String exotic's own index or `length` —
-    // is either dictionary-mode (which the probe refuses outright) or a key
-    // `setProp` was never allowed to reach, and `setProp` is the ONLY thing
-    // that fills an entry. An accessor fills as an accessor, which
-    // `describesOwn` refuses, so a setter still runs below.
-    //
-    // The entry outlives the allocations further down: it lives in a per-thread
-    // table and holds only arena pointers, so no collection can move it or what
-    // it names.
-    ElemSetCacheEntry* setEntry = elemSetCacheEntryFor(objVal, Value(idxBits));
-    if (setEntry && setEntry->ic.describesOwn(objVal.asObject<ObjectHeader>()->shape)) {
-        objVal.asObject<ObjectHeader>()->setSlot(setEntry->ic.cached_slot, Value(valBits));
-        return;
-    }
-
-    // `bronze_prop_set`'s refusal, for the computed spelling of the same write
-    // (`Array.prototype[k] = v`, and `Object.assign` onto it). No cache entry
-    // can have answered above: only `setProp` fills one, and this keeps every
-    // write to the object from reaching it.
-    if (rtArrayPrototypeRefusesChange(objVal)) {
-        rtThrowArrayPrototypeChange("write", Value(idxBits));
-        return;
-    }
-
-    if (Value(idxBits).isSymbol()) {
-        if (objVal.isNull() || objVal.isUndefined()) {
-            rtThrowTypeError("Cannot set properties of " +
-                             std::string(objVal.isNull() ? "null" : "undefined") +
-                             " (setting a symbol-keyed property)");
-            return;
-        }
-        // A proxy's set trap takes a symbol like any key; the holder search
-        // below knows only objects with a shape.
-        if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
-            rtProxySet(objVal, Value(idxBits), Value(valBits), strict);
-            return;
-        }
-        Rooted<Value> recv{objVal};
-        // Rooted BEFORE the side-object build below, which allocates. The key
-        // needs no root — a symbol lives in the arena and never moves — but the
-        // VALUE is an ordinary heap value, and rooting it after the allocation
-        // would root a pointer the collector had already moved. That is exactly
-        // what it did: `f[sym] = "bare"` on a fresh function read back as an
-        // unrelated string under BRONZE_GC_STRESS=1.
-        Rooted<Value> val{Value(valBits)};
-        // A function's side object of statics is built on first demand, so a
-        // symbol-keyed write can be the demand — without this, `f[sym] = v` on
-        // a function that had never been given a static reached the "no shape"
-        // error below and the write was refused for a receiver that can hold
-        // one perfectly well.
-        if (recv.get().isObject() &&
-            recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-            rtPrepareFunctionOwnWrite(recv);
-        }
-        if (recv.get().isObject() &&
-            recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-            ArrayHeader::ensureProperties(rtHeap(), rtArena(), recv);
-        }
-        if (ObjectHeader* holder = rtSymbolKeyHolder(recv.get())) {
-            Rooted<Value> holderRoot{Value::fromObject(holder)};
-            Rooted<Value> key{Value(idxBits)};
-            SetRefusal refusal = SetRefusal::None;
-            holderRoot.get().asObject<ObjectHeader>()->setProp(
-                rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
-                /*defineOwn=*/false, recv.slot_ptr(), &refusal);
-            // A symbol has no spelling a message can quote back — its
-            // description is not its identity — so the position is named
-            // instead of the key.
-            rtReportSetRefusal(refusal, strict, "<symbol>");
-            return;
-        }
-        // A namespace refuses a SYMBOL key on the same terms as a string one:
-        // 10.4.6.9 returns false without ever looking at the key.
-        if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
-        rtThrowTypeError("a symbol-keyed property write is only supported on a plain object, a "
-                         "function or an array (a typed array carries no shape at all)");
-        return;
-    }
-    // A write through `o[i]` to something that is not an object, answered
-    // exactly as `bronze_prop_set` answers `o.k`: the nullish TypeError first,
-    // then `rtPrimitiveWrite`. They are one operation with two spellings, and the
-    // read side has already been made to agree (`cases/string_index`); a
-    // `fatal` here would kill a process where the `o.k` spelling of the same
-    // write is a value a `catch` can hold.
-    if (!objVal.isObject()) {
-        Rooted<Value> recv{objVal};
-        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
-        if (recv.get().isNull() || recv.get().isUndefined()) {
-            rtThrowTypeError("Cannot set properties of " +
-                             std::string(recv.get().isNull() ? "null" : "undefined") +
-                             " (setting '" + keyText + "')");
-            return;
-        }
-        Rooted<Value> val{Value(valBits)};
-        rtPrimitiveWrite(recv, key, keyText, val, strict);
-        return;
-    }
-    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    uint32_t idx = 0;
-    if (hdr->flags == HeapKind::Proxy) {
-        // One operation, two spellings, like every arm below: `p[k] = v` is
-        // `p.k = v` and takes the same trap-or-forward path.
-        rtProxySet(objVal, Value(idxBits), Value(valBits), strict);
-        return;
-    }
-    Value idxVal(idxBits);
-    if (idxVal.isNumber()) {
-        double d = idxVal.asNumber();
-        if (d >= 0.0 && d <= 4294967294.0) {
-            uint32_t u = static_cast<uint32_t>(d);
-            if (static_cast<double>(u) == d) {
-                if (hdr->flags == HeapKind::Array) {
-                    rtArrayIndexSet(objVal, u, Value(valBits), strict);
-                    return;
-                }
-                if (hdr->flags == TypedArrayHeader::kFlags) {
-                    // The conversion (ToNumber, or ToBigInt for the two 64-bit
-                    // integer views) can be a user `valueOf`; the funnel
-                    // re-derives the view from the root after it.
-                    Rooted<Value> viewRoot{objVal};
-                    rtTypedArraySetElement(viewRoot, u, Value(valBits));
-                    return;
-                }
-            }
-        }
-    }
-    if (hdr->flags == HeapKind::Array) {
-        if (!rtValueToElementIndex(Value(idxBits), idx)) {
-            // A key that is not a canonical array index NAMES a property, and
-            // `a[k] = v` means exactly what `a.k = v` means — so it takes the
-            // same two arms, through the same file, rather than keeping a
-            // second opinion about what `a["length"]` is.
-            Rooted<Value> arrRoot{objVal};
-            Rooted<Value> val{Value(valBits)};
-            Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-            const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
-            if (keyText == "length") {
-                rtReportSetRefusal(rtArraySetLength(arrRoot, val.get()), strict, keyText);
-                return;
-            }
-            rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, keyText);
-            return;
-        }
-        rtArrayIndexSet(objVal, idx, Value(valBits), strict);
-        return;
-    }
-    if (hdr->flags == TypedArrayHeader::kFlags) {
-        // A NUMBER key that reaches here failed the exact-uint32 fast path
-        // above, so it is NaN, negative, fractional or >= 2^32-1. On an
-        // integer-indexed exotic object every number is a NUMERIC index
-        // (10.4.5.5 through CanonicalNumericIndexString), and an invalid one
-        // is the spec's silently-discarded store — never a named property.
-        // Only an actual string key can name one.
-        // TypedArraySetElement (10.4.5.16) converts the VALUE before it
-        // looks at the index, so the discarded store still runs ToNumber.
-        if (Value(idxBits).isNumber()) {
-            Rooted<Value> viewRoot{objVal};
-            rtTypedArraySetElement(viewRoot, kNoTypedArrayIndex, Value(valBits));
-            return;
-        }
-        if (rtValueToElementIndex(Value(idxBits), idx)) {
-            Rooted<Value> viewRoot{objVal};
-            rtTypedArraySetElement(viewRoot, idx, Value(valBits));
-            return;  // out-of-bounds typed-array writes are discarded, per spec
-        }
-        // A string that spells a canonical number without being a valid index
-        // is the same discarded store (10.4.5.5 step 1.b); every other string
-        // and every symbol is an ordinary property of the view, written by the
-        // shape-carrying tail below.
-        if (Value(idxBits).isString() &&
-            rtIsCanonicalNumericString(rtUtf8Chars(Value(idxBits).asString<StringHeader>()))) {
-            Rooted<Value> viewRoot{objVal};
-            rtTypedArraySetElement(viewRoot, kNoTypedArrayIndex, Value(valBits));
-            return;
-        }
-    }
-    if (hdr->flags == HeapKind::Function) {
-        Rooted<Value> fnRoot{objVal};
-        Rooted<Value> val{Value(valBits)};
-        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
-        if (keyText == "prototype") {
-            if (!rtFunctionPrototypeWritable(objVal)) {
-                // A REFUSAL, not a diagnosis of the value: 10.1.9.2 discards
-                // the write in sloppy code and 13.15.2 throws in strict, and
-                // that is true whatever was being assigned. The `fatal` that
-                // used to stand here said "assigning a non-object", which was
-                // the wrong sentence about the right situation.
-                rtReportSetRefusal(SetRefusal::NotWritable, strict, keyText);
-                return;
-            }
-            auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
-            fn->prototype = val.get();
-            return;
-        }
-        // 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength make `name` and
-        // `length` NON-WRITABLE own properties of every function, so the write
-        // is discarded in sloppy code and a TypeError in strict — never a
-        // store. `bronze_prop_set` has always said so for `f.name = v`; without
-        // it here the same write spelled `f[k] = v` landed in the statics
-        // table, which the read consults FIRST, and the two spellings of one
-        // assignment disagreed about whether it happened.
-        if (reinterpret_cast<FunctionHeader*>(hdr)->name != nullptr &&
-            (keyText == "length" || keyText == "name")) {
-            rtReportSetRefusal(SetRefusal::NotWritable, strict, keyText);
-            return;
-        }
-        rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
-        SetRefusal refusal = SetRefusal::None;
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
-                                                         /*ic=*/nullptr, /*enumerable=*/true,
-                                                         /*defineOwn=*/false,
-                                                         /*receiver=*/nullptr, &refusal);
-        rtReportSetRefusal(refusal, strict, keyText);
-        return;
-    }
-    if (HeapKind::carriesShape(hdr->flags)) {
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> val{Value(valBits)};
-        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        // `s[0] = "z"`, the spelling this bug actually arrives in. Same answer
-        // as `bronze_prop_set`'s, for the reason the two TypeErrors above are
-        // the same: one operation, two spellings. Asked of the WRAPPER first,
-        // which is one flag test, so the key's `std::string` is built only for
-        // the receiver that can actually refuse — this is the miss path of
-        // every computed store, and it used to copy the key on all of them.
-        if (Value stringData; rtStringWrapperData(objRoot.get(), stringData)) {
-            if (rtStringDataWriteRefused(stringData,
-                                         rtUtf8Chars(key.get().asString<StringHeader>()), strict)) {
-                return;
-            }
-        }
-        SetRefusal refusal = SetRefusal::None;
-        objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
-                                                        setEntry ? &setEntry->ic : nullptr,
-                                                        /*enumerable=*/true,
-                                                        /*defineOwn=*/false,
-                                                        /*receiver=*/nullptr, &refusal);
-        // Likewise: the key text is what the message quotes, and there is no
-        // message unless the write was refused.
-        if (refusal != SetRefusal::None) {
-            rtReportSetRefusal(refusal, strict, rtUtf8Chars(key.get().asString<StringHeader>()));
-        }
-        return;
-    }
-    {
-        // `ns[k] = v` is the same operation as `ns.k = v` and gets the same
-        // answer, for the reason the two TypeErrors above are shared: one
-        // operation, two spellings. The key is only needed for the message.
-        Rooted<Value> nsRoot{objVal};
-        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        if (rtModuleNamespaceWriteRefused(nsRoot.get(),
-                                          rtUtf8Chars(key.get().asString<StringHeader>()),
-                                          strict)) {
-            return;
-        }
-    }
-    rtThrowTypeError("computed index writes are only supported on arrays, plain objects "
-                     "and typed arrays");
 }
 
 }  // extern "C"

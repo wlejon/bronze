@@ -177,11 +177,15 @@ struct FeedbackApplyStats {
 // own-slot callee instead (`ownCallees`, split on the slot's closure later),
 // and a site the prediction gave one keeps it unless every receiver the run
 // saw inherited the key; with no one closure in the slot the site gets
-// kMethodOwnCallee. A site that met two or more shapes gets
-// kMethodPolyShapes, and a predicted direct target where the run called a
-// native is dropped.
+// kMethodOwnCallee. A site whose executions split across two compiled callees
+// gets both in `polyMethods` (inherited) or `polyOwnCallees` (own slot),
+// ordered more frequent first, for guarded inlining to chain. A site that met
+// two or more shapes gets kMethodPolyShapes, and a predicted direct target
+// where the run called a native is dropped.
 void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::unordered_map<uint32_t, uint32_t>& ownCallees,
-                                FeedbackApplyStats* stats);
+                                FeedbackApplyStats* stats,
+                                std::unordered_map<uint32_t, std::vector<uint32_t>>* polyMethods = nullptr,
+                                std::unordered_map<uint32_t, std::vector<uint32_t>>* polyOwnCallees = nullptr);
 
 // B, closure calls: the function a `call.dynamic` should be split on (its
 // one profiled callee), or UINT32_MAX (lower/own_callee_calls.h does the

@@ -26,6 +26,12 @@ Type lower_abi_type(BronzeType t);
 // a constant, a scalar operation, a box of a scalar, a proven unbox
 // (il_lowering_hoist.cpp).
 bool is_pure_scalar_inst(const BronzeInstruction& inst);
+class IlLowering;
+
+// Dynamic call helper dispatch (`bronze_call_dynamic_0..16` or staged `_n`)
+// and typed-edge argument boxing shared by call and builtin lowerings.
+Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering);
+Value* box_call_arg(IlLowering* lowering, Builder& b, Value* v, Type as);
 
 class IlLowering {
 public:
@@ -225,6 +231,18 @@ public:
     bool is_zero_one(const Value* v) const;
     // c when `cond` is `eq c, 0` of a 0/1 value c, else null.
     Value* negated_boolean(Value* cond) const;
+
+    // Speculated Math builtin calls (il_builtin_call.cpp): resets per-function
+    // Box.f64 source tracking and callee-identity guard memoization, extracts
+    // an already-unboxed f64 argument without boxing it for the fast path, and
+    // lowers MethodCall / CallDynamic sites targeting Math members.
+    void begin_builtin_lowering(const BronzeFunction& fn_ast);
+    Value* peek_unboxed_f64(uint32_t id, const std::unordered_map<uint32_t, Value*>& val_map) const;
+    Value* try_lower_builtin_method_call(const BronzeInstruction& inst, Builder& b, Value* recv,
+                                         const std::vector<Type>& arg_kinds,
+                                         const std::unordered_map<uint32_t, Value*>& val_map, Value* site);
+    Value* try_lower_builtin_dynamic_call(const BronzeInstruction& inst, Builder& b,
+                                          const std::unordered_map<uint32_t, Value*>& val_map);
 
 private:
     // The memo at a block's start (from its one predecessor's end), after an
@@ -455,6 +473,17 @@ private:
     std::unordered_map<uint32_t, Value*> in_elements_;
     std::unordered_map<uint32_t, int64_t> in_element_flags_;
     void pair_in_element_reads(const BronzeFunction& fn_ast);
+    struct BuiltinFnGuard {
+        uint32_t callee_id = UINT32_MAX;
+        uint32_t key_index = UINT32_MAX;
+        const Function* fn = nullptr;
+        BasicBlock* def_bb = nullptr;
+        Value* fn_ok = nullptr;
+    };
+    Value* lookup_builtin_fn_guard(uint32_t callee_id, uint32_t key_index, BasicBlock* cur) const;
+    void note_builtin_fn_guard(uint32_t callee_id, uint32_t key_index, BasicBlock* def_bb, Value* fn_ok);
+    std::unordered_map<uint32_t, uint32_t> box_f64_src_;
+    std::vector<BuiltinFnGuard> builtin_fn_guards_;
 };
 
 } // namespace il2mir

@@ -456,7 +456,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                                     Rooted<Value>& val, InlineCache* ic, bool enumerable,
                                     bool defineOwn, const Value* receiver, SetRefusal* refused,
-                                    bool writable, bool configurable) {
+                                    bool writable, bool configurable, InlineCacheSite* setSite) {
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
         runtime::rtThrowTypeError("property key must be a string or a symbol");
@@ -464,23 +464,25 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     }
     if (shape && runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, prop_name);
 
+    InlineCache* hitIc = setSite ? setSite->findForSet(shape) : ic;
+
     // A set-site entry only ever describes an OWN DATA property of a
     // non-dictionary shape (below), so a shape match is a slot write with
     // nothing left to check.
-    if (ic && ic->describesOwn(shape)) {
-        setSlot(ic->cached_slot, val.get());
+    if (hitIc && hitIc->describesOwn(shape)) {
+        setSlot(hitIc->cached_slot, val.get());
         return this;
     }
 
-    if (ic && ic->isRealShape() && ic->describes(shape) && ic->isAccessor()) {
-        uint32_t depth = ic->realDepth();
+    if (hitIc && hitIc->isRealShape() && hitIc->describes(shape) && hitIc->isAccessor()) {
+        uint32_t depth = hitIc->realDepth();
         ObjectHeader* holder = this;
         if (depth > 0) {
             bool crossedDictionary = false;
             holder = cachedProtoHolder(depth, crossedDictionary);
         }
         if (holder) {
-            Value setter = holder->getSlot(ic->cached_slot + 1);
+            Value setter = holder->getSlot(hitIc->cached_slot + 1);
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
             bool noSetter = false;
@@ -512,16 +514,17 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     //    marked-prototype shape, a dictionary define, a prototype swap —
     //    bumps the epoch, exactly the discipline the depth > 0 read entries
     //    already lean on.
-    if (ic && ic->isRealShape() && ic->cached_depth == 0 && shape && !shape->isDictionary() &&
-        ic->cached_shape->parent == shape &&
-        ic->cached_shape->slot_index == ic->cached_slot &&
-        ic->cached_shape->enumerable && !ic->cached_shape->accessor &&
-        ic->cached_shape->writable && ic->cached_shape->configurable &&
+    InlineCache* trIc = setSite ? &setSite->ways[0] : ic;
+    if (trIc && trIc->isRealShape() && trIc->cached_depth == 0 && shape && !shape->isDictionary() &&
+        trIc->cached_shape->parent == shape &&
+        trIc->cached_shape->slot_index == trIc->cached_slot &&
+        trIc->cached_shape->enumerable && !trIc->cached_shape->accessor &&
+        trIc->cached_shape->writable && trIc->cached_shape->configurable &&
         enumerable && writable && configurable &&
-        ic->cached_epoch == protoMutationEpoch() &&
-        ic->cached_shape->key.matches(prop_name)) {
-        Shape* next = ic->cached_shape;
-        const uint32_t slot = ic->cached_slot;
+        trIc->cached_epoch == protoMutationEpoch() &&
+        trIc->cached_shape->key.matches(prop_name)) {
+        Shape* next = trIc->cached_shape;
+        const uint32_t slot = trIc->cached_slot;
         // Same bump the slow path performs: if this object is somebody's
         // prototype, the add shadows what depth > 0 entries below it point at.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
@@ -533,7 +536,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // entry outlived) would otherwise expire an entry that has just
         // proven itself.
         if (!runtime::censusFillsSuppressed() && !next->used_as_prototype) {
-            ic->fillForSet(next, slot, next->slotIsDouble(slot));
+            trIc->fillForSet(next, slot, next->slotIsDouble(slot));
         }
         live->setSlot(slot, val.get());
         return live;
@@ -550,8 +553,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 runtime::rtThrowTypeError("redefining an accessor property as a data property is unsupported");
                 return this;
             }
-            if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
-                ic->fillAccessor(shape, own.slot, /*depth=*/0);
+            if ((setSite || ic) && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+                InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
+                dst->fillAccessor(shape, own.slot, /*depth=*/0);
             }
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
@@ -575,9 +579,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // A prototype's shape is never cached for a store: generated code's
         // inline store would overwrite a method without the epoch moving
         // (Shape::markObjectAsPrototype). Every such write lands here instead.
-        if (ic && !shape->isDictionary() && !shape->used_as_prototype &&
+        if ((setSite || ic) && !shape->isDictionary() && !shape->used_as_prototype &&
             !runtime::censusFillsSuppressed()) {
-            ic->fillForSet(shape, own.slot, shape->slotIsDouble(own.slot));
+            InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
+            dst->fillForSet(shape, own.slot, shape->slotIsDouble(own.slot));
         }
         notePrototypeSlotOverwrite(own.slot);
         setSlot(own.slot, val.get());
@@ -639,9 +644,11 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 break;
             }
             bool crossedDictionary = false;
-            if (ic && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
+            if ((setSite || ic) && shape && !shape->isDictionary() &&
+                !runtime::censusFillsSuppressed() &&
                 cachedProtoHolder(depth, crossedDictionary) == holder) {
-                ic->fillAccessor(shape, info.slot, depth);
+                InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
+                dst->fillAccessor(shape, info.slot, depth);
             }
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
@@ -711,8 +718,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // the flag is for: the arm then tests the value for Number and misses
         // to here when it is not, where `setSlot` below generalizes the slot
         // and the next fill hands back an ordinary entry.
-        if (ic && !next_shape->used_as_prototype && !runtime::censusFillsSuppressed()) {
-            ic->fillForSet(next_shape, new_slot, next_shape->slotIsDouble(new_slot));
+        if ((setSite || ic) && !next_shape->used_as_prototype && !runtime::censusFillsSuppressed()) {
+            InlineCache* dst = setSite ? setSite->slotForSetTransition(next_shape) : ic;
+            dst->fillForSet(next_shape, new_slot, next_shape->slotIsDouble(new_slot));
         }
     }
     live->setSlot(new_slot, val.get());

@@ -114,6 +114,7 @@ bronze_add_module(runtime
         selfhost.cpp
         rt_global.cpp
         rt_reflect.cpp
+        rt_instanceof.cpp
         rt_operator.cpp
         rt_numeric.cpp
         rt_key.cpp
@@ -131,6 +132,7 @@ bronze_add_module(runtime
         rt_array_holes.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
+        rt_elem_write.cpp
         rt_prop_define.cpp
         rt_method_call.cpp
         static_shape.cpp
@@ -243,6 +245,7 @@ bronze_add_module(runtime
         ../../tests/runtime/root_slots_test.cpp
         ../../tests/runtime/root_remset_test.cpp
         ../../tests/runtime/class_family_test.cpp
+        ../../tests/runtime/ic_write_instanceof_test.cpp
 )
 
 if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")

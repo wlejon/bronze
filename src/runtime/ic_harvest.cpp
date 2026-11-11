@@ -27,9 +27,8 @@ namespace {
 
 // One thing a cache held: how the site's key was found (a property way's
 // form, or a method way's), the receiver it was latched for, and for a method
-// site the callee (`*other*` when the entry does not say: an own slot holds a
-// per-instance function, and a native or a build without function source
-// names no source).
+// site the callee (`*other*` when the entry does not name a source function,
+// such as a native or a build without function source names).
 struct Fact {
     std::string form;
     std::string receiver;
@@ -44,8 +43,8 @@ struct Site {
     // A property read whose four ways were all in use: it met at least four
     // shapes, and the stub's table answered the rest.
     bool full = false;
-    // The stub's table answered the site (a method site, or a write, which
-    // keeps one way): more shapes than its ways.
+    // The stub's table answered the site (a method site, or a property write
+    // that overflowed its BRONZE_ABI_IC_SET_WAYS ways): more shapes than its ways.
     bool mega = false;
     std::set<Fact> facts;
 };
@@ -136,9 +135,10 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
         site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}});
     }
     if (used == BRONZE_ABI_IC_WAYS) site.full = true;
-    // A write keeps way 0 only, and word 11 is its count of the table's
-    // answers after a way-0 miss; a read's word 11 is way 3's epoch, which a
-    // read whose way 3 was never filled leaves zero.
+    // A write uses ways 0..2 (`BRONZE_ABI_IC_SET_WAYS`), leaving way 3's
+    // cached_shape null and word 11 as its count of misses after all three
+    // write ways filled; a read's word 11 is way 3's epoch, which a read whose
+    // way 3 was never filled leaves zero.
     const auto* way3 = reinterpret_cast<const InlineCache*>(words + 3 * (BRONZE_ABI_IC_ENTRY_SIZE / 8));
     if (way3->cached_shape == nullptr && words[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD] != 0) site.mega = true;
 }
@@ -162,7 +162,9 @@ void foldMethodWay(State& s, Site& site, uint64_t shapeWord, uint64_t codeWord, 
     }
     const std::string& receiver = shapeName(s, reinterpret_cast<const Shape*>(shapeWord));
     if (slotForm) {
-        site.facts.insert(Fact{"slot", receiver, "*other*"});
+        site.facts.insert(Fact{"slot", receiver,
+                               codeWord != 0 ? calleeOf(reinterpret_cast<const void*>(codeWord))
+                                             : std::string("*other*")});
         return;
     }
     site.facts.insert(Fact{"direct", receiver, calleeOf(reinterpret_cast<const void*>(codeWord))});

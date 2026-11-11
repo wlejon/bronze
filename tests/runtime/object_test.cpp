@@ -119,7 +119,7 @@ TEST_CASE("a root's inline capacity sizes its objects and numbers overflow slots
     // A capacity never goes below the default nor above the split.
     CHECK(Shape::clampInlineSlots(0) == ObjectHeader::kInlineSlots);
     CHECK(Shape::clampInlineSlots(2) == ObjectHeader::kInlineSlots);
-    CHECK(Shape::clampInlineSlots(40) == ObjectHeader::kOverflowSlot);
+    CHECK(Shape::clampInlineSlots(ObjectHeader::kOverflowSlot + 24) == ObjectHeader::kOverflowSlot);
     // An accessor pair never straddles the inline end.
     CHECK(Shape::placeSlot(kCap - 1, 2, kCap) == ObjectHeader::kOverflowSlot);
     CHECK(Shape::placeSlot(kCap - 2, 2, kCap) == kCap - 2);

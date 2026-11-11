@@ -31,15 +31,14 @@
  * `InlineCache*` still works when handed the site pointer generated code and
  * the helpers pass around.
  *
- * READ sites use every way; a WRITE site uses way 0 only (a write's bill is
- * transitions, not shape variety — measured on the pure-compute fixtures).
- * The unused ways of a write site cost BSS and nothing else, but for word
- * BRONZE_ABI_IC_SET_MEGA_COUNT_WORD: the write stub's count of the answers
- * the thread's megamorphic table gave the site after a way-0 miss, every
- * BRONZE_ABI_IC_SET_MEGA_RELATCH-th of which goes to the helper, which
- * zeroes it and stores past the table, so way 0 refills with the receiver's
- * shape (a table answer latches nothing, so a way 0 holding a shape that
- * stopped coming was otherwise missed for good). An integer.
+ * READ sites use every way; a WRITE site uses BRONZE_ABI_IC_SET_WAYS ways
+ * (ways 0..2), leaving way 3's shape word zero so a full write site stays
+ * distinguishable from a four-way read site and leaving word
+ * BRONZE_ABI_IC_SET_MEGA_COUNT_WORD (word 11) free for the write stub's count
+ * of answers from the thread's megamorphic table once all three ways are
+ * occupied. Every BRONZE_ABI_IC_SET_MEGA_RELATCH-th table answer goes to the
+ * helper, which zeroes the counter and shifts the active shape into way 0 so
+ * a site whose hot shapes change after warm-up re-latches them. An integer.
  *
  * Generated code compares the receiver's shape against way 0, then — only on
  * a way-0 miss — against ways 1..N-1, and
@@ -126,6 +125,7 @@
  * width that holds that mix while keeping the way scan a short compare chain
  * a way-0 hit never enters. */
 #define BRONZE_ABI_IC_WAYS 4
+#define BRONZE_ABI_IC_SET_WAYS 3
 #define BRONZE_ABI_IC_SITE_SIZE (BRONZE_ABI_IC_ENTRY_SIZE * BRONZE_ABI_IC_WAYS)
 /* slot and depth are adjacent and little-endian, so the single u64 at
  * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < OBJ_OVERFLOW_SLOT`
@@ -222,7 +222,9 @@
  *
  *   word 0: the receiver shape the entry was latched against, or 0 for an
  *           entry that has never latched. The guard, exactly as before.
- *   word 1: the callee's code pointer (DIRECT form; unused in slot form).
+ *   word 1: the callee's code pointer (called in DIRECT form; recorded in SLOT
+ *           form when the latched slot holds a FunctionHeader so IC harvesting
+ *           sees the observed body, while dispatch still re-reads the slot).
  *   word 2: low 32 bits the callee's arity; HIGH 32 bits select the form:
  *           zero is DIRECT, and any nonzero value is SLOT form carrying the
  *           receiver's own slot index PLUS ONE (so an all-zero word cannot
@@ -694,7 +696,7 @@
 #define BRONZE_ABI_OBJ_OVERFLOW_OFFSET  16
 #define BRONZE_ABI_OBJ_SLOTS_OFFSET     24
 #define BRONZE_ABI_OBJ_INLINE_SLOTS      4
-#define BRONZE_ABI_OBJ_OVERFLOW_SLOT    16
+#define BRONZE_ABI_OBJ_OVERFLOW_SLOT    62
 
 /* Shape (runtime/shape.h): the fields the two inline IC fast paths read, all
  * deliberately laid out BEFORE the transitions vector so no standard-library
@@ -843,7 +845,7 @@
  * gives the function's instance root shape that capacity, clamped to
  * [BRONZE_ABI_OBJ_INLINE_SLOTS, BRONZE_ABI_OBJ_OVERFLOW_SLOT]. */
 #define BRONZE_ABI_FN_INLINE_SLOTS_SHIFT    8
-#define BRONZE_ABI_FN_INLINE_SLOTS_MASK     0x1Fu
+#define BRONZE_ABI_FN_INLINE_SLOTS_MASK     0x3Fu
 
 /* One entry of a module's fn-singleton table: the code pointer, then the Value.
  * An entry answers a mention only when its code word matches the mention's own

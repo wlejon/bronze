@@ -14,6 +14,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "lower/function_placement.h"
@@ -99,9 +100,11 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // profile's direct targets (B) right after, for the sites the prediction
     // left without one.
     OwnCallees ownCallees;
+    ClosureGuesses polyMethods;
+    ClosureGuesses polyOwnCallees;
     if (wholeProgram) report += wpo::predictDirectTargets(mod, build, &ownCallees);
     if (plan != nullptr) {
-        spec::applyFeedbackDirectMethods(mod, *plan, ownCallees, &feedbackStats);
+        spec::applyFeedbackDirectMethods(mod, *plan, ownCallees, &feedbackStats, &polyMethods, &polyOwnCallees);
         std::set<spec::SpanKey> offered;
         feedbackStats.closureCalls = applyClosureCalls(mod, [&](const il::Instruction& call) {
             const uint32_t target = spec::profiledClosureTarget(mod, *plan, call);
@@ -141,10 +144,22 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
             },
             &feedbackStats);
     }
+    std::unordered_set<uint32_t> inlinedOwnIcs;
     if (inlineGuarded_) {
         std::vector<uint32_t> inlinedInto;
-        const ClosureGuesses guesses = directMethods_.closureGuesses(mod);
-        inlineGuardedMethods(mod, diags, &inlinedInto, &guesses, &coldLoops);
+        ClosureGuesses guesses = directMethods_.closureGuesses(mod);
+        for (const auto& [ic, target] : ownCallees) guesses[ic] = {target};
+        for (const auto& [ic, targets] : polyMethods) {
+            (void)targets;
+            guesses.erase(ic);
+        }
+        for (const auto& [ic, targets] : polyOwnCallees) {
+            (void)targets;
+            guesses.erase(ic);
+        }
+        inlineGuardedMethods(mod, diags, &inlinedInto, &guesses, &coldLoops,
+                             polyMethods.empty() ? nullptr : &polyMethods,
+                             polyOwnCallees.empty() ? nullptr : &polyOwnCallees, &inlinedOwnIcs);
         if (diags.hasErrors()) return false;
         foldInlinedCallers(mod, inlinedInto);
         // The loops inlined bodies brought (guard_region.h, `only`).
@@ -152,6 +167,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto);
         if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
     }
+    for (uint32_t ic : inlinedOwnIcs) ownCallees.erase(ic);
     // The own-slot calls inlining left: a direct entry behind the slot's
     // closure's code word.
     const uint32_t ownCalls = applyOwnCalleeCalls(mod, ownCallees);
