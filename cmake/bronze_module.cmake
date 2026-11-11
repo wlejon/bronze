@@ -21,15 +21,17 @@ function(bronze_add_module name)
     target_include_directories(bronze_${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
     if(MSVC)
         # C/C++ only: the runtime carries a MASM source, and ml64 rejects
-        # these as command-line options.
+        # these as command-line options. /wd4702 matches bronze_runtime_shared:
+        # `return rtThrowTypeError(...).rawBits();` is unreachable after [[noreturn]]
+        # in Debug (/Od) builds under /WX.
         target_compile_options(bronze_${name} PRIVATE
-            $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /wd4324 /utf-8>)
+            $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /wd4324 /wd4702 /utf-8>)
         # The CRT-deprecation opt-out (getenv and friends are standard C++),
         # not a blanket C4996 disable. Target-wide because a per-file #define
         # placed after the first include is silently too late.
         target_compile_definitions(bronze_${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
-        target_compile_options(bronze_${name} PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs -fno-omit-frame-pointer)
+        target_compile_options(bronze_${name} PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs -fno-omit-frame-pointer)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_compile_options(bronze_${name} PRIVATE -Wno-restrict)
         endif()
@@ -50,11 +52,11 @@ function(bronze_add_module name)
         if(MSVC)
             # /utf-8: string literals carry \u escapes as UTF-8 bytes whatever
             # the machine's ANSI code page is (C4566 under /WX otherwise).
-            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive- /wd4324 /utf-8)
+            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive- /wd4324 /wd4702 /utf-8)
             target_compile_definitions(bronze_${name}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
             target_link_options(bronze_${name}_tests PRIVATE /FORCE:MULTIPLE)
         else()
-            target_compile_options(bronze_${name}_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs -fno-omit-frame-pointer)
+            target_compile_options(bronze_${name}_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs -fno-omit-frame-pointer)
             if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
                 target_compile_options(bronze_${name}_tests PRIVATE -Wno-restrict)
             endif()

@@ -146,7 +146,7 @@ if(MSVC)
     # unoptimised build, so without this a Debug build of the runtime (every
     # sibling's windows-msvc-debug CI job) fails under /WX while Release is clean.
     target_compile_options(bronze_runtime_shared PRIVATE
-        $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /utf-8 /wd4702>)
+        $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /utf-8 /wd4324 /wd4702>)
     target_compile_definitions(bronze_runtime_shared PRIVATE _CRT_SECURE_NO_WARNINGS)
     # A .def source is how CMake spells /DEF: for the MSVC-family linkers.
     target_sources(bronze_runtime_shared PRIVATE ${_bronze_abi_def})
@@ -168,7 +168,7 @@ if(MSVC)
         $<$<CONFIG:Release,MinSizeRel>:/OPT:ICF>)
 else()
     target_compile_options(bronze_runtime_shared PRIVATE
-        -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)
+        -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(bronze_runtime_shared PRIVATE -Wno-restrict)
     endif()

@@ -472,6 +472,12 @@ public:
 // shape-transition write hit reads parent, slot_index, the attribute bytes
 // and the prototype mark. Pinned HERE, beside the type that owns the layout,
 // so a reorder breaks the build instead of miscompiling every cached access.
+// std::unique_ptr (transition_index) is not standard-layout under libstdc++,
+// which triggers Clang's -Winvalid-offsetof even on layout-stable prefix fields.
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
 static_assert(offsetof(Shape, parent) == BRONZE_ABI_SHAPE_PARENT_OFFSET);
 static_assert(offsetof(Shape, slot_index) == BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET);
 static_assert(offsetof(Shape, enumerable) == BRONZE_ABI_SHAPE_ATTRS_OFFSET);
@@ -496,6 +502,9 @@ static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
 // read — pinning it now is what keeps a later reorder a build break.
 static_assert(offsetof(Shape, double_slots) == BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
 static_assert(offsetof(Shape, repr) == BRONZE_ABI_SHAPE_REPR_OFFSET);
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 static_assert(sizeof(Shape::repr) == 1);
 static_assert(static_cast<uint8_t>(SlotRepr::Boxed) == BRONZE_ABI_SLOT_REPR_BOXED &&
               static_cast<uint8_t>(SlotRepr::Double) == BRONZE_ABI_SLOT_REPR_DOUBLE);

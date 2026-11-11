@@ -19,14 +19,14 @@ set_target_properties(bronze_host PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${BRONZE_SHARED_RUNTIME_DIR}")
 
 if(MSVC)
-    target_compile_options(bronze_host PRIVATE /W4 /WX /permissive-)
+    target_compile_options(bronze_host PRIVATE /W4 /WX /permissive- /wd4702)
     target_compile_definitions(bronze_host PRIVATE _CRT_SECURE_NO_WARNINGS)
     # 8 MB main-thread stack, like bro's and the bronze CLI's: the 1 MB
     # default caps JS recursion near 7,000 frames before the runtime's
     # stack-limit check turns it into a RangeError.
     target_link_options(bronze_host PRIVATE /STACK:8388608)
 else()
-    target_compile_options(bronze_host PRIVATE -Wall -Wextra -Werror)
+    target_compile_options(bronze_host PRIVATE -Wall -Wextra -Werror -Wno-invalid-offsetof)
     # The runtime is beside the host wherever the host is copied to, so the
     # host's own directory is its run-time search path — in the build tree
     # and in a program directory alike.

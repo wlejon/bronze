@@ -29,7 +29,7 @@ target_link_libraries(bronze_stage0 PRIVATE bronze::parse bronze::lex bronze::as
     bronze::selfhost_il)
 set_target_properties(bronze_stage0 PROPERTIES BRONZE_STAGE0 ON)
 if(MSVC)
-    target_compile_options(bronze_stage0 PRIVATE /W4 /WX /permissive- /wd4324)
+    target_compile_options(bronze_stage0 PRIVATE /W4 /WX /permissive- /wd4324 /wd4702)
     target_compile_definitions(bronze_stage0 PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_options(bronze_stage0 PRIVATE /FORCE:MULTIPLE)
 endif()
