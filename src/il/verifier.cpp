@@ -532,10 +532,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             }
             if (inst.op == Op::IsShape &&
                 (inst.operands.size() != 1 || inst.type != Type::Bool || inst.result == kNoValue ||
-                 definedTypes[inst.operands[0]] != Type::Dynamic ||
-                 inst.staticSlot == Instruction::kNoStaticSlot)) {
-                diags.error(Span{}, "Function " + fn.name +
-                                        ": is.shape takes one dynamic operand and a site's slot claim, and is a bool");
+                 definedTypes[inst.operands[0]] != Type::Dynamic)) {
+                diags.error(Span{}, "Function " + fn.name + ": is.shape takes one dynamic operand and is a bool");
                 return false;
             }
             // A shape-guarded site is a bare load or store at its claimed slot,

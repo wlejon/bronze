@@ -25,7 +25,7 @@ constexpr size_t kMaxBodyInstructions = 400;
 constexpr size_t kMinAccesses = 4;
 // Caps in-body `is.number` split points so interleaved property reads cannot
 // explode block count.
-constexpr size_t kMaxGuardSplits = 24;
+constexpr size_t kMaxGuardSplits = 64;
 
 std::vector<il::Type> valueTypes(const il::Function& fn) {
     std::vector<il::Type> t(fn.valueCount, il::Type::Void);
@@ -604,15 +604,6 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
     // Spine blocks dominate every block in `body` reachable from them.
     std::vector<uint8_t> isSpine(fn.blocks.size(), 0);
     for (il::BlockId s : plan.body) {
-        bool hasAheadRawUnbox = false;
-        for (const auto& inst : fn.blocks[s].instructions) {
-            if (inst.op == il::Op::Unbox && inst.rawUnbox) {
-                hasAheadRawUnbox = true;
-                break;
-            }
-        }
-        if (hasAheadRawUnbox) continue;
-
         std::vector<uint8_t> reach(fn.blocks.size(), 0);
         std::vector<il::BlockId> stack{s};
         reach[s] = 1;
@@ -685,6 +676,27 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
     }
 
     plan.splitsOf.assign(fn.blocks.size(), {});
+    // The split at `index` of block `b`, made if there is none; the block's
+    // splits stay in instruction order.
+    const auto splitAt = [&](il::BlockId b, uint32_t index) -> TypedBodyGuardSplit& {
+        auto& splits = plan.splitsOf[b];
+        auto it = std::lower_bound(splits.begin(), splits.end(), index,
+                                   [](const TypedBodyGuardSplit& sp, uint32_t at) { return sp.index < at; });
+        if (it == splits.end() || it->index != index) {
+            TypedBodyGuardSplit sp;
+            sp.index = index;
+            it = splits.insert(it, std::move(sp));
+            ++plan.totalSplits;
+        }
+        return *it;
+    };
+    // A named read off a boxed receiver, which a split can stand in front of
+    // (typed_body_version.h, "READS").
+    const auto exitableRead = [&](const il::Instruction& inst) {
+        return inst.op == il::Op::PropGet && inst.result != il::kNoValue && inst.operands.size() == 1 &&
+               !inst.shapeGuarded && inst.directTarget == il::Instruction::kNoDirectTarget &&
+               inst.operands[0] < plan.types.size() && plan.types[inst.operands[0]] == il::Type::Dynamic;
+    };
     for (il::BlockId b : plan.body) {
         if (!isSpine[b]) continue;
         const auto& insts = fn.blocks[b].instructions;
@@ -702,6 +714,9 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
         uint32_t lastAvailDef = UINT32_MAX;
         for (uint32_t i = 0; i < insts.size(); ++i) {
             const il::Instruction& inst = insts[i];
+            if (concreteKinds && exitableRead(inst) && canSplit[i] && plan.totalSplits < kMaxGuardSplits) {
+                splitAt(b, i).shapeOf = inst.operands[0];
+            }
             bool needSplit = false;
             if (canSplit[i] && plan.totalSplits < kMaxGuardSplits) {
                 const bool relNumeric =
@@ -728,15 +743,11 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
                 }
             }
             if (needSplit) {
-                TypedBodyGuardSplit sp;
-                sp.index = i;
+                std::vector<il::ValueId> fresh;
                 for (il::ValueId v : avail) {
-                    if (guardedHere.insert(v).second) sp.guarded.push_back(v);
+                    if (guardedHere.insert(v).second) fresh.push_back(v);
                 }
-                if (!sp.guarded.empty()) {
-                    plan.splitsOf[b].push_back(std::move(sp));
-                    ++plan.totalSplits;
-                }
+                if (!fresh.empty()) splitAt(b, i).guarded = std::move(fresh);
             }
             if (inst.result != il::kNoValue && wantedInBody.count(inst.result) != 0) {
                 avail.push_back(inst.result);
@@ -753,17 +764,100 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
                 uint32_t splitIdx = lastAvailDef + 1;
                 while (splitIdx < insts.size() && !canSplit[splitIdx]) ++splitIdx;
                 if (splitIdx < insts.size()) {
-                    TypedBodyGuardSplit sp;
-                    sp.index = splitIdx;
-                    sp.guarded = std::move(rem);
-                    plan.splitsOf[b].push_back(std::move(sp));
-                    ++plan.totalSplits;
+                    auto& guarded = splitAt(b, splitIdx).guarded;
+                    guarded.insert(guarded.end(), rem.begin(), rem.end());
                 }
             }
         }
     }
     return true;
 }
+
+}  // namespace
+
+void resolveReadExits(il::Module& module) {
+    for (il::Function& fn : module.functions) {
+        std::vector<uint32_t> preds;
+        bool folded = false;
+        for (size_t x = 0; x < fn.blocks.size(); ++x) {
+            auto& insts = fn.blocks[x].instructions;
+            if (insts.size() < 2) continue;
+            il::Instruction& test = insts[insts.size() - 2];
+            il::Instruction& term = insts.back();
+            if (test.op != il::Op::IsShape || test.staticSlot != il::Instruction::kNoStaticSlot) continue;
+            if (preds.empty()) {
+                preds.assign(fn.blocks.size(), 0);
+                for (const il::Block& blk : fn.blocks) {
+                    if (blk.instructions.empty()) continue;
+                    const il::Instruction& t = blk.instructions.back();
+                    for (const il::BlockTarget* e : {&t.target, &t.elseTarget}) {
+                        if (e->block != il::kNoBlock && e->block < preds.size()) ++preds[e->block];
+                    }
+                    if (blk.handler != il::kNoBlock && blk.handler < preds.size()) ++preds[blk.handler];
+                }
+            }
+            il::Instruction* read = nullptr;
+            if (term.op == il::Op::Branch && term.operands.size() == 1 && term.operands[0] == test.result &&
+                term.target.block < fn.blocks.size() && term.target.block != term.elseTarget.block &&
+                preds[term.target.block] == 1) {
+                for (il::Instruction& inst : fn.blocks[term.target.block].instructions) {
+                    if (inst.op == il::Op::PropGet && inst.operands.size() == 1 &&
+                        inst.operands[0] == test.operands[0]) {
+                        if (inst.result != il::kNoValue && !inst.shapeGuarded &&
+                            inst.staticSlot != il::Instruction::kNoStaticSlot &&
+                            inst.directTarget == il::Instruction::kNoDirectTarget) {
+                            read = &inst;
+                        }
+                        break;
+                    }
+                    if (il::isTerminator(inst.op) || il::canCollect(inst) || il::canThrow(inst)) break;
+                }
+            }
+            // A cell claim is filled by a site's own miss, which a bare load
+            // never runs: the test asks the cell of the read a miss leaves
+            // for, the original body's, which claims the same key at the same
+            // slot and fills it there. A family claim has no cell.
+            uint32_t cell = 0;
+            if (read != nullptr && read->familyLo == il::Instruction::kNoFamily) {
+                const il::Block* tail =
+                    term.elseTarget.block < fn.blocks.size() ? &fn.blocks[term.elseTarget.block] : nullptr;
+                const il::Instruction* slow =
+                    tail != nullptr && !tail->instructions.empty() ? &tail->instructions.front() : nullptr;
+                if (slow != nullptr && slow->op == il::Op::PropGet && slow->operands.size() == 1 &&
+                    !slow->shapeGuarded && slow->keyIndex == read->keyIndex &&
+                    slow->staticSlot == read->staticSlot && slow->familyLo == il::Instruction::kNoFamily &&
+                    slow->directTarget == il::Instruction::kNoDirectTarget) {
+                    cell = slow->staticCellIndex;
+                } else {
+                    read = nullptr;
+                }
+            }
+            if (read != nullptr) {
+                test.staticSlot = read->staticSlot;
+                test.staticCellIndex = cell;
+                test.familyLo = read->familyLo;
+                test.familySpan = read->familySpan;
+                read->shapeGuarded = true;
+                continue;
+            }
+            test.op = il::Op::ConstBool;
+            test.operands.clear();
+            test.immI32 = 1;
+            if (term.op == il::Op::Branch && term.operands.size() == 1 && term.operands[0] == test.result) {
+                term.op = il::Op::Jump;
+                term.operands.clear();
+                term.elseTarget = {};
+                folded = true;
+            }
+        }
+        if (folded) {
+            std::vector<uint8_t> unused(fn.blocks.size(), 0);
+            pruneUnreachable(fn, unused);
+        }
+    }
+}
+
+namespace {
 
 bool runTypedBodyVersion(il::Function& fn, std::vector<il::BlockId>& coldOut) {
     if (fn.blocks.empty()) return false;

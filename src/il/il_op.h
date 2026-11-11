@@ -585,7 +585,9 @@ enum class Op : uint8_t {
     // GUARDS") is its only producer: it stands in front of a stretch of the
     // fast copy in which the same receiver's sites are `shapeGuarded` raw
     // loads and stores. Loads only; cannot throw, cannot collect, moves no
-    // shape.
+    // shape. With no claim (`staticSlot` unset) it is a typed body's exit
+    // waiting for its read's (lower/typed_body_version.h, "READS"), settled
+    // by resolveReadExits before the backend.
     IsShape,
     // a: f64 = layout.epoch. The thread's LAYOUT EPOCH (runtime/shape_leave.h,
     // docs/aot-specialization.md "S1"), which is the prototype-mutation epoch,

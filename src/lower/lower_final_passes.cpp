@@ -214,6 +214,9 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // unclaimed, and its number hints (C), before the layout facts spend
     // the claims.
     if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats);
+    // The exits the typed bodies left in front of their reads, now that every
+    // read that will have a claim has it.
+    resolveReadExits(mod);
     if (wholeProgram) {
         // After the claims, which it spends: a receiver's guard asked once
         // answers its later sites across calls (layout_facts.h).

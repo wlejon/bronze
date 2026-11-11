@@ -11,8 +11,13 @@
 
 namespace bronze::lower {
 
+// A point of the copy where control leaves it for the original body, one way:
+// each of `guarded` is tested for being a Number, then `shapeOf`, when there
+// is one, for the guard of the static read the split stands in front of
+// (typed_body_version.h, "READS").
 struct TypedBodyGuardSplit {
     uint32_t index = 0;
+    il::ValueId shapeOf = il::kNoValue;
     std::vector<il::ValueId> guarded;
     std::vector<il::ValueId> params;
     std::vector<il::ValueId> paramIds;

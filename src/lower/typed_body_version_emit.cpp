@@ -711,8 +711,13 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                 fastTailArgs.reserve(sp.params.size());
                 for (il::ValueId v : sp.params) fastTailArgs.push_back(mapV(v));
 
+                // One test a block: the Numbers, then the read's pending
+                // guard, so that it stands right in front of its read; the
+                // last one passes into the next part and every one fails into
+                // the original body at this point.
+                const size_t tests = sp.guarded.size() + (sp.shapeOf != il::kNoValue ? 1 : 0);
                 std::vector<il::BlockId> testBlocks{partId};
-                for (size_t k = 1; k < sp.guarded.size(); ++k) {
+                for (size_t k = 1; k < tests; ++k) {
                     il::Block tb;
                     tb.id = static_cast<il::BlockId>(fn.blocks.size());
                     tb.handler = src.handler;
@@ -722,26 +727,31 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                     testBlocks.push_back(tb.id);
                     fn.blocks.push_back(std::move(tb));
                 }
-                for (size_t k = 0; k < sp.guarded.size(); ++k) {
-                    il::Instruction isNum;
-                    isNum.op = il::Op::IsNumber;
-                    isNum.type = il::Type::Bool;
-                    isNum.result = static_cast<il::ValueId>(fn.valueCount++);
-                    isNum.operands = {mapV(sp.guarded[k])};
-                    isNum.span = spSpan;
+                for (size_t k = 0; k < tests; ++k) {
+                    il::Instruction test;
+                    test.type = il::Type::Bool;
+                    test.result = static_cast<il::ValueId>(fn.valueCount++);
+                    test.span = spSpan;
+                    if (k < sp.guarded.size()) {
+                        test.op = il::Op::IsNumber;
+                        test.operands = {mapV(sp.guarded[k])};
+                    } else {
+                        // No claim yet: resolveReadExits gives it the read's.
+                        test.op = il::Op::IsShape;
+                        test.operands = {mapV(sp.shapeOf)};
+                    }
 
                     il::Instruction br;
                     br.op = il::Op::Branch;
                     br.type = il::Type::Void;
                     br.result = il::kNoValue;
-                    br.operands = {isNum.result};
-                    br.target = (k + 1 < sp.guarded.size())
-                                    ? il::BlockTarget{testBlocks[k + 1], {}}
-                                    : il::BlockTarget{fastPartId[b][seg + 1], {}};
+                    br.operands = {test.result};
+                    br.target = (k + 1 < tests) ? il::BlockTarget{testBlocks[k + 1], {}}
+                                                : il::BlockTarget{fastPartId[b][seg + 1], {}};
                     br.elseTarget = il::BlockTarget{slowTailId[b][seg], fastTailArgs};
                     br.span = spSpan;
 
-                    fn.blocks[testBlocks[k]].instructions.push_back(std::move(isNum));
+                    fn.blocks[testBlocks[k]].instructions.push_back(std::move(test));
                     fn.blocks[testBlocks[k]].instructions.push_back(std::move(br));
                 }
             }

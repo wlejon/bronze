@@ -46,8 +46,32 @@ namespace bronze::lower {
 // `fromArray` / `toArray` field copy, which the backend's element runs
 // (il_lowering_elem_run.cpp) already fuse behind one guard.
 //
+// READS. A named read in the body (`uvs.x0` between the batcher's stores) asks
+// its receiver's shape and, on a miss, calls the ordinary read and comes back.
+// A call that comes back is a place the view may have been detached or moved,
+// so every access after it reads the view's length, buffer and bytes over
+// again, hit or miss. In the copy the read's guard is asked by a split in
+// front of it instead, and a miss leaves for the original body's read: the
+// copy then calls nothing between its accesses, and the backend reads each
+// view's header once. The claim the guard tests is not known when the copy is
+// made (a site is claimed last, lower_final_passes.cpp), so the split holds an
+// `is.shape` with no claim and resolveReadExits, run after the claims, gives
+// it the claim of the read it stands in front of and makes that read its bare
+// load (il.h `shapeGuarded`), or, where the read got no claim, answers it
+// `true` and leaves the read as it is. A claim by cell is tested against the
+// cell of the original body's read, the one a miss runs: only a site's own
+// miss fills its cell, and the copy's read no longer has one.
+//
 // `cold` receives each original body, by function name, as the loop pass
 // gives its original loops: the inliner spends its room on the copy first.
 bool applyTypedBodyVersions(il::Module& module, ColdBlocks* cold = nullptr);
+
+// Settles every claimless `is.shape` ("READS" above). Whatever happened to the
+// copy since it was made, a test is given a claim only where it still stands
+// directly in front of a claimed read of its operand: the test ends its block,
+// the block it passes into has no other way in, and nothing before the read
+// there can collect or throw. Must run before the backend, which knows no
+// claimless test.
+void resolveReadExits(il::Module& module);
 
 }  // namespace bronze::lower
