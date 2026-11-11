@@ -125,6 +125,10 @@ void rtInvalidateGlobalReadCells();
 // with a module they do not belong to.
 uint64_t rtBeginModuleEpoch();
 void rtEndModuleEpoch(uint64_t epoch);
+// Empties every accessor and method cell that names a shape
+// (accessor_cell.cpp): at a prototype-epoch bump, and before the memory a
+// cell lives in or the shapes it names can go.
+void rtForgetPublishedCells() noexcept;
 void rtDropModuleEpoch(uint64_t epoch);
 uint64_t rtCurrentModuleEpoch() noexcept;
 // Spans registered between these two are permanent (epoch 0) whatever bracket

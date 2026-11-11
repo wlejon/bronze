@@ -140,15 +140,13 @@ Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t
     // join). A plain object's shape, else the stand-in (not_plain_shape); a
     // cell's first word is 0, kRefused (1) or a shape
     // (runtime/accessor_cell.cpp), so `keyed == cell[0]` already says "plain
-    // and that shape".
+    // and that shape" — and "at this epoch": the runtime empties every cell
+    // that names a shape when the epoch moves.
     //
-    // Each cell word is loaded right in front of its one compare, so the
+    // The cell word is loaded right in front of its one compare, so the
     // compare takes it as a memory operand.
     if (!keyed) keyed = pl.keyed_shape(b, recv);
-    Value* same_shape = b.build_eq(keyed, b.build_load(Type::i64(), cells, off));
-    Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* same_epoch = b.build_eq(epoch, b.build_load(Type::i64(), cells, off + 8));
-    return b.build_and(same_shape, same_epoch);
+    return b.build_eq(keyed, b.build_load(Type::i64(), cells, off));
 }
 
 Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* obj,

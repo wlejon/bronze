@@ -11,7 +11,13 @@
 //
 // The cell is (shape, epoch), and the guard is
 //
-//     receiver is plain  &&  receiver.shape == cell[0]  &&  cell[1] == epoch
+//     receiver is plain  &&  receiver.shape == cell[0]
+//
+// one compare, because a cell that names a shape always speaks for the
+// current epoch: every published cell is on the thread's list, and a bump of
+// the epoch empties each one before anything else runs
+// (`rtForgetPublishedCells`, called by `bumpProtoMutationEpoch`). The epoch
+// word is the slow path's alone: it says whether the miss should ask again.
 //
 // The SHAPE stands for everything about the receiver itself: a non-dictionary
 // shape fixes the object's own keys (so the key is still not own) and its
@@ -43,6 +49,11 @@
 // moves: setup bumps it often (every class body adds methods to a prototype),
 // and a cell pinned once would go stale for good. It is still one call per
 // site per epoch, not one per miss.
+//
+// The list is also emptied, cells and all, before a compiled-in-process
+// module's memory can go (its cells live there) and when the thread's
+// runtime state is torn down (a later thread's shape may take a dead one's
+// address): rt_state.cpp. A cell emptied that way reads as never tried.
 
 #include "abi/bronze_abi.h"
 #include "runtime/fn.h"
@@ -56,6 +67,8 @@
 #include "runtime/string.h"
 #include "runtime/value.h"
 
+#include <vector>
+
 namespace bronze::runtime {
 
 namespace {
@@ -63,6 +76,15 @@ namespace {
 // Not a legal shape address (shapes come from the arena 8-aligned), so the
 // guard needs no extra test to treat a refusal as a miss.
 constexpr uint64_t kRefused = 1;
+
+// The cells that name a shape now.
+thread_local std::vector<uint64_t*> t_published;
+
+void publish(uint64_t* cell, uint64_t word, uint64_t epoch) {
+    cell[0] = word;
+    cell[1] = epoch;
+    if (word != kRefused) t_published.push_back(cell);
+}
 
 // The function the key resolves to on `obj`'s prototype chain — an accessor's
 // half, or a data property's value for a method — or null when the chain
@@ -97,6 +119,14 @@ const FunctionHeader* resolvedMember(ObjectHeader* obj, PropertyKey key, Member 
 }
 
 }  // namespace
+
+void rtForgetPublishedCells() noexcept {
+    for (uint64_t* cell : t_published) {
+        cell[0] = 0;
+        cell[1] = 0;
+    }
+    t_published.clear();
+}
 
 extern "C" {
 
@@ -133,8 +163,7 @@ void bronze_accessor_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t*
             }
         }
     }
-    cell[0] = published;
-    cell[1] = epoch;
+    publish(cell, published, epoch);
 }
 
 // The same reconciliation for an inlined METHOD body's guard (`method.ic.is`
@@ -166,8 +195,7 @@ void bronze_method_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
             }
         }
     }
-    cell[0] = published;
-    cell[1] = epoch;
+    publish(cell, published, epoch);
 }
 
 }  // extern "C"

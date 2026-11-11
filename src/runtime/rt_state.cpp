@@ -480,7 +480,8 @@ void rtDropModuleEpoch(uint64_t epoch) {
     ThreadModuleState& s = *g_threadModules;
     dropModuleSpansAndSingletons(s, epoch);
     // Before the modules themselves go: a compiled-in-process module owns the
-    // memory its instance lives in.
+    // memory its instance lives in, its accessor cells included.
+    rtForgetPublishedCells();
     rtResetModuleInstancesOfEpoch(epoch);
     std::erase_if(s.dynamicModules, [epoch, &s](const std::unique_ptr<DynamicModule>& mod) {
         if (mod->epoch != epoch) return false;
@@ -681,6 +682,8 @@ static void sweepDynamicModules() {
     ThreadModuleState& s = *g_threadModules;
     if (s.dynamicModules.empty()) return;
     std::vector<std::shared_ptr<void>> retiredOwners;
+    // A module retired here takes its accessor cells with it.
+    rtForgetPublishedCells();
     std::erase_if(s.dynamicModules, [&s, &retiredOwners](const std::unique_ptr<DynamicModule>& mod) {
         if (mod->marked.load(std::memory_order_relaxed) || isEpochActiveOnStack(s, mod->epoch)) {
             return false;
@@ -990,6 +993,7 @@ static void releaseThreadDynamicModules() {
 }
 
 void rtTeardownThreadState() {
+    rtForgetPublishedCells();
     g_plainObjectShape = nullptr;
     bronze_tls_block_addr()->plain_shape = 0;
     for (uint32_t n = 0; n <= Shape::kOverflowSlot; ++n) {

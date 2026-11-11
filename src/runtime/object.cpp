@@ -98,6 +98,9 @@ static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_ST
 void bumpProtoMutationEpoch() noexcept {
     if (BRONZE_UNLIKELY(runtime::g_shapeCensusEnabled)) runtime::censusNoteEpochBump(BRONZE_CENSUS_RET_ADDR());
     runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP;
+    // The accessor and method cells' guards compare no epoch
+    // (accessor_cell.cpp): the cells are emptied here instead.
+    runtime::rtForgetPublishedCells();
 }
 
 void tripArrayIndexHazard(const char* why) noexcept {
