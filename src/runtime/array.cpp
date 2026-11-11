@@ -133,6 +133,31 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     arr->length = newLength;
 }
 
+void ArrayHeader::appendRange(Heap& heap, Rooted<Value>& self, Rooted<Value>& src, uint32_t start,
+                              uint32_t count, bool holesAsUndefined) {
+    if (count == 0) return;
+    const uint32_t at = self.get().asObject<ArrayHeader>()->length;
+    const bool numbers =
+        src.get().asObject<ArrayHeader>()->elementsAreNumbers() &&
+        (at == 0 ? !self.get().asObject<ArrayHeader>()->properties.isPointer()
+                 : self.get().asObject<ArrayHeader>()->elementsAreNumbers());
+    // Grows the block and leaves holes where the run goes; it allocates, so
+    // every pointer is taken after it.
+    setLength(heap, self, at + count);
+    ArrayHeader* out = self.get().asObject<ArrayHeader>();
+    const Value* from = std::as_const(*src.get().asObject<ArrayHeader>()).elementsData() + start;
+    HeapValue* to = out->elementsData() + at;
+    gcCopyValues(out->elementsBlock(), to, from, count);
+    if (numbers) {
+        // A run of Numbers after Numbers: no hole among them to rewrite.
+        out->reserved |= kElementsAreNumbers;
+    } else if (holesAsUndefined) {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (HeapValue::values(to)[i].isHole()) to[i] = Value::fromUndefined();
+        }
+    }
+}
+
 void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
     Rooted<Value> self(Value::fromObject(this));
     if (head_offset + index >= capacity) {

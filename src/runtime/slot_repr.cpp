@@ -5,8 +5,8 @@
 #include <cstring>
 #include <algorithm>
 #include <map>
+#include <atomic>
 #include <mutex>
-#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -28,23 +28,26 @@ bool envIsOne(const char* name) {
 
 // The eligible names, arena-interned and therefore immortal. A vector and a
 // linear `matches` scan rather than a hash set: the list is the pinned fields
-// of a program's math classes (seventeen, for three.js), it is consulted only
-// when a shape NODE IS CREATED, and content-matching an interned key is a
-// pointer compare in the common case.
+// of a program's math classes (seventeen, for three.js; none for most
+// programs), and content-matching an interned key is a pointer compare in the
+// common case.
 //
 // LEAKED, like the shape census's site table and for the same reason: the
 // report runs from `std::atexit`, and a function-local static constructed after
 // the handler was registered is destroyed BEFORE it runs. Every container in
 // this file that the report reads is allocated the same way.
-std::shared_mutex& eligibleNamesMutex() {
-    static auto* m = new std::shared_mutex();
+// Read on every store that creates a Number-valued property (object.cpp,
+// desiredSlotRepr), so readers take no lock: the list is an immutable
+// snapshot behind an atomic pointer, and a registration (a module's load)
+// publishes a new one under the writers' mutex. Old snapshots are leaked with
+// the rest; there is one per registered name.
+std::mutex& eligibleNamesMutex() {
+    static auto* m = new std::mutex();
     return *m;
 }
 
-std::vector<StringHeader*>& eligibleNames() {
-    static auto* v = new std::vector<StringHeader*>();
-    return *v;
-}
+using EligibleNames = std::vector<StringHeader*>;
+std::atomic<const EligibleNames*> g_eligibleNames{nullptr};
 
 // Per-(shape, slot) representation stability, for BRONZE_SLOT_REPR_CENSUS.
 struct SlotRec {
@@ -111,8 +114,8 @@ bool slotReprCensusEnabled() noexcept { return config().census; }
 
 void slotReprResetForTesting() {
     {
-        std::unique_lock<std::shared_mutex> lock(eligibleNamesMutex());
-        eligibleNames().clear();
+        std::lock_guard<std::mutex> lock(eligibleNamesMutex());
+        g_eligibleNames.store(nullptr, std::memory_order_release);
     }
     slotReprMutableCounters() = SlotReprCounters{};
     std::lock_guard<std::mutex> lock(censusMutex());
@@ -133,23 +136,27 @@ NonMovingArena& slotReprArena() {
 void slotReprRegisterName(StringHeader* name) {
     if (name == nullptr) return;
     const PropertyKey incoming = PropertyKey::forString(name);
-    std::unique_lock<std::shared_mutex> lock(eligibleNamesMutex());
-    for (StringHeader* existing : eligibleNames()) {
-        if (PropertyKey::forString(existing).matches(incoming)) return;
+    std::lock_guard<std::mutex> lock(eligibleNamesMutex());
+    const EligibleNames* current = g_eligibleNames.load(std::memory_order_acquire);
+    if (current != nullptr) {
+        for (StringHeader* existing : *current) {
+            if (PropertyKey::forString(existing).matches(incoming)) return;
+        }
     }
-    StringHeader* owned = StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name));
-    eligibleNames().push_back(owned);
+    auto* next = current != nullptr ? new EligibleNames(*current) : new EligibleNames();
+    next->push_back(StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name)));
+    g_eligibleNames.store(next, std::memory_order_release);
 }
 
 uint32_t slotReprEligibleCount() noexcept {
-    std::shared_lock<std::shared_mutex> lock(eligibleNamesMutex());
-    return static_cast<uint32_t>(eligibleNames().size());
+    const EligibleNames* names = g_eligibleNames.load(std::memory_order_acquire);
+    return names != nullptr ? static_cast<uint32_t>(names->size()) : 0;
 }
 
 bool slotReprEligible(PropertyKey key) noexcept {
-    if (!key.valid() || key.isSymbol()) return false;
-    std::shared_lock<std::shared_mutex> lock(eligibleNamesMutex());
-    for (StringHeader* name : eligibleNames()) {
+    const EligibleNames* names = g_eligibleNames.load(std::memory_order_acquire);
+    if (names == nullptr || !key.valid() || key.isSymbol()) return false;
+    for (StringHeader* name : *names) {
         if (PropertyKey::forString(name).matches(key)) return true;
     }
     return false;

@@ -277,6 +277,18 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // here — which is how a symbol-keyed property becomes invisible to
     // `Object.keys`, `Object.entries` and `JSON.stringify` at once, by BEING a
     // symbol rather than by any rule about its spelling.
+    // A plain object at a tree shape: its shape's remembered list, written
+    // into the result with no key list built (the keys are arena strings, so
+    // the stores need no barrier's help to keep them).
+    if (hdr->flags == HeapKind::Plain) {
+        if (const std::vector<StringHeader*>* keys =
+                rtShapeEnumerableStringKeys(reinterpret_cast<ObjectHeader*>(hdr)->shape)) {
+            const uint32_t n = static_cast<uint32_t>(keys->size());
+            ArrayHeader* arr = ArrayHeader::create(rtHeap(), n ? n : 4);
+            for (uint32_t i = 0; i < n; ++i) arr->setElem(rtHeap(), i, rtKeyAsValue((*keys)[i]));
+            return Value::fromObject(arr).rawBits();
+        }
+    }
     const StringKeyList ordered =
         rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
 

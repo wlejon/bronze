@@ -166,6 +166,17 @@ struct ArrayHeader {
     // through a root and `this` must not be reused.
     static void setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength);
 
+    // `count` elements of `src` from `start`, appended to `self` in one copy
+    // with one barrier: what `slice`, a spread of an array and `concat` are
+    // when nothing between the read and the write can run a program. A hole
+    // of the source arrives as a hole, or as `undefined` when
+    // `holesAsUndefined` (an iteration reads it so). `start + count` must not
+    // pass the source's length. NUMBERS is kept when the result is all
+    // Numbers because the source was and `self` was (or was empty). Allocates,
+    // so both arrive through roots; they may be the same array.
+    static void appendRange(Heap& heap, Rooted<Value>& self, Rooted<Value>& src, uint32_t start,
+                            uint32_t count, bool holesAsUndefined);
+
     // The MUTABLE accessors forget NUMBERS: whoever asks for a writable
     // pointer may store anything through it. A reader holding a non-const
     // header should call the const overload (`std::as_const`) so that reading

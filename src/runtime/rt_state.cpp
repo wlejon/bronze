@@ -1016,6 +1016,7 @@ void rtTeardownThreadState() {
     if (g_threadArena) {
         // Its shapes and immortal keys are what the lookup memo is keyed on.
         Shape::forgetLookupMemo();
+        rtForgetShapeKeyLists();
         delete g_threadArena;
         g_threadArena = nullptr;
     }

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/native_base.h"
 #include "runtime/array.h"
 #include "runtime/builtin_object.h"
 #include "runtime/exception.h"
@@ -209,9 +210,24 @@ void appendStringCodePoints(Rooted<Value>& out, Rooted<Value>& src) {
 // the whole reason spread stopped being an index walk. A value with no
 // @@iterator method raises the TypeError 7.4.2 defines rather than producing an
 // empty result.
+bool isPlainArraySource(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+           !rtExoticPropertyBox(v).isObject();
+}
+
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     if (src.get().isString() && rtStringIteratorPristine()) {
         appendStringCodePoints(out, src);
+        return;
+    }
+    // An array with no named-property box iterates as %Array.prototype.values%
+    // does and nothing else can (iterator_records.cpp: the prototype and the
+    // array iterator are frozen), so its elements are copied, a hole read as
+    // `undefined`.
+    if (isPlainArraySource(src.get()) && isPlainArraySource(out.get())) {
+        ArrayHeader::appendRange(rtHeap(), out, src, 0,
+                                 src.get().asObject<ArrayHeader>()->length,
+                                 /*holesAsUndefined=*/true);
         return;
     }
     Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};

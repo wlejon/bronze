@@ -40,6 +40,17 @@ PropertyKeyList rtOwnKeysOrdered(const struct ObjectHeader* obj, bool enumerable
 // cannot have got a symbol.
 StringKeyList rtOwnStringKeysOrdered(const struct ObjectHeader* obj, bool enumerableOnly = true);
 
+// The own enumerable string keys of a TRANSITION-TREE shape in that order,
+// remembered per shape: a tree shape's keys never change and are arena
+// strings, so the list is built once and read with no allocation by
+// `Object.keys` and the copies (`{...o}`, `Object.assign`), which ask it of
+// the same few shapes all day. Null for a dictionary shape, whose keys are
+// its one object's to change. The pointer holds until the calling thread
+// next asks this of another shape.
+const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const struct Shape* shape);
+// Emptied with the arena whose shapes and keys it names.
+void rtForgetShapeKeyLists() noexcept;
+
 // An arena-interned key as an ordinary JS value — the arena object ITSELF,
 // not a copy. A JS string has no observable identity (`===` is content
 // equality) and every string is immutable, so a program cannot tell the

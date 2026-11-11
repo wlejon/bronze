@@ -252,6 +252,49 @@ StringKeyList rtOwnStringKeysOrdered(const ObjectHeader* obj, bool enumerableOnl
     return names;
 }
 
+namespace {
+struct ShapeKeyList {
+    const Shape* shape = nullptr;
+    std::vector<StringHeader*> keys;
+};
+constexpr size_t kShapeKeyLists = 256;
+thread_local ShapeKeyList t_shapeKeyLists[kShapeKeyLists];
+}  // namespace
+
+const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const Shape* shape) {
+    if (shape == nullptr || shape->isDictionary()) return nullptr;
+    ShapeKeyList& slot =
+        t_shapeKeyLists[(reinterpret_cast<uintptr_t>(shape) >> 4) % kShapeKeyLists];
+    if (slot.shape == shape) return &slot.keys;
+    // Insertion order with the integer-like names first, ascending (10.1.11):
+    // rtOwnKeysOrdered's order, for a shape instead of an object.
+    std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
+    std::vector<StringHeader*> strKeys;
+    for (const Shape* n = shape; n != nullptr; n = n->parent) {
+        if (!n->key.valid() || !n->enumerable) continue;
+        StringHeader* name = n->key.string();
+        if (name == nullptr) continue;
+        uint32_t idx = 0;
+        if (name->isLatin1() && rtIsIntegerLikeKey(latin1View(name), idx)) {
+            intKeys.emplace_back(idx, name);
+        } else {
+            strKeys.push_back(name);
+        }
+    }
+    std::sort(intKeys.begin(), intKeys.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    slot.shape = shape;
+    slot.keys.clear();
+    for (const auto& [idx, name] : intKeys) slot.keys.push_back(name);
+    // The chain was walked newest first.
+    slot.keys.insert(slot.keys.end(), strKeys.rbegin(), strKeys.rend());
+    return &slot.keys;
+}
+
+void rtForgetShapeKeyLists() noexcept {
+    for (ShapeKeyList& slot : t_shapeKeyLists) slot = ShapeKeyList{};
+}
+
 extern "C" {
 
 uint64_t bronze_create_object() {
