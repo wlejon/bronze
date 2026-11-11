@@ -8,6 +8,14 @@
 #include <utility>
 
 namespace bronze::lower {
+namespace {
+
+// The calls il_array_method.cpp has an inline Array arm for.
+bool arrayArmName(const std::string& method, size_t argc) {
+    return (method == "push" && argc >= 1 && argc <= 8) || (method == "shift" && argc == 0);
+}
+
+}  // namespace
 
 void DirectMethodTable::recordSite(uint32_t icIndex, std::string receiverClass,
                                    std::string method) {
@@ -165,6 +173,19 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
                 if ((inst.immI32 & il::Instruction::kMethodRecvArray) != 0) continue;
                 const auto site = sites_.find(inst.icIndex);
                 if (site == sites_.end()) continue;
+                // `x.push(a, b)` and `x.shift()` on a receiver nothing typed,
+                // read from no field a class stores one class in: an Array far
+                // more often than an instance of a class that declares the
+                // name (pixi has eight `push` methods and 36 `verts.push(x, y)`
+                // in buildLine alone, each through the method cache into the
+                // native). The inline arm tests the receiver itself and a miss
+                // is the site's ordinary call, so the hint costs a class
+                // instance one header compare.
+                if (site->second.receiverClass.empty() && arrayArmName(site->second.method, inst.operands.size() - 1) &&
+                    (site->second.fieldKey.empty() || fieldClassGuesses_.count(site->second.fieldKey) == 0)) {
+                    inst.immI32 |= il::Instruction::kMethodRecvArray;
+                    continue;
+                }
                 const std::string cls =
                     site->second.receiverClass.empty() ? guessClass(site->second) : site->second.receiverClass;
                 if (cls.empty()) continue;
