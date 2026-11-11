@@ -79,8 +79,25 @@ size_t Lowerer::cleanupDepthForJump(size_t targetIndex) const {
     return depth;
 }
 
-void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync) {
+void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync,
+                            il::ValueId noRecordIf) {
     if (!isAsync) {
+        // A loop that walks a plain array by index opened no record
+        // (lowerIteratorLoop), and an array iterator has nothing to close.
+        il::BlockId after = il::kNoBlock;
+        if (noRecordIf != il::kNoValue) {
+            const il::BlockId close = createBlock(ilFn);
+            after = createBlock(ilFn);
+            il::Instruction br;
+            br.op = il::Op::Branch;
+            br.type = il::Type::Void;
+            br.result = il::kNoValue;
+            br.operands = {noRecordIf};
+            br.target = il::BlockTarget{.block = after, .args = {}};
+            br.elseTarget = il::BlockTarget{.block = close, .args = {}};
+            emitInst(ilFn, br);
+            setCurrentBlock(close);
+        }
         il::Instruction inst;
         inst.op = il::Op::IterClose;
         inst.type = il::Type::Void;
@@ -88,6 +105,15 @@ void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilF
         inst.operands = {record};
         inst.immI32 = suppress ? 1 : 0;
         emitInst(ilFn, inst);
+        if (after != il::kNoBlock) {
+            il::Instruction j;
+            j.op = il::Op::Jump;
+            j.type = il::Type::Void;
+            j.result = il::kNoValue;
+            j.target = il::BlockTarget{.block = after, .args = {}};
+            emitInst(ilFn, j);
+            setCurrentBlock(after);
+        }
         return;
     }
     il::ValueId closeRes = ilFn.valueCount++;
@@ -156,7 +182,7 @@ bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
             // other — 7.4.9 discards one only when a throw is already in
             // flight, which is the handler's copy, not this one.
             emitIterClose(frame.iterRecord, /*suppress=*/false, ilFn,
-                          frame.kind == CleanupKind::AsyncIteratorClose);
+                          frame.kind == CleanupKind::AsyncIteratorClose, frame.noRecordIf);
             continue;
         }
         // Truncated below this entry while its body runs, so a `break` inside

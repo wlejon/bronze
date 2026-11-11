@@ -225,11 +225,13 @@ TEST_CASE("switch lowers to a strict-equality test chain") {
     CHECK(printed.find("br %") != std::string::npos);
 }
 
-TEST_CASE("for-of opens an iterator and closes it when the body throws") {
-    // The loop is a cursor, not an index and a length — an iterator is opened
-    // once, stepped, and read. And the body runs under a handler whose only job
-    // is to close the iterator and re-raise, so a `throw` from inside the loop
-    // still reaches the iterator's `return` method.
+TEST_CASE("for-of walks a plain array by index, else opens an iterator and closes it when the body throws") {
+    // One test of the source decides the loop's kind: a plain array is read
+    // by index against its length, with no record; anything else is a cursor,
+    // an iterator opened once, stepped, and read. And the body runs under a
+    // handler whose only job is to close the iterator (when one was opened)
+    // and re-raise, so a `throw` from inside the loop still reaches the
+    // iterator's `return` method.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -241,16 +243,15 @@ TEST_CASE("for-of opens an iterator and closes it when the body throws") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
+    CHECK(printed.find("is.plain_array") != std::string::npos);
+    CHECK(printed.find("elem.get") != std::string::npos);
     CHECK(printed.find("iter.open") != std::string::npos);
     CHECK(printed.find("iter.step") != std::string::npos);
     CHECK(printed.find("iter.value") != std::string::npos);
     // Suppressed, because a throw is already on its way out and 7.4.9 step 6
     // keeps that one rather than anything `return` might raise.
-    CHECK(printed.find("iter.close %4, suppress") != std::string::npos);
+    CHECK(printed.find(", suppress") != std::string::npos);
     CHECK(printed.find("exc.take") != std::string::npos);
-    // No index is threaded through the loop's blocks any more: the record
-    // holds the cursor, so the only block parameters are source bindings.
-    CHECK(printed.find("iter.advance") == std::string::npos);
 }
 
 TEST_CASE("a class lowers to a constructor, a prototype and property writes") {

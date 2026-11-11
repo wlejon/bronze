@@ -664,7 +664,10 @@ private:
     bool lowerThrowStmt(const ast::ThrowStmt* throwStmt, il::Function& ilFn);
     bool runCleanups(size_t downTo, il::Function& ilFn);
     size_t cleanupDepthForJump(size_t targetIndex) const;
-    void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync = false);
+    // `noRecordIf`: a Bool under which there is no record and nothing to
+    // close (a for-of walking a plain array by index).
+    void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync = false,
+                       il::ValueId noRecordIf = il::kNoValue);
     bool lowerFinallyBody(const ast::TryStmt& stmt, il::Function& ilFn);
     void openBlockUnderHandler(il::BlockId handler, il::Function& ilFn);
 

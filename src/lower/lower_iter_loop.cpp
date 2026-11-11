@@ -41,13 +41,75 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 il::Function& ilFn, bool isAwait) {
     const std::string label = takePendingLabel();
 
-    il::ValueId recVal = ilFn.valueCount++;
-    il::Instruction openInst;
-    openInst.op = isAwait ? il::Op::AsyncIterOpen : il::Op::IterOpen;
-    openInst.type = il::Type::Dynamic;
-    openInst.result = recVal;
-    openInst.operands = {iterVal.id};
-    emitInst(ilFn, openInst);
+    // AN ARRAY IS WALKED BY INDEX. A plain array (`is.plain_array`: no
+    // named-property box, so its `[Symbol.iterator]` is %Array.prototype.values%
+    // and that iterator's `next` the intrinsic, both frozen) is stepped as the
+    // array iterator steps it — `index < length` asked again each time, then
+    // Get(array, index) — with the index a value of the loop instead of a
+    // field of an iteration record: no record is opened, the step is a compare
+    // and the read an inline element load. The question is asked ONCE, where
+    // GetIterator would have read the method; a box the body gives the array
+    // later changes nothing, as it would not for an iterator already made.
+    // There is nothing to close: an array iterator has no `return`.
+    // Everything else opens a record, in the same loop: each of the step and
+    // the value is a branch on the one answer.
+    const bool indexed = !isAwait;
+    il::ValueId isArrVal = il::kNoValue;
+    il::ValueId recVal = il::kNoValue;
+    const auto jumpTo = [&](il::BlockId block, std::vector<il::ValueId> args) {
+        il::Instruction j;
+        j.op = il::Op::Jump;
+        j.type = il::Type::Void;
+        j.result = il::kNoValue;
+        j.target = il::BlockTarget{.block = block, .args = std::move(args)};
+        emitInst(ilFn, j);
+    };
+    const auto branchOnKind = [&](il::BlockId onArray, il::BlockId onRecord) {
+        il::Instruction br;
+        br.op = il::Op::Branch;
+        br.type = il::Type::Void;
+        br.result = il::kNoValue;
+        br.operands = {isArrVal};
+        br.target = il::BlockTarget{.block = onArray, .args = {}};
+        br.elseTarget = il::BlockTarget{.block = onRecord, .args = {}};
+        emitInst(ilFn, br);
+    };
+    if (indexed) {
+        isArrVal = ilFn.valueCount++;
+        il::Instruction isArr;
+        isArr.op = il::Op::IsPlainArray;
+        isArr.type = il::Type::Bool;
+        isArr.result = isArrVal;
+        isArr.operands = {iterVal.id};
+        emitInst(ilFn, isArr);
+        const il::BlockId bArray = createBlock(ilFn);
+        const il::BlockId bOpen = createBlock(ilFn);
+        const il::BlockId bJoin = createBlock(ilFn);
+        branchOnKind(bArray, bOpen);
+        setCurrentBlock(bArray);
+        jumpTo(bJoin, {emitConstUndefined(ilFn)});
+        setCurrentBlock(bOpen);
+        const il::ValueId opened = ilFn.valueCount++;
+        il::Instruction openInst;
+        openInst.op = il::Op::IterOpen;
+        openInst.type = il::Type::Dynamic;
+        openInst.result = opened;
+        openInst.operands = {iterVal.id};
+        emitInst(ilFn, openInst);
+        jumpTo(bJoin, {opened});
+        // The record, or `undefined` on the array's side, where nothing reads it.
+        recVal = ilFn.valueCount++;
+        ilFn.blocks[bJoin].params.push_back({recVal, il::Type::Dynamic});
+        setCurrentBlock(bJoin);
+    } else {
+        recVal = ilFn.valueCount++;
+        il::Instruction openInst;
+        openInst.op = il::Op::AsyncIterOpen;
+        openInst.type = il::Type::Dynamic;
+        openInst.result = recVal;
+        openInst.operands = {iterVal.id};
+        emitInst(ilFn, openInst);
+    }
 
     const auto loopParams = collectLoopParams(loopStmt, ast::getAssignedNames(loopStmt));
     std::vector<std::string> loopVars;
@@ -67,13 +129,28 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     il::BlockId bUpdate = createBlock(ilFn);
 
     auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
-
-    il::Instruction jmpEntry;
-    jmpEntry.op = il::Op::Jump;
-    jmpEntry.type = il::Type::Void;
-    jmpEntry.result = il::kNoValue;
-    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
-    emitInst(ilFn, jmpEntry);
+    // The array walk's index: the header's last parameter, after the source
+    // bindings (collectEdgeArgs pairs those by position).
+    il::ValueId indexVal = il::kNoValue;
+    const auto f64Const = [&](double v) {
+        const il::ValueId id = ilFn.valueCount++;
+        il::Instruction c;
+        c.op = il::Op::ConstF64;
+        c.type = il::Type::F64;
+        c.result = id;
+        c.immF64 = v;
+        emitInst(ilFn, c);
+        return id;
+    };
+    {
+        std::vector<il::ValueId> entryArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
+        if (indexed) {
+            indexVal = ilFn.valueCount++;
+            ilFn.blocks[bHeader].params.push_back({indexVal, il::Type::F64});
+            entryArgs.push_back(f64Const(0.0));
+        }
+        jumpTo(bHeader, std::move(entryArgs));
+    }
 
     setCurrentBlock(bHeader);
     bindLoopBlockParams(loopParams, headerParamMap);
@@ -109,13 +186,46 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
         Value notDone = emitLogicalNot(doneBool, ilFn);
         moreVal = notDone.id;
     } else {
-        moreVal = ilFn.valueCount++;
+        const il::BlockId bArrayStep = createBlock(ilFn);
+        const il::BlockId bRecordStep = createBlock(ilFn);
+        const il::BlockId bTest = createBlock(ilFn);
+        branchOnKind(bArrayStep, bRecordStep);
+
+        setCurrentBlock(bArrayStep);
+        const il::ValueId lenVal = ilFn.valueCount++;
+        il::Instruction lenInst;
+        lenInst.op = il::Op::PropGet;
+        lenInst.type = il::Type::Dynamic;
+        lenInst.result = lenVal;
+        lenInst.keyIndex = getKeyConstantIndex("length");
+        lenInst.icIndex = icSiteCounter_++;
+        lenInst.immI32 = il::kPropGetArrayLength;
+        lenInst.operands = {iterVal.id};
+        emitInst(ilFn, lenInst);
+        const Value lenNum =
+            unboxValueIfNeeded(Value{lenVal, il::Type::Dynamic}, il::Type::F64, ilFn);
+        const il::ValueId inRange = ilFn.valueCount++;
+        il::Instruction lt;
+        lt.op = il::Op::CmpLt;
+        lt.type = il::Type::Bool;
+        lt.result = inRange;
+        lt.operands = {indexVal, lenNum.id};
+        emitInst(ilFn, lt);
+        jumpTo(bTest, {inRange});
+
+        setCurrentBlock(bRecordStep);
+        const il::ValueId stepped = ilFn.valueCount++;
         il::Instruction stepInst;
         stepInst.op = il::Op::IterStep;
         stepInst.type = il::Type::Bool;
-        stepInst.result = moreVal;
+        stepInst.result = stepped;
         stepInst.operands = {recVal};
         emitInst(ilFn, stepInst);
+        jumpTo(bTest, {stepped});
+
+        moreVal = ilFn.valueCount++;
+        ilFn.blocks[bTest].params.push_back({moreVal, il::Type::Bool});
+        setCurrentBlock(bTest);
     }
 
     // The exit block carries the loop variables only: `break` reaches it from
@@ -148,13 +258,36 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
         getVal.operands = {asyncIterResult.id};
         emitInst(ilFn, getVal);
     } else {
-        elemVal = ilFn.valueCount++;
+        const il::BlockId bArrayValue = createBlock(ilFn);
+        const il::BlockId bRecordValue = createBlock(ilFn);
+        const il::BlockId bValue = createBlock(ilFn);
+        branchOnKind(bArrayValue, bRecordValue);
+
+        setCurrentBlock(bArrayValue);
+        const Value indexBoxed = boxValueIfNeeded(Value{indexVal, il::Type::F64}, ilFn);
+        const il::ValueId readVal = ilFn.valueCount++;
+        il::Instruction getInst;
+        getInst.op = il::Op::ElemGet;
+        getInst.type = il::Type::Dynamic;
+        getInst.result = readVal;
+        getInst.operands = {iterVal.id, indexBoxed.id};
+        getInst.immI32 = il::kElemFlagArrayReceiver | il::kElemFlagProvenIntegralIndex;
+        emitInst(ilFn, getInst);
+        jumpTo(bValue, {readVal});
+
+        setCurrentBlock(bRecordValue);
+        const il::ValueId stepValue = ilFn.valueCount++;
         il::Instruction valueInst;
         valueInst.op = il::Op::IterValue;
         valueInst.type = il::Type::Dynamic;
-        valueInst.result = elemVal;
+        valueInst.result = stepValue;
         valueInst.operands = {recVal};
         emitInst(ilFn, valueInst);
+        jumpTo(bValue, {stepValue});
+
+        elemVal = ilFn.valueCount++;
+        ilFn.blocks[bValue].params.push_back({elemVal, il::Type::Dynamic});
+        setCurrentBlock(bValue);
     }
 
     // The jump target goes on FIRST and the cleanup second, so the cleanup's
@@ -169,7 +302,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     jumpStack_.back().scopeDepth = currentScopeDepth_;
     cleanupStack_.push_back(CleanupFrame{
         isAwait ? CleanupKind::AsyncIteratorClose : CleanupKind::IteratorClose, nullptr, recVal,
-        jumpStack_.size(), outerHandler});
+        jumpStack_.size(), outerHandler, isArrVal});
     jumpStack_.back().cleanupDepthInBody = cleanupStack_.size();
 
     // A `let`/`const` head binding belongs to the body's scope, so it gets an
@@ -216,13 +349,21 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
 
     setCurrentBlock(bUpdate);
     bindLoopBlockParams(loopParams, updateParamMap);
-    il::Instruction backJmp;
-    backJmp.op = il::Op::Jump;
-    backJmp.type = il::Type::Void;
-    backJmp.result = il::kNoValue;
-    backJmp.target =
-        il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
-    emitInst(ilFn, backJmp);
+    {
+        std::vector<il::ValueId> backArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
+        if (indexed) {
+            const il::ValueId one = f64Const(1.0);
+            const il::ValueId next = ilFn.valueCount++;
+            il::Instruction inc;
+            inc.op = il::Op::Add;
+            inc.type = il::Type::F64;
+            inc.result = next;
+            inc.operands = {indexVal, one};
+            emitInst(ilFn, inc);
+            backArgs.push_back(next);
+        }
+        jumpTo(bHeader, std::move(backArgs));
+    }
 
     // The throw path (ECMA-262 7.4.9 with a throw completion). It takes the
     // thrown value, closes the iterator with errors from `return` SUPPRESSED —
@@ -237,7 +378,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     take.type = il::Type::Dynamic;
     take.result = pending;
     emitInst(ilFn, take);
-    emitIterClose(recVal, /*suppress=*/true, ilFn, isAwait);
+    emitIterClose(recVal, /*suppress=*/true, ilFn, isAwait, isArrVal);
     il::Instruction rethrow;
     rethrow.op = il::Op::Throw;
     rethrow.type = il::Type::Void;

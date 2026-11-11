@@ -73,6 +73,9 @@ struct CleanupFrame {
     il::ValueId iterRecord = il::kNoValue;
     size_t jumpDepth = 0;
     il::BlockId outerHandler = il::kNoBlock;
+    // An iterator close's: the Bool that says the loop walks a plain array by
+    // index and opened no record to close (lowerIteratorLoop), or kNoValue.
+    il::ValueId noRecordIf = il::kNoValue;
 };
 
 // The two immutable-binding forms ECMA-262 creates, told apart by the S that
