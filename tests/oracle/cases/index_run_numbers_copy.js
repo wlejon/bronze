@@ -79,8 +79,8 @@ delete holed.elements[7];
 twice(dst, holed, "hole");
 console.log("hole own", 7 in dst.elements, dst.elements[7] === undefined);
 
-// (An inherited index answering a hole's read is not reachable: bronze
-// refuses an index defined on Array.prototype, "Cannot decorate".)
+// (An inherited index answering a hole's read is not reachable:
+// Array.prototype is frozen.)
 holed.elements[7] = 10.5;
 twice(dst, holed, "filled");
 

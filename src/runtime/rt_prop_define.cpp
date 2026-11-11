@@ -77,7 +77,7 @@ bool rtCreateDataPropertyOrThrow(Rooted<Value>& target, PropertyKey name, Rooted
         // general path below refuses them.
         Value stringData;
         const bool stringWrapper = rtStringWrapperData(target.get(), stringData);
-        if (shape && !stringWrapper && !rtArrayPrototypeRefusesChange(target.get())) {
+        if (shape && !stringWrapper) {
             bool present = false;
             bool plainData = false;
             if (shape->isDictionary()) {

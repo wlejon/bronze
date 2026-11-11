@@ -128,8 +128,8 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // the intrinsic, fixed by 23.1.6.1 and 20.2.3, and bronze builds both
         // objects. So the answer is the intrinsic, and what an array's chain
         // does NOT do (walk through it — an array's members are answered beside
-        // the value) is a separate fact, already refused by name where a
-        // program could act on it: decorating Array.prototype.
+        // the value) is a separate fact, and one no program can act on:
+        // Array.prototype is frozen (lockdown.h).
         if (Value proto; rtShapelessPrototypeOf(args[0], proto)) return proto.rawBits();
         if (args[0].isObject() &&
             args[0].asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
@@ -271,12 +271,6 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
         const uint64_t call[1] = {self.get().rawBits()};
         const Value current(objectGetPrototypeOf(0, 0, 1, call));
         if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) return true;
-    }
-    // An array's misses go to `Object.prototype` whatever `Array.prototype`'s
-    // chain says, so a new one there is the lie rt_builtins.h refuses.
-    if (rtArrayPrototypeRefusesChange(self.get())) {
-        rtThrowArrayPrototypeChange("replace its prototype");
-        return false;
     }
     if (!rtIsExtensible(self.get())) return false;
     // Step 8: a chain that would loop back to the object is refused, walked

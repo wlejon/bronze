@@ -253,13 +253,6 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
             bool existed = false;
             const SetRefusal why = receiverRefusalForData(receiver, key, existed);
             if (why != SetRefusal::None) return why;
-            // The write lands on the receiver, so the receiver is what the
-            // `Array.prototype` refusal asks about (rt_builtins.h). Asked
-            // after the refusals above, which a frozen one answers with.
-            if (rtArrayPrototypeRefusesChange(receiver.get())) {
-                rtThrowArrayPrototypeChange("write", key.get());
-                return SetRefusal::None;
-            }
             if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
                 return defineOntoProxyReceiver(receiver, key, val, existed);
             }

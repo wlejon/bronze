@@ -563,16 +563,6 @@ static bool applyFunctionDescriptor(Rooted<Value>& self, PropertyKey name,
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
                             Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
                             bool throwOnRefusal) {
-    // The assignment's refusal (rt_builtins.h), for every spelling of a
-    // define: an unfrozen `Array.prototype` would take the property and no
-    // array would ever see it. It is not 10.1.6.3's refusal — the object is
-    // ordinary and would accept — but bronze's limit, so it throws for
-    // `Reflect.defineProperty` too rather than becoming a `false` that says
-    // the object declined. A frozen one passes on and declines for itself.
-    if (rtArrayPrototypeRefusesChange(self.get())) {
-        rtThrowArrayPrototypeChange("define", name.toValue());
-        return false;
-    }
     const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
     if (kind == HeapKind::Array) {
         return applyArrayDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
@@ -729,16 +719,15 @@ namespace {
 // (absent fields false, 10.1.6.3 step 2 through 6.2.5.6) — and nothing else.
 //
 // The receiver's start, when it is one an add can be published from: a plain
-// object with no internal slots at a tree shape that is no prototype's, no
-// global object, and not `Array.prototype` (its refusal is by identity, and the
-// arm only sees a shape).
+// object with no internal slots at a tree shape that is no prototype's, and no
+// global object.
 Shape* defineAddStart(Value objVal, const uint64_t* cells) {
     if (cells == nullptr || !objVal.isObject()) return nullptr;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain || !reinterpret_cast<ObjectHeader*>(hdr)->isBarePlain()) return nullptr;
     Shape* start = reinterpret_cast<ObjectHeader*>(hdr)->shape;
     if (start == nullptr || start->isDictionary() || start->used_as_prototype) return nullptr;
-    if (rtIsArrayPrototypeShape(start) || rtRealmOfGlobal(objVal) != nullptr) return nullptr;
+    if (rtRealmOfGlobal(objVal) != nullptr) return nullptr;
     return start;
 }
 

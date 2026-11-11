@@ -161,7 +161,7 @@ void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
 // Whether the array's `[Symbol.iterator]` is the intrinsic %Array.prototype.values%,
 // which is what lets an ARRAY record step its elements directly. An array with
 // the intrinsic prototype and no named properties answers that without a
-// lookup: Array.prototype refuses every change (rtArrayPrototypeRefusesChange),
+// lookup: Array.prototype is frozen with every intrinsic (lockdown.h),
 // so its `[Symbol.iterator]` is `values` for good. An own or inherited override
 // (`a[Symbol.iterator] = ...`, a subclass's method) is the lookup's to find.
 // The iterator's `next` needs no check: it is an own property of each iterator

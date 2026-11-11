@@ -104,8 +104,7 @@ dialect, up to but not including the final passes) and
 - each `method.call` whose key is one of the builtins' method names becomes
   `is.plain_array recv ? call @selfhost.<name>(recv, args...) : <the method
   call as it was>`. `is.plain_array` (il_op.h) holds only for an Array with no
-  named-property box: Array.prototype refuses every change in bronze
-  (rt_prop_write.cpp), so for such a receiver the property read can only
+  named-property box: Array.prototype is frozen (runtime/lockdown.h), so for such a receiver the property read can only
   answer the intrinsic, and the copy runs exactly where the registered builtin
   would have, with the same arguments (padded with `undefined`, extra ones
   dropped, `reduce`'s argument count passed to its direct entry);

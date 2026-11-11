@@ -97,8 +97,8 @@ struct InlineCache {
     // `cached_depth > 0`; at depth 0 the receiver's own shape already
     // changes whenever an own property is added to it, and an
     // array-method sentinel entry leaves it 0 and never reads it (the
-    // method table is immutable by construction — decorating
-    // `Array.prototype` is a hard error, rt_prop_write.cpp).
+    // method table is immutable: `Array.prototype` is frozen,
+    // lockdown.h).
     uint64_t cached_epoch{0};
 
     bool isArrayMethod() const noexcept {

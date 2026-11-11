@@ -404,10 +404,13 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                     // 10.2.4 makes `prototype` non-enumerable and
                     // non-configurable, writable unless the function is one
                     // whose prototype never was; 10.2.9 and 10.2.10 make the
-                    // pair non-writable, non-enumerable and CONFIGURABLE.
+                    // pair non-writable, non-enumerable and CONFIGURABLE,
+                    // until the function is sealed or frozen (every builtin
+                    // is, lockdown.h).
                     const bool writable =
                         isProto && rtFunctionPrototypeWritable(self.get());
-                    const bool configurable = !isProto;
+                    const bool configurable =
+                        !isProto && rtIntegrityLevel(self.get()) == IntegrityLevel::Open;
                     Rooted<Value> out{Value(bronze_create_object())};
                     putField(out, "value", value);
                     Rooted<Value> w{Value::fromBool(writable)};

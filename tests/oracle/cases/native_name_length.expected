@@ -448,12 +448,12 @@ Iterator.from "from" 1
 %AsyncGeneratorPrototype%.throw "throw" 1
 %AsyncIteratorPrototype%[Symbol.asyncIterator] "[Symbol.asyncIterator]" 0
 GeneratorFunction 1 AsyncGeneratorFunction AsyncFunction
-Array name "Array" false false true length 1 false false true
-Array.prototype.map name "map" false false true length 1 false false true
-Math.max name "max" false false true length 2 false false true
-parseInt name "parseInt" false false true length 2 false false true
-TypeError name "TypeError" false false true length 1 false false true
-Map name "Map" false false true length 0 false false true
+Array name "Array" false false false length 1 false false false
+Array.prototype.map name "map" false false false length 1 false false false
+Math.max name "max" false false false length 2 false false false
+parseInt name "parseInt" false false false length 2 false false false
+TypeError name "TypeError" false false false length 1 false false false
+Map name "Map" false false false length 0 false false false
 from,fromAsync,isArray,length,name,of,prototype
 length,name
 length,name

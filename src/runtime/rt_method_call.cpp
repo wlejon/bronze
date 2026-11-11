@@ -78,8 +78,8 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 //   Array: the probe's way 0 holds the ARRAY-METHOD sentinel, which the read
 //   path fills only when the answer came from the method table, the receiver
 //   carried no named-property box, and the array-method get IC is enabled
-//   (rt_prop.cpp) — and that table cannot change, because decorating
-//   `Array.prototype` is a hard error by construction (rt_prop_write.cpp).
+//   (rt_prop.cpp) — and that table cannot change, because
+//   `Array.prototype` is frozen (lockdown.h).
 //
 //   Typed arrays: the native-member memo (runtime/native_fn_memo.h) answers
 //   (kind, key) with the interned ladder native and nothing else — a fill is

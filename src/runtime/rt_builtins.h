@@ -570,29 +570,13 @@ bool rtCheckAppliedArgumentCount(uint32_t count, const char* member);
 // the same method table an array answers beside itself, never a link on any
 // array's chain (builtin_array.cpp's comment above it says why both halves
 // hold). The identity test and the miss check exist for the two paths a plain
-// object takes: a write to it is refused by name (rt_prop_write.cpp), and a
+// object takes: a write to it is declined as any frozen intrinsic declines
+// one (lockdown.h), and a
 // full-chain read miss on it is diagnosed against the Array unimplemented
 // table rather than read as `undefined` (rt_prop.cpp).
 Value rtArrayPrototypeObject();
 Value rtArrayPrototypeObjectIfBuilt();  // rtObjectPrototypeIfBuilt's terms
 bool rtIsArrayPrototypeObject(Value v);
-// The refusal itself, which every path that can change an object asks — an
-// assignment by name or by key, `Reflect.set` and `super.k = v` (a receiver),
-// `Object.assign`, the descriptor family, `delete`, and [[SetPrototypeOf]]:
-// a property installed on the object is found by reads of `Array.prototype`
-// and by nothing an array does, the silent lie the refusal exists to prevent,
-// so the change is a TypeError naming what was tried rather than a success.
-// True when `obj` is that object and the change must be refused; the caller
-// then throws with `rtThrowArrayPrototypeChange("write `k`")` and the like.
-bool rtArrayPrototypeRefusesChange(Value obj);
-// Whether `shape` is the one `Array.prototype` has now (never creating it): a
-// cache keyed by shape must not take an add onto that object, which the
-// refusal above answers for the object and not for its shape.
-bool rtIsArrayPrototypeShape(const Shape* shape);
-void rtThrowArrayPrototypeChange(const std::string& what);
-// The same for a change to one property, `verb` (`write`, `define`, `delete`)
-// and the key as a value: a string, an index, or a symbol.
-void rtThrowArrayPrototypeChange(const char* verb, Value key);
 bool rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key);
 
 // `String.prototype[Symbol.iterator]` (22.1.3.36), installed by

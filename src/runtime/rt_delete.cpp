@@ -72,6 +72,18 @@ Value prepareDeleteReceiver(Value v) {
     return root.get();
 }
 
+// `name` and `length` of a function live in its header, not its box, and are
+// configurable (10.2.9) until the function is sealed or frozen, which every
+// builtin is (lockdown.h): then the delete is refused like any other of a
+// non-configurable property. (Unsealed, the header keeps both and the delete
+// answers true without removing them.)
+bool sealedFunctionHeaderKey(Value v, const std::string& key) {
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
+    if (key != "name" && key != "length") return false;
+    return v.asObject<FunctionHeader>()->name != nullptr &&
+           rtIntegrityLevel(v) != IntegrityLevel::Open;
+}
+
 // 10.4.5.4 [[Delete]] on a typed array, for the NUMERIC half of its keys: a
 // valid index names an element, which is non-configurable, so the delete
 // answers false; any other canonical numeric string names nothing and answers
@@ -188,21 +200,6 @@ bool deleteArrayProperty(Rooted<Value>& objRoot, Value keyVal, std::string& outK
 
 }  // namespace
 
-// `delete Array.prototype.shift` would leave every array still answering
-// `shift` from its table while the object said it had none — the refusal
-// rt_builtins.h describes. A key the object does not have is no change, and
-// keeps 13.5.1's `true`; a frozen object refuses for itself. True when this
-// answered the delete, with `result` the answer: the own-key test allocates,
-// so the caller's raw receiver and key are not to be used after it.
-static bool arrayPrototypeDelete(Value objVal, Value key, bool& result) {
-    if (!rtArrayPrototypeRefusesChange(objVal)) return false;
-    Rooted<Value> self{objVal};
-    Rooted<Value> keyRoot{key};
-    result = !rtHasOwnPropertyNamed(self, keyRoot.get());
-    if (!result) rtThrowArrayPrototypeChange("delete", keyRoot.get());
-    return true;
-}
-
 extern "C" {
 
 // The strict half of 13.5.1.2 step 5.b, in one place because `delete o.k` and
@@ -267,10 +264,10 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return rtProxyDelete(objVal, Value::fromString(keyHeader), strict);
     }
-    if (bool answer = false; arrayPrototypeDelete(objVal, Value::fromString(keyHeader), answer)) {
-        return answer;
-    }
 
+    if (sealedFunctionHeaderKey(objVal, rtKeyString(keyIndex))) {
+        return reportRefusedDelete(false, strict, rtKeyString(keyIndex));
+    }
     objVal = prepareDeleteReceiver(objVal);
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
@@ -326,8 +323,11 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return rtProxyDelete(objVal, idxVal, strict);
     }
-    if (bool answer = false; arrayPrototypeDelete(objVal, idxVal, answer)) return answer;
 
+    if (idxVal.isString()) {
+        const std::string text = rtUtf8Chars(idxVal.asString<StringHeader>());
+        if (sealedFunctionHeaderKey(objVal, text)) return reportRefusedDelete(false, strict, text);
+    }
     {
         // The key is a primitive here and may be a heap string, so it rides
         // through the constructor's first write on a root.

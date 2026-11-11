@@ -1,55 +1,55 @@
 forEach function forEach 1 function forEach() { [native code] } function forEach() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 map function map 1 function map() { [native code] } function map() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 filter function filter 1 function filter() { [native code] } function filter() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 some function some 1 function some() { [native code] } function some() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 every function every 1 function every() { [native code] } function every() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 find function find 1 function find() { [native code] } function find() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 findIndex function findIndex 1 function findIndex() { [native code] } function findIndex() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true
   extensible false
 reduce function reduce 1 function reduce() { [native code] } function reduce() { [native code] }
   own keys ["length","name"] false false
-  name attrs false false true length attrs false false true
+  name attrs false false false length attrs false false false
   new TypeError
   Reflect.construct TypeError
   proto is Function.prototype true

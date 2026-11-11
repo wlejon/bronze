@@ -93,7 +93,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
 // asked of an array uniform (`ambientLightColor`), once each per material
 // refresh. An array without a named-property box answers a non-index,
 // non-`length` key from two places only, `Array.prototype`'s C table (fixed:
-// decorating it is a hard error, rt_prop_write.cpp) and `Object.prototype`'s
+// the object is frozen, lockdown.h) and `Object.prototype`'s
 // own properties (its [[Prototype]] is null). So "absent" is a fact about the
 // key and the current realm's `Object.prototype` alone, and it holds while that
 // object's shape and the prototype-mutation epoch both do: an add moves the

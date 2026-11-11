@@ -56,7 +56,7 @@ inline ElemSetFastEntry& elemSetFastEntryFor(const Shape* shape, uint32_t keyHas
 }
 
 // Executes a cached computed store on a bare plain receiver (`sh` non-null and
-// non-dictionary, `Array.prototype` refusal already checked): own-slot
+// non-dictionary): own-slot
 // overwrite, shape-transition add, or own/inherited accessor setter call.
 bool tryCachedPlainElemSet(Value objVal, uint64_t idxBits, uint64_t valBits, bool strict,
                            InlineCache& ic, const StringHeader* matchedArenaKey) {
@@ -236,15 +236,6 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     ElemSetCacheEntry* setEntry = elemSetCacheEntryFor(objVal, Value(idxBits));
     if (setEntry && setEntry->ic.describesOwn(objVal.asObject<ObjectHeader>()->shape)) {
         objVal.asObject<ObjectHeader>()->setSlot(setEntry->ic.cached_slot, Value(valBits));
-        return;
-    }
-
-    // `bronze_prop_set`'s refusal, for the computed spelling of the same write
-    // (`Array.prototype[k] = v`, and `Object.assign` onto it). No cache entry
-    // can have answered above: only `setProp` fills one, and this keeps every
-    // write to the object from reaching it.
-    if (rtArrayPrototypeRefusesChange(objVal)) {
-        rtThrowArrayPrototypeChange("write", Value(idxBits));
         return;
     }
 

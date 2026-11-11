@@ -4,7 +4,7 @@ own names: apply,bind,call,constructor,length,name,toString
 own symbols: Symbol.hasInstance
 Reflect.ownKeys: Symbol(Symbol.hasInstance),apply,bind,call,constructor,length,name,toString
 hasOwn: true true true false false undefined
-length/name descs: value:number w:false e:false c:true value:string w:false e:false c:true
+length/name descs: value:number w:false e:false c:false value:string w:false e:false c:false
 apply: value:function w:false e:false c:false apply 2
 bind: value:function w:false e:false c:false bind 1
 call: value:function w:false e:false c:false call 1

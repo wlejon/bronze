@@ -15,7 +15,7 @@
 // The contract a caller keeps:
 //   - `thisBits` is the receiver the site's guard named: for an ARRAY entry an
 //     Array with no named-property box (whose member is the intrinsic, because
-//     Array.prototype refuses every change); for a STRING entry a String whose
+//     Array.prototype is frozen); for a STRING entry a String whose
 //     `String.prototype` member is this builtin's function object (the method
 //     cache's PRIMITIVE entry plus the function's code word). Every entry
 //     re-tests the receiver's kind anyway, so a wrong one costs the builtin's

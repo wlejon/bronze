@@ -364,16 +364,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // shape carries an index or `length` for it to have matched.
     if (stringExoticRefusesWrite(objVal, keyStr, strict)) return;
 
-    // The `Array.prototype` OBJECT is a plain object no array's chain runs
-    // through (builtin_array.cpp), so a method installed on it would be found
-    // by reads of `Array.prototype` and by nothing an array does — a property
-    // that exists and changes nothing, which is the silent lie the refusal
-    // exists to prevent.
-    if (rtArrayPrototypeRefusesChange(objVal)) {
-        rtThrowArrayPrototypeChange("write `" + keyStr + "`");
-        return;
-    }
-
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("property write with an unregistered key index");
     // Interned arena key: no allocation before the object is dereferenced.
