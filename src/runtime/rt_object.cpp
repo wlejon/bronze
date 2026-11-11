@@ -6,6 +6,7 @@
 // constructor objects and so need nothing here.
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -258,13 +259,18 @@ struct ShapeKeyList {
     std::vector<StringHeader*> keys;
 };
 constexpr size_t kShapeKeyLists = 256;
-thread_local ShapeKeyList t_shapeKeyLists[kShapeKeyLists];
+// Raw pointer freed by rtForgetShapeKeyLists() during rtTeardownThreadState():
+// a non-trivial thread_local here registers its destructor after rt_state.cpp's
+// teardown guard and runs first at thread exit (LIFO), freeing the slot vectors
+// before rtTeardownThreadState() clears them.
+thread_local std::array<ShapeKeyList, kShapeKeyLists>* t_shapeKeyLists = nullptr;
 }  // namespace
 
 const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const Shape* shape) {
     if (shape == nullptr || shape->isDictionary()) return nullptr;
+    if (!t_shapeKeyLists) t_shapeKeyLists = new std::array<ShapeKeyList, kShapeKeyLists>();
     ShapeKeyList& slot =
-        t_shapeKeyLists[(reinterpret_cast<uintptr_t>(shape) >> 4) % kShapeKeyLists];
+        (*t_shapeKeyLists)[(reinterpret_cast<uintptr_t>(shape) >> 4) % kShapeKeyLists];
     if (slot.shape == shape) return &slot.keys;
     // Insertion order with the integer-like names first, ascending (10.1.11):
     // rtOwnKeysOrdered's order, for a shape instead of an object.
@@ -292,7 +298,8 @@ const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const Shape* shape
 }
 
 void rtForgetShapeKeyLists() noexcept {
-    for (ShapeKeyList& slot : t_shapeKeyLists) slot = ShapeKeyList{};
+    delete t_shapeKeyLists;
+    t_shapeKeyLists = nullptr;
 }
 
 extern "C" {

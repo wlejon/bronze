@@ -47,7 +47,7 @@ StringKeyList rtOwnStringKeysOrdered(const struct ObjectHeader* obj, bool enumer
 // the same few shapes all day. Null for a dictionary shape, whose keys are
 // its one object's to change. The pointer holds until the calling thread
 // next asks this of another shape.
-const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const struct Shape* shape);
+const std::vector<StringHeader*>* rtShapeEnumerableStringKeys(const Shape* shape);
 // Emptied with the arena whose shapes and keys it names.
 void rtForgetShapeKeyLists() noexcept;
 

@@ -135,7 +135,7 @@ private:
     }
 
     bool threadTruth(const il::Block& join) {
-        const il::Instruction br = join.instructions[1];
+        const il::Instruction& br = join.instructions[1];
         const il::Block& onTrue = fn_.blocks[br.target.block];
         const il::Block& onFalse = fn_.blocks[br.elseTarget.block];
         if (!sameCopy(onTrue, join) || !sameCopy(onFalse, join)) return false;
@@ -149,11 +149,18 @@ private:
             if (term.op == il::Op::Jump) {
                 if (argDef == nullptr || !isBoxedBool(*argDef)) continue;
                 // The jump becomes the join's branch on the unboxed answer.
-                il::Instruction nb = br;
-                nb.operands[0] = argDef->operands[0];
+                // Build nb fresh rather than copying br: truthJoin proved
+                // br.operands.size() == 1, which trips GCC 14's -Warray-bounds
+                // inside std::vector's copy constructor.
+                il::Instruction nb;
+                nb.op = il::Op::Branch;
+                nb.immI32 = br.immI32;
+                nb.operands = {argDef->operands[0]};
+                nb.target = br.target;
+                nb.elseTarget = br.elseTarget;
                 nb.span = term.span;
                 nb.inlineFrame = term.inlineFrame;
-                term = nb;
+                term = std::move(nb);
                 changed = true;
                 continue;
             }
