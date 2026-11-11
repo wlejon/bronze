@@ -668,6 +668,74 @@ void applyFeedbackAccessors(il::Module& mod, const FeedbackPlan& plan, const Acc
     }
 }
 
+uint32_t addProfiledFamilies(il::Module& mod, const FeedbackPlan& plan) {
+    // More than this and the walk every shape's stamp makes (class_family.cpp)
+    // is paying for classes no hot site reads.
+    constexpr size_t kMaxAdded = 128;
+    std::unordered_map<std::string_view, uint32_t> keyIndex;
+    for (uint32_t k = 0; k < mod.keyConstants.size(); ++k) keyIndex.emplace(mod.keyConstants[k], k);
+    using Fields = std::vector<uint32_t>;
+    auto begins = [](const Fields& whole, const Fields& head) {
+        return head.size() <= whole.size() && std::equal(head.begin(), head.end(), whole.begin());
+    };
+    // Lexicographic order is the preorder of the lists' prefix tree: a list is
+    // followed by the lists it begins, which is what a range of ids covers.
+    std::set<Fields> found;
+    std::vector<std::string_view> keys;
+    for (const auto& [ic, names] : plan.shapesByIc) {
+        (void)ic;
+        std::vector<Fields> met;
+        bool usable = true;
+        for (const auto& [name, count] : names.counts) {
+            if (count == 0 || name == "*other*") continue;
+            bool complete = false;
+            uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+            if (!shapeKeys(name, keys, complete, &inlineSlots)) {
+                usable = false;
+                break;
+            }
+            // The positions that are slots (familyOf): all of them, or those
+            // before a capacity that splits the keys early.
+            const size_t prefix =
+                inlineSlots < BRONZE_ABI_OBJ_OVERFLOW_SLOT ? std::min<size_t>(keys.size(), inlineSlots) : keys.size();
+            Fields fields;
+            for (size_t i = 0; i < prefix && usable; ++i) {
+                const auto it = keyIndex.find(keys[i]);
+                // `constructor` is how a prototype looks from here, and a
+                // prototype's writes must reach the runtime.
+                usable = it != keyIndex.end() && keys[i] != "constructor";
+                if (usable) fields.push_back(it->second);
+            }
+            if (!usable) break;
+            met.push_back(std::move(fields));
+        }
+        if (!usable || met.size() < 2) continue;
+        const Fields& head = *std::min_element(met.begin(), met.end(),
+                                               [](const Fields& a, const Fields& b) { return a.size() < b.size(); });
+        if (head.size() < 2 || !std::all_of(met.begin(), met.end(), [&](const Fields& f) { return begins(f, head); })) {
+            continue;
+        }
+        found.insert(head);
+    }
+    uint32_t added = 0;
+    for (const Fields& fields : found) {
+        if (added == kMaxAdded) break;
+        bool related = false;
+        for (size_t c = 0; c + added < mod.classFamilies.size() && !related; ++c) {
+            Fields have;
+            for (const auto& f : mod.classFamilies[c].fields) have.push_back(f.keyIndex);
+            related = !have.empty() && (begins(fields, have) || begins(have, fields));
+        }
+        if (related) continue;
+        il::Module::ClassFamilyEntry entry;
+        entry.name = "profile:" + mod.keyConstants[fields.front()] + ".." + mod.keyConstants[fields.back()];
+        for (uint32_t k : fields) entry.fields.push_back({k, true});
+        mod.classFamilies.push_back(std::move(entry));
+        ++added;
+    }
+    return added;
+}
+
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats) {
     FeedbackApplyStats local;
     ClaimWriter writer(mod, plan, stats ? *stats : local);

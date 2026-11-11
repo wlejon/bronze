@@ -399,6 +399,14 @@ share. A write that met a shape and the one it grew from by one or two keys
 counts as the grown shape's, the other keeping one execution, which is what
 gives the claim its regrow. The result:
 
+Before any claim, `addProfiledFamilies` (`feedback_apply.cpp`) reads layout
+families off the plan: where a property site met several shapes that all begin
+with the keys of the shortest (a base class's method run on the base and its
+subclasses, whose constructors the compiler could not model), that key list
+joins `classFamilies`, the runtime stamps every shape that begins with it, and
+the site is claimed by one range test (consumer A's family form) in place of a
+chain. A list related to a family the lowering proved is left out.
+
 - a single held receiver is dominant (consumers A and F);
 - two or three receivers are a chain (E). Four receivers fill the cache, so
   that site is marked `full`;

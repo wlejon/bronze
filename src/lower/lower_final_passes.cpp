@@ -94,6 +94,9 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     std::string scratch;
     std::string& report = wholeProgram && !probe ? wholeProgram_->report : scratch;
     spec::FeedbackApplyStats feedbackStats;
+    // After the lowering's own families (lowering is over, and their ids are
+    // in its claims) and before any claim of this run.
+    if (plan != nullptr) spec::addProfiledFamilies(mod, *plan);
 
     // The predicted direct targets first, so that every pass below that
     // copies or specializes a callee reads them as it reads lowering's. A

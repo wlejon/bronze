@@ -199,6 +199,21 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 // shapes.
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats);
 
+// Layout families read off the profile, for the classes whose construction
+// the compiler could not model (a constructor that copies an options object,
+// mixins): where a property site met several shapes that all begin with the
+// keys of the shortest (`this` in a base class's method: the base and its
+// subclasses, or an object before and after it grew a key), that key list is
+// appended to `mod.classFamilies`, and the runtime stamps every shape that
+// begins with it (runtime/class_family.cpp verifies, name by name). The
+// claims that follow (the whole-program stamps, applyFeedbackClaimsAndHints)
+// then guard such a site by one range test where it had an inline-cache
+// chain. A list that a family already there begins, equals or extends is left
+// out: the shape would trade that family's stamp for the new one, which the
+// sites already claimed for the old do not admit. Run before any claim of the
+// build reads the table; returns how many it added.
+uint32_t addProfiledFamilies(il::Module& mod, const FeedbackPlan& plan);
+
 // F, accessor targets: (prototype name, key, setter) -> the getter or setter
 // the classes so named resolve the key to, or UINT32_MAX (lowering's class
 // table answers it, lower/direct_method_table.h `accessorOfShownClass`).
