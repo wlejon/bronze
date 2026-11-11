@@ -612,6 +612,7 @@ bool rtBoundFunctionState(Value fn, Value& target, Value& boundThis, Value& boun
 // `Function` and `Function.prototype` (builtin_function.cpp).
 Value rtFunctionConstructorObject();
 Value rtFunctionPrototypeObject();
+Value rtFunctionPrototypeIfBuilt();
 bool rtIsFunctionConstructor(Value fn);
 
 // 19.2.1 `eval` (builtin_function.cpp, beside the Function constructor whose
@@ -672,6 +673,7 @@ void rtPrepareFunctionOwnWrite(Rooted<Value>& fn);
 // walk a prototype chain an array does not have, and `extends`, which must
 // refuse a base whose instances it cannot actually produce.
 const char* rtIntrinsicConstructorName(Value fn);
+bool rtIntrinsicConstructorHasTableStatics(Value fn) noexcept;
 bool rtIsArrayConstructor(Value fn);
 bool rtOrdinaryHasInstance(Value ctor, Value obj);
 uint64_t rtFunctionHasInstanceBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,

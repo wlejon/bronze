@@ -704,6 +704,19 @@ const char* rtIntrinsicConstructorName(Value fn) {
     return nullptr;
 }
 
+bool rtIntrinsicConstructorHasTableStatics(Value fn) noexcept {
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return false;
+    }
+    const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
+    for (const CtorEntry& entry : kCtors) {
+        if (entry.code == code) {
+            return entry.staticCount > 0 || entry.unimplementedCount > 0;
+        }
+    }
+    return false;
+}
+
 bool rtIsArrayConstructor(Value fn) {
     return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
            fn.asObject<FunctionHeader>()->code == kCtors[0].code;

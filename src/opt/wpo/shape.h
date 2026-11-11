@@ -67,6 +67,11 @@ class ShapeAnalysis {
 public:
     explicit ShapeAnalysis(Solver& solver);
     void run();
+    // Upgrades constructor inline-slot capacities (`Function::fnFlags`) and the
+    // matching `ObjShape::inlineSlots` from all own keys WPO saw written on
+    // each non-exotic instance, plus slack when later expando writes remain
+    // possible, before static-slot offsets are claimed.
+    void upgradeInstanceInlineSlots(il::Module& mod);
     const ObjShape& shape(ObjId id) const { return shapes_[id]; }
     // One runtime shape for every object of the site: the exact key list,
     // nothing added later, nothing escaped, deleted or reattributed.
@@ -93,6 +98,7 @@ private:
     WalkOut walk(uint32_t fn, uint32_t startBlock, uint32_t startInst, const std::vector<il::ValueId>& seeds,
                  const std::vector<il::ValueId>& fnSeeds, const State& in, int depth);
     bool chainHasAccessor(uint32_t key) const;
+    bool hasExoticProtoChain(ObjId id) const;
 
     Solver& solver_;
     std::vector<ObjShape> shapes_;

@@ -46,6 +46,11 @@ struct HotRange {
 thread_local std::vector<HotRange> t_ranges;
 // The range the last write found: a frame's fills come from one module.
 thread_local size_t t_last = 0;
+// Envelope [t_minLo, t_maxHi) across all live `t_ranges` on this thread
+// (`UINTPTR_MAX` / `0` when empty), so stack-allocated scratch sites and
+// unharvested tables reject in a single comparison without touching the vector.
+thread_local uintptr_t t_minLo = UINTPTR_MAX;
+thread_local uintptr_t t_maxHi = 0;
 
 // A module instance's METHOD ROWS (bronze_abi_layout.h): its table's range,
 // the rows, and the method sites in the sorted order the rows follow.
@@ -58,6 +63,30 @@ struct MethodRange {
 
 thread_local std::vector<MethodRange> t_methodRanges;
 thread_local size_t t_methodLast = 0;
+thread_local uintptr_t t_methodMinLo = UINTPTR_MAX;
+thread_local uintptr_t t_methodMaxHi = 0;
+
+void recomputeHotBounds() noexcept {
+    uintptr_t minLo = UINTPTR_MAX;
+    uintptr_t maxHi = 0;
+    for (const HotRange& r : t_ranges) {
+        if (r.lo < minLo) minLo = r.lo;
+        if (r.hi > maxHi) maxHi = r.hi;
+    }
+    t_minLo = minLo;
+    t_maxHi = maxHi;
+}
+
+void recomputeMethodBounds() noexcept {
+    uintptr_t minLo = UINTPTR_MAX;
+    uintptr_t maxHi = 0;
+    for (const MethodRange& r : t_methodRanges) {
+        if (r.lo < minLo) minLo = r.lo;
+        if (r.hi > maxHi) maxHi = r.hi;
+    }
+    t_methodMinLo = minLo;
+    t_methodMaxHi = maxHi;
+}
 
 static_assert(BRONZE_ABI_METHOD_ROW_SIZE == 4 * sizeof(uint64_t) && BRONZE_ABI_METHOD_ROW_SHAPE_OFFSET == 0 &&
                   BRONZE_ABI_METHOD_ROW_CODE_OFFSET == 8 && BRONZE_ABI_METHOD_ROW_ARITY_OFFSET == 16 &&
@@ -108,8 +137,8 @@ void foldRange(const HotRange& r) {
 
 void rtIcHotNoteWrite(const InlineCache* entry) noexcept {
     const auto at = reinterpret_cast<uintptr_t>(entry);
+    if (at < t_minLo || at >= t_maxHi) return;
     const size_t n = t_ranges.size();
-    if (n == 0) return;
     if (t_last < n) {
         const HotRange& r = t_ranges[t_last];
         if (at >= r.lo && at < r.hi) {
@@ -131,8 +160,8 @@ namespace runtime {
 
 void rtMethodRowNoteWrite(const uint64_t* icEntry) noexcept {
     const auto at = reinterpret_cast<uintptr_t>(icEntry);
+    if (at < t_methodMinLo || at >= t_methodMaxHi) return;
     const size_t n = t_methodRanges.size();
-    if (n == 0 || !icEntry) return;
     if (t_methodLast < n) {
         const MethodRange& r = t_methodRanges[t_methodLast];
         if (at >= r.lo && at < r.hi) {
@@ -164,15 +193,21 @@ void rtIcHotDropWithin(const void* begin, size_t size) noexcept {
     std::erase_if(t_methodRanges, [lo, hi](const MethodRange& r) { return r.lo < hi && r.hi > lo; });
     t_last = 0;
     t_methodLast = 0;
+    recomputeHotBounds();
+    recomputeMethodBounds();
 }
 
 void rtIcHotClearThread() noexcept {
     t_ranges.clear();
     t_ranges.shrink_to_fit();
     t_last = 0;
+    t_minLo = UINTPTR_MAX;
+    t_maxHi = 0;
     t_methodRanges.clear();
     t_methodRanges.shrink_to_fit();
     t_methodLast = 0;
+    t_methodMinLo = UINTPTR_MAX;
+    t_methodMaxHi = 0;
 }
 
 size_t rtMethodRowRangeCount() noexcept { return t_methodRanges.size(); }
@@ -197,6 +232,7 @@ extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_
     // instance) replaces its range rather than adding a second copy of it.
     runtime::rtIcHotDropWithin(icTable, static_cast<size_t>(hi - lo));
     t_ranges.push_back({lo, hi, hot, identity});
+    recomputeHotBounds();
     // A standalone program built with `--harvest-out` names its file here.
     runtime::rtIcHarvestNoteIdentity(identity);
     // The rows start as copies of what the sites hold now: zero for a fresh
@@ -217,6 +253,7 @@ extern "C" void bronze_register_method_ic_rows(uint64_t* icTable, uint64_t* rows
     std::erase_if(t_methodRanges, [&r](const MethodRange& m) { return m.lo < r.hi && m.hi > r.lo; });
     t_methodLast = 0;
     t_methodRanges.push_back(std::move(r));
+    recomputeMethodBounds();
     // The rows start as copies of what the sites hold now.
     const MethodRange& added = t_methodRanges.back();
     for (uint64_t site : added.sites) copyMethodRow(added, added.lo + site * BRONZE_ABI_IC_SITE_SIZE);

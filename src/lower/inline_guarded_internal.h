@@ -24,19 +24,26 @@ namespace bronze::lower::inline_guarded_detail {
 // slower than inlining neither, since the call left behind sat in a loop body
 // that now held every other value live across it.
 inline constexpr size_t kMaxCalleeInstructions = 250;
+// Tiny getters, setters, and leaf vector/point helpers (`<= 32` instructions)
+// cost very little code and eliminate hot IC/call overhead inside loops.
+inline constexpr size_t kTinyCalleeInstructions = 32;
 // Inline frames deep: a body inlined into a body inlined into the caller.
 inline constexpr size_t kMaxDepth = 3;
-// A caller bigger than this takes no bodies: what is big already is mostly
-// cold library code (parsers, loaders), and brass's analyses grow faster than
-// linearly in a function's size, so it is build time spent for nothing.
+// A non-loop caller bigger than `kMaxCallerStart` takes no bodies: what is big
+// already without loops is mostly cold library code (parsers, loaders). Callers
+// with loops (often already versioned by `guardRegion` / `typedLoopVersion`)
+// or entered from loops admit up to `kMaxHotCallerStart`.
 inline constexpr size_t kMaxCallerStart = 800;
+inline constexpr size_t kMaxHotCallerStart = 2400;
 // A caller grows to at most twice its size plus this, and never past the cap.
 inline constexpr size_t kCallerGrowthSlack = 200;
 // ...or by this much, whichever is more: room for one callee of the largest
 // size with its blocks' joins, so a small method's one big call (`updateMatrix`
 // calling `compose`) is not the one call it can never take.
 inline constexpr size_t kMinCallerGrowth = 320;
+inline constexpr size_t kMinHotCallerGrowth = 1600;
 inline constexpr size_t kMaxCallerInstructions = 1500;
+inline constexpr size_t kMaxHotCallerInstructions = 3600;
 // The fixed-argument method.call form's widest list (il/verifier.cpp).
 inline constexpr size_t kMaxArgs = 16;
 
@@ -67,8 +74,10 @@ public:
             const ClosureGuesses* polyMethods, const ClosureGuesses* polyOwnCallees);
 
     // Inlines every eligible call in `fnIdx`, its copied bodies' calls
-    // included, within the depth and size bounds. Returns how many.
-    size_t inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlinedOwnIcs);
+    // included, within the depth and size bounds. When `tinyOnly` is set, only
+    // callees up to `kTinyCalleeInstructions` are considered. Returns how many.
+    size_t inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlinedOwnIcs,
+                      bool tinyOnly = false);
 
 private:
     static constexpr uint32_t kNone = UINT32_MAX;
@@ -108,6 +117,7 @@ private:
     std::vector<uint8_t> closureCandidate_;
     std::vector<uint8_t> exactCandidate_;
     std::vector<uint8_t> literalCandidate_;
+    std::vector<uint8_t> calleeHasLoop_;
     std::unordered_map<il::ValueId, std::pair<uint32_t, il::ValueId>> literals_;
     // Per block: how many of its first call's closure or method targets an
     // earlier guard already took (the miss block of target k starts at k+1).

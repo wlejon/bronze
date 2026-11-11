@@ -20,7 +20,9 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
 #include "runtime/elem_ic.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
@@ -499,4 +501,86 @@ TEST_CASE("a symbol key is offered no store entry") {
     Rooted<Value> desc{str("s")};
     Rooted<Value> sym{rtMakeSymbol(desc.get())};
     CHECK(elemSetCacheEntryFor(obj.get(), sym.get()) == nullptr);
+}
+
+namespace {
+
+uint64_t recordStyleSetter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> self{Value(thisBits)};
+    Rooted<Value> v{argc > 0 ? Value(argv[0]) : Value::fromUndefined()};
+    Rooted<Value> k{str("_fill")};
+    self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), k, v);
+    return Value::fromUndefined().rawBits();
+}
+
+}  // namespace
+
+TEST_CASE("bronze_elem_set caches plain transitions, slot generalization, overflow slots, and setters") {
+    ShadowStackFrame frame;
+
+    // 1. Repeated spread-like transitions (`{ color, alpha, name }`) + double-slot generalization.
+    for (int i = 0; i < 12; ++i) {
+        Rooted<Value> dst{plainObject()};
+        elemSet(dst, str("color"), Value::fromDouble(0xff0000 + i));
+        elemSet(dst, str("alpha"),
+                (i < 8) ? Value::fromDouble(0.5) : str("opaque"));
+        elemSet(dst, str("label"), str("ok"));
+        CHECK(elemGet(dst, str("color")).asNumber() == static_cast<double>(0xff0000 + i));
+        if (i < 8) {
+            CHECK(elemGet(dst, str("alpha")).asNumber() == 0.5);
+        } else {
+            CHECK(text(elemGet(dst, str("alpha"))) == "opaque");
+        }
+        CHECK(text(elemGet(dst, str("label"))) == "ok");
+    }
+
+    // 2. Overflow slot transitions (> kOverflowSlot properties) under collection.
+    for (int round = 0; round < 4; ++round) {
+        Rooted<Value> wide{plainObject()};
+        for (int k = 0; k < 24; ++k) {
+            const std::string name = "field_" + std::to_string(k);
+            elemSet(wide, str(name.c_str()), Value::fromDouble(round * 100 + k));
+        }
+        rtHeap().collect();
+        for (int k = 0; k < 24; ++k) {
+            const std::string name = "field_" + std::to_string(k);
+            CHECK(elemGet(wide, str(name.c_str())).asNumber() ==
+                  static_cast<double>(round * 100 + k));
+        }
+    }
+
+    // 3. Inherited prototype setter (`applyStyleParams` pattern).
+    Rooted<Value> styleProto{plainObject()};
+    {
+        Rooted<Value> key{str("fill")};
+        Rooted<Value> getter{Value::fromUndefined()};
+        Rooted<Value> setter{
+            Value::fromObject(FunctionHeader::create(rtHeap(), recordStyleSetter,
+                                                     Value::fromUndefined(), 1))};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), styleProto, key, getter, setter,
+                                     /*enumerable=*/true);
+    }
+    Shape* instRoot = rtRootShapeForPrototype(styleProto.get());
+    for (int i = 0; i < 8; ++i) {
+        Rooted<Value> inst{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), instRoot))};
+        elemSet(inst, str("fill"), Value::fromDouble(100.0 + i));
+        CHECK(elemGet(inst, str("_fill")).asNumber() == 100.0 + i);
+    }
+
+    // 4. `obj["__proto__"]` on `{}` mutates prototype while `Object.create(null)["__proto__"]`
+    //    defines an own data property.
+    {
+        Rooted<Value> customProto{plainObject()};
+        put(customProto, "tag", Value::fromDouble(77.0));
+        Rooted<Value> normalObj{plainObject()};
+        elemSet(normalObj, str("__proto__"), customProto.get());
+        CHECK(elemGet(normalObj, str("tag")).asNumber() == 77.0);
+
+        Rooted<Value> nullProtoObj{Value::fromObject(
+            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+        for (int i = 0; i < 4; ++i) {
+            elemSet(nullProtoObj, str("__proto__"), Value::fromDouble(123.0 + i));
+            CHECK(elemGet(nullProtoObj, str("__proto__")).asNumber() == 123.0 + i);
+        }
+    }
 }

@@ -154,7 +154,11 @@ bool rtStaticsArmServes(Value fnVal) noexcept;
 // A function receiver's read answered from the site's ways against its
 // statics box's shape (InlineCache::describesForFunction), as the read stub's
 // function arm answers it; false when no way answers. May run a getter.
-bool rtFunctionCachedMember(Value fnVal, struct InlineCacheSite* site, uint64_t& out);
+bool rtFunctionCachedMember(Value fnVal, struct InlineCacheSite* site, uint32_t keyIndex,
+                            uint64_t& out);
+inline bool rtFunctionCachedMember(Value fnVal, struct InlineCacheSite* site, uint64_t& out) {
+    return rtFunctionCachedMember(fnVal, site, BRONZE_ABI_KEY_NONE, out);
+}
 
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //

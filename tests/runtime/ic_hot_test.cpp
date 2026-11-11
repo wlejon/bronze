@@ -177,3 +177,28 @@ TEST_CASE("a latch's write to a method site lands in that site's method row") {
     CHECK(rows[8] == 0x9000);
     runtime::rtIcHotClearThread();
 }
+
+TEST_CASE("fillLocal and stack-local IC sites bypass registered hot and method rows") {
+    Tables a;
+    Tables b;
+    a.registerHere();
+    b.registerHere();
+
+    // fillLocal on a registered site updates the site's way 0 without copying to rows.
+    a.sites[0].ways[0].fillLocal(shapeAt(0x4000), 2, 0);
+    CHECK(a.sites[0].ways[0].cached_shape == shapeAt(0x4000));
+    CHECK(a.rows[0] == 0);
+    CHECK(a.rows[1] == 0);
+
+    // A stack-local site outside [t_minLo, t_maxHi) leaves registered rows untouched.
+    InlineCacheSite stackSite{};
+    stackSite.ways[0].fill(shapeAt(0x6000), 1, 0);
+    CHECK(a.rows[0] == 0);
+    CHECK(b.rows[0] == 0);
+
+    // Dropping one range recomputes bounds so the remaining table stays live.
+    runtime::rtIcHotDropWithin(a.table(), kSites * sizeof(InlineCacheSite));
+    b.sites[1].ways[0].fill(shapeAt(0x5000), 4, 0);
+    CHECK(b.rowIsWay0(1));
+    runtime::rtIcHotClearThread();
+}

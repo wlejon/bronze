@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <vector>
 
+#include "runtime/elem_ic.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
@@ -439,38 +441,57 @@ struct LookupMemo {
     PropertyInfo info;
     bool found;
 };
-constexpr uint32_t kLookupMemoBits = 11;
+constexpr uint32_t kLookupMemoBits = 13;
 thread_local LookupMemo g_lookupMemo[1u << kLookupMemoBits];
 
+inline uint64_t mixLookupHash(uint64_t h) noexcept {
+    h ^= h >> 33;
+    h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33;
+    return h;
+}
+
 inline LookupMemo& lookupMemoFor(const Shape* shape, const void* key) noexcept {
-    const uint64_t h = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) * 0x9E3779B97F4A7C15ULL +
-                       static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)) * 0xC2B2AE3D27D4EB4FULL;
+    const uint64_t s = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) >> 4;
+    const uint64_t k = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)) >> 3;
+    const uint64_t h = mixLookupHash(s * 0x9E3779B97F4A7C15ULL ^ k * 0xC2B2AE3D27D4EB4FULL);
     return g_lookupMemo[h >> (64 - kLookupMemoBits)];
 }
 
-// Hit memo for non-immortal heap strings (`!name.immortal()`): keyed by
-// `(shape, name->hash())` and validated by content equality against the matched
-// shape node's immortal arena `StringHeader*`, so no movable heap address is
-// ever retained across collections.
+// Memo for non-immortal heap strings (`!name.immortal()`): keyed by
+// `(shape, name->hash())`. Hits validate content equality against the matched
+// shape node's immortal arena `StringHeader*`; short Latin-1 misses store the
+// bytes inline so negative walks across deep shapes hit without retaining any
+// movable heap address across collections.
 struct StringLookupMemo {
+    static constexpr uint32_t kMaxInlineMissLen = 30;
     const Shape* shape;
     const StringHeader* arenaKey;
     uint32_t keyHash;
     PropertyInfo info;
+    char missChars[kMaxInlineMissLen];
+    uint8_t missLen;
+    bool isMiss;
 };
-constexpr uint32_t kStringLookupMemoBits = 11;
+constexpr uint32_t kStringLookupMemoBits = 12;
 thread_local StringLookupMemo g_stringLookupMemo[1u << kStringLookupMemoBits];
 
 inline StringLookupMemo& stringLookupMemoFor(const Shape* shape, uint32_t keyHash) noexcept {
-    const uint64_t h = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) * 0x9E3779B97F4A7C15ULL +
-                       static_cast<uint64_t>(keyHash) * 0xC2B2AE3D27D4EB4FULL;
+    const uint64_t s = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) >> 4;
+    const uint64_t h = mixLookupHash(s * 0x9E3779B97F4A7C15ULL ^
+                                     static_cast<uint64_t>(keyHash) * 0xC2B2AE3D27D4EB4FULL);
     return g_stringLookupMemo[h >> (64 - kStringLookupMemoBits)];
 }
 }  // namespace
 
 void Shape::forgetLookupMemo() noexcept {
-    for (LookupMemo& m : g_lookupMemo) m = LookupMemo{};
-    for (StringLookupMemo& m : g_stringLookupMemo) m = StringLookupMemo{};
+    for (LookupMemo& m : g_lookupMemo) m.shape = nullptr;
+    for (StringLookupMemo& m : g_stringLookupMemo) {
+        m.shape = nullptr;
+        m.arenaKey = nullptr;
+        m.isMiss = false;
+    }
+    runtime::rtForgetElemSetFastCache();
     bumpProtoMutationEpoch();
 }
 
@@ -488,12 +509,20 @@ bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
         StringLookupMemo* smemo = nullptr;
         uint32_t strHash = 0;
         if (!memoize && name.isString()) {
-            strHash = name.string()->hash();
+            const StringHeader* s = name.string();
+            strHash = s->hash();
             smemo = &stringLookupMemoFor(this, strHash);
-            if (smemo->shape == this && smemo->keyHash == strHash &&
-                smemo->arenaKey != nullptr && smemo->arenaKey->equals(*name.string())) {
-                out = smemo->info;
-                return true;
+            if (smemo->shape == this && smemo->keyHash == strHash) {
+                if (smemo->arenaKey != nullptr) {
+                    if (smemo->arenaKey->equals(*s)) {
+                        out = smemo->info;
+                        return true;
+                    }
+                } else if (smemo->isMiss && s->isLatin1() && s->length == smemo->missLen &&
+                           (smemo->missLen == 0 ||
+                            std::memcmp(smemo->missChars, s->latin1Data(), smemo->missLen) == 0)) {
+                    return false;
+                }
             }
         }
         bool found = false;
@@ -514,8 +543,26 @@ bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
         }
         if (memo) {
             *memo = LookupMemo{this, name.identity(), info, found};
-        } else if (found && smemo && hitArenaKey && hitArenaKey->isArena()) {
-            *smemo = StringLookupMemo{this, hitArenaKey, strHash, info};
+        } else if (smemo) {
+            if (found && hitArenaKey && hitArenaKey->isArena()) {
+                smemo->shape = this;
+                smemo->arenaKey = hitArenaKey;
+                smemo->keyHash = strHash;
+                smemo->info = info;
+                smemo->isMiss = false;
+            } else if (!found) {
+                const StringHeader* s = name.string();
+                if (s->isLatin1() && s->length <= StringLookupMemo::kMaxInlineMissLen) {
+                    smemo->shape = this;
+                    smemo->arenaKey = nullptr;
+                    smemo->keyHash = strHash;
+                    if (s->length > 0) {
+                        std::memcpy(smemo->missChars, s->latin1Data(), s->length);
+                    }
+                    smemo->missLen = static_cast<uint8_t>(s->length);
+                    smemo->isMiss = true;
+                }
+            }
         }
         if (found) out = info;
         return found;

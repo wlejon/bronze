@@ -4,9 +4,11 @@
 
 #include <bit>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
 #include "runtime/array.h"
 #include "runtime/elem_ic.h"
 #include "runtime/exception.h"
@@ -23,12 +25,121 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape_census.h"
+#include "runtime/shape_leave.h"
 #include "runtime/string.h"
 #include "runtime/tls_block.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+
+namespace {
+
+struct ElemSetFastEntry {
+    const Shape* beforeShape{nullptr};
+    const StringHeader* arenaKey{nullptr};
+    uint32_t keyHash{0};
+    InlineCache ic{};
+};
+
+constexpr uint32_t kElemSetFastBits = 12;
+thread_local ElemSetFastEntry g_elemSetFastCache[1u << kElemSetFastBits];
+
+inline ElemSetFastEntry& elemSetFastEntryFor(const Shape* shape, uint32_t keyHash) noexcept {
+    uint64_t h = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape)) >> 4) *
+                     0x9E3779B97F4A7C15ULL ^
+                 static_cast<uint64_t>(keyHash) * 0xC2B2AE3D27D4EB4FULL;
+    h ^= h >> 33;
+    h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33;
+    return g_elemSetFastCache[h >> (64 - kElemSetFastBits)];
+}
+
+// Executes a cached computed store on a bare plain receiver (`sh` non-null and
+// non-dictionary, `Array.prototype` refusal already checked): own-slot
+// overwrite, shape-transition add, or own/inherited accessor setter call.
+bool tryCachedPlainElemSet(Value objVal, uint64_t idxBits, uint64_t valBits, bool strict,
+                           InlineCache& ic, const StringHeader* matchedArenaKey) {
+    auto* obj = objVal.asObject<ObjectHeader>();
+    Shape* sh = obj->shape;
+    if (ic.describesOwn(sh)) {
+        obj->setSlot(ic.cached_slot, Value(valBits));
+        return true;
+    }
+    if (!obj->isBarePlain() || rtMaybeGlobalObjectShape(sh)) return false;
+
+    if (matchedArenaKey != nullptr && !sh->used_as_prototype && ic.isRealShape() &&
+        !ic.isAccessor() && !ic.isAbsent() && ic.realDepth() == 0) {
+        Shape* next = ic.cached_shape;
+        const uint32_t slot = ic.cached_slot;
+        const Value val(valBits);
+        if (next->parent == sh && next->slot_index == slot && !next->repr_generalized &&
+            (!ic.isDoubleSlot() || val.isNumber()) && next->enumerable && !next->accessor &&
+            next->writable && next->configurable && ic.cached_epoch == protoMutationEpoch() &&
+            (next->key.string() == matchedArenaKey ||
+             (next->key.isString() && next->key.string()->equals(*matchedArenaKey)))) {
+            noteShapeLeave(sh, next, ShapeLeave::Add);
+            if (slot < ObjectHeader::kOverflowSlot) {
+                obj->shape = next;
+                obj->setSlot(slot, val);
+                return true;
+            }
+            Rooted<Value> self{objVal};
+            Rooted<Value> valRoot{val};
+            ObjectHeader* live = ObjectHeader::ensureSlots(rtHeap(), self, slot + 1);
+            live->shape = next;
+            live->setSlot(slot, valRoot.get());
+            return true;
+        }
+    }
+
+    if (ic.isRealShape() && ic.describes(sh) && ic.isAccessor()) {
+        const uint32_t depth = ic.realDepth();
+        ObjectHeader* holder = obj;
+        if (depth > 0) {
+            bool crossedDictionary = false;
+            holder = obj->cachedProtoHolder(depth, crossedDictionary);
+        }
+        if (holder) {
+            Rooted<Value> holderRoot{Value::fromObject(holder)};
+            Rooted<Value> recv{objVal};
+            Rooted<Value> valRoot{Value(valBits)};
+            Value setter = holderRoot.get().asObject<ObjectHeader>()->getSlot(ic.cached_slot + 1);
+            Rooted<Value> fnRoot{setter};
+            if (fnRoot.get().isObject() &&
+                fnRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();
+                if (fn->code && fn->arity == 1 && !fn->isNativeCode() &&
+                    (fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) == 0) {
+                    rtEnterJs(fn->code, fn->env_record.rawBits(), recv.get().rawBits(), 1,
+                              reinterpret_cast<const uint64_t*>(valRoot.slot_ptr()));
+                    return true;
+                }
+            }
+            bool noSetter = false;
+            callSetter(fnRoot.get(), recv, valRoot, &noSetter);
+            if (noSetter) {
+                const std::string keyText =
+                    matchedArenaKey
+                        ? rtUtf8Chars(matchedArenaKey)
+                        : rtUtf8Chars(rtElemKeyAsString(Value(idxBits)).asString<StringHeader>());
+                rtReportSetRefusal(SetRefusal::NoSetter, strict, keyText);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+void rtForgetElemSetFastCache() noexcept {
+    for (ElemSetFastEntry& e : g_elemSetFastCache) {
+        e.beforeShape = nullptr;
+        e.arenaKey = nullptr;
+        e.ic = InlineCache{};
+    }
+}
 
 extern "C" {
 
@@ -135,6 +246,55 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     if (rtArrayPrototypeRefusesChange(objVal)) {
         rtThrowArrayPrototypeChange("write", Value(idxBits));
         return;
+    }
+
+    if (setEntry &&
+        tryCachedPlainElemSet(objVal, idxBits, valBits, strict, setEntry->ic, setEntry->key)) {
+        return;
+    }
+
+    if (objVal.isObject() && Value(idxBits).isString()) {
+        HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
+        if (fastHdr->flags == HeapKind::Plain) {
+            auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
+            Shape* sh = fastObj->shape;
+            if (fastObj->isBarePlain() && !sh->isDictionary() && !rtMaybeGlobalObjectShape(sh)) {
+                StringHeader* strKey = Value(idxBits).asString<StringHeader>();
+                const uint32_t strHash = strKey->hash();
+                ElemSetFastEntry& fastEntry = elemSetFastEntryFor(sh, strHash);
+                if (fastEntry.beforeShape == sh && fastEntry.keyHash == strHash &&
+                    fastEntry.arenaKey != nullptr &&
+                    (fastEntry.arenaKey == strKey || fastEntry.arenaKey->equals(*strKey))) {
+                    if (tryCachedPlainElemSet(objVal, idxBits, valBits, strict, fastEntry.ic,
+                                              fastEntry.arenaKey)) {
+                        return;
+                    }
+                }
+                if (!sh->used_as_prototype) {
+                    PropertyInfo own;
+                    if (sh->lookupProperty(PropertyKey::forString(strKey), own) &&
+                        !own.accessor && own.writable) {
+                        fastObj->setSlot(own.slot, Value(valBits));
+                        Shape* postSh = fastObj->shape;
+                        if (!censusFillsSuppressed() && postSh && !postSh->isDictionary() &&
+                            !postSh->used_as_prototype) {
+                            InlineCache filled{};
+                            filled.fillForSet(postSh, own.slot, postSh->slotIsDouble(own.slot));
+                            if (setEntry) setEntry->ic = filled;
+                            const StringHeader* ak =
+                                (setEntry && setEntry->key)
+                                    ? setEntry->key
+                                    : (strKey->isArena() ? strKey : nullptr);
+                            if (ak) {
+                                ElemSetFastEntry& dst = elemSetFastEntryFor(postSh, strHash);
+                                dst = ElemSetFastEntry{postSh, ak, strHash, filled};
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     if (Value(idxBits).isSymbol()) {
@@ -349,12 +509,31 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                 return;
             }
         }
+        Shape* preShape = objRoot.get().asObject<ObjectHeader>()->shape;
+        const bool trackFastStringIc =
+            Value(idxBits).isString() && hdr->flags == HeapKind::Plain &&
+            objRoot.get().asObject<ObjectHeader>()->isBarePlain() && preShape &&
+            !preShape->isDictionary() && !rtMaybeGlobalObjectShape(preShape);
+        InlineCache localIc{};
+        InlineCache* icSlot = setEntry ? &setEntry->ic : (trackFastStringIc ? &localIc : nullptr);
         SetRefusal refusal = SetRefusal::None;
         objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
-                                                        setEntry ? &setEntry->ic : nullptr,
+                                                        icSlot,
                                                         /*enumerable=*/true,
                                                         /*defineOwn=*/false,
                                                         /*receiver=*/nullptr, &refusal);
+        if (trackFastStringIc && refusal == SetRefusal::None && icSlot && icSlot->isRealShape()) {
+            StringHeader* liveKey = key.get().asString<StringHeader>();
+            const StringHeader* ak =
+                (setEntry && setEntry->key)
+                    ? setEntry->key
+                    : (liveKey->isArena() ? liveKey : elemCacheInternKey(liveKey));
+            if (ak) {
+                const uint32_t strHash = ak->hash();
+                ElemSetFastEntry& dst = elemSetFastEntryFor(preShape, strHash);
+                dst = ElemSetFastEntry{preShape, ak, strHash, *icSlot};
+            }
+        }
         // Likewise: the key text is what the message quotes, and there is no
         // message unless the write was refused.
         if (refusal != SetRefusal::None) {

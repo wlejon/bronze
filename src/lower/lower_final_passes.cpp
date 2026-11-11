@@ -100,9 +100,10 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // profile's direct targets (B) right after, for the sites the prediction
     // left without one.
     OwnCallees ownCallees;
+    OwnCallees predictedAccessors;
     ClosureGuesses polyMethods;
     ClosureGuesses polyOwnCallees;
-    if (wholeProgram) report += wpo::predictDirectTargets(mod, build, &ownCallees);
+    if (wholeProgram) report += wpo::predictDirectTargets(mod, build, &ownCallees, &predictedAccessors);
     if (plan != nullptr) {
         spec::applyFeedbackDirectMethods(mod, *plan, ownCallees, &feedbackStats, &polyMethods, &polyOwnCallees);
         std::set<spec::SpanKey> offered;
@@ -133,6 +134,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // function's entry or a loop header, and an inlined body is neither),
     // and a typed site would lose its unboxed entry for a generic body.
     directMethods_.resolveAccessors(mod);
+    if (!predictedAccessors.empty()) directMethods_.applyPredictedAccessors(mod, predictedAccessors);
     // A profile's accessor targets (F), for the sites the class guess left
     // without one, where that guess is stamped: right before the inliner,
     // which copies a getter's or setter's body in behind its cell.

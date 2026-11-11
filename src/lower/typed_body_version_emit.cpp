@@ -22,54 +22,289 @@ void setRename(Rename& map, il::ValueId from, il::ValueId to) {
     map.push_back({from, to});
 }
 
-// The entry block's `jump entry(args)` becomes a chain of receiver view tests
-// followed by pre-body `is.number` tests: all passing leads into the fast
-// copy, and the first that fails branches to the original slow entry.
-void enterThrough(il::Function& fn, il::BlockId entry, il::BlockId copyEntry,
-                  const std::vector<il::ValueId>& receivers,
-                  const std::vector<int32_t>& receiverKinds,
-                  const std::vector<il::ValueId>& guardedPreBody) {
-    const il::Instruction jump = fn.blocks[0].instructions.back();
-    fn.blocks[0].instructions.pop_back();
-    const size_t totalTests = receivers.size() + guardedPreBody.size();
-    std::vector<il::BlockId> tests{0};
-    for (size_t t = 1; t < totalTests; ++t) {
-        il::Block blk;
-        blk.id = static_cast<il::BlockId>(fn.blocks.size());
-        blk.copyClass = fn.blocks[0].copyClass;
-        blk.copyRegion = fn.blocks[0].copyRegion;
-        blk.handler = fn.blocks[0].handler;
-        tests.push_back(blk.id);
-        fn.blocks.push_back(std::move(blk));
+il::BlockId appendEntryTestBlock(il::Function& fn) {
+    il::Block blk;
+    blk.id = static_cast<il::BlockId>(fn.blocks.size());
+    blk.copyClass = fn.blocks[0].copyClass;
+    blk.copyRegion = fn.blocks[0].copyRegion;
+    blk.handler = fn.blocks[0].handler;
+    const il::BlockId id = blk.id;
+    fn.blocks.push_back(std::move(blk));
+    return id;
+}
+
+void emitCondBranch(il::Function& fn, il::BlockId inBlk, il::ValueId cond, il::BlockTarget pass,
+                    il::BlockTarget fail, Span span) {
+    il::Instruction br;
+    br.op = il::Op::Branch;
+    br.type = il::Type::Void;
+    br.result = il::kNoValue;
+    br.operands = {cond};
+    br.target = std::move(pass);
+    br.elseTarget = std::move(fail);
+    br.span = span;
+    fn.blocks[inBlk].instructions.push_back(std::move(br));
+}
+
+// Emits shared pre-body `is.number` guards and read-probe base-offset integer
+// range checks once ahead of version dispatch, populating `preBodyF64` with
+// validated F64 base offsets that strictly dominate every fast copy.
+il::BlockId emitPreBodyGuards(il::Function& fn, const il::Function& srcFn, const Cfg& cfg,
+                              const TypedBodyPlan& plan, const il::Instruction& jump,
+                              std::unordered_map<il::ValueId, il::ValueId>& preBodyF64) {
+    const il::BlockTarget slowTarget{plan.entry, jump.target.args};
+    il::BlockId cur = 0;
+
+    for (il::ValueId g : plan.guardedPreBody) {
+        il::Instruction isNum;
+        isNum.op = il::Op::IsNumber;
+        isNum.type = il::Type::Bool;
+        isNum.result = static_cast<il::ValueId>(fn.valueCount++);
+        isNum.operands = {g};
+        isNum.span = jump.span;
+        const il::ValueId cond = isNum.result;
+        fn.blocks[cur].instructions.push_back(std::move(isNum));
+
+        const il::BlockId nextBlk = appendEntryTestBlock(fn);
+        emitCondBranch(fn, cur, cond, il::BlockTarget{nextBlk, {}}, slowTarget, jump.span);
+        cur = nextBlk;
     }
-    for (size_t idx = 0; idx < totalTests; ++idx) {
-        il::Instruction t = jump;
-        t.type = il::Type::Bool;
-        t.result = static_cast<il::ValueId>(fn.valueCount++);
-        t.target = {};
-        t.elseTarget = {};
-        if (idx < receivers.size()) {
-            t.op = il::Op::IsTypedArray;
-            t.operands = {receivers[idx]};
-            t.immI32 = receiverKinds[idx];
-        } else {
-            t.op = il::Op::IsNumber;
-            t.operands = {guardedPreBody[idx - receivers.size()]};
-            t.immI32 = 0;
+
+    std::vector<std::pair<il::ValueId, int32_t>> baseLimits;
+    for (const TypedBodyReadProbe& p : plan.readProbes) {
+        if (p.baseVal == il::kNoValue) continue;
+        auto it = std::find_if(baseLimits.begin(), baseLimits.end(),
+                               [&](const auto& kv) { return kv.first == p.baseVal; });
+        if (it == baseLimits.end()) {
+            baseLimits.push_back({p.baseVal, p.maxOffset});
+        } else if (p.maxOffset > it->second) {
+            it->second = p.maxOffset;
         }
-        il::Instruction br = jump;
-        br.op = il::Op::Branch;
-        br.operands = {t.result};
-        br.target = idx + 1 < totalTests ? il::BlockTarget{tests[idx + 1], {}}
-                                         : il::BlockTarget{copyEntry, jump.target.args};
-        br.elseTarget = il::BlockTarget{entry, jump.target.args};
-        fn.blocks[tests[idx]].instructions.push_back(std::move(t));
-        fn.blocks[tests[idx]].instructions.push_back(std::move(br));
+    }
+
+    auto widenI32 = [&](il::BlockId intoBlk, il::ValueId i32Val) {
+        il::Instruction z;
+        z.op = il::Op::ConstI32;
+        z.type = il::Type::I32;
+        z.result = static_cast<il::ValueId>(fn.valueCount++);
+        z.immI32 = 0;
+        z.span = jump.span;
+        il::Instruction w;
+        w.op = il::Op::BitOr;
+        w.type = il::Type::F64;
+        w.result = static_cast<il::ValueId>(fn.valueCount++);
+        w.operands = {i32Val, z.result};
+        w.span = jump.span;
+        const il::ValueId res = w.result;
+        fn.blocks[intoBlk].instructions.push_back(std::move(z));
+        fn.blocks[intoBlk].instructions.push_back(std::move(w));
+        return res;
+    };
+
+    for (const auto& [baseVal, maxOff] : baseLimits) {
+        il::ValueId fBase = il::kNoValue;
+        if (baseVal < plan.types.size() && plan.types[baseVal] == il::Type::F64) {
+            fBase = baseVal;
+        } else if (baseVal < plan.types.size() && plan.types[baseVal] == il::Type::I32) {
+            fBase = widenI32(cur, baseVal);
+        } else if (baseVal < plan.defs.size() && plan.defs[baseVal].block != il::kNoBlock &&
+                   plan.defs[baseVal].index != UINT32_MAX) {
+            const il::Instruction& d =
+                srcFn.blocks[plan.defs[baseVal].block].instructions[plan.defs[baseVal].index];
+            if (d.op == il::Op::Box && d.operands.size() == 1) {
+                if (d.boxType == il::Type::F64) {
+                    fBase = d.operands[0];
+                } else if (d.boxType == il::Type::I32) {
+                    fBase = widenI32(cur, d.operands[0]);
+                }
+            }
+        }
+        if (fBase == il::kNoValue) {
+            fBase = bodyDominatingRawUnboxAt(cfg, plan.defs, plan.rawUnboxes, baseVal, plan.entry, 0);
+        }
+        if (fBase == il::kNoValue) {
+            il::Instruction u;
+            u.op = il::Op::Unbox;
+            u.type = il::Type::F64;
+            u.rawUnbox = true;
+            u.result = static_cast<il::ValueId>(fn.valueCount++);
+            u.operands = {baseVal};
+            u.span = jump.span;
+            fBase = u.result;
+            fn.blocks[cur].instructions.push_back(std::move(u));
+        }
+
+        // 1. Reject negative offsets and NaN (ordered `>= 0.0` fails on NaN).
+        il::Instruction c0;
+        c0.op = il::Op::ConstF64;
+        c0.type = il::Type::F64;
+        c0.result = static_cast<il::ValueId>(fn.valueCount++);
+        c0.immF64 = 0.0;
+        c0.span = jump.span;
+        il::Instruction ge0;
+        ge0.op = il::Op::CmpGe;
+        ge0.type = il::Type::Bool;
+        ge0.result = static_cast<il::ValueId>(fn.valueCount++);
+        ge0.operands = {fBase, c0.result};
+        ge0.span = jump.span;
+        const il::ValueId geCond = ge0.result;
+        fn.blocks[cur].instructions.push_back(std::move(c0));
+        fn.blocks[cur].instructions.push_back(std::move(ge0));
+        const il::BlockId next1 = appendEntryTestBlock(fn);
+        emitCondBranch(fn, cur, geCond, il::BlockTarget{next1, {}}, slowTarget, jump.span);
+        cur = next1;
+
+        // 2. Keep `base + maxOff` strictly inside signed 32-bit range.
+        il::Instruction cLim;
+        cLim.op = il::Op::ConstF64;
+        cLim.type = il::Type::F64;
+        cLim.result = static_cast<il::ValueId>(fn.valueCount++);
+        cLim.immF64 = 2147483644.0 - static_cast<double>(maxOff);
+        cLim.span = jump.span;
+        il::Instruction ltLim;
+        ltLim.op = il::Op::CmpLt;
+        ltLim.type = il::Type::Bool;
+        ltLim.result = static_cast<il::ValueId>(fn.valueCount++);
+        ltLim.operands = {fBase, cLim.result};
+        ltLim.span = jump.span;
+        const il::ValueId ltCond = ltLim.result;
+        fn.blocks[cur].instructions.push_back(std::move(cLim));
+        fn.blocks[cur].instructions.push_back(std::move(ltLim));
+        const il::BlockId next2 = appendEntryTestBlock(fn);
+        emitCondBranch(fn, cur, ltCond, il::BlockTarget{next2, {}}, slowTarget, jump.span);
+        cur = next2;
+
+        // 3. Require exact integer equality via call-free I32 round-trip so
+        // fractional / subnormal offsets take the generic body.
+        il::Instruction toI;
+        toI.op = il::Op::ToInt32;
+        toI.type = il::Type::I32;
+        toI.boxType = il::Type::F64;
+        toI.rawUnbox = true;
+        toI.result = static_cast<il::ValueId>(fn.valueCount++);
+        toI.operands = {fBase};
+        toI.span = jump.span;
+        const il::ValueId iBase = toI.result;
+        fn.blocks[cur].instructions.push_back(std::move(toI));
+        const il::ValueId fRound = widenI32(cur, iBase);
+        il::Instruction eqInt;
+        eqInt.op = il::Op::CmpEq;
+        eqInt.type = il::Type::Bool;
+        eqInt.result = static_cast<il::ValueId>(fn.valueCount++);
+        eqInt.operands = {fBase, fRound};
+        eqInt.span = jump.span;
+        const il::ValueId eqCond = eqInt.result;
+        fn.blocks[cur].instructions.push_back(std::move(eqInt));
+        const il::BlockId next3 = appendEntryTestBlock(fn);
+        emitCondBranch(fn, cur, eqCond, il::BlockTarget{next3, {}}, slowTarget, jump.span);
+        cur = next3;
+
+        preBodyF64[baseVal] = fRound;
+    }
+
+    return cur;
+}
+
+void emitVersionDispatch(il::Function& fn, il::BlockId cur, const TypedBodyPlan& plan,
+                         const std::vector<std::vector<int32_t>>& versions,
+                         const std::vector<il::BlockId>& copyEntries, const il::Instruction& jump,
+                         const std::unordered_map<il::ValueId, il::ValueId>& preBodyF64) {
+    const il::BlockTarget slowTarget{plan.entry, jump.target.args};
+    for (size_t v = 0; v < versions.size(); ++v) {
+        const bool hasNextVersion = (v + 1 < versions.size());
+        const il::BlockId nextVersionBlk = hasNextVersion ? appendEntryTestBlock(fn) : plan.entry;
+        const il::BlockTarget missTarget =
+            hasNextVersion ? il::BlockTarget{nextVersionBlk, {}} : slowTarget;
+
+        for (size_t r = 0; r < plan.receivers.size(); ++r) {
+            const bool lastCheck = (r + 1 == plan.receivers.size() && plan.readProbes.empty());
+            const il::BlockId passBlk = lastCheck ? copyEntries[v] : appendEntryTestBlock(fn);
+            const il::BlockTarget passTarget =
+                lastCheck ? il::BlockTarget{passBlk, jump.target.args} : il::BlockTarget{passBlk, {}};
+
+            il::Instruction isTa;
+            isTa.op = il::Op::IsTypedArray;
+            isTa.type = il::Type::Bool;
+            isTa.result = static_cast<il::ValueId>(fn.valueCount++);
+            isTa.operands = {plan.receivers[r]};
+            isTa.immI32 = versions[v][r];
+            isTa.span = jump.span;
+            const il::ValueId cond = isTa.result;
+            fn.blocks[cur].instructions.push_back(std::move(isTa));
+            emitCondBranch(fn, cur, cond, passTarget, missTarget, jump.span);
+            if (!lastCheck) cur = passBlk;
+        }
+
+        for (size_t pIdx = 0; pIdx < plan.readProbes.size(); ++pIdx) {
+            const TypedBodyReadProbe& p = plan.readProbes[pIdx];
+            const bool lastProbe = (pIdx + 1 == plan.readProbes.size());
+            const il::BlockId passBlk = lastProbe ? copyEntries[v] : appendEntryTestBlock(fn);
+            const il::BlockTarget passTarget =
+                lastProbe ? il::BlockTarget{passBlk, jump.target.args} : il::BlockTarget{passBlk, {}};
+
+            il::ValueId fMax = il::kNoValue;
+            if (p.baseVal == il::kNoValue) {
+                il::Instruction cOff;
+                cOff.op = il::Op::ConstF64;
+                cOff.type = il::Type::F64;
+                cOff.result = static_cast<il::ValueId>(fn.valueCount++);
+                cOff.immF64 = static_cast<double>(p.maxOffset);
+                cOff.span = jump.span;
+                fMax = cOff.result;
+                fn.blocks[cur].instructions.push_back(std::move(cOff));
+            } else if (p.maxOffset == 0) {
+                fMax = preBodyF64.at(p.baseVal);
+            } else {
+                il::Instruction cOff;
+                cOff.op = il::Op::ConstF64;
+                cOff.type = il::Type::F64;
+                cOff.result = static_cast<il::ValueId>(fn.valueCount++);
+                cOff.immF64 = static_cast<double>(p.maxOffset);
+                cOff.span = jump.span;
+                il::Instruction sum;
+                sum.op = il::Op::Add;
+                sum.type = il::Type::F64;
+                sum.result = static_cast<il::ValueId>(fn.valueCount++);
+                sum.operands = {preBodyF64.at(p.baseVal), cOff.result};
+                sum.span = jump.span;
+                fMax = sum.result;
+                fn.blocks[cur].instructions.push_back(std::move(cOff));
+                fn.blocks[cur].instructions.push_back(std::move(sum));
+            }
+
+            // `ElemGetTyped` yields NaN when out of bounds or detached; testing
+            // `elem == elem` certifies `base + maxOffset < view.length` (hence
+            // every `base + k` in `0..maxOffset` is in bounds) and routes both
+            // out-of-bounds (`undefined`) and rare stored NaNs to `slowTarget`.
+            il::Instruction probeLoad;
+            probeLoad.op = il::Op::ElemGetTyped;
+            probeLoad.type = il::Type::F64;
+            probeLoad.result = static_cast<il::ValueId>(fn.valueCount++);
+            probeLoad.operands = {plan.receivers[p.recvIdx], fMax};
+            probeLoad.immI32 = versions[v][p.recvIdx] | il::kElemFlagProvenIntegralIndex;
+            probeLoad.span = jump.span;
+            const il::ValueId loaded = probeLoad.result;
+            fn.blocks[cur].instructions.push_back(std::move(probeLoad));
+
+            il::Instruction notNan;
+            notNan.op = il::Op::CmpEq;
+            notNan.type = il::Type::Bool;
+            notNan.result = static_cast<il::ValueId>(fn.valueCount++);
+            notNan.operands = {loaded, loaded};
+            notNan.span = jump.span;
+            const il::ValueId okCond = notNan.result;
+            fn.blocks[cur].instructions.push_back(std::move(notNan));
+            emitCondBranch(fn, cur, okCond, passTarget, slowTarget, jump.span);
+            if (!lastProbe) cur = passBlk;
+        }
+
+        if (hasNextVersion) cur = nextVersionBlk;
     }
 }
 
 il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg,
-                     const TypedBodyPlan& plan,
+                     const TypedBodyPlan& plan, const std::vector<int32_t>& receiverKinds,
+                     const std::unordered_map<il::ValueId, il::ValueId>& preBodyF64,
                      const std::vector<std::vector<il::BlockId>>& slowTailId,
                      const std::map<std::pair<il::BlockId, uint32_t>, il::ValueId>& setNumbers) {
     std::vector<std::vector<il::BlockId>> fastPartId(srcFn.blocks.size());
@@ -144,6 +379,7 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
             if (u != il::kNoValue) f64Of[inst.result] = u;
         }
     }
+    for (const auto& [k, fv] : preBodyF64) f64Of[k] = fv;
 
     auto getF64 = [&](il::ValueId origVal, il::BlockId b, uint32_t idx,
                       std::vector<il::Instruction>& emitInto, Span span) -> il::ValueId {
@@ -260,7 +496,9 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
 
             if (b == plan.entry && seg == 0) {
                 for (il::ValueId g : plan.guardedPreBody) {
-                    f64Of[g] = emitRawUnbox(fn.blocks[partId].instructions, g, headSpan);
+                    if (f64Of.find(g) == f64Of.end()) {
+                        f64Of[g] = emitRawUnbox(fn.blocks[partId].instructions, g, headSpan);
+                    }
                 }
             }
             if (seg > 0) {
@@ -278,7 +516,7 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                     orig.operands.size() == 1 && orig.result != il::kNoValue) {
                     f64Of[orig.result] = mapV(orig.operands[0]);
                 }
-                if (orig.op == il::Op::Unbox && !orig.rawUnbox && !orig.nullishUnbox &&
+                if (orig.op == il::Op::Unbox && !orig.nullishUnbox &&
                     orig.type == il::Type::F64 && orig.operands.size() == 1 &&
                     orig.result != il::kNoValue) {
                     const il::ValueId f =
@@ -286,6 +524,21 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                     if (f != il::kNoValue) {
                         vmap[orig.result] = f;
                         f64Of[orig.result] = f;
+                        continue;
+                    }
+                }
+                if (orig.op == il::Op::Unbox && orig.type == il::Type::Bool &&
+                    orig.operands.size() == 1 && orig.result != il::kNoValue) {
+                    const il::ValueId f =
+                        getF64(orig.operands[0], b, static_cast<uint32_t>(i), outInsts, orig.span);
+                    if (f != il::kNoValue) {
+                        il::Instruction truthy;
+                        truthy.op = il::Op::NumTruthy;
+                        truthy.type = il::Type::Bool;
+                        truthy.result = mapV(orig.result);
+                        truthy.operands = {f};
+                        truthy.span = orig.span;
+                        outInsts.push_back(std::move(truthy));
                         continue;
                     }
                 }
@@ -299,14 +552,36 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                     outInsts.push_back(std::move(t));
                     continue;
                 }
+                if ((orig.op == il::Op::StrictEq || isBodyRelOp(orig.op)) &&
+                    orig.operands.size() == 2 && orig.result != il::kNoValue) {
+                    std::vector<il::Instruction> scratch;
+                    const il::ValueId f0 =
+                        getF64(orig.operands[0], b, static_cast<uint32_t>(i), scratch, orig.span);
+                    const il::ValueId f1 =
+                        (f0 != il::kNoValue)
+                            ? getF64(orig.operands[1], b, static_cast<uint32_t>(i), scratch, orig.span)
+                            : il::kNoValue;
+                    if (f0 != il::kNoValue && f1 != il::kNoValue) {
+                        for (auto& s : scratch) outInsts.push_back(std::move(s));
+                        il::Instruction cmp;
+                        cmp.op = promotedBodyCmpOp(orig.op);
+                        cmp.type = il::Type::Bool;
+                        cmp.result = mapV(orig.result);
+                        cmp.operands = {f0, f1};
+                        cmp.span = orig.span;
+                        outInsts.push_back(std::move(cmp));
+                        continue;
+                    }
+                }
 
                 if (isBodyPromotableDynOp(srcFn, plan, orig)) {
                     bool allF64 = true;
+                    std::vector<il::Instruction> scratch;
                     std::vector<il::ValueId> fOps;
                     fOps.reserve(orig.operands.size());
                     for (il::ValueId opId : orig.operands) {
                         const il::ValueId f =
-                            getF64(opId, b, static_cast<uint32_t>(i), outInsts, orig.span);
+                            getF64(opId, b, static_cast<uint32_t>(i), scratch, orig.span);
                         if (f == il::kNoValue) {
                             allF64 = false;
                             break;
@@ -314,6 +589,7 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                         fOps.push_back(f);
                     }
                     if (allF64) {
+                        for (auto& s : scratch) outInsts.push_back(std::move(s));
                         il::Instruction typed = orig;
                         typed.type = il::Type::F64;
                         typed.result = static_cast<il::ValueId>(fn.valueCount++);
@@ -324,6 +600,7 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                                 il::Instruction toI32;
                                 toI32.op = il::Op::ToInt32;
                                 toI32.type = il::Type::I32;
+                                toI32.boxType = il::Type::F64;
                                 toI32.rawUnbox = false;
                                 toI32.result = static_cast<il::ValueId>(fn.valueCount++);
                                 toI32.operands = {fOps[k]};
@@ -356,6 +633,7 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                         getF64(orig.operands[0], b, static_cast<uint32_t>(i), outInsts, orig.span);
                     if (f != il::kNoValue) {
                         inst.operands[0] = f;
+                        inst.boxType = il::Type::F64;
                         inst.rawUnbox = false;
                     }
                 } else if (isBodyElemAccess(orig)) {
@@ -363,10 +641,27 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
                         std::lower_bound(plan.receivers.begin(), plan.receivers.end(), orig.operands[0]);
                     if (rIt != plan.receivers.end() && *rIt == orig.operands[0]) {
                         const size_t rIdx = static_cast<size_t>(rIt - plan.receivers.begin());
-                        const int32_t rKind = plan.receiverKinds[rIdx];
+                        const int32_t rKind = receiverKinds[rIdx];
                         const il::ValueId fIdx =
                             getF64(orig.operands[1], b, static_cast<uint32_t>(i), outInsts, orig.span);
                         if (orig.op == il::Op::ElemGet) {
+                            if (rKind != il::kTypedArrayWordView && fIdx != il::kNoValue &&
+                                rIdx < plan.provenInBoundsRead.size() &&
+                                plan.provenInBoundsRead[rIdx] != 0) {
+                                il::Instruction ld;
+                                ld.op = il::Op::ElemGetTyped;
+                                ld.type = il::Type::F64;
+                                ld.result = static_cast<il::ValueId>(fn.valueCount++);
+                                ld.operands = {mapV(orig.operands[0]), fIdx};
+                                ld.immI32 = rKind | il::kElemFlagProvenIntegralIndex |
+                                            il::kElemFlagProvenInBounds;
+                                ld.span = orig.span;
+                                const il::ValueId fRes = ld.result;
+                                outInsts.push_back(std::move(ld));
+                                f64Of[orig.result] = fRes;
+                                emitBoxF64(outInsts, mapV(orig.result), fRes, orig.span);
+                                continue;
+                            }
                             inst.immI32 |= il::kElemFlagWordViewReceiver;
                             if (fIdx != il::kNoValue) {
                                 const auto bIdx = static_cast<il::ValueId>(fn.valueCount++);
@@ -456,6 +751,94 @@ il::BlockId copyBody(il::Function& fn, const il::Function& srcFn, const Cfg& cfg
     return fastPartId[plan.entry][0];
 }
 
+// Folds conditional branches on `const.bool` (e.g. `is.number` guards folded
+// after `ElemGetTyped` promotion) into direct jumps so `pruneUnreachable` drops
+// orphaned trampoline blocks and their `box.f64` operands.
+void foldConstBranches(il::Function& fn) {
+    std::unordered_map<il::ValueId, uint8_t> constBool;
+    for (const auto& blk : fn.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == il::Op::ConstBool && inst.result != il::kNoValue) {
+                constBool[inst.result] = inst.immI32 != 0 ? 1 : 0;
+            }
+        }
+    }
+    if (constBool.empty()) return;
+    for (auto& blk : fn.blocks) {
+        if (blk.instructions.empty()) continue;
+        il::Instruction& term = blk.instructions.back();
+        if (term.op != il::Op::Branch || term.operands.size() != 1) continue;
+        const auto it = constBool.find(term.operands[0]);
+        if (it == constBool.end()) continue;
+        il::BlockTarget taken = it->second ? std::move(term.target) : std::move(term.elseTarget);
+        term.op = il::Op::Jump;
+        term.operands.clear();
+        term.target = std::move(taken);
+        term.elseTarget = {};
+    }
+}
+
+// Removes unused Dynamic block parameters on internal fast-copy join blocks so
+// `box.f64` values passed on incoming edges become dead for `dropDeadF64Boxes`.
+void dropUnusedFastJoinParams(il::Function& fn, const std::vector<uint8_t>& slowOriginal) {
+    std::vector<uint8_t> isHandler(fn.blocks.size(), 0);
+    for (const auto& blk : fn.blocks) {
+        if (blk.handler < isHandler.size()) isHandler[blk.handler] = 1;
+    }
+    for (bool changed = true; changed;) {
+        changed = false;
+        std::vector<uint8_t> used(fn.valueCount, 0);
+        for (const auto& blk : fn.blocks) {
+            for (const auto& inst : blk.instructions) {
+                for (il::ValueId v : inst.operands) {
+                    if (v < used.size()) used[v] = 1;
+                }
+                for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                    for (il::ValueId v : t->args) {
+                        if (v < used.size()) used[v] = 1;
+                    }
+                }
+            }
+        }
+        for (il::BlockId b = 1; b < fn.blocks.size(); ++b) {
+            if ((b < slowOriginal.size() && slowOriginal[b]) || isHandler[b] ||
+                fn.blocks[b].copyClass == il::CopyClass::Slow || fn.blocks[b].params.empty()) {
+                continue;
+            }
+            auto& params = fn.blocks[b].params;
+            std::vector<uint8_t> keep(params.size(), 1);
+            bool anyDead = false;
+            for (size_t pi = 0; pi < params.size(); ++pi) {
+                if (params[pi].id < used.size() && !used[params[pi].id]) {
+                    keep[pi] = 0;
+                    anyDead = true;
+                }
+            }
+            if (!anyDead) continue;
+            changed = true;
+            std::vector<il::BlockParam> keptParams;
+            keptParams.reserve(params.size());
+            for (size_t pi = 0; pi < params.size(); ++pi) {
+                if (keep[pi]) keptParams.push_back(params[pi]);
+            }
+            params = std::move(keptParams);
+            for (auto& pred : fn.blocks) {
+                if (pred.instructions.empty()) continue;
+                il::Instruction& term = pred.instructions.back();
+                for (il::BlockTarget* t : {&term.target, &term.elseTarget}) {
+                    if (t->block != b) continue;
+                    std::vector<il::ValueId> keptArgs;
+                    keptArgs.reserve(t->args.size());
+                    for (size_t pi = 0; pi < t->args.size() && pi < keep.size(); ++pi) {
+                        if (keep[pi]) keptArgs.push_back(t->args[pi]);
+                    }
+                    t->args = std::move(keptArgs);
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 bool emitTypedBodyVersion(il::Function& fn, const Cfg& cfg, TypedBodyPlan& plan,
@@ -504,7 +887,20 @@ bool emitTypedBodyVersion(il::Function& fn, const Cfg& cfg, TypedBodyPlan& plan,
         }
     }
 
-    const il::BlockId copyEntry = copyBody(fn, srcFn, cfg, plan, slowTailId, setNumbers);
+    const il::Instruction jump = fn.blocks[0].instructions.back();
+    fn.blocks[0].instructions.pop_back();
+    std::unordered_map<il::ValueId, il::ValueId> preBodyF64;
+    const il::BlockId dispatchHead = emitPreBodyGuards(fn, srcFn, cfg, plan, jump, preBodyF64);
+
+    const std::vector<std::vector<int32_t>> versions =
+        plan.versionKinds.empty() ? std::vector<std::vector<int32_t>>{plan.receiverKinds}
+                                  : plan.versionKinds;
+    std::vector<il::BlockId> copyEntries;
+    copyEntries.reserve(versions.size());
+    for (const auto& rKinds : versions) {
+        copyEntries.push_back(
+            copyBody(fn, srcFn, cfg, plan, rKinds, preBodyF64, slowTailId, setNumbers));
+    }
 
     // Rewrite slow `body` blocks to thread any `splitsOf` tails and rename
     // dominated uses to the nearest dominating split's parameters.
@@ -571,8 +967,7 @@ bool emitTypedBodyVersion(il::Function& fn, const Cfg& cfg, TypedBodyPlan& plan,
         }
     }
 
-    enterThrough(fn, plan.entry, copyEntry, plan.receivers, plan.receiverKinds, plan.guardedPreBody);
-    dropDeadF64Boxes(fn);
+    emitVersionDispatch(fn, dispatchHead, plan, versions, copyEntries, jump, preBodyF64);
 
     // Original slow body and its split tails sink behind their dominators and
     // are marked cold so register allocation never spills hot fast-copy values
@@ -582,6 +977,10 @@ bool emitTypedBodyVersion(il::Function& fn, const Cfg& cfg, TypedBodyPlan& plan,
         original[b] = 1;
         for (il::BlockId tailId : slowTailId[b]) original[tailId] = 1;
     }
+    foldConstBranches(fn);
+    pruneUnreachable(fn, original);
+    dropUnusedFastJoinParams(fn, original);
+    dropDeadF64Boxes(fn);
     orderAfterDominators(fn, original);
     DiagnosticSink verifyDiags;
     if (!dominanceHolds(fn) || !il::verifyFunction(fn, verifyDiags)) return false;

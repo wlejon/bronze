@@ -826,3 +826,49 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
               }).find("TypeError") != std::string::npos);
     }
 }
+
+TEST_CASE("Object.getOwnPropertySymbols fast-paths symbol-free shapes and handles symbols and dictionaries") {
+    ShadowStackFrame frame;
+
+    auto getSymbols = [](Rooted<Value>& target) {
+        const uint64_t argv[1] = {target.get().rawBits()};
+        return Value(runtime::objectGetOwnPropertySymbols(0, 0, 1, argv));
+    };
+
+    Rooted<Value> obj{Value(bronze_create_object())};
+    {
+        Rooted<Value> k1{runtime::rtMakeString("color")};
+        Rooted<Value> v1{Value::fromDouble(0xff0000)};
+        Rooted<Value> k2{runtime::rtMakeString("alpha")};
+        Rooted<Value> v2{Value::fromDouble(0.85)};
+        bronze_elem_set(obj.get().rawBits(), k1.get().rawBits(), v1.get().rawBits(), true);
+        bronze_elem_set(obj.get().rawBits(), k2.get().rawBits(), v2.get().rawBits(), true);
+        CHECK_FALSE(obj.get().asObject<ObjectHeader>()->shape->has_symbol_keys);
+        Rooted<Value> syms{getSymbols(obj)};
+        CHECK(syms.get().asObject<ArrayHeader>()->length == 0);
+    }
+
+    Rooted<Value> desc{runtime::rtMakeString("tag")};
+    Rooted<Value> sym{runtime::rtMakeSymbol(desc.get())};
+    {
+        Rooted<Value> sv{Value::fromDouble(99.0)};
+        bronze_elem_set(obj.get().rawBits(), sym.get().rawBits(), sv.get().rawBits(), true);
+        Rooted<Value> k3{runtime::rtMakeString("width")};
+        Rooted<Value> v3{Value::fromDouble(2.0)};
+        bronze_elem_set(obj.get().rawBits(), k3.get().rawBits(), v3.get().rawBits(), true);
+        CHECK(obj.get().asObject<ObjectHeader>()->shape->has_symbol_keys);
+
+        Rooted<Value> syms{getSymbols(obj)};
+        REQUIRE(syms.get().asObject<ArrayHeader>()->length == 1);
+        CHECK(syms.get().asObject<ArrayHeader>()->getElem(0).rawBits() == sym.get().rawBits());
+    }
+
+    // Deleting the symbol transitions to dictionary mode and leaves zero symbols.
+    CHECK(obj.get().asObject<ObjectHeader>()->deleteProperty(
+        runtime::rtArena(), PropertyKey::fromValue(sym.get())));
+    CHECK(obj.get().asObject<ObjectHeader>()->shape->isDictionary());
+    {
+        Rooted<Value> syms{getSymbols(obj)};
+        CHECK(syms.get().asObject<ArrayHeader>()->length == 0);
+    }
+}

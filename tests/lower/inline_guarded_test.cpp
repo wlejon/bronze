@@ -59,6 +59,25 @@ size_t countOp(const il::Function& fn, il::Op op) {
     return n;
 }
 
+uint32_t findAccessorFnIndex(const il::Module& mod, std::string_view key, bool setter) {
+    const size_t kIdx = lower_test::keyIndex(mod, key);
+    for (const auto& fn : mod.functions) {
+        std::unordered_map<il::ValueId, uint32_t> funcVal;
+        for (const auto& b : fn.blocks) {
+            for (const auto& inst : b.instructions) {
+                if (inst.op == il::Op::CreateFunction && inst.result != il::kNoValue) {
+                    funcVal[inst.result] = inst.calleeIndex;
+                }
+                if (inst.op == il::Op::AccessorDef && inst.keyIndex == kIdx && inst.operands.size() >= 3) {
+                    const il::ValueId half = inst.operands[setter ? 2 : 1];
+                    if (const auto it = funcVal.find(half); it != funcVal.end()) return it->second;
+                }
+            }
+        }
+    }
+    return UINT32_MAX;
+}
+
 }  // namespace
 
 TEST_CASE("inline guarded: own-callee closures from WPO inline without duplicate fallback guard") {
@@ -304,4 +323,110 @@ TEST_CASE("inline guarded: bimorphic site refuses partial inline when an arm is 
     polyMethods[stepIc] = {fastIdx, varIdx};
     CHECK_FALSE(lower::inlineGuardedMethods(*mod, diags, nullptr, nullptr, nullptr, &polyMethods));
     CHECK(countOp(mod->functions[driveIdx], il::Op::MethodIcIs) == 0);
+}
+
+TEST_CASE("inline guarded: flattens nested field-class accessors and leaf observer method") {
+    const std::string src =
+        "class ObservablePoint {\n"
+        "  _x: any; _obs: any;\n"
+        "  constructor(obs: any) { this._x = 0; this._obs = obs; }\n"
+        "  get opx() { return this._x; }\n"
+        "  set opx(v: any) { this._x = v; this._obs._onUpdate(); }\n"
+        "}\n"
+        "class Container {\n"
+        "  _pos: any; _dirty: any;\n"
+        "  constructor() { this._pos = new ObservablePoint(this); this._dirty = 0; }\n"
+        "  _onUpdate() { this._dirty = this._dirty + 1; }\n"
+        "  get cx() { return this._pos.opx; }\n"
+        "  set cx(v: any) { this._pos.opx = v; }\n"
+        "}\n"
+        "function step(c: any, n: any) {\n"
+        "  for (let i = 0; i < n; i++) c.cx = c.cx + 1;\n"
+        "  return c._dirty;\n"
+        "}\n"
+        "const root = new Container();\n"
+        "step(root, 4);\n";
+
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lowerAot(src, diags, buf);
+    REQUIRE(mod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+
+    const uint32_t cGet = findAccessorFnIndex(*mod, "cx", /*setter=*/false);
+    const uint32_t cSet = findAccessorFnIndex(*mod, "cx", /*setter=*/true);
+    const uint32_t opGet = findAccessorFnIndex(*mod, "opx", /*setter=*/false);
+    const uint32_t opSet = findAccessorFnIndex(*mod, "opx", /*setter=*/true);
+    const uint32_t onUpdateIdx = findFnIndexEndingIn(*mod, "Container._onUpdate");
+    REQUIRE(cGet != UINT32_MAX);
+    REQUIRE(cSet != UINT32_MAX);
+    REQUIRE(opGet != UINT32_MAX);
+    REQUIRE(opSet != UINT32_MAX);
+    REQUIRE(onUpdateIdx != UINT32_MAX);
+
+    const il::Function* step = findFnEndingIn(*mod, "step");
+    REQUIRE(step != nullptr);
+
+    auto hasInlinedIdx = [&](uint32_t calleeIdx) {
+        for (const auto& frame : step->inlineFrames) {
+            if (frame.callee == calleeIdx) return true;
+        }
+        return false;
+    };
+
+    CHECK(hasInlinedIdx(cGet));
+    CHECK(hasInlinedIdx(cSet));
+    CHECK(hasInlinedIdx(opGet));
+    CHECK(hasInlinedIdx(opSet));
+    CHECK(hasInlinedIdx(onUpdateIdx));
+
+    DiagnosticSink verifyDiags;
+    CHECK(il::verify(*mod, verifyDiags));
+}
+
+TEST_CASE("inline guarded: hot-loop caller above 800 IL instructions still inlines tiny accessors") {
+    std::string body;
+    for (int k = 0; k < 180; ++k) {
+        body += "    acc = (acc * 1.01 + " + std::to_string(k + 1) + ") - acc * 0.005;\n";
+    }
+    const std::string src =
+        "class Item {\n"
+        "  _v: any;\n"
+        "  constructor(v: any) { this._v = v; }\n"
+        "  get val() { return this._v; }\n"
+        "}\n"
+        "function bigLoop(arr: any, n: any) {\n"
+        "  let acc: any = 1;\n"
+        "  for (let i = 0; i < n; i++) {\n" +
+        body +
+        "    const it = arr[i];\n"
+        "    acc = acc + it.val;\n"
+        "  }\n"
+        "  return acc;\n"
+        "}\n"
+        "bigLoop([new Item(3)], 2);\n";
+
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lowerAot(src, diags, buf);
+    REQUIRE(mod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+
+    const uint32_t valGetIdx = findAccessorFnIndex(*mod, "val", /*setter=*/false);
+    REQUIRE(valGetIdx != UINT32_MAX);
+
+    const il::Function* bigLoop = findFnEndingIn(*mod, "bigLoop");
+    REQUIRE(bigLoop != nullptr);
+    size_t totalInsts = 0;
+    for (const auto& blk : bigLoop->blocks) totalInsts += blk.instructions.size();
+    CHECK(totalInsts > 900);
+
+    bool inlinedVal = false;
+    for (const auto& frame : bigLoop->inlineFrames) {
+        if (frame.callee == valGetIdx) inlinedVal = true;
+    }
+    CHECK(inlinedVal);
+
+    DiagnosticSink verifyDiags;
+    CHECK(il::verify(*mod, verifyDiags));
 }

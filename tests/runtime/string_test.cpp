@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "abi/bronze_abi.h"
@@ -549,6 +550,74 @@ TEST_CASE("String.prototype.indexOf and replace(re, fn) / replaceAll(re, fn): AS
             CHECK(replaceMs < 100.0);
         }
         rtHeap().set_gc_stress(wasStress);
+    }
+}
+
+TEST_CASE("bronze_string_concat fast paths: empty strings, 1-char arena, builders, and string+number") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> empty{rtMakeString("")};
+    Rooted<Value> multi{rtMakeString("PixiText")};
+    Rooted<Value> oneCharHeap{
+        Value::fromString(StringHeader::createLatin1(rtHeap(), "Q", 1))};
+
+    // Empty + non-builder multi-char returns the exact StringHeader without allocating.
+    CHECK(bronze_string_concat(empty.get().rawBits(), multi.get().rawBits()) ==
+          multi.get().rawBits());
+    CHECK(bronze_string_concat(multi.get().rawBits(), empty.get().rawBits()) ==
+          multi.get().rawBits());
+
+    // Empty + 1-char Latin-1 returns the immortal arena singleton.
+    Value oneL{bronze_string_concat(empty.get().rawBits(), oneCharHeap.get().rawBits())};
+    Value oneR{bronze_string_concat(oneCharHeap.get().rawBits(), empty.get().rawBits())};
+    CHECK(oneL.asString<StringHeader>()->isArena());
+    CHECK(oneL.rawBits() == oneR.rawBits());
+    CHECK(rtUtf8Chars(oneL.asString<StringHeader>()) == "Q");
+
+    // Unsealed builder + "" must NOT return an unsealed builder that later appends could mutate!
+    {
+        Rooted<Value> bld{
+            Value::fromString(StringHeader::createBuilder(rtHeap(), /*utf16=*/false, 3, 16))};
+        std::memcpy(bld.get().asString<StringHeader>()->latin1Data(), "abc", 4);
+        Rooted<Value> copyL{
+            Value(bronze_string_concat(empty.get().rawBits(), bld.get().rawBits()))};
+        Rooted<Value> copyR{
+            Value(bronze_string_concat(bld.get().rawBits(), empty.get().rawBits()))};
+        CHECK_FALSE(copyL.get().asString<StringHeader>()->isBuilder());
+        CHECK_FALSE(copyR.get().asString<StringHeader>()->isBuilder());
+        bld.get().asString<StringHeader>()->latin1Data()[0] = 'Z';
+        CHECK(rtUtf8Chars(copyL.get().asString<StringHeader>()) == "abc");
+        CHECK(rtUtf8Chars(copyR.get().asString<StringHeader>()) == "abc");
+    }
+
+    // Fused String + Number / Int32 and Number / Int32 + String (Latin-1, arena, empty, UTF-16).
+    {
+        auto boxInt32 = [](int32_t v) -> uint64_t {
+            return (static_cast<uint64_t>(Tag::Int32) << kTagShift) | static_cast<uint32_t>(v);
+        };
+        Rooted<Value> prefix{
+            Value::fromString(rtKeyHeader(bronze_register_key_string("Label #")))};
+        CHECK(prefix.get().asString<StringHeader>()->isArena());
+        Rooted<Value> heapPrefix{rtMakeString("Row ")};
+        Rooted<Value> utf16Prefix{rtMakeString("数:")};
+
+        Value r1{bronze_string_concat(prefix.get().rawBits(), Value::fromDouble(42.0).rawBits())};
+        CHECK(rtUtf8Chars(r1.asString<StringHeader>()) == "Label #42");
+
+        Value r2{bronze_string_concat(heapPrefix.get().rawBits(), boxInt32(-7))};
+        CHECK(rtUtf8Chars(r2.asString<StringHeader>()) == "Row -7");
+
+        Value r3{bronze_string_concat(Value::fromDouble(99.5).rawBits(),
+                                      heapPrefix.get().rawBits())};
+        CHECK(rtUtf8Chars(r3.asString<StringHeader>()) == "99.5Row ");
+
+        Value r4{bronze_string_concat(empty.get().rawBits(), boxInt32(5))};
+        CHECK(r4.asString<StringHeader>()->isArena());
+        CHECK(rtUtf8Chars(r4.asString<StringHeader>()) == "5");
+
+        Value r5{bronze_dynamic_add(utf16Prefix.get().rawBits(),
+                                    Value::fromDouble(123.0).rawBits())};
+        CHECK(rtUtf8Chars(r5.asString<StringHeader>()) == "数:123");
     }
 }
 

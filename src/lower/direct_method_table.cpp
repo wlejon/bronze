@@ -67,9 +67,10 @@ void DirectMethodTable::recordClassAccessor(const std::string& className, const 
     half = fnIndex;
 }
 
-void DirectMethodTable::recordAccessorSite(uint32_t icIndex, std::string receiverClass, std::string key) {
-    if (receiverClass.empty() || key.empty()) return;
-    accessorSites_[icIndex] = Site{std::move(receiverClass), std::move(key)};
+void DirectMethodTable::recordAccessorSite(uint32_t icIndex, std::string receiverClass, std::string key,
+                                           std::string fieldKey) {
+    if ((receiverClass.empty() && fieldKey.empty()) || key.empty()) return;
+    accessorSites_[icIndex] = Site{std::move(receiverClass), std::move(key), std::move(fieldKey)};
 }
 
 bool DirectMethodTable::isMethodSealedOnSubclasses(uint32_t icIndex) const {
@@ -273,8 +274,16 @@ void DirectMethodTable::resolveAccessors(il::Module& ilModule) const {
                 }
                 const auto site = accessorSites_.find(inst.icIndex);
                 if (site == accessorSites_.end()) continue;
+                std::string recvCls = site->second.receiverClass;
+                if (recvCls.empty() && !site->second.fieldKey.empty()) {
+                    if (const auto g = fieldClassGuesses_.find(site->second.fieldKey);
+                        g != fieldClassGuesses_.end()) {
+                        recvCls = g->second;
+                    }
+                }
+                if (recvCls.empty()) continue;
                 const bool setter = inst.op == il::Op::PropSet;
-                const uint32_t target = resolveName(site->second.receiverClass, site->second.method, setter);
+                const uint32_t target = resolveName(recvCls, site->second.method, setter);
                 if (!callable(target, setter)) continue;
                 auto cell = cellOf.find(inst.icIndex);
                 if (cell == cellOf.end()) {
@@ -282,6 +291,35 @@ void DirectMethodTable::resolveAccessors(il::Module& ilModule) const {
                     ilModule.staticSiteCount += 2;
                 }
                 inst.directTarget = target;
+                inst.staticCellIndex = cell->second;
+            }
+        }
+    }
+}
+
+void DirectMethodTable::applyPredictedAccessors(
+    il::Module& ilModule, const std::unordered_map<uint32_t, uint32_t>& predicted) const {
+    if (predicted.empty()) return;
+    std::unordered_map<uint32_t, uint32_t> cellOf;
+    for (auto& fn : ilModule.functions) {
+        for (auto& block : fn.blocks) {
+            for (auto& inst : block.instructions) {
+                if (inst.op != il::Op::PropGet && inst.op != il::Op::PropSet) continue;
+                if (il::isDefineWrite(inst)) continue;
+                if (inst.staticSlot != il::Instruction::kNoStaticSlot ||
+                    inst.directTarget != il::Instruction::kNoDirectTarget) {
+                    continue;
+                }
+                const auto it = predicted.find(inst.icIndex);
+                if (it == predicted.end()) continue;
+                const bool setter = inst.op == il::Op::PropSet;
+                if (!accessorCallable(ilModule, it->second, setter)) continue;
+                auto cell = cellOf.find(inst.icIndex);
+                if (cell == cellOf.end()) {
+                    cell = cellOf.emplace(inst.icIndex, ilModule.staticSiteCount).first;
+                    ilModule.staticSiteCount += 2;
+                }
+                inst.directTarget = it->second;
                 inst.staticCellIndex = cell->second;
             }
         }

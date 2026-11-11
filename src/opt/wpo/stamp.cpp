@@ -237,6 +237,92 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     plan.directs.push_back(DirectEntry{fact.fn, fact.block, fact.inst, target});
 }
 
+// Whether any instantiated object in the module resolves `key` to an own
+// property or to a prototype accessor other than `target` (when `partial`
+// indicates escaped/unknown receivers alongside the tracked ones).
+bool accessorConflicted(const Solver& s, uint32_t key, bool setter, uint32_t target) {
+    const size_t n = s.objectCount();
+    for (ObjId id = 0; id < n; ++id) {
+        const AObj& o = s.object(id);
+        if (o.kind != ObjKind::Instance && o.kind != ObjKind::Plain) continue;
+        if (o.fields.count(key) != 0 || o.accessors.count(key) != 0) return true;
+        std::vector<ObjId> level(o.proto.objs.begin(), o.proto.objs.end());
+        for (int depth = 0; depth < 16 && !level.empty(); ++depth) {
+            std::vector<ObjId> next;
+            bool stopped = false;
+            for (ObjId p : level) {
+                const AObj& po = s.object(p);
+                if (po.fields.count(key) != 0) return true;
+                if (const auto acc = po.accessors.find(key); acc != po.accessors.end()) {
+                    const AVal& half = setter ? acc->second.setters : acc->second.getters;
+                    const Solver::Callees c = s.callees(half);
+                    if (c.unknown || c.builtin || c.fns.size() != 1 || c.fns[0] != target) return true;
+                    stopped = true;
+                    continue;
+                }
+                for (ObjId q : po.proto.objs) next.push_back(q);
+            }
+            if (stopped) break;
+            level = std::move(next);
+        }
+    }
+    return false;
+}
+
+// A property read or write whose predicted receivers all resolve `key` to one
+// prototype getter or setter: guarded at run time by an accessor cell pair
+// (`runtime/accessor_cell.cpp`, `DirectMethodTable::applyPredictedAccessors`).
+void planAccessor(const Solver& s, const SiteFact& fact, StampPlan& plan) {
+    if (fact.prop != PropClass::Accessor) return;
+    const il::Module& mod = s.module();
+    const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
+    if ((inst.op != il::Op::PropGet && inst.op != il::Op::PropSet) || il::isDefineWrite(inst) ||
+        inst.staticSlot != il::Instruction::kNoStaticSlot ||
+        inst.directTarget != il::Instruction::kNoDirectTarget || inst.operands.empty() ||
+        il::parseIndexKey(mod.keyConstants[inst.keyIndex])) {
+        return;
+    }
+    const AVal& recv = s.value(fact.fn, inst.operands[0]);
+    if (recv.objs.empty()) return;
+    const bool setter = inst.op == il::Op::PropSet;
+    uint32_t chosen = UINT32_MAX;
+    for (ObjId r : recv.objs) {
+        const AObj& ro = s.object(r);
+        if ((ro.kind != ObjKind::Instance && ro.kind != ObjKind::Plain) ||
+            ro.fields.count(inst.keyIndex) != 0 || ro.accessors.count(inst.keyIndex) != 0 ||
+            ro.anyKey || ro.proto.topObj) {
+            return;
+        }
+        std::vector<ObjId> frontier(ro.proto.objs.begin(), ro.proto.objs.end());
+        std::vector<ObjId> seen;
+        bool foundOnChain = false;
+        while (!frontier.empty()) {
+            const ObjId p = frontier.back();
+            frontier.pop_back();
+            if (std::find(seen.begin(), seen.end(), p) != seen.end()) continue;
+            seen.push_back(p);
+            const AObj& po = s.object(p);
+            if (po.fields.count(inst.keyIndex) != 0) return;
+            if (const auto acc = po.accessors.find(inst.keyIndex); acc != po.accessors.end()) {
+                if (po.kind != ObjKind::Proto) return;
+                const AVal& half = setter ? acc->second.setters : acc->second.getters;
+                const Solver::Callees c = s.callees(half);
+                if (c.unknown || c.builtin || c.fns.size() != 1) return;
+                if (chosen != UINT32_MAX && chosen != c.fns[0]) return;
+                chosen = c.fns[0];
+                foundOnChain = true;
+                continue;
+            }
+            if (po.proto.topObj) return;
+            for (ObjId q : po.proto.objs) frontier.push_back(q);
+        }
+        if (!foundOnChain) return;
+    }
+    if (chosen >= mod.functions.size()) return;
+    if (fact.partial && accessorConflicted(s, inst.keyIndex, setter, chosen)) return;
+    plan.accessorCalls.push_back(DirectEntry{fact.fn, fact.block, fact.inst, chosen});
+}
+
 // A read the static claims left alone: marked polymorphic when every
 // predicted receiver holds the key as an own data property and the cache's
 // ways can hold one shape per receiver. A read inference already calls
@@ -287,6 +373,10 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
     for (const SiteFact& fact : facts) {
         if (fact.isCall) {
             planDirect(predicted, held, fact, plan);
+            continue;
+        }
+        if (fact.prop == PropClass::Accessor) {
+            planAccessor(predicted, fact, plan);
             continue;
         }
         if (fact.slot < 0) continue;

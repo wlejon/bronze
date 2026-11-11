@@ -79,6 +79,8 @@ struct StampPlan {
     std::vector<PolyEntry> absents;
     // Method calls whose one predicted callee a receiver holds in an own slot.
     std::vector<DirectEntry> ownCalls;
+    // Property sites whose predicted receivers resolve to one prototype getter or setter.
+    std::vector<DirectEntry> accessorCalls;
     // Method calls whose direct target lowering guessed (by the method's name
     // on the receiver's class) where the prediction gives the site one other
     // callee: the guess is withdrawn, since every receiver the prediction saw

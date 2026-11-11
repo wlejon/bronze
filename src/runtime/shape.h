@@ -206,6 +206,10 @@ public:
     // against a key constant or a name already in the arena. What bounds the
     // tree (`refusesNewTransition`).
     uint32_t computed_transitions{0};
+    // True once any node from the root through `this` carries a Symbol key, so
+    // `Object.getOwnPropertySymbols` can return `[]` immediately on symbol-free
+    // non-dictionary objects without walking the chain or allocating a key list.
+    bool has_symbol_keys{false};
 
     // The slot-number split (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT): a slot
     // below it is an inline Value, slot kOverflowSlot + i is Value i of the
@@ -257,7 +261,9 @@ public:
                                       : 0u)),
           repr(slot_repr),
           bare_header(parent_shape != nullptr ? parent_shape->bare_header
-                                              : bareHeaderFor(kDefaultInlineSlots)) {}
+                                              : bareHeaderFor(kDefaultInlineSlots)),
+          has_symbol_keys((parent_shape != nullptr && parent_shape->has_symbol_keys) ||
+                          prop_key.isSymbol()) {}
 
     // Creates a root shape whose instances have `proto` as their
     // prototype. A root carrying a non-undefined prototype also has to be

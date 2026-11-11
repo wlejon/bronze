@@ -30,6 +30,7 @@
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_prop_mega.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -79,14 +80,11 @@ namespace bronze::runtime {
 // a key-to-slot map, and the refusals above are exactly those cases.
 bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
     if (box == nullptr || box->shape == nullptr || !box->shape->readCacheable()) return false;
-    // The intrinsic-constructor gate. `rtIntrinsicConstructorName` is true for
-    // exactly the receivers `rtGlobalConstructorMember` can answer for — both
-    // ask whether the FunctionHeader's code pointer is one of `kCtors` — so
-    // this refuses precisely the receivers whose answer is decided ahead of
-    // the box, and nothing else. It has to be the receiver test and not the
-    // (receiver, key) one: the table's claim travels with the receiver, and a
-    // key it declines today is one another site may ask it about.
-    if (rtIntrinsicConstructorName(fnVal) != nullptr) return false;
+    // Refuse only constructors whose `kCtors` row answers static members or
+    // unimplemented-member diagnostics ahead of `properties` (`Array`,
+    // `String`, `Proxy`). `Number`, `Boolean`, `Object`, typed-array
+    // constructors and user classes keep their statics in `properties` itself.
+    if (rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
     return !censusFillsSuppressed();
 }
 
@@ -96,15 +94,67 @@ bool rtStaticsArmServes(Value fnVal) noexcept {
     return (flags & BRONZE_ABI_FN_FLAG_NATIVE) == 0 && (flags & BRONZE_ABI_FN_FLAG_PROTOTYPE) != 0;
 }
 
-bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint64_t& out) {
-    if (site == nullptr || !rtStaticsArmServes(fnVal)) return false;
-    const Value box = fnVal.asObject<FunctionHeader>()->properties;
-    if (!box.isObject() || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+namespace {
+
+bool tryFastBoxlessFunctionMember(Value fnVal, const FunctionHeader* fn,
+                                  StringHeader* keyHeader, uint64_t& out) noexcept {
+    if (keyHeader == nullptr || fn->properties.isObject()) return false;
+    if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
+    if (keyHeader->equalsASCII("length")) {
+        out = Value::fromDouble(fn->name ? static_cast<double>(fn->length) : 0.0).rawBits();
+        return true;
+    }
+    if (fn->name != nullptr && keyHeader->equalsASCII("name")) {
+        out = rtKeyAsValue(fn->name).rawBits();
+        return true;
+    }
+    if (fn->parent.isUndefined() && !fn->isGeneratorFunction() && !fn->isAsyncFunction() &&
+        (keyHeader->equalsASCII("apply") || keyHeader->equalsASCII("call") ||
+         keyHeader->equalsASCII("bind") || keyHeader->equalsASCII("toString"))) {
+        const Value fpVal = rtFunctionPrototypeIfBuilt();
+        if (fpVal.isObject()) {
+            const Value fpBoxVal = fpVal.asObject<FunctionHeader>()->properties;
+            if (fpBoxVal.isObject()) {
+                auto* fpObj = fpBoxVal.asObject<ObjectHeader>();
+                PropertyInfo info;
+                if (fpObj->shape && !fpObj->shape->isDictionary() &&
+                    fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), info) &&
+                    !info.accessor) {
+                    out = fpObj->getSlot(info.slot).rawBits();
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint32_t keyIndex, uint64_t& out) {
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return false;
+    }
+    const auto* fn = fnVal.asObject<FunctionHeader>();
+    const Value box = fn->properties;
+    if (!box.isObject()) {
+        if (keyIndex != BRONZE_ABI_KEY_NONE) {
+            return tryFastBoxlessFunctionMember(fnVal, fn, rtKeyHeader(keyIndex), out);
+        }
+        return false;
+    }
+    if (site == nullptr || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+    if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
     ObjectHeader* boxObj = box.asObject<ObjectHeader>();
     InlineCache* ic = site->find(boxObj->shape);
+    if (ic == nullptr && keyIndex != BRONZE_ABI_KEY_NONE &&
+        site->ways[BRONZE_ABI_IC_WAYS - 1].isRealShape()) {
+        ic = rtMegaPropProbe(boxObj->shape, keyIndex);
+    }
     if (ic == nullptr || !ic->describesForFunction(boxObj->shape)) return false;
     ObjectHeader* holder = boxObj;
     if (ic->isStatics()) {
+        if (!rtStaticsArmServes(fnVal)) return false;
         bool crossedDictionary = false;
         holder = boxObj->cachedProtoHolder(ic->staticsDepth(), crossedDictionary);
         if (holder == nullptr) return false;
@@ -185,14 +235,18 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
     // `statics_materialized`, and are never the `%Function%` constructor, so a
     // materialized `prototype` (or an arrow/method/async's permanent absence of
     // one) answers immediately without rooting or UTF-8 string conversion.
-    if (const auto* fastFn = objVal.asObject<FunctionHeader>();
-        !fastFn->isNativeCode() && keyHeader->equalsASCII("prototype")) {
+    if (const auto* fastFn = objVal.asObject<FunctionHeader>(); !fastFn->isNativeCode() &&
+                                                                keyHeader->equalsASCII("prototype")) {
         if (!fastFn->hasPrototypeProperty()) {
             return Value::fromUndefined().rawBits();
         }
         if (fastFn->prototype.isObject()) {
             return fastFn->prototype.rawBits();
         }
+    }
+    if (uint64_t fastOut = 0;
+        tryFastBoxlessFunctionMember(objVal, objVal.asObject<FunctionHeader>(), keyHeader, fastOut)) {
+        return fastOut;
     }
 
     std::string lazyKeyStr;

@@ -1,11 +1,14 @@
 #include <doctest/doctest.h>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 
@@ -82,4 +85,86 @@ TEST_CASE("a function object's name and length are separate from its call arity"
     // And the name is the registry's own header, not a copy — a copy would move
     // under the collector and leave the field dangling.
     CHECK(named.get()->name == runtime::rtKeyHeader(nameKey));
+}
+
+TEST_CASE("Function static property caching serves classes, Number.EPSILON, mega_prop, and Function.prototype methods") {
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
+
+    // 1. Number.EPSILON caches in a site way and hits rtFunctionCachedMember,
+    //    whereas Array keeps table statics uncached in statics boxes.
+    Rooted<Value> numCtor{runtime::rtNumberConstructorObject()};
+    CHECK_FALSE(runtime::rtIntrinsicConstructorHasTableStatics(numCtor.get()));
+    CHECK(runtime::rtIntrinsicConstructorHasTableStatics(runtime::rtArrayConstructorObject()));
+
+    const uint32_t epsKey = bronze_register_key_string("EPSILON");
+    InlineCacheSite epsSite{};
+    const double eps1 =
+        Value(bronze_prop_get(numCtor.get().rawBits(), epsKey, reinterpret_cast<uint64_t*>(&epsSite)))
+            .asNumber();
+    CHECK(eps1 > 0.0);
+    CHECK(epsSite.ways[0].isRealShape());
+    uint64_t cachedEps = 0;
+    REQUIRE(runtime::rtFunctionCachedMember(numCtor.get(), &epsSite, epsKey, cachedEps));
+    CHECK(Value(cachedEps).asNumber() == eps1);
+
+    // 2. ES6 class constructors (> 4 distinct static shapes) warm site + mega_prop.
+    const uint32_t slerpKey = bronze_register_key_string("slerpFlat");
+    InlineCacheSite classSite{};
+    std::vector<Value> classes;
+    Rooted<Value> classesArr{Value(bronze_create_array(6))};
+    for (uint32_t i = 0; i < 6; ++i) {
+        Rooted<Value> cls{Value::fromObject(FunctionHeader::create(
+            heap, dummyAdd, Value::fromUndefined(), 0,
+            BRONZE_ABI_FN_FLAG_PROTOTYPE | BRONZE_ABI_FN_FLAG_CONSTRUCT |
+                BRONZE_ABI_FN_FLAG_CLASS_CTOR))};
+        runtime::rtEnsureFunctionProperties(cls);
+        Rooted<Value> box{cls.get().asObject<FunctionHeader>()->properties};
+        const std::string extraName = "extra_" + std::to_string(i);
+        Rooted<Value> extraKey{runtime::rtMakeString(extraName)};
+        Rooted<Value> extraVal{Value::fromDouble(i)};
+        box.get().asObject<ObjectHeader>()->setProp(heap, arena, extraKey, extraVal);
+        Rooted<Value> k{Value::fromString(runtime::rtKeyHeader(slerpKey))};
+        Rooted<Value> v{Value::fromDouble(100.0 + i)};
+        box.get().asObject<ObjectHeader>()->setProp(heap, arena, k, v);
+        classesArr.get().asObject<ArrayHeader>()->setElem(heap, i, cls);
+    }
+    for (int round = 0; round < 3; ++round) {
+        for (uint32_t i = 0; i < 6; ++i) {
+            Value cls = classesArr.get().asObject<ArrayHeader>()->getElem(i);
+            Value got{
+                bronze_prop_get(cls.rawBits(), slerpKey, reinterpret_cast<uint64_t*>(&classSite))};
+            CHECK(got.asNumber() == 100.0 + i);
+        }
+    }
+
+    // 3. Box-less native and source functions answer apply / call / length / name cleanly.
+    const uint32_t applyKey = bronze_register_key_string("apply");
+    const uint32_t callKey = bronze_register_key_string("call");
+    const uint32_t lenKey = bronze_register_key_string("length");
+    const uint32_t fnNameKey = bronze_register_key_string("name");
+
+    // Ensure Function.prototype is initialized once, then read on a box-less function.
+    (void)runtime::rtFunctionPrototypeObject();
+    const uint32_t hostName = bronze_register_key_string("texImage2D");
+    Rooted<Value> hostFn{
+        Value::fromObject(FunctionHeader::create(heap, dummyAdd, Value::fromUndefined(), 2))};
+    runtime::rtSetFunctionNameAndLength(hostFn.get().asObject<FunctionHeader>(), hostName, 6);
+    CHECK_FALSE(hostFn.get().asObject<FunctionHeader>()->properties.isObject());
+
+    Value applyFn{bronze_prop_get(hostFn.get().rawBits(), applyKey, nullptr)};
+    Value callFn{bronze_prop_get(hostFn.get().rawBits(), callKey, nullptr)};
+    CHECK(applyFn.isObject());
+    CHECK(callFn.isObject());
+    CHECK(Value(bronze_prop_get(hostFn.get().rawBits(), lenKey, nullptr)).asNumber() == 6.0);
+    CHECK(runtime::rtUtf8Chars(
+              Value(bronze_prop_get(hostFn.get().rawBits(), fnNameKey, nullptr))
+                  .asString<StringHeader>()) == "texImage2D");
+
+    // Invoke via `hostFn.call(undefined, 7, 8)` -> 15.
+    uint64_t callArgs[3] = {Value::fromUndefined().rawBits(), Value::fromDouble(7.0).rawBits(),
+                            Value::fromDouble(8.0).rawBits()};
+    CHECK(Value(bronze_dynamic_call(callFn.rawBits(), hostFn.get().rawBits(), 3, callArgs))
+              .asNumber() == 15.0);
 }

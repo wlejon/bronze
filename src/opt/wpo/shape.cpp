@@ -182,6 +182,79 @@ void ShapeAnalysis::computeObject(ObjId id) {
     }
 }
 
+bool ShapeAnalysis::hasExoticProtoChain(ObjId id) const {
+    const AObj& start = solver_.object(id);
+    if (start.protoSet || start.proto.topObj) return true;
+    std::vector<ObjId> work(start.proto.objs.begin(), start.proto.objs.end());
+    std::vector<ObjId> seen;
+    while (!work.empty()) {
+        const ObjId o = work.back();
+        work.pop_back();
+        if (std::find(seen.begin(), seen.end(), o) != seen.end()) continue;
+        seen.push_back(o);
+        const AObj& a = solver_.object(o);
+        if (a.protoSet || a.proto.topObj) return true;
+        if (a.kind == ObjKind::Builtin) {
+            if (solver_.catalog().def(a.builtin).path != "Object.prototype") return true;
+            continue;
+        }
+        if (a.kind != ObjKind::Proto && a.kind != ObjKind::Plain && a.kind != ObjKind::Instance) {
+            return true;
+        }
+        for (ObjId p : a.proto.objs) work.push_back(p);
+    }
+    return false;
+}
+
+void ShapeAnalysis::upgradeInstanceInlineSlots(il::Module& mod) {
+    // Exotic subclasses (`extends Array`, `extends Map`, `extends Error`, ...)
+    // keep the runtime's fixed 4-slot layout (`inline_slots.cpp`) because their
+    // internal fields sit immediately after the fourth inline slot.
+    std::vector<uint8_t> exoticCtor(mod.functions.size(), 0);
+    std::vector<uint32_t> wantedCap(mod.functions.size(), 0);
+    for (ObjId id = 0; id < shapes_.size(); ++id) {
+        const ObjShape& s = shapes_[id];
+        const AObj& o = solver_.object(id);
+        if (!s.modelled || o.kind != ObjKind::Instance || o.fn >= mod.functions.size()) continue;
+        const uint32_t flags = mod.functions[o.fn].fnFlags;
+        if ((flags & BRONZE_ABI_FN_FLAG_CONSTRUCT) == 0) continue;
+        if (hasExoticProtoChain(id)) {
+            exoticCtor[o.fn] = 1;
+            continue;
+        }
+        uint32_t width = 0;
+        for (const SeqEntry& e : s.seq) width += e.accessor ? 2u : 1u;
+        for (uint32_t k : s.extras) width += o.accessors.count(k) != 0 ? 2u : 1u;
+        // Instances that escape or acquire properties after construction get
+        // expando slack so caller-added fields stay inline instead of allocating
+        // an overflow SlotBlock.
+        if (o.escaped || o.anyKey || !s.exact || !s.extras.empty()) width += 4u;
+        wantedCap[o.fn] = std::max(wantedCap[o.fn], clampInline(width));
+    }
+
+    constexpr uint32_t kInlineMask =
+        uint32_t{BRONZE_ABI_FN_INLINE_SLOTS_MASK} << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT;
+    for (size_t fnIdx = 0; fnIdx < mod.functions.size(); ++fnIdx) {
+        if (exoticCtor[fnIdx] || wantedCap[fnIdx] == 0) continue;
+        uint32_t& flags = mod.functions[fnIdx].fnFlags;
+        const uint32_t curCap =
+            clampInline((flags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) & BRONZE_ABI_FN_INLINE_SLOTS_MASK);
+        if (wantedCap[fnIdx] > curCap) {
+            flags = (flags & ~kInlineMask) | (wantedCap[fnIdx] << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT);
+        } else {
+            wantedCap[fnIdx] = curCap;
+        }
+    }
+
+    for (ObjId id = 0; id < shapes_.size(); ++id) {
+        ObjShape& s = shapes_[id];
+        const AObj& o = solver_.object(id);
+        if (!s.modelled || o.kind != ObjKind::Instance || o.fn >= mod.functions.size()) continue;
+        if (exoticCtor[o.fn] || wantedCap[o.fn] == 0) continue;
+        s.inlineSlots = wantedCap[o.fn];
+    }
+}
+
 ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, uint32_t startInst,
                                            const std::vector<il::ValueId>& seeds,
                                            const std::vector<il::ValueId>& fnSeeds, const State& in,

@@ -61,7 +61,8 @@ public:
     // `receiverClass`. Keyed on the site's IC index like a method call's.
     void recordClassAccessor(const std::string& className, const std::string& key, bool setter,
                              uint32_t fnIndex);
-    void recordAccessorSite(uint32_t icIndex, std::string receiverClass, std::string key);
+    void recordAccessorSite(uint32_t icIndex, std::string receiverClass, std::string key,
+                            std::string fieldKey = {});
     // The name a class's `name` property shows (its source spelling, what a
     // type-feedback profile names a prototype by), for the binding
     // `className` the table keys it on.
@@ -86,6 +87,10 @@ public:
     // accessor's body in behind the cell's guard: the stamp is a fact only
     // about the finished sites, and nothing before inlining reads it.
     void resolveAccessors(il::Module& ilModule) const;
+    // Stamps accessor targets predicted by whole-program points-to analysis on
+    // property sites that local class/field guesses left unclaimed.
+    void applyPredictedAccessors(il::Module& ilModule,
+                                 const std::unordered_map<uint32_t, uint32_t>& predicted) const;
 
     // The getter (or setter) every class whose `name` shows `shownName`
     // resolves `key` to, as `resolveAccessors` would for a receiver of that

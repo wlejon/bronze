@@ -86,7 +86,7 @@ extern "C" {
 // key the compiler registered, one with the key ToPropertyKey just produced -
 // and a second copy of this dispatch would be a second answer to "does this
 // member exist?", which is the question rt_members.cpp exists to keep one of.
-static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, StringHeader* keyHeader,
                               InlineCacheSite* site);
 
 // A NAME that no Array has: `v.x` and `v.r` of three.js's `setValueV3f`
@@ -279,7 +279,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             if (!reinterpret_cast<const ArrayHeader*>(fastHdr)->properties.isObject()) {
                 if (arrayAbsentHit(keyIndex)) return BRONZE_ABI_UNDEFINED_BITS;
                 const uint64_t result =
-                    propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+                    propGetByName(objVal, &rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
                 if (result == BRONZE_ABI_UNDEFINED_BITS) arrayAbsentFill(keyIndex);
                 return result;
             }
@@ -292,7 +292,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             if (rtKeyInfo(keyIndex).isPrototype) {
                 const Value proto = reinterpret_cast<const FunctionHeader*>(fastHdr)->prototype;
                 if (proto.isObject() && rtStaticsArmServes(objVal)) return proto.rawBits();
-            } else if (uint64_t out = 0; rtFunctionCachedMember(objVal, site, out)) {
+            } else if (uint64_t out = 0; rtFunctionCachedMember(objVal, site, keyIndex, out)) {
                 return out;
             }
         }
@@ -336,11 +336,18 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
     // it runs can move the receiver. Shapes are immortal, so the pointer
     // stays good across the call.
     const Shape* missShape = nullptr;
-    if (site && objVal.isObject() &&
-        HeapKind::carriesShape(objVal.asObject<HeapObjectHeader>()->flags)) {
-        missShape = objVal.asObject<ObjectHeader>()->shape;
+    if (site && objVal.isObject()) {
+        const uint16_t recvFlags = objVal.asObject<HeapObjectHeader>()->flags;
+        if (HeapKind::carriesShape(recvFlags)) {
+            missShape = objVal.asObject<ObjectHeader>()->shape;
+        } else if (recvFlags == HeapKind::Function && !rtKeyInfo(keyIndex).isPrototype) {
+            const Value box = objVal.asObject<FunctionHeader>()->properties;
+            if (box.isObject() && box.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+                missShape = box.asObject<ObjectHeader>()->shape;
+            }
+        }
     }
-    const uint64_t result = propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+    const uint64_t result = propGetByName(objVal, nullptr, rtKeyHeader(keyIndex), site);
     if (missShape) rtMegaPropFill(site, missShape, keyIndex);
     return result;
 }
@@ -360,12 +367,18 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     return propGetHelperBody(objBits, keyIndex, icEntry);
 }
 
-static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, StringHeader* keyHeader,
                               InlineCacheSite* ic) {
     // The interned key is needed by more than the plain-object branch now, so
     // its registration is checked once at the top rather than where it is
     // first read.
     if (!keyHeader) fatal("property access with an unregistered key index");
+    std::string lazyKeyStr;
+    auto keyText = [&]() -> const std::string& {
+        if (optKeyStr) return *optKeyStr;
+        if (lazyKeyStr.empty() && keyHeader->getLength() != 0) lazyKeyStr = rtUtf8Chars(keyHeader);
+        return lazyKeyStr;
+    };
 
     // Reading a property of null or undefined is a TypeError in ECMA-262 7.3.2
     // (GetV -> ToObject), and answering `undefined` for it is the
@@ -377,7 +390,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     if (objVal.isNull() || objVal.isUndefined()) {
         return rtThrowTypeError("Cannot read properties of " +
                                 std::string(objVal.isNull() ? "null" : "undefined") +
-                                " (reading '" + keyStr + "')")
+                                " (reading '" + keyText() + "')")
             .rawBits();
     }
     // Every other PRIMITIVE receiver, whose answer comes from an intrinsic
@@ -385,7 +398,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // question, including the index properties 10.4.3.5 synthesises for a
     // string.
     if (!objVal.isObject()) {
-        return rtPrimitiveMember(objVal, keyStr, keyHeader, ic).rawBits();
+        return rtPrimitiveMember(objVal, keyText(), keyHeader, ic).rawBits();
     }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -398,6 +411,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // read only above the first of them.
         Rooted<Value> recv{objVal};
         ArrayHeader* arr = recv.get().asObject<ArrayHeader>();
+        const std::string& keyStr = keyText();
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (rtKeyAsIndex(keyStr, idx)) return rtArrayIndexGet(recv.get(), idx).rawBits();
         // A named own property: a match array's `index`, an `arguments`
@@ -446,6 +460,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // `undefined` and not an error. A canonical numeric string that is
         // not a valid index ("1.5", "-0", "NaN") is the same absence. Every
         // other name is the ordinary walk below: the view carries a shape.
+        const std::string& keyStr = keyText();
         if (rtKeyAsIndex(keyStr, idx)) return rtTypedArrayElement(objVal, idx).rawBits();
         if (rtIsCanonicalNumericString(keyStr)) return BRONZE_ABI_UNDEFINED_BITS;
     }
@@ -454,7 +469,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // has, and it lives in the header rather than in a slot so the exec
         // path reads it with no lookup. Every other name is the ordinary walk
         // below — the RegExp carries a shape whose chain is `RegExp.prototype`.
-        if (keyStr == "lastIndex") return rtRegExpLastIndexValue(objVal).rawBits();
+        if (keyHeader->equalsASCII("lastIndex")) return rtRegExpLastIndexValue(objVal).rawBits();
     }
     if (hdr->flags == IterRecordHeader::kFlags) {
         // The record of a live for-of is not a JS value: nothing hands one to
@@ -485,7 +500,8 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // the longest branch of this dispatch. It is handed the SITE because
         // one of those four places, the function's statics object, is a shape
         // and a slot and can therefore be cached.
-        return rtFunctionMember(objVal, keyStr, keyHeader, ic);
+        return optKeyStr ? rtFunctionMember(objVal, *optKeyStr, keyHeader, ic)
+                         : rtFunctionMember(objVal, keyHeader, ic);
     }
 
     // Interned arena key: no allocation on the property path.
@@ -500,6 +516,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // into this one. The byte-store family (a view, a buffer, a DataView) opens
     // with an ObjectHeader and is read through it like any ordinary object.
     if (!HeapKind::carriesShape(hdr->flags)) {
+        const std::string& keyStr = keyText();
         char buf[128];
         std::snprintf(buf, sizeof(buf),
                       "internal: a property read on an unknown object kind: flags=%u, key='%.*s'",
@@ -514,8 +531,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // A key this does not claim falls through to the ordinary walk, which is
     // the half `new String("ab").indexOf` needs and the half bronze had no
     // holder for before `String.prototype` became an object.
-    if (Value exotic; rtStringExoticOwnProperty(objRoot.get(), keyStr, exotic)) {
-        return exotic.rawBits();
+    if (objRoot.get().asObject<ObjectHeader>()->internalSlotCount() != 0) {
+        if (Value exotic; rtStringExoticOwnProperty(objRoot.get(), keyText(), exotic)) {
+            return exotic.rawBits();
+        }
     }
     Rooted<Value> key(Value::fromString(keyHeader));
     // The walk reports whether it found the key NOWHERE and ran to the chain's
@@ -531,6 +550,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
     if (result.isUndefined()) {
+        const std::string& keyStr = keyText();
         // %GeneratorFunction.prototype% and its two siblings inherit from a
         // FUNCTION object, a link the walk above stops at. Their inherited
         // members are answered here, uncached: the answer is a real value the
@@ -902,7 +922,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                         if (!info.accessor) {
                             if (probe.entry && !censusFillsSuppressed()) {
                                 InlineCacheSite site{};
-                                site.ways[0].fill(sh, info.slot, 0);
+                                site.ways[0].fillLocal(sh, info.slot, 0);
                                 elemCacheFill(probe, strKey, site);
                             }
                             return plainObj->getSlot(info.slot).rawBits();
@@ -921,7 +941,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
         if (!probe.entry) {
             StringHeader* plainKey = key.get().asString<StringHeader>();
-            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr);
+            return propGetByName(objRoot.get(), nullptr, plainKey, /*ic=*/nullptr);
         }
         // A single-entry site on the STACK. The walk fills it by its own rules
         // — the dictionary refusal, `chainIsCacheable`, the diagnostic claims —
@@ -931,7 +951,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         InlineCacheSite site{};
         StringHeader* keyHeader = key.get().asString<StringHeader>();
         const uint64_t result =
-            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site);
+            propGetByName(objRoot.get(), nullptr, keyHeader, &site);
         if (site.ways[0].isRealShape()) {
             // Filled only once the walk has proven the answer cacheable —
             // including ABSENCE, which reaches way 0 only through

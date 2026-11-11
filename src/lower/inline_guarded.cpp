@@ -65,7 +65,10 @@ bool selfHosted(const il::Function& fn) {
 // An EXACT body (a direct `call`'s, "exact calls" below) is bound to the
 // call's operands one for one, whatever their types.
 bool isCandidate(const il::Function& fn, bool closure, bool exact) {
-    if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
+    if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator ||
+        !fn.inlineFrames.empty()) {
+        return false;
+    }
     // The environment, `arguments` and the rest array are built by the call
     // wrapper from the real call; a sloppy function's `this` is coerced there.
     // A closure body's environment is its closure's (`closure.env`), and its
@@ -145,6 +148,7 @@ bool isCandidate(const il::Function& fn, bool closure, bool exact) {
                 case il::Op::ModuleEnvSet:
                 case il::Op::ExcTake:
                 case il::Op::MethodIcIs:
+                case il::Op::AccessorIcIs:
                 case il::Op::MethodSlotFn:
                 case il::Op::ClosureIs:
                 case il::Op::ClosureEnv:
@@ -181,6 +185,7 @@ Inliner::Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBl
     noteGuessed(polyOwnCallees_);
     exactCandidate_.assign(module.functions.size(), 0);
     literalCandidate_.assign(module.functions.size(), 0);
+    calleeHasLoop_.assign(module.functions.size(), 0);
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const il::Function& f = module.functions[i];
         if (isCandidate(f, false)) candidate_[i] = 1;
@@ -196,29 +201,63 @@ Inliner::Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBl
         }
         if (candidate_[i] || closureCandidate_[i] || exactCandidate_[i] || literalCandidate_[i]) {
             originals_[i] = f;
+            const auto lb = loopBlocks(f);
+            if (std::any_of(lb.begin(), lb.end(), [](uint8_t v) { return v != 0; })) {
+                calleeHasLoop_[i] = 1;
+            }
         }
     }
     markEnteredFromLoops();
 }
 
-size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlinedOwnIcs) {
+size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlinedOwnIcs, bool tinyOnly) {
     il::Function& fn = module_.functions[fnIdx];
     if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) return 0;
     // The top level is module initialisation, which runs once; a script
     // whose hot loop is there keeps its method calls, and takes only the
     // bodies that need no guard of their own (exact and literal calls).
     const bool entry = fn.isEntryPoint || fn.name == "main";
-    size_t count = instructionCount(fn);
-    if (count > kMaxCallerStart) {
+    markLoops(fn);
+    const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
+    const bool hasLoop = std::any_of(inLoop_.begin(), inLoop_.end(), [](uint8_t v) { return v != 0; });
+    const size_t initialCount = instructionCount(fn);
+    size_t count = initialCount;
+    const size_t maxCallerStart = (hasLoop || hot || tinyOnly) ? kMaxHotCallerStart : kMaxCallerStart;
+    if (count > maxCallerStart) {
         if (trace()) std::fprintf(stderr, "[inline] %s: caller too big (%zu)\n", fn.name.c_str(), count);
         return 0;
     }
+    // Callers already larger than `kMaxCallerStart` (such as outer benchmark
+    // drivers or large batchers, or round-2 callers revisiting nested sites)
+    // take only tiny loop-free callees so they never swallow a hot inner loop
+    // function and starve it of its own callee budget and lean stack frame.
+    const bool restrictToTiny = tinyOnly || initialCount > kMaxCallerStart;
     types_ = valueTypes(fn);
     literals_.clear();
+    std::vector<il::Op> defOp(fn.valueCount, il::Op::ConstUndefined);
     for (const auto& blk : fn.blocks) {
-        for (const auto& inst : blk.instructions) noteLiteral(inst);
+        for (const auto& inst : blk.instructions) {
+            noteLiteral(inst);
+            if (inst.result != il::kNoValue && inst.result < defOp.size()) defOp[inst.result] = inst.op;
+        }
     }
     slowBlock_.assign(fn.blocks.size(), 0);
+    // Preserve guard fallback blocks synthesized in an earlier round so their
+    // fallback calls are never re-inlined during the second tiny-callee pass.
+    const auto isGuardBranch = [&](const il::Block& blk) {
+        if (blk.instructions.empty()) return false;
+        const il::Instruction& term = blk.instructions.back();
+        if (term.op != il::Op::Branch || term.operands.empty() || term.operands[0] >= defOp.size()) {
+            return false;
+        }
+        const il::Op op = defOp[term.operands[0]];
+        return op == il::Op::MethodIcIs || op == il::Op::AccessorIcIs || op == il::Op::ClosureIs;
+    };
+    for (const auto& blk : fn.blocks) {
+        if (!isGuardBranch(blk)) continue;
+        const il::BlockId miss = blk.instructions.back().elseTarget.block;
+        if (miss < fn.blocks.size() && !isGuardBranch(fn.blocks[miss])) slowBlock_[miss] = 1;
+    }
     closureTried_.assign(fn.blocks.size(), 0);
     methodTried_.assign(fn.blocks.size(), 0);
     closureSlotFn_.assign(fn.blocks.size(), il::kNoValue);
@@ -237,10 +276,10 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
             }
         }
     }
-    markLoops(fn);
-    const size_t limit =
+    const size_t baseLimit =
         std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
-    const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
+    const size_t hotLimit =
+        std::min(kMaxHotCallerInstructions, std::max(count * 4 + kCallerGrowthSlack, count + kMinHotCallerGrowth));
     size_t inlined = 0;
     // The guarded regions' fast copies first: the room is one budget for
     // the whole function, and a region's slow copy (its original blocks,
@@ -273,21 +312,49 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                 Form unguardedForm = Form::Method;
                 const uint32_t unguarded = unguardedCallee(fn, fnIdx, inst, unguardedForm);
                 if (onlyExact && unguardedForm != Form::Exact) continue;
-                const size_t available = count + reserved <= limit ? limit - count - reserved : 0;
-                const auto roomFor = [&](uint32_t callee, size_t extra) -> size_t {
+                const auto availableFor = [&](bool allowHotCap) -> size_t {
+                    const size_t cap = (pass == 0 && allowHotCap) ? hotLimit : baseLimit;
+                    return count + reserved <= cap ? cap - count - reserved : 0;
+                };
+                const auto roomFor = [&](uint32_t callee, size_t extra, bool exactCall) -> size_t {
+                    const size_t calleeInsts = instructionCount(originals_[callee]);
+                    if (!exactCall && calleeHasLoop_[callee] && calleeInsts > kTinyCalleeInstructions) {
+                        return 0;
+                    }
+                    if (restrictToTiny && !exactCall &&
+                        (calleeInsts > kTinyCalleeInstructions || calleeHasLoop_[callee])) {
+                        return 0;
+                    }
+                    if (tinyOnly && exactCall && calleeInsts > kTinyCalleeInstructions) return 0;
+                    const bool allowHot = inLoop_[b] || calleeInsts <= kTinyCalleeInstructions;
+                    const size_t avail = availableFor(allowHot);
                     const size_t grows = growthOf(callee, extra);
-                    if (grows <= available) return grows;
+                    if (grows <= avail) return grows;
                     if (trace()) {
+                        const size_t cap = (pass == 0 && allowHot) ? hotLimit : baseLimit;
                         std::fprintf(stderr, "[inline] %s: no room for %s (%zu + %zu > %zu)\n", fn.name.c_str(),
-                                     module_.functions[callee].name.c_str(), count + reserved, grows, limit);
+                                     module_.functions[callee].name.c_str(), count + reserved, grows, cap);
                     }
                     return 0;
+                };
+                const auto polyFitsTiny = [&](const ClosureGuesses* map) {
+                    if (!restrictToTiny) return true;
+                    if (!map) return false;
+                    const auto it = map->find(inst.icIndex);
+                    if (it == map->end()) return false;
+                    for (uint32_t t : it->second) {
+                        if (t >= originals_.size() || calleeHasLoop_[t] ||
+                            instructionCount(originals_[t]) > kTinyCalleeInstructions) {
+                            return false;
+                        }
+                    }
+                    return true;
                 };
                 SplicePlan splice{};
                 size_t grows = 0;
                 uint32_t callee = kNone;
                 if (unguarded != kNone) {
-                    if ((grows = roomFor(unguarded, 0)) == 0) continue;
+                    if ((grows = roomFor(unguarded, 0, unguardedForm == Form::Exact)) == 0) continue;
                     callee = unguarded;
                     splice.form = unguardedForm;
                 } else if (entry) {
@@ -295,8 +362,9 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                 } else {
                     const il::BlockId bid = static_cast<il::BlockId>(b);
                     const bool polyOwn = polyOwnCallees_ != nullptr && polyOwnCallees_->count(inst.icIndex) != 0;
-                    if (polyOwn) {
-                        callee = polyClosureCallee(fn, fnIdx, bid, i, inst, available, splice, grows);
+                    if (polyOwn && polyFitsTiny(polyOwnCallees_)) {
+                        const size_t polyAvail = availableFor(inLoop_[b] || restrictToTiny);
+                        callee = polyClosureCallee(fn, fnIdx, bid, i, inst, polyAvail, splice, grows);
                     }
                     if (callee == kNone && !polyOwn) {
                         uint32_t next = 0;
@@ -304,7 +372,8 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                         if (c != kNone) {
                             const bool reuse =
                                 i == 0 && b < closureSlotFn_.size() && closureSlotFn_[b] != il::kNoValue;
-                            grows = roomFor(c, reuse ? kChainedClosureGuardInstructions : kClosureGuardInstructions);
+                            grows = roomFor(c, reuse ? kChainedClosureGuardInstructions : kClosureGuardInstructions,
+                                            /*exactCall=*/false);
                             if (grows != 0) {
                                 callee = c;
                                 splice = SplicePlan{Form::Closure, next, /*moreTries=*/true, 0};
@@ -313,13 +382,14 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                     }
                     if (callee == kNone) {
                         const uint32_t m = eligibleCallee(fn, fnIdx, inst);
-                        if (m != kNone && (grows = roomFor(m, 0)) != 0) {
+                        if (m != kNone && (grows = roomFor(m, 0, /*exactCall=*/false)) != 0) {
                             callee = m;
                             splice = SplicePlan{Form::Method, 0, /*moreTries=*/false, 0};
                         }
                     }
-                    if (callee == kNone) {
-                        callee = polyMethodCallee(fn, fnIdx, bid, inst, available, splice, grows);
+                    if (callee == kNone && polyFitsTiny(polyMethods_)) {
+                        const size_t polyAvail = availableFor(inLoop_[b] || restrictToTiny);
+                        callee = polyMethodCallee(fn, fnIdx, bid, inst, polyAvail, splice, grows);
                     }
                     if (callee == kNone) continue;
                 }
@@ -383,6 +453,7 @@ uint32_t Inliner::unguardedCallee(const il::Function& fn, uint32_t fnIdx, const 
 bool Inliner::eligibleMethodTarget(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst,
                                    uint32_t origin, uint32_t callee) const {
     if (origin >= candidate_.size() || callee >= candidate_.size() || !candidate_[callee]) return false;
+    if (calleeHasLoop_[callee] && instructionCount(originals_[callee]) > kTinyCalleeInstructions) return false;
     if (origin == originOf(fnIdx) || inst.operands.empty() || inst.operands.size() - 1 > kMaxArgs) return false;
     if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return false;
     if (inst.operands[0] >= types_.size() || types_[inst.operands[0]] != il::Type::Dynamic) return false;
@@ -455,6 +526,7 @@ bool Inliner::eligibleClosureTarget(const il::Function& fn, uint32_t fnIdx, cons
         if (inst.operands[a] >= types_.size() || types_[inst.operands[a]] != il::Type::Dynamic) return false;
     }
     if (target >= closureCandidate_.size() || !closureCandidate_[target] || target == originOf(fnIdx)) return false;
+    if (calleeHasLoop_[target] && instructionCount(originals_[target]) > kTinyCalleeInstructions) return false;
     size_t depth = 0;
     for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
         if (fn.inlineFrames[f - 1].callee == target) return false;
@@ -530,10 +602,22 @@ void Inliner::markEnteredFromLoops() {
     for (size_t g = 0; g < module_.functions.size(); ++g) {
         const il::Function& fn = module_.functions[g];
         if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
-        const bool callerSkipsGuarded =
-            fn.isEntryPoint || fn.name == "main" || instructionCount(fn) > kMaxCallerStart;
-        const uint32_t callerOrigin = originOf(static_cast<uint32_t>(g));
         markLoops(fn);
+        const size_t callerInsts = instructionCount(fn);
+        const bool callerSkipsAllGuarded =
+            fn.isEntryPoint || fn.name == "main" || callerInsts > kMaxHotCallerStart;
+        const bool callerOnlyTiny = callerInsts > kMaxCallerStart;
+        const auto callerSkipsCallee = [&](uint32_t callee) {
+            if (callerSkipsAllGuarded) return true;
+            if (callee < originals_.size() && calleeHasLoop_[callee] &&
+                instructionCount(originals_[callee]) > kTinyCalleeInstructions) {
+                return true;
+            }
+            if (!callerOnlyTiny) return false;
+            return callee >= originals_.size() || calleeHasLoop_[callee] ||
+                   instructionCount(originals_[callee]) > kTinyCalleeInstructions;
+        };
+        const uint32_t callerOrigin = originOf(static_cast<uint32_t>(g));
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
             if (!inLoop_[b]) continue;
             for (const auto& inst : fn.blocks[b].instructions) {
@@ -547,7 +631,7 @@ void Inliner::markEnteredFromLoops() {
                         if (it == map->end()) return;
                         for (uint32_t t : it->second) {
                             const uint32_t to = originOf(t);
-                            if (callerSkipsGuarded || to == callerOrigin || t >= ok.size() || !ok[t]) mark(to, fn);
+                            if (callerSkipsCallee(t) || to == callerOrigin || t >= ok.size() || !ok[t]) mark(to, fn);
                         }
                     };
                     markUninlined(polyMethods_, candidate_);
@@ -559,7 +643,8 @@ void Inliner::markEnteredFromLoops() {
                     inst.op == il::Op::MethodCall || inst.op == il::Op::PropGet || inst.op == il::Op::PropSet;
                 if (!site || origin >= candidate_.size()) continue;
                 const uint32_t callee = inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
-                if (callerSkipsGuarded || origin == callerOrigin || callee >= candidate_.size() || !candidate_[callee]) {
+                if (callerSkipsCallee(callee) || origin == callerOrigin || callee >= candidate_.size() ||
+                    !candidate_[callee]) {
                     mark(origin, fn);
                 }
             }
@@ -577,10 +662,11 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
     inline_guarded_detail::Inliner inliner(module, guesses, cold, polyMethods, polyOwnCallees);
     bool any = false;
     const char* dump = std::getenv("BRONZE_INLINE_DUMP");
-    for (size_t f = 0; f < module.functions.size(); ++f) {
+    std::vector<uint32_t> round1Changed;
+    const auto runOne = [&](uint32_t f, bool tinyOnly, std::vector<uint32_t>* outChanged) {
         il::Function before = module.functions[f];
         std::unordered_set<uint32_t> localOwnIcs;
-        if (inliner.inlineInto(static_cast<uint32_t>(f), inlinedOwnIcs ? &localOwnIcs : nullptr) == 0) continue;
+        if (inliner.inlineInto(f, inlinedOwnIcs ? &localOwnIcs : nullptr, tinyOnly) == 0) return;
         // A guessed callee can be one this site never calls (a profile that
         // is stale or wrong names it), and its body copied over this site's
         // arguments can hold an operation whose certificate they contradict:
@@ -595,18 +681,35 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
                 std::fputs(il::print(one).c_str(), stderr);
             }
             module.functions[f] = std::move(before);
-            continue;
+            return;
         }
         if (inlinedOwnIcs) inlinedOwnIcs->insert(localOwnIcs.begin(), localOwnIcs.end());
         any = true;
-        if (dump && module.functions[f].name == dump) {
+        if (outChanged) outChanged->push_back(f);
+    };
+
+    for (size_t f = 0; f < module.functions.size(); ++f) {
+        runOne(static_cast<uint32_t>(f), /*tinyOnly=*/false, &round1Changed);
+    }
+    if (!round1Changed.empty()) {
+        // Fold callers modified in round 1 and run a targeted tiny-callee pass
+        // over them so nested accessors and leaf helpers (`Container.x` ->
+        // `ObservablePoint.x` -> `_onUpdate`) flatten cleanly.
+        foldInlinedCallers(module, round1Changed);
+        std::vector<uint32_t> round2Changed;
+        for (uint32_t f : round1Changed) runOne(f, /*tinyOnly=*/true, &round2Changed);
+        if (!round2Changed.empty()) foldInlinedCallers(module, round2Changed);
+    }
+    if (dump) {
+        for (uint32_t f : round1Changed) {
+            if (module.functions[f].name != dump) continue;
             il::Module one;
             one.keyConstants = module.keyConstants;
             one.functions.push_back(module.functions[f]);
             std::fputs(il::print(one).c_str(), stderr);
         }
-        if (changed) changed->push_back(static_cast<uint32_t>(f));
     }
+    if (changed) changed->insert(changed->end(), round1Changed.begin(), round1Changed.end());
     (void)diags;
     return any;
 }

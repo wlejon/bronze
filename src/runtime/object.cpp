@@ -515,7 +515,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     //    bumps the epoch, exactly the discipline the depth > 0 read entries
     //    already lean on.
     InlineCache* trIc = setSite ? &setSite->ways[0] : ic;
-    if (trIc && trIc->isRealShape() && trIc->cached_depth == 0 && shape && !shape->isDictionary() &&
+    if (trIc && trIc->isRealShape() && !trIc->isAccessor() && !trIc->isAbsent() &&
+        trIc->realDepth() == 0 && shape && !shape->isDictionary() &&
+        !trIc->cached_shape->repr_generalized &&
+        (!trIc->isDoubleSlot() || val.get().isNumber()) &&
         trIc->cached_shape->parent == shape &&
         trIc->cached_shape->slot_index == trIc->cached_slot &&
         trIc->cached_shape->enumerable && !trIc->cached_shape->accessor &&

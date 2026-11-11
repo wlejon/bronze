@@ -18,12 +18,24 @@ struct TypedBodyGuardSplit {
     std::vector<il::ValueId> paramIds;
 };
 
+// Entry bounds/non-NaN witness for a receiver whose in-body `ElemGet`s all
+// address `baseVal + offset` (`0 <= offset <= maxOffset`) before any
+// collection/detachment point. `baseVal == kNoValue` denotes constant indices.
+struct TypedBodyReadProbe {
+    size_t recvIdx = 0;
+    il::ValueId baseVal = il::kNoValue;
+    int32_t maxOffset = 0;
+};
+
 struct TypedBodyPlan {
     il::BlockId entry = il::kNoBlock;
     std::vector<il::BlockId> body;
     std::vector<uint8_t> in;
     std::vector<il::ValueId> receivers;
     std::vector<int32_t> receiverKinds;
+    std::vector<std::vector<int32_t>> versionKinds;
+    std::vector<uint8_t> provenInBoundsRead;
+    std::vector<TypedBodyReadProbe> readProbes;
     std::vector<il::ValueId> guardedPreBody;
     std::unordered_set<il::ValueId> numericAdd;
     std::vector<std::vector<TypedBodyGuardSplit>> splitsOf;
@@ -70,6 +82,22 @@ inline bool isBodyFloatArithOp(il::Op op) {
 inline bool isBodyBitwiseBinOp(il::Op op) {
     return op == il::Op::BitAnd || op == il::Op::BitOr || op == il::Op::BitXor ||
            op == il::Op::Shl || op == il::Op::Shr || op == il::Op::UShr;
+}
+
+inline bool isBodyRelOp(il::Op op) {
+    return op == il::Op::RelLt || op == il::Op::RelGt || op == il::Op::RelLe ||
+           op == il::Op::RelGe;
+}
+
+inline il::Op promotedBodyCmpOp(il::Op op) {
+    switch (op) {
+        case il::Op::StrictEq: return il::Op::CmpEq;
+        case il::Op::RelLt: return il::Op::CmpLt;
+        case il::Op::RelGt: return il::Op::CmpGt;
+        case il::Op::RelLe: return il::Op::CmpLe;
+        case il::Op::RelGe: return il::Op::CmpGe;
+        default: return op;
+    }
 }
 
 inline il::ValueId bodyDominatingRawUnboxAt(

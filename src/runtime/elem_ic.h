@@ -242,4 +242,7 @@ StringHeader* elemCacheInternKey(StringHeader* live);
 // does not.
 inline constexpr uint32_t kElemKeyBudget = 8192;
 
+// Clears the runtime-side computed-store fast cache when shape arenas tear down.
+void rtForgetElemSetFastCache() noexcept;
+
 }  // namespace bronze::runtime

@@ -131,7 +131,8 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
 }  // namespace
 
 std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
-                                 std::unordered_map<uint32_t, uint32_t>* ownCallees) {
+                                 std::unordered_map<uint32_t, uint32_t>* ownCallees,
+                                 std::unordered_map<uint32_t, uint32_t>* accessorTargets) {
     StampPlan plan;
     {
         Solver predicted(mod, solverOptions(opts, /*predict=*/true));
@@ -141,17 +142,21 @@ std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
         plan = planStamps(predicted, shapes, classifySites(predicted, shapes));
     }
     applyDirects(mod, plan);
-    if (ownCallees != nullptr) {
+    const auto collectUniqueByIc = [&](const std::vector<DirectEntry>& entries,
+                                       std::unordered_map<uint32_t, uint32_t>* out) {
+        if (out == nullptr) return;
         constexpr uint32_t kDisagree = UINT32_MAX;
-        for (const DirectEntry& d : plan.ownCalls) {
+        for (const DirectEntry& d : entries) {
             const uint32_t site = mod.functions[d.fn].blocks[d.block].instructions[d.inst].icIndex;
-            auto [it, fresh] = ownCallees->insert({site, d.target});
+            auto [it, fresh] = out->insert({site, d.target});
             if (!fresh && it->second != d.target) it->second = kDisagree;
         }
-        for (auto it = ownCallees->begin(); it != ownCallees->end();) {
-            it = it->second == kDisagree ? ownCallees->erase(it) : std::next(it);
+        for (auto it = out->begin(); it != out->end();) {
+            it = it->second == kDisagree ? out->erase(it) : std::next(it);
         }
-    }
+    };
+    collectUniqueByIc(plan.ownCalls, ownCallees);
+    collectUniqueByIc(plan.accessorCalls, accessorTargets);
     if (!opts.stats) return {};
     std::string out = "wpo-early: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
                       std::to_string(plan.callCandidates) +
@@ -178,6 +183,7 @@ std::string optimizeForBuild(il::Module& mod, const BuildOptions& opts) {
         predicted.run();
         ShapeAnalysis shapes(predicted);
         shapes.run();
+        shapes.upgradeInstanceInlineSlots(mod);
         plan = planStamps(predicted, shapes, classifySites(predicted, shapes));
     }
     std::string report;

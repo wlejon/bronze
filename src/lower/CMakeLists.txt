@@ -35,6 +35,7 @@ bronze_add_module(lower
                  ../../tests/lower/loop_prop_hoist_test.cpp
                  ../../tests/lower/read_cse_test.cpp
                  ../../tests/lower/typed_entry_test.cpp
+                 ../../tests/lower/typed_body_version_test.cpp
                  ../../tests/lower/inline_guarded_test.cpp
                  ../../tests/lower/function_placement_test.cpp
     # Test-only: the fixtures need a lexer and parser to produce an AST.

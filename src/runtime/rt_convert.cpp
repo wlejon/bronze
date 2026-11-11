@@ -645,18 +645,99 @@ bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
     return aBits == bBits;
 }
 
+static uint64_t concatStringAndNumber(Value strVal, double num, bool strFirst) {
+    char buf[64];
+    const size_t numLen = formatJsNumber(num, buf);
+    const auto* s = strVal.asString<StringHeader>();
+    const uint32_t sLen = s->length;
+    if (sLen == 0) {
+        return rtMakeString(std::string_view(buf, numLen)).rawBits();
+    }
+    if (s->isLatin1()) {
+        const uint32_t totalLen = sLen + static_cast<uint32_t>(numLen);
+        if (s->isArena()) {
+            StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, totalLen);
+            char* dst = res->latin1Data();
+            if (strFirst) {
+                std::memcpy(dst, s->latin1Data(), sLen);
+                std::memcpy(dst + sLen, buf, numLen);
+            } else {
+                std::memcpy(dst, buf, numLen);
+                std::memcpy(dst + numLen, s->latin1Data(), sLen);
+            }
+            dst[totalLen] = '\0';
+            return Value::fromString(res).rawBits();
+        }
+        Rooted<Value> sRoot{strVal};
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, totalLen);
+        s = sRoot.get().asString<StringHeader>();
+        char* dst = res->latin1Data();
+        if (strFirst) {
+            std::memcpy(dst, s->latin1Data(), sLen);
+            std::memcpy(dst + sLen, buf, numLen);
+        } else {
+            std::memcpy(dst, buf, numLen);
+            std::memcpy(dst + numLen, s->latin1Data(), sLen);
+        }
+        dst[totalLen] = '\0';
+        return Value::fromString(res).rawBits();
+    }
+    Rooted<Value> aRoot{strFirst ? strVal : Value::fromDouble(num)};
+    Rooted<Value> bRoot{strFirst ? Value::fromDouble(num) : strVal};
+    if (!aRoot.get().isString()) aRoot.set(rtMakeString(std::string_view(buf, numLen)));
+    if (!bRoot.get().isString()) bRoot.set(rtMakeString(std::string_view(buf, numLen)));
+    return StringHeader::concat(rtHeap(), aRoot, bRoot).rawBits();
+}
+
 uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_string_concat");
+    const Value aVal(aBits);
+    const Value bVal(bBits);
+    if (aVal.isString() && bVal.isString()) {
+        const auto* sA = aVal.asString<StringHeader>();
+        const auto* sB = bVal.asString<StringHeader>();
+        if (sA->length == 0) {
+            if (sB->length == 1 && sB->isLatin1()) {
+                return Value::fromString(StringHeader::latin1CharInArena(
+                                             rtArena(), static_cast<uint8_t>(sB->latin1Data()[0])))
+                    .rawBits();
+            }
+            if (!sB->isBuilder()) return bBits;
+        }
+        if (sB->length == 0) {
+            if (sA->length == 1 && sA->isLatin1()) {
+                return Value::fromString(StringHeader::latin1CharInArena(
+                                             rtArena(), static_cast<uint8_t>(sA->latin1Data()[0])))
+                    .rawBits();
+            }
+            if (!sA->isBuilder()) return aBits;
+        }
+        Rooted<Value> aRoot{aVal};
+        Rooted<Value> bRoot{bVal};
+        return StringHeader::concat(rtHeap(), aRoot, bRoot).rawBits();
+    }
+    if (aVal.isString() && (bVal.isNumber() || bVal.isInt32())) {
+        const double num = bVal.isNumber()
+                               ? bVal.asNumber()
+                               : static_cast<double>(static_cast<int32_t>(bVal.payload()));
+        return concatStringAndNumber(aVal, num, /*strFirst=*/true);
+    }
+    if ((aVal.isNumber() || aVal.isInt32()) && bVal.isString()) {
+        const double num = aVal.isNumber()
+                               ? aVal.asNumber()
+                               : static_cast<double>(static_cast<int32_t>(aVal.payload()));
+        return concatStringAndNumber(bVal, num, /*strFirst=*/false);
+    }
     // BOTH operands are rooted before EITHER conversion runs. `valueToString`
     // of a number allocates, and an allocation moves every other live object
     // — including the second operand, whose raw bits are just a pointer until
     // something roots them. Converting a then b left b's pointer stale across
     // a's allocation, so `a.length + ":"` concatenated an empty string under
     // BRONZE_GC_STRESS.
-    Rooted<Value> aRoot{Value(aBits)};
-    Rooted<Value> bRoot{Value(bBits)};
-    aRoot.set(valueToString(aRoot.get()));
-    bRoot.set(valueToString(bRoot.get()));
+    Rooted<Value> aRoot{aVal};
+    Rooted<Value> bRoot{bVal};
+    if (!aRoot.get().isString()) aRoot.set(valueToString(aRoot.get()));
+    if (!bRoot.get().isString()) bRoot.set(valueToString(bRoot.get()));
     return StringHeader::concat(rtHeap(), aRoot, bRoot).rawBits();
 }
 
@@ -682,7 +763,8 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
         double b = bVal.isNumber() ? bVal.asNumber() : static_cast<double>(static_cast<int32_t>(bVal.payload()));
         return Value::fromDouble(a + b).rawBits();
     }
-    if (aVal.isString() && bVal.isString()) {
+    if ((aVal.isString() && (bVal.isString() || bVal.isNumber() || bVal.isInt32())) ||
+        ((aVal.isNumber() || aVal.isInt32()) && bVal.isString())) {
         return bronze_string_concat(aBits, bBits);
     }
     Rooted<Value> aRoot{aVal};

@@ -200,6 +200,16 @@ struct InlineCache {
         rtIcHotNoteWrite(this);
     }
 
+    // Same fill for a scratch `InlineCache` not residing in any module's IC
+    // table (e.g. stack-local carriers into `elemCacheFill` or `mega_prop`),
+    // avoiding the hot-row table notification call.
+    void fillLocal(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = depth;
+        cached_epoch = protoMutationEpoch();
+    }
+
     // The same fill for a SET site, which additionally has to say whether the
     // slot is an f64 one. Separate from `fill` rather than a defaulted
     // parameter on it, so that every caller that can name a double slot is a

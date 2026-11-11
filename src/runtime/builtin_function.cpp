@@ -305,6 +305,10 @@ Value rtFunctionPrototypeObject() {
     return g_functionPrototype;
 }
 
+Value rtFunctionPrototypeIfBuilt() {
+    return g_functionPrototype;
+}
+
 bool rtIsFunctionConstructor(Value fn) {
     if (!fn.isObject()) return false;
     HeapObjectHeader* hdr = fn.asObject<HeapObjectHeader>();

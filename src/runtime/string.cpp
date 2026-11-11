@@ -269,6 +269,8 @@ Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
 
     uint32_t lenA = sA->length;
     uint32_t lenB = sB->length;
+    if (lenA == 0 && !sB->isBuilder()) return b.get();
+    if (lenB == 0 && !sA->isBuilder()) return a.get();
     uint32_t totalLen = lenA + lenB;
 
     bool bothLatin1 = sA->isLatin1() && sB->isLatin1();

@@ -40,9 +40,13 @@ struct BuildOptions {
 //
 // `ownCallees`, when given, receives for each method-call site (by IC index)
 // whose one predicted callee its receivers hold in an own slot that callee's
-// function index; a site whose copies disagree is left out.
+// function index; `accessorTargets` receives for each property site (by IC
+// index) whose predicted receivers all resolve to one prototype getter or
+// setter that accessor's function index. Sites whose copies disagree are
+// omitted.
 std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
-                                 std::unordered_map<uint32_t, uint32_t>* ownCallees = nullptr);
+                                 std::unordered_map<uint32_t, uint32_t>* ownCallees = nullptr,
+                                 std::unordered_map<uint32_t, uint32_t>* accessorTargets = nullptr);
 
 // Runs the analysis over `mod` and applies its claims. Returns the census
 // text when `opts.stats`, else an empty string. What it does to `mod` does

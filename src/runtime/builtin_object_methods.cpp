@@ -65,7 +65,10 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
         Value props = self.get().asObject<ArrayHeader>()->properties;
         if (props.isObject()) holder = props.asObject<ObjectHeader>();
     }
-    if (!holder) return bronze_create_array(0);
+    if (!holder || !holder->shape ||
+        (!holder->shape->isDictionary() && !holder->shape->has_symbol_keys)) {
+        return bronze_create_array(0);
+    }
 
     const PropertyKeyList ordered =
         rtOwnKeysOrdered(holder, /*enumerableOnly=*/false);

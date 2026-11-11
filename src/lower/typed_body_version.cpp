@@ -1,6 +1,8 @@
 #include "lower/typed_body_version.h"
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -170,11 +172,16 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
     size_t accesses = 0;
     size_t copies = 0;
     bool allStores = true;
+    bool hasStores = false;
     for (il::BlockId b : plan.body) {
         for (const auto& inst : fn.blocks[b].instructions) {
             if (!isBodyElemAccess(inst) || !receiverOk(inst.operands[0])) continue;
             ++accesses;
-            if (inst.op != il::Op::ElemSet) allStores = false;
+            if (inst.op == il::Op::ElemSet) {
+                hasStores = true;
+            } else {
+                allStores = false;
+            }
             if (fieldCopy(inst)) ++copies;
             if (std::find(plan.receivers.begin(), plan.receivers.end(), inst.operands[0]) ==
                 plan.receivers.end()) {
@@ -185,9 +192,19 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
     if (accesses < kMinAccesses || accesses == copies) return false;
     std::sort(plan.receivers.begin(), plan.receivers.end());
 
+    const auto receiverIndex = [&](il::ValueId r) -> size_t {
+        const auto it = std::lower_bound(plan.receivers.begin(), plan.receivers.end(), r);
+        return (it != plan.receivers.end() && *it == r)
+                   ? static_cast<size_t>(it - plan.receivers.begin())
+                   : SIZE_MAX;
+    };
     const auto isFlaggedAccess = [&](const il::Instruction& inst) {
-        return isBodyElemAccess(inst) &&
-               std::binary_search(plan.receivers.begin(), plan.receivers.end(), inst.operands[0]);
+        return isBodyElemAccess(inst) && receiverIndex(inst.operands[0]) != SIZE_MAX;
+    };
+    const auto isProvenFloatRead = [&](const il::Instruction& inst) {
+        if (inst.op != il::Op::ElemGet || !isBodyElemAccess(inst)) return false;
+        const size_t rIdx = receiverIndex(inst.operands[0]);
+        return rIdx < plan.provenInBoundsRead.size() && plan.provenInBoundsRead[rIdx] != 0;
     };
 
     for (const auto& blk : fn.blocks) {
@@ -210,6 +227,12 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
         return d && d->op == il::Op::Box && (d->boxType == il::Type::F64 || d->boxType == il::Type::I32) &&
                d->operands.size() == 1;
     };
+    const auto canGuardPreBody = [&](il::ValueId v) {
+        if (v >= plan.types.size() || plan.types[v] != il::Type::Dynamic || definedIn(v)) return false;
+        if (receiverIndex(v) != SIZE_MAX) return false;
+        if (isBoxedNumber(v) || isNonNumberValue(v)) return false;
+        return rawUnboxAt(v, entry, 0) == il::kNoValue;
+    };
 
     // Identify Dynamic `Op::Add`s in `body` that act as numeric addition rather
     // than string concatenation.
@@ -220,58 +243,65 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
         if (isBoxedNumber(v) || plan.numericAdd.count(v) != 0) return true;
         if (rawUnboxAt(v, atBlock, atIdx) != il::kNoValue) return true;
         const il::Instruction* d = defInst(v);
-        return d && (isBodyFloatArithOp(d->op) || isBodyBitwiseBinOp(d->op) || d->op == il::Op::ToInt32);
+        if (d && isProvenFloatRead(*d)) return true;
+        return d && (isBodyFloatArithOp(d->op) || isBodyBitwiseBinOp(d->op) ||
+                     d->op == il::Op::MathUnary || d->op == il::Op::ToInt32);
     };
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (il::BlockId b : plan.body) {
-            const auto& insts = fn.blocks[b].instructions;
-            for (uint32_t i = 0; i < insts.size(); ++i) {
-                const il::Instruction& inst = insts[i];
-                if (inst.op != il::Op::Add || inst.type != il::Type::Dynamic || inst.operands.size() != 2 ||
-                    inst.result == il::kNoValue || plan.numericAdd.count(inst.result) != 0) {
-                    continue;
-                }
-                if (isNonNumberValue(inst.operands[0]) || isNonNumberValue(inst.operands[1])) continue;
-                bool ok = isNumericProducer(inst.operands[0], b, i) ||
-                          isNumericProducer(inst.operands[1], b, i);
-                if (!ok && useCount[inst.result] > 0) {
-                    bool allNumericUses = true;
-                    for (il::BlockId ub : plan.body) {
-                        for (const auto& u : fn.blocks[ub].instructions) {
-                            for (size_t oi = 0; oi < u.operands.size(); ++oi) {
-                                if (u.operands[oi] != inst.result) continue;
-                                const bool numUse =
-                                    (isFlaggedAccess(u) && (oi == 1 || oi == 2)) ||
-                                    (u.op == il::Op::Unbox && u.type == il::Type::F64) ||
-                                    u.op == il::Op::ToInt32 || isBodyFloatArithOp(u.op) ||
-                                    isBodyBitwiseBinOp(u.op) ||
-                                    (u.op == il::Op::Add && plan.numericAdd.count(u.result) != 0);
-                                if (!numUse) allNumericUses = false;
-                            }
-                            for (il::ValueId a : u.target.args) {
-                                if (a == inst.result) allNumericUses = false;
-                            }
-                            for (il::ValueId a : u.elseTarget.args) {
-                                if (a == inst.result) allNumericUses = false;
+    const auto propagateNumericAdd = [&]() {
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (il::BlockId b : plan.body) {
+                const auto& insts = fn.blocks[b].instructions;
+                for (uint32_t i = 0; i < insts.size(); ++i) {
+                    const il::Instruction& inst = insts[i];
+                    if (inst.op != il::Op::Add || inst.type != il::Type::Dynamic ||
+                        inst.operands.size() != 2 || inst.result == il::kNoValue ||
+                        plan.numericAdd.count(inst.result) != 0) {
+                        continue;
+                    }
+                    if (isNonNumberValue(inst.operands[0]) || isNonNumberValue(inst.operands[1])) continue;
+                    bool ok = isNumericProducer(inst.operands[0], b, i) ||
+                              isNumericProducer(inst.operands[1], b, i);
+                    if (!ok && useCount[inst.result] > 0) {
+                        bool allNumericUses = true;
+                        for (il::BlockId ub : plan.body) {
+                            for (const auto& u : fn.blocks[ub].instructions) {
+                                for (size_t oi = 0; oi < u.operands.size(); ++oi) {
+                                    if (u.operands[oi] != inst.result) continue;
+                                    const bool numUse =
+                                        (isFlaggedAccess(u) && (oi == 1 || oi == 2)) ||
+                                        (u.op == il::Op::Unbox && u.type == il::Type::F64) ||
+                                        u.op == il::Op::ToInt32 || isBodyFloatArithOp(u.op) ||
+                                        isBodyBitwiseBinOp(u.op) ||
+                                        (u.op == il::Op::Add && plan.numericAdd.count(u.result) != 0);
+                                    if (!numUse) allNumericUses = false;
+                                }
+                                for (il::ValueId a : u.target.args) {
+                                    if (a == inst.result) allNumericUses = false;
+                                }
+                                for (il::ValueId a : u.elseTarget.args) {
+                                    if (a == inst.result) allNumericUses = false;
+                                }
                             }
                         }
+                        ok = allNumericUses;
                     }
-                    ok = allNumericUses;
-                }
-                if (ok) {
-                    plan.numericAdd.insert(inst.result);
-                    changed = true;
+                    if (ok) {
+                        plan.numericAdd.insert(inst.result);
+                        changed = true;
+                    }
                 }
             }
         }
-    }
+    };
+    propagateNumericAdd();
 
     // Vertex-batcher specialization (`packQuadAttributes`): two write-only
     // receivers, one fed float arithmetic and no bitwise ops, the other fed
     // bitwise integer packing and no float arithmetic, specialize directly to
     // Float32Array + Uint32Array so stores lower via ElemSetTyped.
     plan.receiverKinds.assign(plan.receivers.size(), il::kTypedArrayWordView);
+    plan.provenInBoundsRead.assign(plan.receivers.size(), 0);
     bool concreteKinds = false;
     if (allStores && plan.receivers.size() == 2) {
         size_t floatStores[2] = {0, 0};
@@ -301,29 +331,263 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
                 concreteKinds = true;
                 plan.receiverKinds[0] = BRONZE_ABI_TA_KIND_FLOAT32;
                 plan.receiverKinds[1] = BRONZE_ABI_TA_KIND_UINT32;
+                plan.versionKinds = {plan.receiverKinds};
             } else if (floatStores[1] > 0 && bitwiseStores[1] == 0 && bitwiseStores[0] > 0 &&
                        floatStores[0] == 0) {
                 concreteKinds = true;
                 plan.receiverKinds[1] = BRONZE_ABI_TA_KIND_FLOAT32;
                 plan.receiverKinds[0] = BRONZE_ABI_TA_KIND_UINT32;
+                plan.versionKinds = {plan.receiverKinds};
             }
+        }
+    }
+
+    // Multi-view float read+write specialization (`Quaternion.slerpFlat`,
+    // `multiplyQuaternionsFlat`): when 1..3 receivers perform float math with
+    // no integer bitwise packing and every read addresses `base + k` (`0 <= k
+    // <= 1024`) ahead of any collection point, version directly for concrete
+    // Float32Array / Float64Array tuples and guard read bounds at entry so
+    // reads and writes lower via ElemGetTyped / ElemSetTyped without per-access
+    // 4-way word-view kind switches or NaN-boxing.
+    if (!concreteKinds && hasStores && plan.receivers.size() >= 1 && plan.receivers.size() <= 3) {
+        constexpr int32_t kMaxProbeOffset = 1024;
+        constexpr size_t kMaxReadProbes = 4;
+        const auto extractConstOffset = [&](il::ValueId v, int32_t& outK) -> bool {
+            const il::Instruction* d = defInst(v);
+            if (d && d->op == il::Op::Box &&
+                (d->boxType == il::Type::F64 || d->boxType == il::Type::I32) &&
+                d->operands.size() == 1) {
+                d = defInst(d->operands[0]);
+            }
+            if (!d) return false;
+            if (d->op == il::Op::ConstI32 && d->immI32 >= 0 && d->immI32 <= kMaxProbeOffset) {
+                outK = d->immI32;
+                return true;
+            }
+            if (d->op == il::Op::ConstF64 && std::isfinite(d->immF64) && d->immF64 >= 0.0 &&
+                d->immF64 <= static_cast<double>(kMaxProbeOffset) &&
+                std::floor(d->immF64) == d->immF64) {
+                outK = static_cast<int32_t>(d->immF64);
+                return true;
+            }
+            return false;
+        };
+        const auto resolvePreBodyBase = [&](il::ValueId v, il::ValueId& outBase) -> bool {
+            const il::Instruction* d = defInst(v);
+            if (d && d->op == il::Op::Box &&
+                (d->boxType == il::Type::F64 || d->boxType == il::Type::I32) &&
+                d->operands.size() == 1 && !definedIn(d->operands[0])) {
+                v = d->operands[0];
+            } else if (d && d->op == il::Op::Unbox && d->type == il::Type::F64 &&
+                       d->operands.size() == 1 && !definedIn(d->operands[0])) {
+                v = d->operands[0];
+            }
+            if (definedIn(v) || v >= plan.types.size()) return false;
+            if (plan.types[v] == il::Type::F64 || plan.types[v] == il::Type::I32 ||
+                isBoxedNumber(v) || rawUnboxAt(v, entry, 0) != il::kNoValue ||
+                canGuardPreBody(v)) {
+                outBase = v;
+                return true;
+            }
+            return false;
+        };
+        const auto extractReadIndex = [&](il::ValueId idxVal, il::ValueId& outBase,
+                                          int32_t& outOff) -> bool {
+            if (extractConstOffset(idxVal, outOff)) {
+                outBase = il::kNoValue;
+                return true;
+            }
+            il::ValueId u = idxVal;
+            const il::Instruction* d = defInst(u);
+            if (d && d->op == il::Op::Box &&
+                (d->boxType == il::Type::F64 || d->boxType == il::Type::I32) &&
+                d->operands.size() == 1) {
+                u = d->operands[0];
+                d = defInst(u);
+            }
+            if (d && d->op == il::Op::Add && d->operands.size() == 2 &&
+                (d->type == il::Type::F64 || d->type == il::Type::I32 ||
+                 plan.numericAdd.count(d->result) != 0)) {
+                for (int side = 0; side < 2; ++side) {
+                    int32_t k = 0;
+                    il::ValueId base = il::kNoValue;
+                    if (extractConstOffset(d->operands[1 - side], k) &&
+                        resolvePreBodyBase(d->operands[side], base)) {
+                        outBase = base;
+                        outOff = k;
+                        return true;
+                    }
+                }
+            }
+            if (resolvePreBodyBase(u, outBase)) {
+                outOff = 0;
+                return true;
+            }
+            return false;
+        };
+        const auto willFastCopyCollect = [&](const il::Instruction& inst, il::BlockId b,
+                                             uint32_t i) -> bool {
+            if (!il::canCollect(inst) || isFlaggedAccess(inst)) return false;
+            if (inst.op == il::Op::Unbox && inst.type == il::Type::F64 &&
+                inst.operands.size() == 1) {
+                const il::ValueId op0 = inst.operands[0];
+                return !(isNumericProducer(op0, b, i) || canGuardPreBody(op0));
+            }
+            if (isBodyPromotableDynOp(fn, plan, inst)) {
+                for (il::ValueId opId : inst.operands) {
+                    if (!(isNumericProducer(opId, b, i) || canGuardPreBody(opId))) return true;
+                }
+                return false;
+            }
+            return true;
+        };
+
+        const auto isIndexOnlyAdd = [&](il::ValueId addRes) -> bool {
+            auto onlyIndexUses = [&](il::ValueId val, bool allowBox) -> bool {
+                bool any = false;
+                for (il::BlockId ub : plan.body) {
+                    for (const auto& u : fn.blocks[ub].instructions) {
+                        for (size_t oi = 0; oi < u.operands.size(); ++oi) {
+                            if (u.operands[oi] != val) continue;
+                            any = true;
+                            if (isFlaggedAccess(u) && oi == 1) continue;
+                            if (allowBox && u.op == il::Op::Box && u.boxType == il::Type::F64 &&
+                                u.result != il::kNoValue) {
+                                for (il::BlockId bb : plan.body) {
+                                    for (const auto& bu : fn.blocks[bb].instructions) {
+                                        for (size_t boi = 0; boi < bu.operands.size(); ++boi) {
+                                            if (bu.operands[boi] == u.result &&
+                                                !(isFlaggedAccess(bu) && boi == 1)) {
+                                                return false;
+                                            }
+                                        }
+                                        for (il::ValueId a : bu.target.args) {
+                                            if (a == u.result) return false;
+                                        }
+                                        for (il::ValueId a : bu.elseTarget.args) {
+                                            if (a == u.result) return false;
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            return false;
+                        }
+                        for (il::ValueId a : u.target.args) {
+                            if (a == val) return false;
+                        }
+                        for (il::ValueId a : u.elseTarget.args) {
+                            if (a == val) return false;
+                        }
+                    }
+                }
+                return any;
+            };
+            return onlyIndexUses(addRes, /*allowBox=*/true);
+        };
+
+        bool eligible = true;
+        bool hasFloatWork = false;
+        bool seenCollect = false;
+        std::vector<uint8_t> readsRecv(plan.receivers.size(), 0);
+        std::vector<uint8_t> writesRecv(plan.receivers.size(), 0);
+        std::map<std::pair<size_t, il::ValueId>, int32_t> probeMax;
+
+        for (il::BlockId b : plan.body) {
+            const auto& insts = fn.blocks[b].instructions;
+            for (uint32_t i = 0; i < insts.size() && eligible; ++i) {
+                const il::Instruction& inst = insts[i];
+                if (isBodyBitwiseBinOp(inst.op) || inst.op == il::Op::BitNot ||
+                    inst.op == il::Op::MathImul || inst.op == il::Op::ToInt32) {
+                    eligible = false;
+                    break;
+                }
+                if (isBodyFloatArithOp(inst.op) || inst.op == il::Op::MathUnary ||
+                    (inst.op == il::Op::Add &&
+                     (inst.type == il::Type::F64 || plan.numericAdd.count(inst.result) != 0) &&
+                     !isIndexOnlyAdd(inst.result))) {
+                    hasFloatWork = true;
+                }
+                if (isFlaggedAccess(inst)) {
+                    const size_t rIdx = receiverIndex(inst.operands[0]);
+                    for (size_t oi = 1; oi < inst.operands.size(); ++oi) {
+                        if (isNonNumberValue(inst.operands[oi])) eligible = false;
+                    }
+                    if (inst.op == il::Op::ElemGet) {
+                        readsRecv[rIdx] = 1;
+                        il::ValueId base = il::kNoValue;
+                        int32_t off = 0;
+                        if (seenCollect || !extractReadIndex(inst.operands[1], base, off)) {
+                            eligible = false;
+                            break;
+                        }
+                        auto [it, inserted] = probeMax.emplace(std::make_pair(rIdx, base), off);
+                        if (!inserted && off > it->second) it->second = off;
+                        if (probeMax.size() > kMaxReadProbes) {
+                            eligible = false;
+                            break;
+                        }
+                    } else {
+                        writesRecv[rIdx] = 1;
+                    }
+                }
+                if (willFastCopyCollect(inst, b, i)) seenCollect = true;
+            }
+        }
+
+        if (eligible && hasFloatWork) {
+            concreteKinds = true;
+            for (size_t r = 0; r < plan.receivers.size(); ++r) {
+                plan.provenInBoundsRead[r] = readsRecv[r];
+            }
+            for (const auto& [key, maxOff] : probeMax) {
+                plan.readProbes.push_back(TypedBodyReadProbe{key.first, key.second, maxOff});
+                if (key.second != il::kNoValue && canGuardPreBody(key.second)) {
+                    plan.guardedPreBody.push_back(key.second);
+                }
+            }
+            propagateNumericAdd();
+
+            const size_t nRecv = plan.receivers.size();
+            size_t writeOnlyCount = 0;
+            size_t readOnlyCount = 0;
+            size_t writeOnlyIdx = 0;
+            for (size_t r = 0; r < nRecv; ++r) {
+                if (writesRecv[r] && !readsRecv[r]) {
+                    ++writeOnlyCount;
+                    writeOnlyIdx = r;
+                } else if (readsRecv[r] && !writesRecv[r]) {
+                    ++readOnlyCount;
+                }
+            }
+            std::vector<int32_t> allF32(nRecv, BRONZE_ABI_TA_KIND_FLOAT32);
+            std::vector<int32_t> allF64(nRecv, BRONZE_ABI_TA_KIND_FLOAT64);
+            plan.versionKinds.push_back(allF32);
+            if (nRecv >= 2 && writeOnlyCount == 1 && writeOnlyCount + readOnlyCount == nRecv) {
+                std::vector<int32_t> f64OutF32In = allF32;
+                f64OutF32In[writeOnlyIdx] = BRONZE_ABI_TA_KIND_FLOAT64;
+                plan.versionKinds.push_back(std::move(f64OutF32In));
+            }
+            plan.versionKinds.push_back(allF64);
+            plan.receiverKinds = plan.versionKinds.front();
         }
     }
 
     // Pre-body Dynamic values (`index`, `textureId`, `dstOffset`, `t`) used as
     // numeric operands inside `body` are guarded once in `enterThrough`.
-    const auto canGuardPreBody = [&](il::ValueId v) {
-        if (v >= plan.types.size() || plan.types[v] != il::Type::Dynamic || definedIn(v)) return false;
-        if (std::binary_search(plan.receivers.begin(), plan.receivers.end(), v)) return false;
-        if (isBoxedNumber(v) || isNonNumberValue(v)) return false;
-        return rawUnboxAt(v, entry, 0) == il::kNoValue;
-    };
     for (il::BlockId b : plan.body) {
-        for (const auto& inst : fn.blocks[b].instructions) {
+        const auto& insts = fn.blocks[b].instructions;
+        for (uint32_t i = 0; i < insts.size(); ++i) {
+            const il::Instruction& inst = insts[i];
+            const bool relNumeric =
+                isBodyRelOp(inst.op) && inst.operands.size() == 2 &&
+                !isNonNumberValue(inst.operands[0]) && !isNonNumberValue(inst.operands[1]) &&
+                (isNumericProducer(inst.operands[0], b, i) ||
+                 isNumericProducer(inst.operands[1], b, i));
             const bool prom = isBodyPromotableDynOp(fn, plan, inst) ||
                               (inst.op == il::Op::Unbox && !inst.rawUnbox && !inst.nullishUnbox &&
                                inst.type == il::Type::F64) ||
-                              inst.op == il::Op::ToInt32 ||
+                              inst.op == il::Op::ToInt32 || relNumeric ||
                               (concreteKinds && isFlaggedAccess(inst));
             if (!prom) continue;
             for (size_t oi = 0; oi < inst.operands.size(); ++oi) {
@@ -375,13 +639,20 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
         if (v >= plan.types.size() || plan.types[v] != il::Type::Dynamic) return false;
         if (!definedIn(v) || !isSpine[defBlk] || defIdx == UINT32_MAX) return false;
         if (isBoxedNumber(v) || isNonNumberValue(v)) return false;
-        return !isBodyPromotableDynOp(fn, plan, fn.blocks[defBlk].instructions[defIdx]);
+        const il::Instruction& def = fn.blocks[defBlk].instructions[defIdx];
+        if (isProvenFloatRead(def)) return false;
+        return !isBodyPromotableDynOp(fn, plan, def);
     };
     for (il::BlockId b : plan.body) {
         for (uint32_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
             const il::Instruction& inst = fn.blocks[b].instructions[i];
+            const bool relNumeric =
+                isBodyRelOp(inst.op) && inst.operands.size() == 2 &&
+                !isNonNumberValue(inst.operands[0]) && !isNonNumberValue(inst.operands[1]) &&
+                (isNumericProducer(inst.operands[0], b, i) ||
+                 isNumericProducer(inst.operands[1], b, i));
             const bool numericOp =
-                isBodyPromotableDynOp(fn, plan, inst) || inst.op == il::Op::ToInt32 ||
+                isBodyPromotableDynOp(fn, plan, inst) || inst.op == il::Op::ToInt32 || relNumeric ||
                 (inst.op == il::Op::Unbox && !inst.rawUnbox && !inst.nullishUnbox &&
                  inst.type == il::Type::F64);
             if (numericOp) {
@@ -393,7 +664,7 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
                 }
             }
             if (concreteKinds && isFlaggedAccess(inst)) {
-                for (size_t oi : {size_t{1}, size_t{2}}) {
+                for (size_t oi = 1; oi < inst.operands.size(); ++oi) {
                     const il::ValueId v = inst.operands[oi];
                     if (v < plan.defs.size() && canGuardInSpine(v, plan.defs[v].block, plan.defs[v].index) &&
                         rawUnboxAt(v, b, i) == il::kNoValue) {
@@ -433,9 +704,14 @@ bool selectTypedBodyPlan(const il::Function& fn, const Cfg& cfg, TypedBodyPlan& 
             const il::Instruction& inst = insts[i];
             bool needSplit = false;
             if (canSplit[i] && plan.totalSplits < kMaxGuardSplits) {
+                const bool relNumeric =
+                    isBodyRelOp(inst.op) && inst.operands.size() == 2 &&
+                    !isNonNumberValue(inst.operands[0]) && !isNonNumberValue(inst.operands[1]) &&
+                    (isNumericProducer(inst.operands[0], b, i) ||
+                     isNumericProducer(inst.operands[1], b, i));
                 const bool checksOps =
                     isBodyPromotableDynOp(fn, plan, inst) || inst.op == il::Op::ToInt32 ||
-                    (concreteKinds && isFlaggedAccess(inst)) ||
+                    relNumeric || (concreteKinds && isFlaggedAccess(inst)) ||
                     (inst.op == il::Op::Unbox && !inst.rawUnbox && !inst.nullishUnbox &&
                      inst.type == il::Type::F64) ||
                     (isFlaggedAccess(inst) && inst.op == il::Op::ElemSet);

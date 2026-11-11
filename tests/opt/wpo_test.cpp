@@ -737,3 +737,85 @@ TEST_CASE("a prototype method whose key another class writes as an own slot is a
     DiagnosticSink vdiags;
     CHECK(il::verify(with, vdiags));
 }
+
+TEST_CASE("whole-program shape analysis upgrades constructor inline slots for external and expando fields") {
+    const std::string src =
+        "class Batchable {\n"
+        "  constructor() {}\n"
+        "}\n"
+        "function populateBatchable(b: any, v: number) {\n"
+        "  b.f0 = v; b.f1 = v + 1; b.f2 = v + 2; b.f3 = v + 3; b.f4 = v + 4;\n"
+        "  b.f5 = v + 5; b.f6 = v + 6; b.f7 = v + 7; b.f8 = v + 8; b.f9 = v + 9;\n"
+        "}\n"
+        "class Panel {\n"
+        "  constructor() { (this as any)._init(); }\n"
+        "  _init() {\n"
+        "    const s: any = this;\n"
+        "    s.p0 = 1; s.p1 = 2; s.p2 = 3; s.p3 = 4; s.p4 = 5;\n"
+        "    s.p5 = 6; s.p6 = 7; s.p7 = 8; s.p8 = 9; s.p9 = 10;\n"
+        "  }\n"
+        "}\n"
+        "function readPanel(p: any, reps: number) {\n"
+        "  let acc: any = 0;\n"
+        "  for (let i = 0; i < reps; i++) {\n"
+        "    acc = acc + p.p0 + p.p1 + p.p2 + p.p3 + p.p4 + p.p5 + p.p6 + p.p7 + p.p8 + p.p9;\n"
+        "  }\n"
+        "  return acc;\n"
+        "}\n"
+        "class Sprite {\n"
+        "  tex: any; x: any; y: any; w: any;\n"
+        "  constructor(tex: any) { this.tex = tex; this.x = 0; this.y = 0; this.w = 1; }\n"
+        "}\n"
+        "class SubArray extends Array {\n"
+        "  constructor() { super(); }\n"
+        "}\n"
+        "const b0: any = new Batchable();\n"
+        "populateBatchable(b0, 1);\n"
+        "const pn: any = new Panel();\n"
+        "const sp: any = new Sprite(10);\n"
+        "sp.vx = 2; sp.vy = 3;\n"
+        "const sa: any = new SubArray();\n"
+        "sa.k0 = 1; sa.k1 = 2; sa.k2 = 3; sa.k3 = 4; sa.k4 = 5; sa.k5 = 6;\n"
+        "console.log(b0.f9, readPanel(pn, 2), sp.vx + sp.vy, sa.k5);\n";
+
+    auto ctorInlineSlots = [](const il::Module& mod, const std::string& name) -> uint32_t {
+        const il::Function* fn = functionNamed(mod, name);
+        REQUIRE(fn != nullptr);
+        return (fn->fnFlags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) & BRONZE_ABI_FN_INLINE_SLOTS_MASK;
+    };
+
+    const il::Module without = buildLower(src, false);
+    CHECK(ctorInlineSlots(without, "Batchable") == 0);
+    CHECK(ctorInlineSlots(without, "Panel") == 0);
+    CHECK(ctorInlineSlots(without, "Sprite") == 0);
+
+    const il::Module with = buildLower(src, true);
+    // 10 external fields (+ 4 slack) fit inline instead of spilling slots 4..9.
+    CHECK(ctorInlineSlots(with, "Batchable") >= 10);
+    // 10 helper-assigned fields upgraded inline so static slot claims stay < 62.
+    CHECK(ctorInlineSlots(with, "Panel") >= 10);
+    // 4 constructor fields + 2 expando fields + 4 slack upgrade capacity inline.
+    CHECK(ctorInlineSlots(with, "Sprite") >= 10);
+    // Subclasses of Array carry an exotic header at runtime and stay at default 4.
+    CHECK(ctorInlineSlots(with, "SubArray") == 0);
+
+    const il::Function* readFn = functionNamed(with, "readPanel");
+    REQUIRE(readFn != nullptr);
+    size_t inlineClaimed = 0;
+    uint32_t maxSlot = 0;
+    for (const auto& blk : readFn->blocks) {
+        if (blk.copyClass == il::CopyClass::Slow) continue;
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == il::Op::PropGet && inst.staticSlot != il::Instruction::kNoStaticSlot) {
+                CHECK(inst.staticSlot < BRONZE_ABI_OBJ_OVERFLOW_SLOT);
+                maxSlot = std::max(maxSlot, inst.staticSlot);
+                ++inlineClaimed;
+            }
+        }
+    }
+    CHECK(inlineClaimed >= 10);
+    CHECK(maxSlot == 9);
+
+    DiagnosticSink vdiags;
+    CHECK(il::verify(with, vdiags));
+}

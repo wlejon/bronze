@@ -59,7 +59,7 @@ void rtMegaPropFill(const InlineCacheSite* site, const Shape* shape, uint32_t ke
 
 void rtMegaPropFillOwnSlot(Shape* shape, uint32_t keyIndex, uint32_t slot) noexcept {
     InlineCache way;
-    way.fill(shape, slot, /*depth=*/0);
+    way.fillLocal(shape, slot, /*depth=*/0);
     record(way, shape, keyIndex);
 }
 

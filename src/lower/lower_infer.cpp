@@ -834,8 +834,16 @@ void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) 
             // No own data slot to claim: the receiver's class may answer the
             // key with an accessor, which the whole-module resolve decides
             // (direct_method_table.h, `resolveAccessors`).
-            directMethods_.recordAccessorSite(inst.icIndex, receiverClassName(receiver),
-                                              keyStrings_[inst.keyIndex]);
+            std::string cls = receiverClassName(receiver);
+            std::string fieldKey;
+            if (cls.empty()) {
+                if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&receiver);
+                    m != nullptr && !m->optional && !m->isPrivate && !m->property.empty()) {
+                    fieldKey = m->property;
+                }
+            }
+            directMethods_.recordAccessorSite(inst.icIndex, std::move(cls),
+                                              keyStrings_[inst.keyIndex], std::move(fieldKey));
         }
     }
     // The census entry for this site, written HERE and not at the call: this is
