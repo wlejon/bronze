@@ -45,7 +45,7 @@ using oracle::RunResult;
 int buildCase(const std::filesystem::path& entry, const std::filesystem::path& exe, std::string* err,
               const std::string& out, const std::string& in, const std::string& harvest = {}) {
     return bronze::cli::runBuild(entry.string(), exe.string(), err, true, false, false, {}, false, nullptr, {}, {},
-                                 false, true, {}, false, {}, {}, false, {}, {}, {}, {}, false, false, {}, false, {},
+                                 false, true, {}, {}, {}, false, {}, {}, {}, {}, false, false, {}, false, {},
                                  false, out, in, harvest);
 }
 

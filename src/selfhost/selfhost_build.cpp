@@ -41,10 +41,6 @@ int runSelfHostBuild(const std::string& outputPath) {
 
     lower::AheadOfTimeOptions aot;
     aot.selfHost = true;
-    // The library has no host boundary a BigInt could cross that its own
-    // text does not show: what reaches it is arguments, which the scan reads
-    // as unknown anyway.
-    aot.assumeNoBigInt = false;
     auto ilModule = lower::lowerAheadOfTime(*astModule, diags, &*inferred, &sources, aot);
     if (diags.hasErrors() || !ilModule) return fail();
     ilModule->sourceTexts.clear();

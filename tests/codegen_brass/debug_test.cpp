@@ -442,7 +442,7 @@ TEST_CASE("CLI runBuild emitDebugInfo flag integration") {
         /*infer=*/true, /*timings=*/false, /*emitObj=*/true,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
         /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
-        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{},
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/"x64-linux", /*publishModules=*/false, /*emitDebugInfo=*/true
@@ -456,7 +456,7 @@ TEST_CASE("CLI runBuild emitDebugInfo flag integration") {
         /*infer=*/true, /*timings=*/false, /*emitObj=*/true,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
         /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
-        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{},
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/"x64-linux", /*publishModules=*/false, /*emitDebugInfo=*/false

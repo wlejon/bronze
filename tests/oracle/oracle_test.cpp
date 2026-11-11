@@ -606,7 +606,7 @@ TEST_CASE("Oracle spec-profile suite") {
             removeProgram(exe, rec);
             res.buildStatus = bronze::cli::runBuild(
                 caseFiles[i].entry.string(), exe.string(), &res.buildErr, true, false, false, {}, false, nullptr,
-                {}, {}, false, true, {}, false, {}, {}, false, {}, {}, {}, {}, false, false, res.profile.string());
+                {}, {}, false, true, {}, {}, {}, false, {}, {}, {}, {}, false, false, res.profile.string());
             if (res.buildStatus == 0) res.built = runWithTimeout(exe.string(), /*gcStress=*/false);
             removeProgram(exe, rec);
         }

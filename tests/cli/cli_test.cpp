@@ -448,7 +448,7 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
         /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
         /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/true,
-        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{},
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/"x64-macos");
@@ -461,7 +461,7 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
         /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
         /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/true,
-        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{},
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/"x64-linux");
@@ -480,7 +480,7 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
         /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
         /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
-        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{},
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/foreignTarget);

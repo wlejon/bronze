@@ -72,7 +72,7 @@ int build(const std::filesystem::path& js, const std::filesystem::path& out, std
         js.string(), out.string(), &err, /*infer=*/true, /*timings=*/false, emitObj,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr, /*moduleRoots=*/{},
         /*entrySymbol=*/{}, /*emitShared=*/false, /*retainFnSource=*/true, /*importMapPath=*/{},
-        /*assumeNoBigInt=*/false, /*pinsPath=*/{}, census, /*pinsAllowObserved=*/false,
+        /*pinsPath=*/{}, census, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
         /*targetName=*/{}, /*publishModules=*/false, /*emitDebugInfo=*/false,
         /*specProfilePath=*/{}, /*wpoStats=*/false, /*wpoStatsFilter=*/{},
@@ -193,7 +193,7 @@ TEST_CASE("type feedback: a build without --feedback-out carries nothing of it")
     CHECK(il.find("feedback.record") == std::string::npos);
     CHECK(il.find("\nfeedback ") == std::string::npos);
     std::string fbIl;
-    REQUIRE(bronze::cli::runIl(js.string(), &fbIl, true, {}, {}, {}, false, false, {}, {}, false, {}, {},
+    REQUIRE(bronze::cli::runIl(js.string(), &fbIl, true, {}, {}, {}, false, {}, {}, false, {}, {},
                                (dir / "x.tfb").string()) == 0);
     CHECK(fbIl.find("feedback.record") != std::string::npos);
 

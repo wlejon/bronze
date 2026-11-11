@@ -37,30 +37,18 @@ namespace bronze::lower {
 // unresolved-name warning and runtime ReferenceError. Nullable like
 // `inference`, and independent of it — which set of names resolves is a
 // lowering-level fact, so `--no-infer` changes nothing about it.
-// `assumeNoBigInt` says that no BigInt reaches an arithmetic operator through
-// a channel the compiler cannot see: an exported function a host calls, or a
-// host global's value. It is the same KIND of claim `--host-globals` makes —
-// an assertion about a boundary the compiler cannot inspect — so who is
-// entitled to make it depends on whether the build HAS one. An embedding build
-// (`--emit-obj`, `--emit-shared`, or any `--host-globals` manifest) has one,
-// and there the claim is a promise the embedder makes with
-// `--assume-no-bigint`. A standalone executable has no such channel at all, so
-// the CLI passes true without a flag and the scan below is the whole of the
-// argument. `hasHostBoundary` in src/cli/driver.cpp is the one place that
-// decides which build this is.
-//
-// What it buys: `*`, `-`, `/` and `%` over a boxed operand may produce an f64
+// `assumeNoBigInt` lets the whole-program scan (`bigIntMayReach`) decide how
+// arithmetic lowers: where the program's text mentions nothing that names or
+// builds a BigInt, `*`, `-`, `/` and `%` over a boxed operand produce an f64
 // instead of a boxed value, because with no BigInt in reach ToNumeric IS
 // ToNumber. An f64 result is not a GC root, and `planFrame` roots Dynamic
-// values and only those — so a chain of arithmetic keeps its intermediates in
+// values and only those, so a chain of arithmetic keeps its intermediates in
 // registers instead of storing and reloading every one of them around every
-// instruction.
-//
-// The claim is checked as far as it can be: it only takes effect if
-// `bigIntMayReach` also finds nothing in the program's own text, so an
-// embedder that passes the flag over a program full of BigInts gets the safe
-// lowering rather than a miscompile — and so does the standalone build that
-// never passed a flag.
+// instruction. Every ahead-of-time build passes true, a host boundary or not:
+// a BigInt a host hands to a program that never spells one meets ToNumber's
+// TypeError at the operator. False (the JIT's script-at-a-time compiles, the
+// self-hosted library, whose callers' values it cannot read) keeps the boxed
+// form whatever the text says.
 class InferStatsCollector;
 class NativeManifest;
 struct SelfHostLibrary;
@@ -155,9 +143,6 @@ struct AheadOfTimeOptions {
     std::string censusOutPath;
     // A profile to record or to read (lower_feedback.h), or null.
     const FeedbackOptions* feedback = nullptr;
-    // lowerModule's `assumeNoBigInt`: true only where no value can arrive
-    // from outside the program.
-    bool assumeNoBigInt = false;
     InferStatsCollector* inferStats = nullptr;
     // `--wpo-stats[=<filter>]`: the census, written to `wpoReport`.
     bool wpoStats = false;

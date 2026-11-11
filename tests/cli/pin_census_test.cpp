@@ -59,7 +59,7 @@ std::string censusIl(const std::string& name, const std::string& source) {
     const int status = bronze::cli::runIl(js.string(), &il, /*infer=*/true,
                                           /*hostGlobalsPath=*/{}, /*moduleRoots=*/{},
                                           /*importMapPath=*/{}, /*inferStats=*/false,
-                                          /*assumeNoBigInt=*/false, /*pinsPath=*/{},
+                                          /*pinsPath=*/{},
                                           (dir / (name + ".pins")).string());
     REQUIRE(status == 0);
     return il;
@@ -129,7 +129,7 @@ CensusRun census(const std::string& name, const std::string& source) {
         js.string(), exe.string(), &err, /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr, /*moduleRoots=*/{},
         /*entrySymbol=*/{}, /*emitShared=*/false, /*retainFnSource=*/true, /*importMapPath=*/{},
-        /*assumeNoBigInt=*/false, /*pinsPath=*/{}, pins.string());
+        /*pinsPath=*/{}, pins.string());
     REQUIRE_MESSAGE(status == 0, err);
     CensusRun run;
     run.output = runOutput(exe);
@@ -153,7 +153,7 @@ std::string buildWithPins(const std::string& name, const std::string& source,
         js.string(), exe.string(), &err, /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr, /*moduleRoots=*/{},
         /*entrySymbol=*/{}, /*emitShared=*/false, /*retainFnSource=*/true, /*importMapPath=*/{},
-        /*assumeNoBigInt=*/false, pins.string(), /*censusOutPath=*/{}, allowObserved);
+        pins.string(), /*censusOutPath=*/{}, allowObserved);
     if (statusOut) *statusOut = status;
     if (errOut) *errOut = err;
     if (status != 0) return {};

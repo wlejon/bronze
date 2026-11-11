@@ -153,7 +153,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
           const std::string& importMapPath, bool inferStats,
-          bool assumeNoBigInt, const std::string& pinsPath, const std::string& censusOutPath,
+          const std::string& pinsPath, const std::string& censusOutPath,
           bool pinsAllowObserved, const std::string& nativeManifestPath,
           const std::string& nativeLibPath, const std::string& feedbackOutPath) {
     // The manifests are read before any compilation happens: an unreadable file
@@ -226,14 +226,6 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // IL: `import.meta` resolves its module's URL out of the source set at
     // lowering time, so a null one would make `bronze il` dump a different
     // program from the one `bronze build` compiles.
-    // `bronze il` names no output kind, so its only boundary is a manifest.
-    // Deciding it the same way `runBuild` does is the point of the command:
-    // the dump has to be the IL the executable would compile, and a `mul` that
-    // read `dynamic` here and `f64` there would make it a different program.
-    const bool noBigIntPromised =
-        assumeNoBigInt ||
-        !hasHostBoundary(hostGlobalsPath, /*emitObj=*/false, /*emitShared=*/false);
-
     lower::InferStatsCollector statsCollector;
     lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
@@ -247,7 +239,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
-                                       noBigIntPromised,
+                                       /*assumeNoBigInt=*/true,
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
@@ -280,7 +272,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
-             const std::string& importMapPath, bool assumeNoBigInt,
+             const std::string& importMapPath,
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
@@ -403,13 +395,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    // A standalone executable has no host boundary, so the promise is already
-    // true of it and the whole-program scan inside `Lowerer` is the only thing
-    // left to satisfy. A build that HAS a boundary keeps needing the flag: the
-    // values crossing it are the ones no scan can see.
-    const bool noBigIntPromised =
-        assumeNoBigInt || !hasHostBoundary(hostGlobalsPath, emitObj, emitShared);
-
     lower::InferStatsCollector statsCollector;
     // Read before the compile, like every manifest: a bad profile is a fact
     // about the invocation.
@@ -431,7 +416,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
     aot.censusOutPath = censusOutPath;
     aot.feedback = &feedback;
-    aot.assumeNoBigInt = noBigIntPromised;
     aot.inferStats = inferStats ? &statsCollector : nullptr;
     aot.wpoStats = wpoStats;
     aot.wpoStatsPerSite = wpoStatsPerSite;
@@ -748,7 +732,6 @@ int runDriver(int argc, char** argv) {
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         bool inferStats = false;
-        bool assumeNoBigInt = false;
         std::string pinsPath;
         std::string censusOutPath;
         bool pinsAllowObserved = false;
@@ -762,8 +745,6 @@ int runDriver(int argc, char** argv) {
                 infer = false;
             } else if (arg == "--infer-stats") {
                 inferStats = true;
-            } else if (arg == "--assume-no-bigint") {
-                assumeNoBigInt = true;
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -818,7 +799,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         if (!feedbackInPath.empty()) return fail("error: --feedback-in is a `build` flag\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved,
+                     inferStats, pinsPath, censusOutPath, pinsAllowObserved,
                      nativeManifestPath, {}, feedbackOutPath);
     }
 
@@ -836,7 +817,6 @@ int runDriver(int argc, char** argv) {
         bool emitShared = false;
         bool inferStats = false;
         bool retainFnSource = true;
-        bool assumeNoBigInt = false;
         std::string pinsPath;
         std::string censusOutPath;
         bool pinsAllowObserved = false;
@@ -877,8 +857,6 @@ int runDriver(int argc, char** argv) {
                 if (targetName.empty()) return fail("error: missing argument for --target\n");
             } else if (arg == "--no-fn-source") {
                 retainFnSource = false;
-            } else if (arg == "--assume-no-bigint") {
-                assumeNoBigInt = true;
             } else if (arg == "--timings") {
                 timings = true;
             } else if (arg == "--infer-stats") {
@@ -984,7 +962,7 @@ int runDriver(int argc, char** argv) {
         }
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
+                        emitShared, retainFnSource, importMapPath, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
                         wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath,

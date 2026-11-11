@@ -42,7 +42,7 @@ enum class PinKind : uint8_t {
 //
 // A pin is NOT a proof and nothing here derives one. It is a promise the
 // INVOCATION makes about the program, the same family of promise as
-// `--host-globals` and `--assume-no-bigint`: spent UNCHECKED at the read, and
+// `--host-globals`: spent UNCHECKED at the read, and
 // ENFORCED on the write paths.
 //
 // WHAT A VIOLATION DOES, since stage B1. A write that contradicts a pin throws

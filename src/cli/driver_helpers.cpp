@@ -114,10 +114,6 @@ bool loadPins(const std::string& path, types::PinManifest& out, std::string& err
     return out.parse(text, path, err, allowObserved);
 }
 
-bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emitShared) {
-    return !hostGlobalsPath.empty() || emitObj || emitShared;
-}
-
 bool parseTargetName(const std::string& name, brass::Target& out, std::string& err,
                      brass::object::MachOBuildVersion* machoVersion) {
     namespace macho = brass::object::macho;

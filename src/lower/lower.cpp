@@ -789,7 +789,7 @@ std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, Diagnos
     wholeProgram.build.filter = options.wpoStatsFilter;
     auto lowered = lowerModule(astModule, diags, inference,
                                options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
-                               sources, options.inferStats, options.assumeNoBigInt, options.pins,
+                               sources, options.inferStats, /*assumeNoBigInt=*/!options.selfHost, options.pins,
                                options.censusOutPath, options.nativeManifest, InlineGuardedOptions{/*on=*/true},
                                &wholeProgram, options.feedback, options.selfHost, options.selfHostLibrary);
     if (options.wpoReport) *options.wpoReport = std::move(wholeProgram.report);

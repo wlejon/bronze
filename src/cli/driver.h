@@ -62,19 +62,16 @@ int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath
 // stores are not all from sites the compiler can type, so a violation of it
 // would be silent rather than a TypeError. Off by default, on purpose.
 //
-// `assumeNoBigInt` is `--assume-no-bigint`: the promise that no BigInt reaches
-// an arithmetic operator through a channel the compiler cannot see. It is a
-// claim about the HOST BOUNDARY, so both commands ask `hasHostBoundary` first
-// and pass the promise on as already given when there is no boundary to make
-// it about — a standalone `bronze build`, or a `bronze il` with no manifest.
-// What the promise unlocks and what still checks it is in lower/lower.h; the
-// whole-program scan runs either way, and a BigInt spelled in the program
-// refuses the lowering no matter which side said yes.
+// Neither command takes a promise about BigInts: whether `* - / %` over a
+// boxed operand may produce an f64 is the whole-program scan's answer alone
+// (lower/bigint_reach.h), with or without a host boundary. A host that hands
+// a BigInt to a program whose text never mentions one gets ToNumber's
+// TypeError at the operator.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
           const std::string& importMapPath = {}, bool inferStats = false,
-          bool assumeNoBigInt = false, const std::string& pinsPath = {},
+          const std::string& pinsPath = {},
           const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
           const std::string& nativeManifestPath = {},
           const std::string& nativeLibPath = {},
@@ -133,7 +130,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
-             bool assumeNoBigInt = false, const std::string& pinsPath = {},
+             const std::string& pinsPath = {},
              const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
              const std::string& nativeManifestPath = {},
              const std::string& nativeLibPath = {},

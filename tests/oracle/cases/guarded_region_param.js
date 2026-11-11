@@ -10,7 +10,7 @@
 // every one of them has to answer what 13.15.3 says it answers.
 //
 // A BigInt is spelled below, which turns the numeric arm off for the whole
-// module (`--assume-no-bigint`'s whole-program scan, `lowerer.h`): `*` and `-`
+// module (the whole-program scan, `bigint_reach.h`): `*` and `-`
 // stay boxed here, so this case exercises the closure over boxed ARITHMETIC.
 // `guarded_region_unbox_rewrite` is the BigInt-free half that exercises the
 // checked `unbox.f64` candidates instead.

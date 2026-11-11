@@ -54,7 +54,7 @@ std::string ilWithPins(const std::string& name, const std::string& source,
     const int status =
         bronze::cli::runIl(js.string(), &il, /*infer=*/true, /*hostGlobalsPath=*/{},
                            /*moduleRoots=*/{}, /*importMapPath=*/{}, /*inferStats=*/false,
-                           /*assumeNoBigInt=*/false, pins.string());
+                           pins.string());
     REQUIRE(status == 0);
     return il;
 }
@@ -96,7 +96,7 @@ std::string buildAndRun(const std::string& name, const std::string& source,
         js.string(), exe.string(), &err, /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
         /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr, /*moduleRoots=*/{},
         /*entrySymbol=*/{}, /*emitShared=*/false, /*retainFnSource=*/true, /*importMapPath=*/{},
-        /*assumeNoBigInt=*/false, pins.string());
+        pins.string());
     REQUIRE_MESSAGE(status == 0, err);
     return runOutput(exe);
 }

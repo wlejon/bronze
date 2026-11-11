@@ -1,25 +1,19 @@
-// WHO IS ENTITLED TO THE NUMERIC ARITHMETIC ARM.
+// WHEN A BUILD GETS THE NUMERIC ARITHMETIC ARM.
 //
 // `*`, `-`, `/` and `%` over an unproven operand have two lowerings: a boxed
-// `dynamic` result whose helper owns 13.15.3 in full — including the BigInt
-// algorithm, which returns a heap value and therefore earns a GC root slot —
-// and an unboxed `f64` result, which is 13.15.3 with the BigInt arm proved
-// dead. The second is only sound when no BigInt can reach the operator, and
-// that question has two halves: the program's own text, which
-// `bigIntMayReach` scans, and whatever crosses a HOST BOUNDARY, which no scan
-// can see.
-//
-// `hasHostBoundary` in src/cli/driver.cpp is the one place that decides
-// whether this invocation has such a boundary. These cases pin its three
-// answers off `bronze il`, because the IL is where the decision is legible:
-// `f64 = mul` or `dynamic = mul`, one instruction, no inference of intent
-// required.
+// `dynamic` result whose helper owns 13.15.3 in full, including the BigInt
+// algorithm, which returns a heap value and therefore earns a GC root slot,
+// and an unboxed `f64` result, which is 13.15.3 with the BigInt arm dead.
+// Which one an ahead-of-time build gets is `bigIntMayReach`'s answer over the
+// program's own text and nothing else: a host boundary (a `--host-globals`
+// manifest) does not change it. These cases pin that off `bronze il`, because
+// the IL is where the decision is legible: `f64 = mul` or `dynamic = mul`,
+// one instruction.
 //
 // The operands have to be genuinely unproven or the test proves nothing: an
 // element of a mixed array literal is dynamic no matter how hard inference
 // looks, so `vals[i] * vals[j]` is exactly the site the arm is about. A
-// program of `1.5 * 2.0` would emit `f64 = mul` under both lowerings and pass
-// whatever the driver decided.
+// program of `1.5 * 2.0` would emit `f64 = mul` under both lowerings.
 
 #include <doctest/doctest.h>
 
@@ -65,72 +59,38 @@ void write(const std::filesystem::path& path, const std::string& content) {
     out << content;
 }
 
-// `source` compiled to IL, optionally against a host-globals manifest and
-// optionally with the promise flag.
-std::string il(const std::string& name, const char* source, bool withHostGlobals,
-               bool assumeNoBigInt) {
+// `source` compiled to IL, optionally against a host-globals manifest.
+std::string il(const std::string& name, const char* source, bool withHostGlobals) {
     const std::filesystem::path dir = workDir();
     const std::filesystem::path js = dir / (name + ".js");
     write(js, source);
     std::string manifestPath;
     if (withHostGlobals) {
-        // Any name at all: what makes this a boundary is that a HOST supplies
-        // values here, not which names it supplies.
         const std::filesystem::path manifest = dir / (name + ".globals");
         write(manifest, "document\n");
         manifestPath = manifest.string();
     }
     std::string out;
-    const int status = bronze::cli::runIl(js.string(), &out, /*infer=*/true, manifestPath,
-                                          /*moduleRoots=*/{}, /*importMapPath=*/{},
-                                          /*inferStats=*/false, assumeNoBigInt);
+    const int status = bronze::cli::runIl(js.string(), &out, /*infer=*/true, manifestPath);
     REQUIRE(status == 0);
     return out;
 }
 
 }  // namespace
 
-TEST_CASE("no host boundary: the numeric arm needs no flag") {
-    const std::string out = il("standalone", kMixedOperands, /*withHostGlobals=*/false,
-                               /*assumeNoBigInt=*/false);
-    CHECK(out.find("f64 = mul") != std::string::npos);
-    CHECK(out.find("dynamic = mul") == std::string::npos);
-
-    // And the flag is a no-op there rather than a second, better setting.
-    const std::string flagged = il("standalone_flagged", kMixedOperands,
-                                   /*withHostGlobals=*/false, /*assumeNoBigInt=*/true);
-    CHECK(flagged.find("f64 = mul") != std::string::npos);
-    CHECK(flagged.find("dynamic = mul") == std::string::npos);
+TEST_CASE("a program that spells no BigInt gets the numeric arm, hosted or not") {
+    for (const bool hosted : {false, true}) {
+        const std::string out = il(hosted ? "hosted" : "standalone", kMixedOperands, hosted);
+        CHECK(out.find("f64 = mul") != std::string::npos);
+        CHECK(out.find("dynamic = mul") == std::string::npos);
+    }
 }
 
-TEST_CASE("a host-globals manifest is a boundary: the arm needs the promise") {
-    const std::string bare = il("hosted", kMixedOperands, /*withHostGlobals=*/true,
-                                /*assumeNoBigInt=*/false);
-    CHECK(bare.find("dynamic = mul") != std::string::npos);
-    CHECK(bare.find("f64 = mul") == std::string::npos);
-
-    const std::string promised = il("hosted_promised", kMixedOperands,
-                                    /*withHostGlobals=*/true, /*assumeNoBigInt=*/true);
-    CHECK(promised.find("f64 = mul") != std::string::npos);
-    CHECK(promised.find("dynamic = mul") == std::string::npos);
-}
-
-TEST_CASE("a BigInt spelled in the program refuses the arm on either side") {
-    // No boundary, so nothing to promise — and the scan still says no.
-    const std::string standalone = il("bigint_standalone", kMixedOperandsWithBigInt,
-                                      /*withHostGlobals=*/false, /*assumeNoBigInt=*/false);
-    CHECK(standalone.find("dynamic = mul") != std::string::npos);
-    CHECK(standalone.find("f64 = mul") == std::string::npos);
-
-    // A promise cannot buy what the text refuses: this is the half that makes
-    // the flag safe to hand an embedder.
-    const std::string promised = il("bigint_promised", kMixedOperandsWithBigInt,
-                                    /*withHostGlobals=*/false, /*assumeNoBigInt=*/true);
-    CHECK(promised.find("dynamic = mul") != std::string::npos);
-    CHECK(promised.find("f64 = mul") == std::string::npos);
-
-    const std::string hosted = il("bigint_hosted", kMixedOperandsWithBigInt,
-                                  /*withHostGlobals=*/true, /*assumeNoBigInt=*/true);
-    CHECK(hosted.find("dynamic = mul") != std::string::npos);
-    CHECK(hosted.find("f64 = mul") == std::string::npos);
+TEST_CASE("a BigInt spelled in the program refuses the arm, hosted or not") {
+    for (const bool hosted : {false, true}) {
+        const std::string out =
+            il(hosted ? "bigint_hosted" : "bigint_standalone", kMixedOperandsWithBigInt, hosted);
+        CHECK(out.find("dynamic = mul") != std::string::npos);
+        CHECK(out.find("f64 = mul") == std::string::npos);
+    }
 }

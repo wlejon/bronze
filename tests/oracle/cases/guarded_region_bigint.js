@@ -1,7 +1,7 @@
 // BigInts against a guarded numeric region. A BigInt's tag sits ABOVE the
 // number range in the NaN box, so it fails `is.number` by construction and the
 // slow copy runs 13.15.3's BigInt algorithm — including the two errors that
-// algorithm alone can raise. The pass needs no `--assume-no-bigint` and no
+// algorithm alone can raise. The pass needs no
 // reachability scan for this: the guard is a branch, and the branch it does not
 // take is the language.
 //
