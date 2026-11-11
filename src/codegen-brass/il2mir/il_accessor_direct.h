@@ -26,6 +26,13 @@ bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst);
 // compares instead of reading the receiver's header and shape again.
 Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed = nullptr);
 
+// The fill of an inlined method body's cell pair after its guard's miss ran
+// the generic call (runtime/accessor_cell.cpp, `bronze_method_cell_publish`):
+// the publish, only while the cell speaks for another epoch. `obj` is the
+// receiver's bits read after the call. Leaves the builder after it.
+void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
+                           const std::string& callee);
+
 // What a direct accessor site does on a miss: the ordinary read (`get`) or
 // write (`set`), and the receiver's bits read afresh after it, for the fill.
 struct AccessorMiss {

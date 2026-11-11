@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -166,6 +167,27 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
                              polyMethods.empty() ? nullptr : &polyMethods,
                              polyOwnCallees.empty() ? nullptr : &polyOwnCallees, &inlinedOwnIcs);
         if (diags.hasErrors()) return false;
+        // An inlined method body's guard gets a cell pair of its own
+        // (runtime/accessor_cell.cpp, `bronze_method_cell_publish`): one per
+        // site and guessed callee, shared by every copy of the guard. Cell 0
+        // is "none", so it is never handed out here.
+        {
+            std::map<std::pair<uint32_t, uint32_t>, uint32_t> cellOf;
+            for (uint32_t f : inlinedInto) {
+                for (il::Block& blk : mod.functions[f].blocks) {
+                    for (il::Instruction& inst : blk.instructions) {
+                        if (inst.op != il::Op::MethodIcIs || inst.staticCellIndex != 0) continue;
+                        auto cell = cellOf.find({inst.icIndex, inst.calleeIndex});
+                        if (cell == cellOf.end()) {
+                            if (mod.staticSiteCount == 0) mod.staticSiteCount = 1;
+                            cell = cellOf.emplace(std::pair{inst.icIndex, inst.calleeIndex}, mod.staticSiteCount).first;
+                            mod.staticSiteCount += 2;
+                        }
+                        inst.staticCellIndex = cell->second;
+                    }
+                }
+            }
+        }
         foldInlinedCallers(mod, inlinedInto);
         // The loops inlined bodies brought (guard_region.h, `only`).
         GuardRegionStats inlinedRegions;

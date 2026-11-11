@@ -568,6 +568,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::MethodIcIs;
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.ic_index = inst.icIndex;
+            out.static_cell = inst.staticCellIndex;
             break;
         case il::Op::MethodSlotFn:
             out.op = il2mir::BronzeOp::MethodSlotFn;

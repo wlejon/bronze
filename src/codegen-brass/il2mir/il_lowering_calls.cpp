@@ -10,6 +10,7 @@
 #include "il/il.h"
 #include <brass/mir/module.hpp>
 #include <algorithm>
+#include <functional>
 #include <cctype>
 #include <cstdlib>
 #include <string>
@@ -125,7 +126,8 @@ Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, Value* row, c
 // takes the generic call, which dispatches on the receiver in hand.
 Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
                                 const std::vector<Value*>& args, Value* site, const std::string& callee,
-                                const std::string& entry_name, Function* direct_fn, bool this_param) {
+                                const std::string& entry_name, Function* direct_fn, bool this_param,
+                                const std::function<Value*(Builder&)>& recv_after) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     // The miss of an inlined body's guard (IlLowering::find_guard_misses):
     // the generic call alone.
@@ -172,7 +174,15 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
                          ? b.build_call("__bronze_method_call_ic", Type::i64(),
                                         {recv, key_id, argc_val, argv, site, row ? row : b.build_iconst_i64(0)})
                          : b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site});
-    if (missed) return generic;
+    if (missed) {
+        // The guard's cell pair learns this receiver's shape, when the call
+        // just made was of the guessed callee.
+        if (const BronzeInstruction* guard = lowering->method_cell_guard(inst);
+            guard && pl.static_cells_cover(guard->static_cell, 2)) {
+            emit_method_cell_fill(lowering, b, recv_after(b), guard->static_cell, inst.index, guard->callee_name);
+        }
+        return generic;
+    }
     b.build_br(merge, {generic});
 
     b.position_at_end(fast);
@@ -289,11 +299,37 @@ bool lower_call_instruction(
             Value* site = lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr;
             // A guard reads and decides; it moves no shape, so the memo
             // stays (il_shape_memo.cpp).
-            res_val = site ? direct_method_ic_hit(b, lowering->memo_keyed(b, inst_ast.operands[0], recv), site,
-                                                  lowering->prop_lowering().method_row(b, inst_ast.ic_index),
-                                                  inst_ast.callee_name)
-                           : b.build_iconst_i32(0);
-            if (lowering) lowering->memo_keep();
+            if (!site) {
+                res_val = b.build_iconst_i32(0);
+                break;
+            }
+            PropertyLoweringHelper& pl = lowering->prop_lowering();
+            Value* keyed = lowering->memo_keyed(b, inst_ast.operands[0], recv);
+            const auto row_hit = [&] {
+                return direct_method_ic_hit(b, keyed, site, pl.method_row(b, inst_ast.ic_index), inst_ast.callee_name);
+            };
+            // A guard whose miss fills its cell pair asks the pair first: two
+            // compares where the site's cache entry takes four. The entry
+            // still answers what the pair does not hold (a site's second
+            // shape; the pair holds one).
+            if (lowering->method_cell_filled(inst_ast) && pl.static_cells_cover(inst_ast.static_cell, 2)) {
+                BasicBlock* cur = b.current_block();
+                const std::string prefix = "mcell_" + std::to_string(cur->parent()->next_block_id());
+                BasicBlock* row_bb = b.append_block(prefix + "_row_cold");
+                BasicBlock* merge = b.append_block(prefix + "_merge");
+                Value* hit = b.add_block_param(merge, Type::i32());
+                b.position_at_end(cur);
+                b.build_br_if(accessor_cell_hit(lowering, b, recv, inst_ast.static_cell, keyed), merge,
+                              {b.build_iconst_i32(1)}, row_bb, {});
+                b.position_at_end(row_bb);
+                b.build_br(merge, {row_hit()});
+                row_bb->set_cold();
+                b.position_at_end(merge);
+                res_val = hit;
+            } else {
+                res_val = row_hit();
+            }
+            lowering->memo_keep();
             break;
         }
 
@@ -508,8 +544,9 @@ bool lower_call_instruction(
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
                 if (can_direct) {
                     const auto direct = [&](Builder& bb) {
-                        return lower_direct_method_call(lowering, inst_ast, bb, recv, args, site, callee, entry_name,
-                                                        direct_fn, this_param);
+                        return lower_direct_method_call(
+                            lowering, inst_ast, bb, recv, args, site, callee, entry_name, direct_fn, this_param,
+                            [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); });
                     };
                     // A receiver may hold its callee in an own slot (three.js's
                     // `_onChangeCallback`, a prototype no-op shadowed by a

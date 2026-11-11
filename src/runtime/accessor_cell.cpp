@@ -64,10 +64,13 @@ namespace {
 // guard needs no extra test to treat a refusal as a miss.
 constexpr uint64_t kRefused = 1;
 
-// The accessor half the key resolves to on `obj`'s prototype chain, or null
-// when the chain answers anything else: the key own on the receiver, a data
+// The function the key resolves to on `obj`'s prototype chain — an accessor's
+// half, or a data property's value for a method — or null when the chain
+// answers anything else: the key own on the receiver, the other kind of
 // property above it, a link the epoch does not watch, or no such key at all.
-const FunctionHeader* resolvedAccessorHalf(ObjectHeader* obj, PropertyKey key, bool forSet) {
+enum class Member { Getter, Setter, Method };
+
+const FunctionHeader* resolvedMember(ObjectHeader* obj, PropertyKey key, Member want) {
     PropertyInfo info;
     // An own property — data or accessor — is what [[Get]] finds first.
     if (obj->shape->lookupProperty(key, info)) return nullptr;
@@ -84,9 +87,9 @@ const FunctionHeader* resolvedAccessorHalf(ObjectHeader* obj, PropertyKey key, b
         cur = reinterpret_cast<ObjectHeader*>(hdr);
         if (cur->shape == nullptr || cur->shape->isDictionary()) return nullptr;
         if (!cur->shape->lookupProperty(key, info)) continue;
-        if (!info.accessor) return nullptr;
+        if (info.accessor != (want != Member::Method)) return nullptr;
         // The setter is the slot after the getter (accessor.cpp).
-        const Value half = cur->getSlot(info.slot + (forSet ? 1u : 0u));
+        const Value half = cur->getSlot(info.slot + (want == Member::Setter ? 1u : 0u));
         if (!half.isObject() || half.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return nullptr;
         return half.asObject<FunctionHeader>();
     }
@@ -123,8 +126,41 @@ void bronze_accessor_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t*
     if (key != nullptr && objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
         auto* obj = objVal.asObject<ObjectHeader>();
         if (obj->shape != nullptr && !obj->shape->isDictionary()) {
-            const FunctionHeader* fn = resolvedAccessorHalf(obj, PropertyKey::forString(key), forSet);
+            const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), forSet ? Member::Setter : Member::Getter);
             if (fn != nullptr && fn->code == code && rtEntersWithoutScope(fn) &&
+                (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot())) {
+                published = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
+            }
+        }
+    }
+    cell[0] = published;
+    cell[1] = epoch;
+}
+
+// The same reconciliation for an inlined METHOD body's guard (`method.ic.is`
+// at a site whose miss is the generic call, il_shape_memo.cpp
+// `find_guard_misses`): the cell says this shape resolves the key, at this
+// epoch, to a data property above the receiver holding a function with
+// exactly the guessed code. What the site's method cache's DIRECT form says
+// in four words (rt_method_call.cpp, `latchMethodIc`) is two here, and the
+// same conditions: never a class constructor (calling one throws), never
+// another realm's function, never an own slot (a write to it moves no shape
+// and no epoch).
+void bronze_method_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell, bronze_fn_code code) {
+    recordHelperCall("bronze_method_cell_publish");
+    if (censusFillsSuppressed()) return;
+    if (cell == nullptr) return;
+    const uint64_t epoch = protoMutationEpoch();
+    if (cell[1] == epoch) return;
+
+    uint64_t published = kRefused;
+    Value objVal(objBits);
+    StringHeader* key = rtKeyHeader(keyIndex);
+    if (key != nullptr && objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+        auto* obj = objVal.asObject<ObjectHeader>();
+        if (obj->shape != nullptr && !obj->shape->isDictionary()) {
+            const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), Member::Method);
+            if (fn != nullptr && fn->code == code && !(fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) &&
                 (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot())) {
                 published = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
             }

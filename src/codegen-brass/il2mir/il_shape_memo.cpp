@@ -117,6 +117,8 @@ bool moves_no_shape(const BronzeInstruction& inst) {
 
 void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
     guard_missed_.clear();
+    method_cell_guards_.clear();
+    method_cells_filled_.clear();
     std::unordered_map<uint32_t, uint32_t> entries;
     std::unordered_map<uint32_t, const BronzeBlock*> by_id;
     for (const BronzeBlock& blk : fn_ast.blocks) {
@@ -150,6 +152,10 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
                               (site.op == BronzeOp::PropGet || site.op == BronzeOp::PropSet) &&
                               site.static_cell == guard.static_cell;
         if (method || accessor) guard_missed_.insert(&site);
+        if (method && guard.static_cell != 0) {
+            method_cell_guards_.emplace(&site, &guard);
+            method_cells_filled_.insert(&guard);
+        }
     }
 }
 

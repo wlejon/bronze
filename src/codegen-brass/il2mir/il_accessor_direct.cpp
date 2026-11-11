@@ -68,31 +68,50 @@ Function* accessor_target(IlLowering* lowering, const BronzeInstruction& inst, B
 // The fill after a miss's ordinary access: the publish, only while the cell
 // speaks for some other epoch (runtime/accessor_cell.cpp). `obj` must be bits
 // read after the access, which may have collected. Leaves the builder after it.
-void emit_accessor_fill(IlLowering* lowering, Builder& b, Value* obj, const BronzeInstruction& inst,
-                        const std::string& callee, bool setter) {
+//
+// `member` is the publish's: 0 a getter, 1 a setter, 2 a method
+// (`bronze_method_cell_publish`).
+void emit_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
+                    const std::string& callee, int member) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     BasicBlock* cur = b.current_block();
-    const std::string prefix = block_prefix(b, "accessor_fill");
+    const std::string prefix = block_prefix(b, "cell_fill");
     // Named cold, which brass's block layout reads (codegen/block_layout.cpp):
     // a fill runs once per site and epoch, and is no part of any trace.
     BasicBlock* call = b.append_block(prefix + "_call_cold");
     BasicBlock* done = b.append_block(prefix + "_done");
     b.position_at_end(cur);
     Value* cells = pl.static_cells_addr(b);
-    const int32_t off = static_cast<int32_t>(inst.static_cell * sizeof(uint64_t));
+    const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
     Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
     Value* stale = b.build_ne(b.build_load(Type::i64(), cells, off + 8), epoch);
     b.build_br_if(stale, call, done);
     b.position_at_end(call);
-    b.build_call("bronze_accessor_cell_publish", Type::void_type(),
-                 {obj, lowering->get_key_id(b, inst.index), b.build_add(cells, b.build_iconst_i64(off)),
-                  b.build_func_addr("__wrapper_" + callee), b.build_iconst_i32(setter ? 1 : 0)});
+    Value* key = lowering->get_key_id(b, key_index);
+    Value* addr = b.build_add(cells, b.build_iconst_i64(off));
+    Value* code = b.build_func_addr("__wrapper_" + callee);
+    if (member == 2) {
+        b.build_call("bronze_method_cell_publish", Type::void_type(), {obj, key, addr, code});
+    } else {
+        b.build_call("bronze_accessor_cell_publish", Type::void_type(),
+                     {obj, key, addr, code, b.build_iconst_i32(member)});
+    }
     b.build_br(done);
     call->set_cold();
     b.position_at_end(done);
 }
 
+void emit_accessor_fill(IlLowering* lowering, Builder& b, Value* obj, const BronzeInstruction& inst,
+                        const std::string& callee, bool setter) {
+    emit_cell_fill(lowering, b, obj, inst.static_cell, inst.index, callee, setter ? 1 : 0);
+}
+
 }  // namespace
+
+void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
+                           const std::string& callee) {
+    emit_cell_fill(lowering, b, obj, cell, key_index, callee, 2);
+}
 
 bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst) {
     if (!lowering || inst.callee_name.empty() || inst.operands.empty()) return false;

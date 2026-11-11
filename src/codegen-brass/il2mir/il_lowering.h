@@ -191,6 +191,14 @@ public:
     // Whether `inst` is a direct site standing as the miss of the guard just
     // tested (find_guard_misses).
     bool guard_missed(const BronzeInstruction& inst) const { return guard_missed_.count(&inst) != 0; }
+    // The `method.ic.is` whose miss the call `site` is, when that guard has a
+    // cell pair (il.h `staticCellIndex`) for the site to fill; else null.
+    const BronzeInstruction* method_cell_guard(const BronzeInstruction& site) const {
+        const auto it = method_cell_guards_.find(&site);
+        return it == method_cell_guards_.end() ? nullptr : it->second;
+    }
+    // Whether `guard` is such a guard: its cell is filled, so it tests it.
+    bool method_cell_filled(const BronzeInstruction& guard) const { return method_cells_filled_.count(&guard) != 0; }
     Value* memo_lookup(uint32_t recv_id) const;
     // The memo's key for a receiver's FAMILY ID (PropertyLoweringHelper::
     // family_id), held beside its keyed shape and carried the same way: an
@@ -481,6 +489,8 @@ private:
     // cell words, then read nowhere else, fold into the guard's compares.
     void find_guard_misses(const BronzeFunction& fn_ast);
     std::unordered_set<const BronzeInstruction*> guard_missed_;
+    std::unordered_map<const BronzeInstruction*, const BronzeInstruction*> method_cell_guards_;
+    std::unordered_set<const BronzeInstruction*> method_cells_filled_;
     std::unordered_set<const Value*> boolean_values_;
     // The current function's fused `in` / element read pairs: read id -> in
     // id, and each lowered `in`'s element (il_in_elem_fuse.cpp).
