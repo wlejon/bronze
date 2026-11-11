@@ -365,6 +365,27 @@ data property on a hardened holder is shadowed by an own property on the
 receiver instead of refusing the write. The holder itself still refuses, as
 any frozen object does. `tests/eval/eval_lockdown_test.cpp` is the suite.
 
+Lockdown also pins the global BINDINGS `Math` and `Number` in every realm of
+the thread (`rtPinLockedGlobals`, realm.cpp): read-only and not configurable,
+so `globalThis.Math = x` and a `defineProperty` over it are refused. No
+standard engine does that, and it is deliberate: with the object frozen and
+the name pinned, `Math.sin` is the builtin whatever the program does, so a
+compile for a locked-down host (`EvalOptions::lockedBuiltins`, `bronze build
+--lockdown`) lowers Math and Number calls inline with no proof from the
+program's text. Without it the proof is a syntactic scan
+(`types/builtin_taint.cpp`) that one mention of `Function`, `eval` or a bare
+`globalThis` anywhere in the program withholds, for the whole program: pixi
+has such mentions, and every `Math.imul` of a program that had one cost about
+490 instructions. A `--lockdown` executable is locked by its host before its
+entry (the module exports `bronze_object_lockdown`).
+
+An intrinsic FUNCTION with no statics box is not given one to freeze: it is
+marked (`FunctionHeader::harden_on_box`) and its box is made frozen and
+hardened if anything ever asks for one, which is where a write would go.
+Giving every builtin function a box took them all off the boxless paths
+(`f.call`, `f.apply`, the method cache's BOX guard): `hasOwnProperty.call(o,
+k)` ran 4.8 times the instructions after lockdown, and a pixi scene 20% more.
+
 What a host installs is per realm and never frozen: host globals
 (`registerGlobal`, `registerLazyGlobal`) go to the realm current at the
 registration and to no other, a fresh realm starts with none (those made

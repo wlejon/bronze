@@ -24,7 +24,7 @@ namespace {
 // plain program has.
 std::string runLockedDown(const char* source, ExecutionTier tier = ExecutionTier::Auto,
                           const std::function<void()>& beforeLockdown = nullptr,
-                          bool lock = true) {
+                          bool lock = true, bool lockedBuiltins = false) {
     std::string out;
     std::thread worker([&] {
         ShadowStackFrame frame;
@@ -37,6 +37,7 @@ std::string runLockedDown(const char* source, ExecutionTier tier = ExecutionTier
         EvalOptions opts;
         opts.filename = "<lockdown>";
         opts.tier = tier;
+        opts.lockedBuiltins = lockedBuiltins;
         embed::CallResult r = evalScript(source, opts);
         if (r.thrown) {
             out = "threw: " + embed::toUtf8(r.value);
@@ -301,4 +302,41 @@ if ([1].shift() !== 1) bad.push("shift");
 bad.length ? bad.join("; ") : "ok";
 )JS";
     CHECK(runLockedDown(locked) == "ok");
+}
+
+// `Math` and `Number` are frozen objects behind read-only global bindings, so
+// a compile told the host locks down (EvalOptions::lockedBuiltins) lowers
+// their calls inline in a program whose text would otherwise withhold that:
+// one that hands `globalThis` around and reads `Function` off it.
+TEST_CASE("lockdown pins Math and Number, and a locked compile needs no proof of them") {
+    const char* src = R"JS(
+const bad = [];
+const g = globalThis, F = g.Function;
+for (const n of ["Math", "Number"]) {
+  const d = Object.getOwnPropertyDescriptor(g, n);
+  if (d.writable || d.configurable) bad.push(n + " is not pinned");
+  const was = g[n];
+  try { g[n] = 1; } catch (e) {}
+  try { Object.defineProperty(g, n, { value: 2 }); bad.push("redefined " + n); } catch (e) {}
+  try { delete g[n]; } catch (e) {}
+  try { Reflect.set(g, n, 3); } catch (e) {}
+  if (g[n] !== was) bad.push(n + " was rebound");
+}
+try { Math.sin = () => 7; } catch (e) {}
+function fnv(h, x) { h = Math.imul(h ^ (x & 0xff), 16777619); return Math.imul(h ^ (x >>> 24), 16777619); }
+let s = 0;
+for (let i = 0; i < 50000; i++) s = fnv(s, i * 2654435761 >>> 0);
+if (s !== 444874095) bad.push("fnv " + s);
+if (Math.sin(0) !== 0 || Math.floor(2.5) !== 2 || !Number.isInteger(3)) bad.push("Math / Number answers");
+const has = Object.prototype.hasOwnProperty;
+try { has.mine = 1; } catch (e) {}
+if (has.mine !== undefined || !Object.isFrozen(has) || !has.call({ a: 1 }, "a")) bad.push("a builtin function");
+if (typeof F !== "function") bad.push("Function");
+bad.length ? bad.join("; ") : "ok";
+)JS";
+    for (ExecutionTier tier : {ExecutionTier::Auto, ExecutionTier::Tier0_Interpreter,
+                               ExecutionTier::Tier2_Optimized}) {
+        CHECK(runLockedDown(src, tier, nullptr, /*lock=*/true, /*lockedBuiltins=*/true) == "ok");
+        CHECK(runLockedDown(src, tier) == "ok");
+    }
 }

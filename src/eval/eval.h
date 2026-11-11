@@ -39,6 +39,12 @@ enum class CodeCacheStatus : uint8_t {
 struct EvalOptions {
     std::string filename = "<eval>";
     std::vector<std::string> hostGlobals = {};
+    // The program runs only on threads the host has locked down
+    // (embed::lockdown): the compile may take `Math` and `Number` for the
+    // builtins without a proof from the program's text (types::inferModule).
+    // A host that locks down sets it on every compile; an eval() or new
+    // Function() inside a program passes nothing and is proven as before.
+    bool lockedBuiltins = false;
     bool retainSource = true;
     std::vector<modules::ModuleRoot> moduleRoots = {};
     std::filesystem::path entryResolvesAs = {};

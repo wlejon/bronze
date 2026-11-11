@@ -81,7 +81,15 @@ struct FunctionHeader {
     // generated code, and growing the header would move `native_base`'s
     // neighbours. The word is still scanned as a Value, which is why the
     // padding that remains is still written (create() zeroes all of it).
-    bool prototype_readonly{false};
+    bool prototype_readonly : 1 {false};
+    // Lockdown hardened this function while it had no statics box
+    // (integrity.cpp, rtHarden): it is frozen, and stays without a box so the
+    // boxless paths keep serving it (`f.call`, `f.length`; the method cache's
+    // BOX guard). The box is made frozen and hardened the first time anything
+    // asks for one (rtEnsureFunctionProperties), which is where a write to
+    // the function would go, so the write meets a frozen object. Shares
+    // prototype_readonly's byte.
+    bool harden_on_box : 1 {false};
     // Set once a GLOBAL CONSTRUCTOR's table statics (`Array.isArray`,
     // `String.fromCharCode`) have been written into its statics box, and from
     // then on the box is where they live: `rtGlobalConstructorMember` stops

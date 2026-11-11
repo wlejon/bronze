@@ -6,6 +6,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,11 +14,14 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/builtin_object.h"
 #include "runtime/host_globals.h"
+#include "runtime/lockdown.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/stack_locals.h"
@@ -156,6 +160,46 @@ static const char* const kGlobalObjectNames[] = {
 
 std::span<const char* const> rtBuiltinGlobalNames() { return kGlobalObjectNames; }
 
+// The builtin globals lockdown pins: after it the global BINDING is read-only
+// and not configurable in every realm of the thread, as the object it names
+// is frozen. `Math = x`, `globalThis.Number = f` and a defineProperty over
+// either are refused (a TypeError in strict code), which no standard engine
+// does and which is the point: with the object frozen and the name pinned, a
+// read of `Math.sin` or `Number.isInteger` in a locked-down realm is the
+// builtin with no proof about the program, and a compile told the host locks
+// down (types::inferModule, lockedBuiltins) lowers the call inline whatever
+// else the program mentions.
+static bool isPinnedGlobalName(std::string_view name) { return name == "Math" || name == "Number"; }
+
+void rtPinLockedGlobals() {
+    ShadowStackFrame frame;
+    for (Realm* r : g_liveRealms) {
+        if (r == nullptr) continue;
+        Rooted<Value> glob{r->globalObject()};
+        if (!glob.get().isObject()) continue;
+        for (const char* name : kGlobalObjectNames) {
+            if (!isPinnedGlobalName(name) || runtime::rtHostShadowsBuiltin(name)) continue;
+            Value resolved = Value::fromUndefined();
+            if (!runtime::rtResolveBuiltinGlobal(name, resolved)) continue;
+            Rooted<Value> val{resolved};
+            Rooted<Value> key{runtime::rtMakeString(name)};
+            Rooted<Value> desc{Value(bronze_create_object())};
+            Rooted<Value> no{Value::fromBool(false)};
+            for (const char* field : {"writable", "enumerable", "configurable"}) {
+                Rooted<Value> fkey{runtime::rtMakeString(field)};
+                desc.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), fkey, no);
+            }
+            Rooted<Value> vkey{runtime::rtMakeString("value")};
+            desc.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), vkey, val);
+            runtime::RootedBlock args(3);
+            args.set(0, glob.get());
+            args.set(1, key.get());
+            args.set(2, desc.get());
+            runtime::rtObjectDefineOwnProperty(3, args.data(), /*throwOnRefusal=*/false);
+        }
+    }
+}
+
 Realm::Realm(bool deferInit) {
     if (!deferInit) {
         initGlobalObject(Value::fromUndefined());
@@ -196,9 +240,13 @@ void Realm::initGlobalObject(Value customGlobal) {
         }
         Rooted<Value> val{resolved};
         Rooted<Value> key{runtime::rtMakeString(name)};
+        // A realm made after lockdown gets the pinned names pinned from the
+        // start (rtPinLockedGlobals).
+        const bool pinned = runtime::rtLockedDown() && isPinnedGlobalName(name);
         globRoot.get().asObject<ObjectHeader>()->setProp(
             runtime::rtHeap(), runtime::rtArena(), key, val, nullptr,
-            /*enumerable=*/false, /*defineOwn=*/true);
+            /*enumerable=*/false, /*defineOwn=*/true, nullptr, nullptr,
+            /*writable=*/!pinned, /*configurable=*/!pinned);
     }
 
     for (const auto& entry : hostGlobals_) {

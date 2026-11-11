@@ -89,6 +89,10 @@ private:
 // The builtin names every realm's global object is populated with, each one a
 // name `rtResolveBuiltinGlobal` answers. Lockdown starts its walk here.
 std::span<const char* const> rtBuiltinGlobalNames();
+// Lockdown's last step (lockdown.cpp): the pinned builtin globals (`Math`,
+// `Number`) made read-only, non-configurable bindings on the global object of
+// every live realm of the thread. realm.cpp says what that buys.
+void rtPinLockedGlobals();
 
 // Thread-local active Realm accessors and stack operations.
 Realm* rtCurrentRealm();

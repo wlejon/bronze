@@ -28,8 +28,15 @@ namespace bronze::types {
 // declarations this pass spends without the proofs it would otherwise demand.
 // A promise about the program, not a proof derived from it — types/pins.h says
 // what it licenses and who is meant to enforce it. Null means no manifest.
+//
+// `lockedBuiltins`: the program runs only on threads whose host has locked
+// the builtins down (runtime/lockdown.h), where `Math` and `Number` are frozen
+// objects behind read-only global bindings. The builtin-identity proofs for
+// the two then need nothing from the program's text but that it declares no
+// `Math` / `Number` of its own: no mention of `globalThis`, `eval` or
+// `Function` withholds them, as it must where the builtins are mutable.
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
                                            const std::vector<std::string>* hostGlobals = nullptr,
-                                           const PinManifest* pins = nullptr);
+                                           const PinManifest* pins = nullptr, bool lockedBuiltins = false);
 
 }  // namespace bronze::types

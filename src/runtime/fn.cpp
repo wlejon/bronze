@@ -1,3 +1,4 @@
+#include <cstring>
 #include "runtime/fn.h"
 
 #include <cstdlib>
@@ -53,7 +54,10 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // and which only appears once the heap has recycled a block with the right
     // byte in the right place.
     fn->native_base = 0;
+    // The byte whole first: its other six bits are padding the scan reads.
+    std::memset(reinterpret_cast<uint8_t*>(fn) + BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 3, 0, 1);
     fn->prototype_readonly = (function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0;
+    fn->harden_on_box = false;
     fn->statics_materialized = 0;
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).

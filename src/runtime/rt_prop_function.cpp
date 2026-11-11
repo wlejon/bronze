@@ -96,28 +96,58 @@ bool rtStaticsArmServes(Value fnVal) noexcept {
 
 namespace {
 
+// The statics box of an intrinsic function after lockdown: the walk read the
+// function's members, which gave it a box, and froze the box hardened. Its
+// keys and its prototype are fixed for good.
+bool hardenedBox(Value box) noexcept {
+    if (!box.isObject() || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+    const Shape* shape = box.asObject<ObjectHeader>()->shape;
+    return shape != nullptr && shape->dict != nullptr && shape->dict->hardened &&
+           shape->dict->level == IntegrityLevel::Frozen;
+}
+
+// A function's member without the ladder: `length` and `name` of a function
+// with no box, and `call` / `apply` / `bind` / `toString` read off
+// %Function.prototype%. Lockdown must not cost these: it gives every
+// intrinsic function a (hardened) box and freezes %Function.prototype%'s into
+// a dictionary, and a frozen dictionary is as fixed a key-to-slot map as a
+// shape (Shape::readCacheable). So a hardened box that does not hold the key
+// is passed like no box, and the prototype's box is read frozen or not;
+// before, every `f.call(...)` of a locked-down program walked the whole
+// ladder (1,800 instructions a call).
 bool tryFastBoxlessFunctionMember(Value fnVal, const FunctionHeader* fn,
                                   StringHeader* keyHeader, uint64_t& out) noexcept {
-    if (keyHeader == nullptr || fn->properties.isObject()) return false;
+    if (keyHeader == nullptr) return false;
+    const bool boxed = fn->properties.isObject();
+    if (boxed && !hardenedBox(fn->properties)) return false;
     if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
-    if (keyHeader->equalsASCII("length")) {
-        out = Value::fromDouble(fn->name ? static_cast<double>(fn->length) : 0.0).rawBits();
-        return true;
-    }
-    if (fn->name != nullptr && keyHeader->equalsASCII("name")) {
-        out = rtKeyAsValue(fn->name).rawBits();
-        return true;
+    if (!boxed) {
+        if (keyHeader->equalsASCII("length")) {
+            out = Value::fromDouble(fn->name ? static_cast<double>(fn->length) : 0.0).rawBits();
+            return true;
+        }
+        if (fn->name != nullptr && keyHeader->equalsASCII("name")) {
+            out = rtKeyAsValue(fn->name).rawBits();
+            return true;
+        }
     }
     if (fn->parent.isUndefined() && !fn->isGeneratorFunction() && !fn->isAsyncFunction() &&
         (keyHeader->equalsASCII("apply") || keyHeader->equalsASCII("call") ||
          keyHeader->equalsASCII("bind") || keyHeader->equalsASCII("toString"))) {
+        if (boxed) {
+            PropertyInfo own;
+            if (fn->properties.asObject<ObjectHeader>()->shape->lookupProperty(
+                    PropertyKey::forString(keyHeader), own)) {
+                return false;
+            }
+        }
         const Value fpVal = rtFunctionPrototypeIfBuilt();
         if (fpVal.isObject()) {
             const Value fpBoxVal = fpVal.asObject<FunctionHeader>()->properties;
             if (fpBoxVal.isObject()) {
                 auto* fpObj = fpBoxVal.asObject<ObjectHeader>();
                 PropertyInfo info;
-                if (fpObj->shape && !fpObj->shape->isDictionary() &&
+                if (fpObj->shape && fpObj->shape->readCacheable() &&
                     fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), info) &&
                     !info.accessor) {
                     out = fpObj->getSlot(info.slot).rawBits();
@@ -137,11 +167,12 @@ bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint32_t keyInde
     }
     const auto* fn = fnVal.asObject<FunctionHeader>();
     const Value box = fn->properties;
-    if (!box.isObject()) {
-        if (keyIndex != BRONZE_ABI_KEY_NONE) {
-            return tryFastBoxlessFunctionMember(fnVal, fn, rtKeyHeader(keyIndex), out);
+    if (!box.isObject() || hardenedBox(box)) {
+        if (keyIndex != BRONZE_ABI_KEY_NONE &&
+            tryFastBoxlessFunctionMember(fnVal, fn, rtKeyHeader(keyIndex), out)) {
+            return true;
         }
-        return false;
+        if (!box.isObject()) return false;
     }
     if (site == nullptr || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
     if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;

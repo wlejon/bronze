@@ -58,9 +58,13 @@ namespace bronze::runtime {
 // No allocation, so the pointer is good until the next one.
 Dictionary* rtIntegrityTable(Value obj);
 
+bool rtIsHardened(Value receiver);
 inline bool rtIsExtensible(Value obj) {
     const Dictionary* d = rtIntegrityTable(obj);
-    return !d || d->extensible;
+    // No table: open, but for a function lockdown hardened without a box
+    // (fn.h, harden_on_box).
+    if (!d) return !rtIsHardened(obj);
+    return d->extensible;
 }
 
 // [[IsExtensible]] over the WHOLE value model, which the inline form above is
@@ -73,7 +77,9 @@ bool rtIsExtensibleOf(Rooted<Value>& obj);
 
 inline IntegrityLevel rtIntegrityLevel(Value obj) {
     const Dictionary* d = rtIntegrityTable(obj);
-    return d ? d->level : IntegrityLevel::Open;
+    if (d) return d->level;
+    // A function lockdown hardened without a box (fn.h, harden_on_box).
+    return rtIsHardened(obj) ? IntegrityLevel::Frozen : IntegrityLevel::Open;
 }
 
 // Why a write of `a[index]` cannot happen, or `SetRefusal::None`.

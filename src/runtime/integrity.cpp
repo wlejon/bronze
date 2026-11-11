@@ -300,6 +300,8 @@ bool testIntegrity(Value receiver, bool frozen) {
     }
 
     const Dictionary* d = rtIntegrityTable(receiver);
+    // A function lockdown hardened without a box (fn.h, harden_on_box).
+    if (!d && rtIsHardened(receiver)) return true;
     if (!d || d->extensible) return false;  // step 3
 
     // A RegExp's `lastIndex` (22.2.4.1) is an array's `length` in this
@@ -398,6 +400,7 @@ bool rtFunctionPrototypeWritable(Value fnVal) {
     // (fn.h says which clause), so it is asked before the level: nothing has to
     // have frozen `Object` for `Object.prototype = 5` to be refused.
     if (fnVal.asObject<FunctionHeader>()->prototype_readonly) return false;
+    if (fnVal.asObject<FunctionHeader>()->harden_on_box) return false;
     return rtIntegrityLevel(fnVal) != IntegrityLevel::Frozen;
 }
 
@@ -405,8 +408,25 @@ void rtFreezeObject(Value receiver) {
     setIntegrity(receiver, IntegrityLevel::Frozen, "freeze");
 }
 
+// A function with no statics box that lockdown may leave without one: not a
+// constructor whose statics a C table answers (freezing one moves them to its
+// box, which is how they come to be frozen).
+static bool hardensBoxless(Value v) {
+    if (v.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
+    const auto* fn = v.asObject<FunctionHeader>();
+    return !fn->properties.isObject() && !rtIntrinsicConstructorHasTableStatics(v);
+}
+
 void rtHarden(Value receiver) {
     if (!receiver.isObject()) return;
+    // Hundreds of intrinsic functions, each of which a box would take off the
+    // boxless paths for good (`hasOwnProperty.call(o, k)` was 4.8 times the
+    // instructions after lockdown): the function is marked instead, and its
+    // box is frozen when one is first made (fn.h, harden_on_box).
+    if (hardensBoxless(receiver)) {
+        receiver.asObject<FunctionHeader>()->harden_on_box = true;
+        return;
+    }
     Rooted<Value> self{receiver};
     setIntegrity(self.get(), IntegrityLevel::Frozen, "freeze");
     Dictionary* d = rtIntegrityTable(self.get());
@@ -419,6 +439,10 @@ void rtHarden(Value receiver) {
 }
 
 bool rtIsHardened(Value receiver) {
+    if (receiver.isObject() && receiver.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+        receiver.asObject<FunctionHeader>()->harden_on_box) {
+        return true;
+    }
     const Dictionary* d = rtIntegrityTable(receiver);
     return d && d->hardened;
 }

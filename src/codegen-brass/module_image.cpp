@@ -90,6 +90,9 @@ std::vector<std::string> moduleExports(const brass::object::ObjectFile& obj,
         // The inline-cache identity (bronze_abi_layout.h), which a host hands
         // embed::harvestInlineCaches.
         prefix + "_ic_identity",
+        // `bronze build --lockdown` (cli/driver.cpp): present on a program
+        // compiled for locked builtins, which its host locks before the entry.
+        prefix + "_lockdown",
     };
     std::vector<std::string> present;
     for (const std::string& name : wanted) {

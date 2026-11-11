@@ -170,7 +170,12 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // `-j <n>` / `--jobs <n>`: threads for code generation's
              // per-function work (BrassBackend::setBuildThreads); 0 is every
              // hardware thread. The output does not depend on it.
-             size_t buildThreads = 0);
+             size_t buildThreads = 0,
+             // `--lockdown`: the program runs with the builtins locked down
+             // (the executable's host does it before the entry), and is
+             // compiled on that promise (types::inferModule, lockedBuiltins),
+             // as a host that locks down compiles its apps.
+             bool lockedBuiltins = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

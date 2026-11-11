@@ -104,6 +104,8 @@ void rtLockdown() {
         rtHarden(obj.get());
     }
     g_lockedDown = true;
+    // The realms that exist already; one made from now on pins them itself.
+    bronze::rtPinLockedGlobals();
 }
 
 bool rtLockedDown() { return g_lockedDown; }

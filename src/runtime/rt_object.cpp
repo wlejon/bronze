@@ -175,6 +175,13 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     props->header.flags = HeapKind::Plain;
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
     fn->properties = Value::fromObject(props);
+    // A function lockdown hardened boxless (fn.h, harden_on_box): its box is
+    // born frozen and hardened, so whatever asked for it in order to write
+    // finds what lockdown would have left.
+    if (fn->harden_on_box) {
+        fn->harden_on_box = false;
+        rtHarden(fnVal.get());
+    }
 }
 
 // ECMA-262 6.1.7.1 OwnPropertyKeys, in one place because six callers need the

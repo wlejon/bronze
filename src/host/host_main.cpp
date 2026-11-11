@@ -174,6 +174,10 @@ int main() {
 
     // A GC root frame, the entry, then one drain of the microtask queue —
     // what runMain does for a linked program (embed_module.cpp).
+    // `bronze build --lockdown`: the module was compiled for locked builtins
+    // (frozen intrinsics, `Math` and `Number` pinned), so they are locked
+    // before any of it runs.
+    if (findSymbol(lib, "bronze_object_lockdown") != nullptr) bronze::embed::lockdown();
     bronze::embed::runEntry(entry);
     // `--harvest-out`: the inline caches as the run left them, read while the
     // heap their shapes name is still live (runtime/ic_harvest.h). Nothing
