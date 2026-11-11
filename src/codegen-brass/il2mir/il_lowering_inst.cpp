@@ -801,7 +801,13 @@ bool IlLowering::lower_instruction(
                 cond = inner;
                 swap = true;
             }
-            cond = b.build_and(cond, b.build_iconst_i32(1));
+            // Only bit 0 of a Boolean is its value (a helper's `bool` return
+            // leaves the rest of the register as it was). A compare's result
+            // is 0 or 1 already, and masking it put an `and` between the
+            // compare and the branch that brass then could not fuse: every
+            // `is.number` guard was a setcc, a zero extension, the mask and a
+            // test.
+            if (!is_zero_one(cond)) cond = b.build_and(cond, b.build_iconst_i32(1));
             BasicBlock* true_bb = block_map.at(inst_ast.target.block_id);
             BasicBlock* false_bb = block_map.at(inst_ast.else_target.block_id);
             auto get_args = [&](const auto& tgt, BasicBlock* bb) {

@@ -39,8 +39,12 @@ bool IlLowering::is_zero_one(const Value* v) const {
     const Instruction* d = v->is_instruction() ? v->defining_instruction() : nullptr;
     if (!d) return false;
     if (is_compare(d->opcode())) return true;
-    return d->opcode() == Opcode::and_ && d->operand_count() == 2 &&
-           (is_iconst(d->operand(0), 1) || is_iconst(d->operand(1), 1));
+    if (d->operand_count() != 2) return false;
+    if (d->opcode() == Opcode::and_) {
+        return is_iconst(d->operand(0), 1) || is_iconst(d->operand(1), 1) || is_zero_one(d->operand(0)) ||
+               is_zero_one(d->operand(1));
+    }
+    return d->opcode() == Opcode::or_ && is_zero_one(d->operand(0)) && is_zero_one(d->operand(1));
 }
 
 Value* IlLowering::negated_boolean(Value* cond) const {
