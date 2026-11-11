@@ -519,7 +519,12 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         // The element bits for store `k`, in the store's own block (see `reload_src`).
         auto elem_bits = [&](size_t k) -> Value* { return reload_src ? src_elem(k) : vals_boxed[k]; };
         auto elem_f64 = [&](size_t k) -> Value* {
-            return reload_src ? b.build_bitcast_f64_i64(src_elem(k)) : vals_f64[k];
+            // A reload for a view's store is of the double itself: no trip
+            // through an integer register.
+            return reload_src ? prop_lowering_.load_proven_dense_array_elem(b, src_block, src_head,
+                                                                            set_steps[k].src_elem_idx,
+                                                                            /*check_hole=*/false, Type::f64())
+                              : vals_f64[k];
         };
         if (!bb_claim) {
             if (all_num_ok) {
