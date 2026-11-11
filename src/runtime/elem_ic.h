@@ -199,10 +199,13 @@ struct ElemSetCacheEntry {
     uint64_t key_ident = 0;
 };
 
-// Smaller than the read table on purpose: a program reads far more computed
-// keys than it writes, and three.js's whole computed-store working set is the
-// three `Vector3` components against a handful of shapes.
-inline constexpr uint32_t kElemSetCacheEntries = 1024;
+// As many as the read table. three.js's whole computed-store working set is
+// the three `Vector3` components against a handful of shapes, but a map keyed
+// by ids is written as often as it is read (pixi's `ids[source.uid] = n` over
+// a few hundred uids), and at 1024 entries a third of 400 keys on one shape
+// evicted one another: each such store then made the key's string to walk
+// the shape for it, 600 instructions where a hit is 40.
+inline constexpr uint32_t kElemSetCacheEntries = 4096;
 static_assert((kElemSetCacheEntries & (kElemSetCacheEntries - 1)) == 0,
               "bucket masking needs a power of two");
 

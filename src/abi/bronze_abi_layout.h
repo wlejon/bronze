@@ -498,7 +498,7 @@
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
 #define BRONZE_ABI_ELEM_IDENT_OFFSET    48 /* ElemCacheEntry::key_ident (uint64) */
 #define BRONZE_ABI_ELEM_ENTRIES       4096 /* kElemCacheEntries, a power of two */
-#define BRONZE_ABI_ELEM_SET_ENTRIES   1024 /* kElemSetCacheEntries, a power of two */
+#define BRONZE_ABI_ELEM_SET_ENTRIES   4096 /* kElemSetCacheEntries, a power of two */
 #define BRONZE_ABI_ELEM_KIND_NUMBER      1
 #define BRONZE_ABI_ELEM_KIND_STRING      2
 #define BRONZE_ABI_ELEM_KIND_BOOL        3
@@ -519,7 +519,7 @@
 #define BRONZE_ABI_ELEM_HASH_MUL_SHAPE   0x9E3779B97F4A7C15ull
 #define BRONZE_ABI_ELEM_HASH_MUL_WITNESS 0xBF58476D1CE4E5B9ull
 #define BRONZE_ABI_ELEM_BUCKET_SHIFT     52 /* 64 - log2(BRONZE_ABI_ELEM_ENTRIES) */
-#define BRONZE_ABI_ELEM_SET_BUCKET_SHIFT 54 /* 64 - log2(BRONZE_ABI_ELEM_SET_ENTRIES) */
+#define BRONZE_ABI_ELEM_SET_BUCKET_SHIFT 52 /* 64 - log2(BRONZE_ABI_ELEM_SET_ENTRIES) */
 
 /* Value: NaN-boxed, tag in the top 16 bits (runtime/value.h). */
 #define BRONZE_ABI_VALUE_TAG_SHIFT      48
