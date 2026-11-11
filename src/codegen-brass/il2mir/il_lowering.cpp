@@ -8,6 +8,7 @@
 #include "il_bridge_verifier.h"
 #include "il_pipeline.h"
 #include <brass/mir/coro_transform.hpp>
+#include <brass/mir/printer.hpp>
 #include <brass/mir/verifier.hpp>
 #include "support/timings.h"
 #include <cstdio>
@@ -25,6 +26,18 @@ bool verifyEachPassEnv() {
         return v && v[0] == '1';
     }();
     return on;
+}
+
+// BRONZE_MIR_DUMP=<substr>: the MIR of every function whose name contains it,
+// as lowered ("before") and as the pass pipeline left it ("after"), on stderr.
+// A diagnostic, the backend's counterpart of BRONZE_FINAL_IL_DUMP.
+void dumpMir(const brass::Module& mod, const char* when) {
+    static const char* const want = std::getenv("BRONZE_MIR_DUMP");
+    if (want == nullptr || *want == 0) return;
+    for (const brass::Function* fn : mod.functions()) {
+        if (fn == nullptr || fn->name().find(want) == std::string_view::npos) continue;
+        std::fprintf(stderr, "; MIR %s the passes\n%s\n", when, brass::to_string(*fn).c_str());
+    }
 }
 }  // namespace
 
@@ -621,9 +634,11 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
                 return true;
             };
         }
+        dumpMir(*mod, "before");
         if (!run_bronze_optimization_pipeline(*mod, options_, hooks)) {
             return nullptr;
         }
+        dumpMir(*mod, "after");
         // What the passes removed (barriers, guards) is checked against its
         // certificate in every build; the full verifier only where it runs.
         if (options_.verify_lowered_module ? !verify_module(*mod, diag_, options_.build_threads)
