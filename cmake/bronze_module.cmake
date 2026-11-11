@@ -31,7 +31,9 @@ function(bronze_add_module name)
         # placed after the first include is silently too late.
         target_compile_definitions(bronze_${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
-        target_compile_options(bronze_${name} PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs -fno-omit-frame-pointer)
+        target_compile_options(bronze_${name} PRIVATE
+            -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs -fno-omit-frame-pointer
+            $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_compile_options(bronze_${name} PRIVATE -Wno-restrict)
         endif()
@@ -56,7 +58,9 @@ function(bronze_add_module name)
             target_compile_definitions(bronze_${name}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
             target_link_options(bronze_${name}_tests PRIVATE /FORCE:MULTIPLE)
         else()
-            target_compile_options(bronze_${name}_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs -fno-omit-frame-pointer)
+            target_compile_options(bronze_${name}_tests PRIVATE
+                -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs -fno-omit-frame-pointer
+                $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
             if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
                 target_compile_options(bronze_${name}_tests PRIVATE -Wno-restrict)
             endif()

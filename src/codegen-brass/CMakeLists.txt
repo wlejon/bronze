@@ -142,7 +142,9 @@ if(MSVC)
     target_compile_options(bronze_codegen_brass PRIVATE /W4 /WX /permissive- /wd4324 /wd4702)
     target_compile_definitions(bronze_codegen_brass PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
-    target_compile_options(bronze_codegen_brass PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs)
+    target_compile_options(bronze_codegen_brass PRIVATE
+        -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
     # GCC 12's -Wrestrict false positive inside std::string's char_traits,
     # as for every bronze_module (cmake/bronze_module.cmake).
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -171,7 +173,9 @@ if(BRONZE_BUILD_TESTS)
         target_compile_options(bronze_codegen_brass_tests PRIVATE /W4 /WX /permissive- /wd4324 /wd4702)
         target_compile_definitions(bronze_codegen_brass_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
-        target_compile_options(bronze_codegen_brass_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs)
+        target_compile_options(bronze_codegen_brass_tests PRIVATE
+            -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs
+            $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_compile_options(bronze_codegen_brass_tests PRIVATE -Wno-restrict)
         endif()

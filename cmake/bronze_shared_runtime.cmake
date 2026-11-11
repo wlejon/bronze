@@ -168,7 +168,8 @@ if(MSVC)
         $<$<CONFIG:Release,MinSizeRel>:/OPT:ICF>)
 else()
     target_compile_options(bronze_runtime_shared PRIVATE
-        -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-invalid-offsetof -Wno-trigraphs)
+        -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(bronze_runtime_shared PRIVATE -Wno-restrict)
     endif()

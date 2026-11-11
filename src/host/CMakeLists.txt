@@ -26,7 +26,7 @@ if(MSVC)
     # stack-limit check turns it into a RangeError.
     target_link_options(bronze_host PRIVATE /STACK:8388608)
 else()
-    target_compile_options(bronze_host PRIVATE -Wall -Wextra -Werror -Wno-invalid-offsetof)
+    target_compile_options(bronze_host PRIVATE -Wall -Wextra -Werror $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
     # The runtime is beside the host wherever the host is copied to, so the
     # host's own directory is its run-time search path — in the build tree
     # and in a program directory alike.
