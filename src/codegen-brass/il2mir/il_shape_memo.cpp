@@ -93,6 +93,14 @@ bool moves_no_shape(const BronzeInstruction& inst) {
         // ToBoolean runs no user code.
         case BronzeOp::Unbox:
             return inst.result_type == BronzeType::Bool;
+        // A Number in or out of a view's buffer (il::isTypedArray guarded the
+        // receiver): bytes of a store no object is laid out in, and the
+        // helper an odd index or value takes converts a Number and discards.
+        case BronzeOp::ElemGetTyped:
+        case BronzeOp::ElemSetTyped: {
+            const int64_t kind = inst.imm_i64 & 0xFFFF;
+            return kind >= BRONZE_ABI_TA_KIND_INT8 && kind <= BRONZE_ABI_TA_KIND_FLOAT64;
+        }
         default:
             return false;
     }
