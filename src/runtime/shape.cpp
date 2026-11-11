@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "runtime/elem_ic.h"
@@ -482,9 +483,64 @@ inline StringLookupMemo& stringLookupMemoFor(const Shape* shape, uint32_t keyHas
                                      static_cast<uint64_t>(keyHash) * 0xC2B2AE3D27D4EB4FULL);
     return g_stringLookupMemo[h >> (64 - kStringLookupMemoBits)];
 }
+
+// THE CHAIN INDEX. A lookup the memos miss walks the chain, newest property
+// first, and a map the program keeps growing misses them constantly: each new
+// key gives the object a new shape, which no memo entry is about, so the next
+// touch of every older key walks down to it (pixi's `ids[source.uid] = n`
+// over a few hundred uids: 500 walks a frame, 150 links each). So a walk that
+// has gone `kIndexAfter` links without an answer stops at the next CHECKPOINT
+// — a node whose slot is a multiple of `kIndexEvery` — and asks that node's
+// index: every key from the checkpoint up, hashed, built the first time it is
+// asked for. A walk is then at most kIndexAfter + 2 * kIndexEvery links and
+// one probe however long the chain.
+//
+// An entry is the node that defines the key (the newest, as the walk would
+// find it), and the answer is read off the node at the hit, so an attribute
+// a node changes in place (its slot's representation) is never stale. Nodes
+// are immortal and their parents fixed, so an index never goes stale either;
+// it is dropped with the memos (`forgetLookupMemo`) because a later runtime
+// on this thread may put another shape at a checkpoint's address.
+constexpr uint32_t kIndexAfter = 16;
+constexpr uint32_t kIndexEvery = 32;
+
+uint32_t chainKeyHash(PropertyKey key) noexcept {
+    if (const StringHeader* s = key.string()) return s->hash();
+    return static_cast<uint32_t>(mixLookupHash(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key.symbol()))));
+}
+
+thread_local std::unordered_map<const Shape*, std::vector<const Shape*>> t_chainIndex;
+
+const Shape* chainIndexFind(const std::vector<const Shape*>& cells, PropertyKey name) noexcept {
+    const uint32_t mask = static_cast<uint32_t>(cells.size()) - 1;
+    for (uint32_t i = chainKeyHash(name) & mask;; i = (i + 1) & mask) {
+        const Shape* node = cells[i];
+        if (node == nullptr || node->key.matches(name)) return node;
+    }
+}
+
+const std::vector<const Shape*>& chainIndexFor(const Shape* checkpoint) {
+    auto [it, fresh] = t_chainIndex.try_emplace(checkpoint);
+    std::vector<const Shape*>& cells = it->second;
+    if (!fresh) return cells;
+    uint32_t count = 0;
+    for (const Shape* s = checkpoint; s != nullptr && s->key.valid(); s = s->parent) ++count;
+    uint32_t cap = 8;
+    while (cap < count * 2) cap *= 2;
+    cells.assign(cap, nullptr);
+    const uint32_t mask = cap - 1;
+    for (const Shape* s = checkpoint; s != nullptr && s->key.valid(); s = s->parent) {
+        uint32_t i = chainKeyHash(s->key) & mask;
+        // Newest first, so a key already in is the one the walk would find.
+        while (cells[i] != nullptr && !cells[i]->key.matches(s->key)) i = (i + 1) & mask;
+        if (cells[i] == nullptr) cells[i] = s;
+    }
+    return cells;
+}
 }  // namespace
 
 void Shape::forgetLookupMemo() noexcept {
+    t_chainIndex.clear();
     for (LookupMemo& m : g_lookupMemo) m.shape = nullptr;
     for (StringLookupMemo& m : g_stringLookupMemo) {
         m.shape = nullptr;
@@ -528,16 +584,25 @@ bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
         bool found = false;
         PropertyInfo info;
         const StringHeader* hitArenaKey = nullptr;
+        const auto take = [&](const Shape* node) {
+            info.slot = node->slot_index;
+            info.enumerable = node->enumerable;
+            info.accessor = node->accessor;
+            info.writable = node->writable;
+            info.configurable = node->configurable;
+            info.repr = node->repr;
+            hitArenaKey = node->key.string();
+            found = true;
+        };
+        uint32_t walked = 0;
         for (const Shape* curr = this; curr != nullptr && curr->key.valid(); curr = curr->parent) {
+            // The chain index (above), for the rest of a long walk.
+            if (++walked > kIndexAfter && curr->slot_index % kIndexEvery == 0) {
+                if (const Shape* node = chainIndexFind(chainIndexFor(curr), name)) take(node);
+                break;
+            }
             if (curr->key.matches(name)) {
-                info.slot = curr->slot_index;
-                info.enumerable = curr->enumerable;
-                info.accessor = curr->accessor;
-                info.writable = curr->writable;
-                info.configurable = curr->configurable;
-                info.repr = curr->repr;
-                hitArenaKey = curr->key.string();
-                found = true;
+                take(curr);
                 break;
             }
         }
