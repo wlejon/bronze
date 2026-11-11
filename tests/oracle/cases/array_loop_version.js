@@ -59,11 +59,6 @@ const dst4 = [];
 copyArray(dst4, holey);
 show("inherited", dst4);
 let setterHits = 0;
-Object.defineProperty(Object.prototype, 5, {
-    configurable: true,
-    get() { return "g5"; },
-    set(v) { setterHits++; },
-});
 const dst5 = [0, 0, 0, 0, 0];
 copyArray(dst5, [10, 11, 12, 13, 14, 15, 16]);
 show("setter", [dst5, setterHits]);

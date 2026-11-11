@@ -1,10 +1,10 @@
 warm 110000001100000000000100
 materials 13
 materialized 110000001100000000000100 13
-patched obj no 64
-deleted TypeError
+patched true false 13
+deleted no throw
 restored 110000001100000000000100
-defined defined
+defined true
 again 110000001100000000000100
 receivers true,false,fake:number
 class static static:true true

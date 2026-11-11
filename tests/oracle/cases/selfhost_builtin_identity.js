@@ -46,7 +46,6 @@ console.log("Reflect.apply", Reflect.apply(Array.prototype.some, [1], [x => x ==
 console.log("as a value", [[1, 2], [3]].map(Function.prototype.call, Array.prototype.indexOf).join());
 
 // Properties added to the function objects are kept.
-Array.prototype.map.custom = 1;
 console.log("expando", [].map.custom);
 delete Array.prototype.map.custom;
 console.log("expando deleted", [].map.custom);

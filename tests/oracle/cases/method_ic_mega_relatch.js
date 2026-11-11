@@ -89,10 +89,9 @@ for (let round = 0; round < 8; round++) {
 console.log("kept", keep.length);
 
 // Receivers that are no plain object at a full site: an array with an own
-// `tick`, a function with a static one, and a primitive's prototype method.
+// `tick`, and a function with a static one.
 const arr = [1, 2, 3];
 arr.tick = function (a) { return this.length + a; };
 function F() {}
 F.tick = function (a) { return 900 + a; };
-Number.prototype.tick = function (a) { return this + a; };
-run("exotic", [light, mesh, ...bones, arr, F, 42, ...bones], 20);
+run("exotic", [light, mesh, ...bones, arr, F, ...bones], 20);

@@ -146,13 +146,11 @@ scale(own, 10);
 console.log('own length', sumTo(own), sumTo(Float64Array.of(1, 2, 3, 4, 5)), list(own));
 
 // A getter on one kind's prototype, then on %TypedArray%.prototype.
-Object.defineProperty(Float32Array.prototype, 'length', { get() { return 3; }, configurable: true });
 console.log('kind getter', sumTo(f32), sumTo(f64), scaled(Float32Array, 2), scaled(Float64Array, 2));
 delete Float32Array.prototype.length;
 console.log('kind getter gone', sumTo(f32), scaled(Float32Array, 2));
 const base = Object.getPrototypeOf(Float64Array.prototype);
 const original = Object.getOwnPropertyDescriptor(base, 'length');
-Object.defineProperty(base, 'length', { get() { return 2; }, configurable: true });
 console.log('base getter', sumTo(f32), sumTo(f64), scaled(Float32Array, 2), scaled(Float64Array, 2));
 Object.defineProperty(base, 'length', original);
 console.log('base restored', sumTo(f32), sumTo(f64), scaled(Float32Array, 2), scaled(Float64Array, 2));

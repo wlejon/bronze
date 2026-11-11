@@ -166,9 +166,9 @@ std::span<const char* const> rtBuiltinGlobalNames() { return kGlobalObjectNames;
 // either are refused (a TypeError in strict code), which no standard engine
 // does and which is the point: with the object frozen and the name pinned, a
 // read of `Math.sin` or `Number.isInteger` in a locked-down realm is the
-// builtin with no proof about the program, and a compile told the host locks
-// down (types::inferModule, lockedBuiltins) lowers the call inline whatever
-// else the program mentions.
+// builtin with no proof about the program, and every thread is locked down
+// (rtDefaultRealm), so the compiler lowers the call inline whatever else the
+// program mentions (types::inferModule).
 static bool isPinnedGlobalName(std::string_view name) { return name == "Math" || name == "Number"; }
 
 void rtPinLockedGlobals() {

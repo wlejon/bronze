@@ -48,13 +48,13 @@ TEST_CASE("every statics-box global really keeps its members in a box") {
         // through to the helper on every read for the life of the process.
         CHECK(rtIntrinsicConstructorName(global.get()) == nullptr);
 
-        // And the box exists and is shape-indexed: a dictionary shape is
-        // refused on the same terms a plain object's is.
+        // And the box exists with a shape a cache may name: shape-indexed,
+        // or the frozen dictionary lockdown leaves (Shape::readCacheable).
         Value props = global.get().asObject<FunctionHeader>()->properties;
         REQUIRE(props.isObject());
         const Shape* shape = props.asObject<ObjectHeader>()->shape;
         REQUIRE(shape != nullptr);
-        CHECK_FALSE(shape->isDictionary());
+        CHECK(shape->readCacheable());
     }
 }
 

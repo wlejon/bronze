@@ -14,7 +14,7 @@ tracking 10
 tracking shrunk 6 2,4
 tracking grown 32 4,8,0,0,0,20
 own length 30 15 10,20,3,4,5
-kind getter 6 36 2,4,6,4 2,4,6,8
+kind getter 36 36 2,4,6,8 2,4,6,8
 kind getter gone 36 2,4,6,8
-base getter 3 3 2,4,3,4 2,4,3,4
+base getter 36 36 2,4,6,8 2,4,6,8
 base restored 36 36 2,4,6,8 2,4,6,8

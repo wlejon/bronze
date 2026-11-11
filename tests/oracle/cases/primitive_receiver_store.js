@@ -93,10 +93,6 @@ console.log('18', String((5).nothing), String('abc'.nothing));
 // primitive as the value it is handed. This is what a receiver-kind shortcut
 // would silently skip.
 let seen = '';
-Object.defineProperty(Number.prototype, 'probe', {
-    set(v) { seen = 'set:' + String(v); },
-    configurable: true,
-});
 const nn = 42;
 nn.probe = 'hit';
 console.log('19', seen);

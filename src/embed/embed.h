@@ -849,15 +849,6 @@ public:
     NoYieldScope& operator=(const NoYieldScope&) = delete;
 };
 
-// Freeze every intrinsic the realms of the calling thread share
-// (runtime/lockdown.h): the builtins and everything reachable from them,
-// with the override-mistake fix that keeps `C.prototype.toString = f`
-// working. Each realm's global object, and every host global and host class,
-// stay the realm's own and unfrozen. Call it on each thread before its first
-// script; idempotent. ALLOCATES.
-BRONZE_EMBED_API void lockdown();
-BRONZE_EMBED_API bool lockedDown();
-
 // The locale-sensitive builtin methods, answered by the host's Intl
 // (runtime/locale_hooks.h): the builtin stays the same frozen function and
 // calls `fn` with its receiver and arguments, under the NativeFn contract. A

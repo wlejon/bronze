@@ -2,7 +2,7 @@ true
 [object Iterator]
 Iterator
 0
-function function false true false
+function function false false false
 home TypeError
 home tag TypeError
 true

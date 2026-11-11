@@ -788,23 +788,6 @@ TEST_CASE("a pristine Math call is typed Number and its site is recorded") {
     CHECK(inferred.result->pristineMathCalls.count(decl->init.get()) == 1);
 }
 
-TEST_CASE("one write through Math taints the whole module's pristine proof") {
-    const auto inferred = infer(
-        "Math.extra = 1;\n"
-        "const y = Math.sqrt(4.0);\n");
-    CHECK(inferred.result->pristineMathCalls.empty());
-    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
-    REQUIRE(decl != nullptr);
-    CHECK(inferred.result->typeAt(decl->init.get()) == types::Type::dynamic());
-}
-
-TEST_CASE("a bare mention of Math aliases it and forfeits the proof") {
-    const auto inferred = infer(
-        "const m = Math;\n"
-        "const y = Math.sqrt(4.0);\n");
-    CHECK(inferred.result->pristineMathCalls.empty());
-}
-
 TEST_CASE("a binding named Math shadows the builtin at its site only") {
     const auto inferred = infer(
         "function shadowed() {\n"
@@ -832,44 +815,6 @@ TEST_CASE("an update on a possibly-BigInt binding does not sharpen it to number"
     REQUIRE(r.isDirectCallable("small"));
     CHECK(r.signatureOf(*r.functionIndexOf("big")).returnType == types::Type::dynamic());
     CHECK(r.signatureOf(*r.functionIndexOf("small")).returnType == types::Type::number());
-}
-
-TEST_CASE("MathTaintScan: eval taints Math pristine state") {
-    const auto inferred = infer(
-        "const y = Math.sqrt(4.0);\n"
-        "eval('Math.sqrt = function() { return 0; }');\n");
-    CHECK_FALSE(inferred.result->classLayouts.mathPristine());
-    CHECK(inferred.result->pristineMathCalls.empty());
-}
-
-TEST_CASE("MathTaintScan: dynamic Function constructors taint Math pristine state") {
-    for (const char* ctor : {"Function", "AsyncFunction", "GeneratorFunction"}) {
-        const auto inferred = infer(
-            "const y = Math.sqrt(4.0);\n"
-            "const f = new " + std::string(ctor) + "('return 1');\n");
-        CHECK_FALSE(inferred.result->classLayouts.mathPristine());
-        CHECK(inferred.result->pristineMathCalls.empty());
-    }
-}
-
-TEST_CASE("MathTaintScan: a named member of the global object leaves Math pristine") {
-    const auto inferred = infer(
-        "const cfg = globalThis.BENCH_CONFIG;\n"
-        "globalThis.BENCH_RESULT = 1;\n"
-        "const y = Math.sqrt(4.0);\n");
-    CHECK(inferred.result->classLayouts.mathPristine());
-}
-
-TEST_CASE("MathTaintScan: Math reached through a road to the global object taints") {
-    for (const char* src : {"globalThis.Math.sqrt = function() { return 0; };\n",
-                            "window.Math = { sqrt() { return 0; } };\n",
-                            "self['Ma' + 'th'].sqrt = function() { return 0; };\n",
-                            "const g = globalThis.globalThis; g.Math.sqrt = null;\n",
-                            "const g = globalThis; g.Math.sqrt = null;\n"}) {
-        const auto inferred = infer(std::string("const y = Math.sqrt(4.0);\n") + src);
-        CHECK_FALSE(inferred.result->classLayouts.mathPristine());
-        CHECK(inferred.result->pristineMathCalls.empty());
-    }
 }
 
 TEST_CASE("flow analysis: switch statement preserves unmutated bindings") {

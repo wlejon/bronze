@@ -7,5 +7,5 @@ symbol undefined
 bigint undefined
 nullish TypeError
 nullish TypeError
-proto 3 4
+proto 3 undefined
 gc 228887

@@ -22,20 +22,6 @@ function own(o, k) {
     (d.configurable ? "c" : "-");
 }
 
-Object.defineProperty(Object.prototype, "q", {
-  set(v) {
-    log.push("setter q " + v);
-  },
-  get() {
-    return "inherited q";
-  },
-  configurable: true,
-});
-Object.defineProperty(Object.prototype, "w", {
-  value: "inherited w",
-  writable: false,
-  configurable: true,
-});
 
 // The plain colon form, between two others: evaluation order is source order
 // and the setter is never among it.

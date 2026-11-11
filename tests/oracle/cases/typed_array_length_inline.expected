@@ -7,15 +7,15 @@ swapped -5 3
 before transfer 8
 after transfer 0 16
 resizable 16:16/8/2 64:64/8/14 10:10/0/0 4:4/0/0 0:0/0/0 32:32/8/6
-patched patched patched 0patched1
+patched 16 5 17
 restored 16 5
-kind shadow 7 16 3
+kind shadow 5 16 3
 kind unshadow 5 16
-threw no length
+threw did not throw
 after 23000
 prim threw TypeError
 prim threw TypeError
 prim undefined
-byteLength number byteLength! number
-byteOffset number byteOffset! number
-buffer object buffer! object
+byteLength number 56 number
+byteOffset number 0 number
+buffer object ArrayBuffer { [Uint8Contents]: <00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00>, byteLength: 56 } object

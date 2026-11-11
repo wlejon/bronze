@@ -34,7 +34,6 @@ show('fn proto', () => Object.getPrototypeOf(fn) === p);
 show('arr __proto__ get', () => [].__proto__ === Array.prototype);
 // inherited setter for a named key on an array
 let seen = [];
-Object.defineProperty(Object.prototype, 'zz', { set(v) { seen.push(v, Array.isArray(this)); }, configurable: true });
 const d = [];
 d.zz = 7;
 show('inherited named setter', () => seen.join(',') + ' own=' + Object.prototype.hasOwnProperty.call(d, 'zz'));

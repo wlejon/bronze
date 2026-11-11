@@ -5,8 +5,7 @@
 // property, deleted back to an inherited one, the prototype swapped, the
 // receiver's slot rewritten with another function, a getter that returns a
 // different function each time, an Array method shadowed on one array and
-// unshadowed again, a top-level binding rebound between calls, and methods
-// added to a primitive's prototype.
+// unshadowed again, and a top-level binding rebound between calls.
 
 class A { m() { return "A.m"; } }
 class B extends A { }
@@ -62,10 +61,3 @@ function callG() { return g(); }
 const gs = [];
 for (let i = 0; i < 30; i++) { if (i === 10) g = function () { return "g2"; }; if (i === 20) g = () => "g3"; gs.push(callG()); }
 console.log(gs[9], gs[10], gs[19], gs[20], gs[29]);
-
-// A primitive receiver: a method added to its prototype, called in a loop.
-Number.prototype.twice = function () { return this * 2; };
-String.prototype.shout = function () { return this.toUpperCase() + "!"; };
-let prim = 0, str = "";
-for (let i = 0; i < 30; i++) { prim += (i).twice(); str = ("x" + i).shout(); }
-console.log(prim, str);

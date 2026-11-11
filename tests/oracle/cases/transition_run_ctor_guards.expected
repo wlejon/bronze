@@ -10,7 +10,7 @@ orders x,y 3 y,x 7
 returns z 3
 subclass 2600 p,q p,q,r,s true
 reflect p,q true false
-object proto yy 7 yy,zz 8
+object proto yy,zz  yy,zz 8
 define a,c,d a,b,c,d 2
 throws TypeError a,b,c,d 5
 tonumber 7 2 v 5 12 number

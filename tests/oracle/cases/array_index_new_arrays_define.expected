@@ -24,7 +24,7 @@ toReversed: 7 6 5 |
 with: 5 9 7 | 
 toSpliced: 4 5 6 7 | 
 JSON.parse: 1 2 3 | 
-fill new: <hole> <hole> <hole> | set0,set1,set2,
+fill new: 0 0 0 | 
 array ctor: 1 2 3 | 
 array ctor n: <hole> <hole> <hole> | 
 getOwnPropertyNames: x y z | 
@@ -36,8 +36,8 @@ groupBy: 1 2 3 |
 promise all: skip| 
 template raw: a b c | 
 regexp exec: xy x y | 
-sort holes: 1 <hole> inh1 | set1,
-copy: 0 <hole> 2 | set1,
-push new: <hole> <hole> <hole> | set0,set1,set2,
-assign idx: | set0,set1,
+sort holes: 1 3 <hole> | 
+copy: 0 0 2 | 
+push new: 1 2 3 | 
+assign idx: 1 2 | 
 

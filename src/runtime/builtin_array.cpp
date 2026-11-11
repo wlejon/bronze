@@ -252,7 +252,8 @@ bool rtIsArrayPrototypeObject(Value v) {
     return g_arrayPrototype.isObject() && v.rawBits() == g_arrayPrototype.rawBits();
 }
 
-// A FROZEN `Array.prototype` (embed::lockdown, or a program's own
+// A FROZEN `Array.prototype` (lockdown.h: every thread's, once its realm
+// is made, or a program's own
 // `Object.freeze`) is let through: every change the ordinary algorithms could
 // make to it is one they refuse themselves — non-writable, non-configurable,
 // non-extensible — so the program gets the specification's answer, a

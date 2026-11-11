@@ -35,7 +35,3 @@ console.log(Math.max(1, NaN));
 console.log(Math.min(3, "2"));
 console.log(Math.max("4", 1));
 
-Math.sqrt = function (x) { return 100 + x; };
-let t = 0;
-for (let i = 0; i < 50; i = i + 1) t = t + Math.sqrt(i);
-console.log(t);

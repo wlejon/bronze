@@ -71,10 +71,6 @@ function sumRoots(n) {
 let rs = 0;
 for (let rep = 0; rep < 60; rep++) rs = sumRoots(150);
 console.log(rs);
-const realSqrt = Math.sqrt;
-Math.sqrt = x => x * 10;
-console.log(sumRoots(10));
-Math.sqrt = realSqrt;
 console.log(sumRoots(150), sumRoots('3'));
 
 // A polymorphic read (four shapes) on both sides of a yield, then eight.

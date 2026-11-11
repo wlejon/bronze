@@ -43,14 +43,3 @@ console.log(kernelSum(5000).toFixed(6), kernelSum(5000) === genericSum(5000));
 console.log(Math.asin("0.5") === Math.asin(0.5), Math.atan2("1", true), Math.exp(null), Math.log({ valueOf() { return 1; } }));
 console.log(r(Math.atan2(1)), r(Math.asin()), Math.atan2.length, Math.asin.name, Math.atan2.name);
 
-// A member replaced mid-run: the guard sees the new function object.
-function twice(y, x) { return Math.atan2(y, x) + Math.asin(y / 4); }
-let before = 0;
-for (let i = 0; i < 100; i++) before += twice(1, 2);
-const savedAtan2 = Math.atan2, savedAsin = Math.asin;
-Math.atan2 = (y, x) => y * 100 + x;
-Math.asin = () => 1000;
-console.log(before.toFixed(8), twice(1, 2));
-Math.atan2 = savedAtan2;
-Math.asin = savedAsin;
-console.log(twice(1, 2).toFixed(8));

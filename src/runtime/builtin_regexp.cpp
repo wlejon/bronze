@@ -22,6 +22,7 @@
 #include "runtime/builtin_regexp_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
+#include "runtime/integrity.h"
 #include "runtime/fn.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
@@ -41,23 +42,18 @@ namespace bronze::runtime {
 
 namespace {
 
-// `RegExp`, `RegExp.prototype`, the instance shape every `new RegExp` takes
-// its [[Prototype]] from, and what the string members' fast path re-verifies
-// (`rtRegExpChainPristine`): the prototype's shape as built, and the slots of
-// the six DATA properties whose in-place overwrite bumps no epoch — `exec`
-// and the five symbol-keyed algorithms.
+// `RegExp`, `RegExp.prototype`, and the instance shape every `new RegExp`
+// takes its [[Prototype]] from. The string members' fast path
+// (`rtRegExpChainPristine`) needs nothing more: the prototype is frozen with
+// every intrinsic (lockdown.h), so `exec` and the symbol-keyed algorithms are
+// the builtins for good.
 struct RegExpIntrinsics {
     Value ctor = Value::fromUndefined();
     Value proto = Value::fromUndefined();
     Shape* instanceShape = nullptr;
-    Shape* protoPristineShape = nullptr;
-    static constexpr size_t kWitnessCount = 6;
-    uint32_t witnessSlot[kWitnessCount] = {};
-    Value witnessValue[kWitnessCount] = {Value::fromUndefined(), Value::fromUndefined(),
-                                         Value::fromUndefined(), Value::fromUndefined(),
-                                         Value::fromUndefined(), Value::fromUndefined()};
-    uint64_t pristineEpoch = 0;
-    bool pristine = false;
+    // Latched once the prototype is seen hardened: false only while lockdown
+    // itself is still walking toward it.
+    bool protoHardened = false;
 };
 
 thread_local RegExpIntrinsics g_regexp;
@@ -254,14 +250,6 @@ void defineGetter(Rooted<Value>& proto, const char* name, bronze_fn_code code,
                                  /*enumerable=*/false);
 }
 
-uint32_t slotOf(Value obj, PropertyKey key) {
-    PropertyInfo info;
-    if (!obj.asObject<ObjectHeader>()->shape->lookupProperty(key, info)) {
-        fatal("internal: a RegExp.prototype member was not installed");
-    }
-    return info.slot;
-}
-
 const NativeMethod kRegExpMethods[] = {
     {"exec", rtRegExpExecBody, 1, 1},
     {"test", regexpTest, 1, 1},
@@ -305,26 +293,6 @@ void ensureRegExpIntrinsics() {
     defineGetter(proto, "unicodeSets", unicodeSetsGetter, "get unicodeSets");
     rtInstallRegExpSymbolMethods(proto);
 
-    // The six data properties the string members' fast path must see
-    // unchanged: `exec` and the five symbol-keyed algorithms. In-place
-    // overwrites of a data property bump no epoch, so their VALUES are what
-    // reverify compares, at the slots recorded here.
-    {
-        Rooted<Value> execKey{rtMakeString("exec")};
-        g_regexp.witnessSlot[0] =
-            slotOf(proto.get(), PropertyKey::forString(execKey.get().asString<StringHeader>()));
-        SymbolHeader* (*const symbols[])() = {rtSymbolMatch, rtSymbolMatchAll, rtSymbolReplace,
-                                              rtSymbolSearch, rtSymbolSplit};
-        for (size_t i = 0; i < 5; ++i) {
-            g_regexp.witnessSlot[i + 1] = slotOf(proto.get(), PropertyKey::forSymbol(symbols[i]()));
-        }
-        for (size_t i = 0; i < RegExpIntrinsics::kWitnessCount; ++i) {
-            g_regexp.witnessValue[i] =
-                proto.get().asObject<ObjectHeader>()->getSlot(g_regexp.witnessSlot[i]);
-            rtHeap().add_permanent_root(&g_regexp.witnessValue[i]);
-        }
-    }
-
     // 22.2.5: `escape` and the `@@species` accessor, ordinary own properties
     // of the constructor's box, where a subclass reaches them by the chain
     // `extends` builds.
@@ -343,19 +311,6 @@ void ensureRegExpIntrinsics() {
     fn->native_base = NativeBase::RegExp;
     fn->instance_shape = rtNewRootShape(proto.get());
     g_regexp.instanceShape = fn->instance_shape;
-    g_regexp.protoPristineShape = proto.get().asObject<ObjectHeader>()->shape;
-    g_regexp.pristineEpoch = protoMutationEpoch();
-    g_regexp.pristine = true;
-}
-
-// Re-verify the prototype's shape. Called only when the epoch moved, which
-// any add, delete, redefinition or prototype swap on ANY object serving as a
-// prototype does — so the common case is one compare against the latch.
-bool reverifyPristine() {
-    g_regexp.pristine =
-        g_regexp.proto.asObject<ObjectHeader>()->shape == g_regexp.protoPristineShape;
-    g_regexp.pristineEpoch = protoMutationEpoch();
-    return g_regexp.pristine;
 }
 
 }  // namespace
@@ -377,21 +332,11 @@ Shape* rtRegExpInstanceShape() {
 }
 
 bool rtRegExpChainPristine(const RegExpHeader* re) noexcept {
+    // An own key moves the instance's shape; nothing can move the frozen
+    // prototype's members.
     if (re->object.shape != g_regexp.instanceShape) return false;
-    if (g_regexp.pristineEpoch != protoMutationEpoch() && !reverifyPristine()) return false;
-    if (!g_regexp.pristine) return false;
-    // The shape being as built says the six slots ARE `exec` and the five
-    // symbol keys; whether they still hold the intrinsics is a value compare
-    // on every ask, because `RegExp.prototype.exec = f` moves no shape and
-    // bumps no epoch.
-    const auto* proto = g_regexp.proto.asObject<ObjectHeader>();
-    for (size_t i = 0; i < RegExpIntrinsics::kWitnessCount; ++i) {
-        if (proto->getSlot(g_regexp.witnessSlot[i]).rawBits() !=
-            g_regexp.witnessValue[i].rawBits()) {
-            return false;
-        }
-    }
-    return true;
+    if (!g_regexp.protoHardened) g_regexp.protoHardened = rtIsHardened(g_regexp.proto);
+    return g_regexp.protoHardened;
 }
 
 std::string rtRegExpText(Value re) {

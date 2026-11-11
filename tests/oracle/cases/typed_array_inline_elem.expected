@@ -46,5 +46,5 @@ regrown 7,7,7,0,0,0 2 7,0
 subarray 10,20,0,-1,-2,60 0,-1,-2 -1,-2 8 12
 f32sub 2.200000047683716 3.299999952316284 undefined undefined
 poly plain=750 Int8Array=3 Uint8Array=3 Uint8ClampedArray=4 Int16Array=3 Uint16Array=3 Int32Array=3 Uint32Array=3 Float32Array=3.75 Float64Array=3.75 sparse=NaN
-getter 550 undefined 5.5 proto01 1
+getter 550 undefined 5.5 undefined 0
 nanbits number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true

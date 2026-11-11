@@ -79,16 +79,6 @@ for (let i = 0; i < N; i++) {
     Object.defineProperty(Base.prototype, "y", { value: "base y", writable: false, configurable: true });
   }
   if (i === 2000) {
-    Object.defineProperty(Object.prototype, "x", {
-      set(v) {
-        setterCalls++;
-      },
-      get() {
-        return "inherited";
-      },
-      configurable: true,
-    });
-    Object.defineProperty(Object.prototype, "z", { value: "inherited z", writable: false, configurable: true });
   }
 
   const a = plain(i);

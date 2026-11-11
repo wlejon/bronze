@@ -3,7 +3,7 @@ absent own 100:own,
 absent deleted 0:
 absent proto 100:proto,
 absent getter 100:get5, 100
-absent root 400:root,root,root,root,
+absent root 0:
 absent again 0:
 proto warm 1743900/9900
 proto changed 879000/9900
@@ -24,10 +24,10 @@ slot swapped swappedswappedb1
 slot not callable true
 slot restored swappedswappedfn
 set warm 1,1,1,1,2,3,4,1,2,3,4,0,0,0,0,0
-set patched -1,-1,-1,-1,-1,-1,-1,-1,2,3,4,0,0,0,0,0
-set own -1,-1,-1,-1,-1,-1,-1,-1,2,3,4,0,0,0,0,9
+set patched 1,1,1,1,2,3,4,1,2,3,4,0,0,0,0,0
+set own 1,1,1,1,2,3,4,1,2,3,4,0,0,0,0,9
 isArray warm 200
-isArray replaced 300
+isArray replaced 200
 push warm 500 500
 push list 5 0,10,20,30,40
 push own -2 500

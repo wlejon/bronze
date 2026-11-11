@@ -39,10 +39,6 @@ console.log([1, , 3, undefined, null, 5].join());
 }
 {
   const a = ["x", , "z"];
-  Object.defineProperty(Object.prototype, 1, {
-    configurable: true,
-    get() { return "got" + this.length; },
-  });
   console.log(a.join("/"));
   delete Object.prototype[1];
   console.log(a.join("/"));

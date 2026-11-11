@@ -20,23 +20,20 @@ namespace bronze::types {
 // fixpoint that did not converge — and a diagnostic naming it is in `diags`.
 //
 // `hostGlobals` is the `--host-globals` manifest, when the caller has one: a
-// host that registers its own `Math`, `globalThis`, `Float64Array` or
+// host that registers its own `Math`, `Number`, `Float64Array` or
 // `Float32Array` replaces the builtin the builtin-identity proofs name, so
-// those proofs are withheld. Null means no manifest.
+// those proofs are withheld. Null means no manifest. Nothing else withholds
+// `Math` and `Number` but a declaration of the name in the program: every
+// thread's builtins are locked down (runtime/lockdown.h), the two objects
+// frozen behind read-only global bindings, so no text of the program's can
+// change what the names mean.
 //
 // `pins` is the `--pins` manifest, when the caller has one: per-(class, field)
 // declarations this pass spends without the proofs it would otherwise demand.
 // A promise about the program, not a proof derived from it — types/pins.h says
 // what it licenses and who is meant to enforce it. Null means no manifest.
-//
-// `lockedBuiltins`: the program runs only on threads whose host has locked
-// the builtins down (runtime/lockdown.h), where `Math` and `Number` are frozen
-// objects behind read-only global bindings. The builtin-identity proofs for
-// the two then need nothing from the program's text but that it declares no
-// `Math` / `Number` of its own: no mention of `globalThis`, `eval` or
-// `Function` withholds them, as it must where the builtins are mutable.
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
                                            const std::vector<std::string>* hostGlobals = nullptr,
-                                           const PinManifest* pins = nullptr, bool lockedBuiltins = false);
+                                           const PinManifest* pins = nullptr);
 
 }  // namespace bronze::types

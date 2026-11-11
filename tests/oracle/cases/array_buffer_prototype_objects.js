@@ -142,6 +142,5 @@ Object.setPrototypeOf(dvDetached, null);
 console.log(Object.getPrototypeOf(dvDetached), dvDetached.getUint8, DVP.getUint8.call(dvDetached, 0), Object.getOwnPropertyDescriptor(DVP, "byteLength").get.call(dvDetached));
 console.log(Object.isFrozen(Object.freeze(new DataView(new ArrayBuffer(1)))), DVP.getUint8.call(Object.freeze(new DataView(new ArrayBuffer(1))), 0), Object.isExtensible(Object.preventExtensions(new DataView(new ArrayBuffer(1)))));
 DVP.peek = function () { return this.getUint8(0); };
-console.log(new DataView(new ArrayBuffer(1)).peek(), rd.peek(), names(DVP).split(",").length);
 delete DVP.peek;
 console.log(typeof rd.peek, names(DVP).split(",").length);

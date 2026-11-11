@@ -4,4 +4,4 @@
 4 1200 30Y 40C 50G NaN NaN
 5 600 abc 6.5 xyz cls 1A3 3K
 6 200 ns p12 3,m11
-7 10000 TypeError 0 0 7 proto setter v,w
+7 10000 TypeError 0 0 7  v,w,zz

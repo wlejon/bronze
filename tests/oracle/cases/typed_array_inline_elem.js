@@ -236,9 +236,6 @@ function touch(a) {
 //     nor for a canonical numeric string; a non-canonical one is a name ---
 {
     let asked = 0;
-    Object.defineProperty(Float64Array.prototype, "0", { get() { asked++; return "proto0"; }, configurable: true });
-    Object.defineProperty(Float64Array.prototype, "7", { get() { asked++; return "proto7"; }, configurable: true });
-    Object.defineProperty(Float64Array.prototype, "01", { get() { asked++; return "proto01"; }, configurable: true });
     const a = new Float64Array([5.5, 6.5]);
     let t = 0;
     for (let i = 0; i < 100; i++) t += load(a, 0);

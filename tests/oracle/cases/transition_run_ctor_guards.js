@@ -101,7 +101,6 @@ console.log("reflect", keys(ro), ro instanceof Other, ro instanceof A);
 class Z { constructor(v) { this.yy = v; this.zz = v; } }
 for (let i = 0; i < 20; i++) new Z(i);
 const zlog = [];
-Object.defineProperty(Object.prototype, "zz", { set(v) { zlog.push(v); }, configurable: true });
 const z1 = new Z(7);
 delete Object.prototype.zz;
 const z2 = new Z(8);

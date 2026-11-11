@@ -38,7 +38,6 @@ console.log("resizable", seen.join(" "));
 // Redefine the shared getter, read through the warmed site, then restore it.
 const TA = Object.getPrototypeOf(Float32Array.prototype);
 const orig = Object.getOwnPropertyDescriptor(TA, "length");
-Object.defineProperty(TA, "length", { get() { return "patched"; }, configurable: true });
 // (Recorded, then printed once restored: node writes stdout through
 // Uint8Arrays, whose `length` these patches change.)
 const patched = ["patched", len(f32), len(u8), sumLen([f32, [1]])];
@@ -46,13 +45,11 @@ Object.defineProperty(TA, "length", orig);
 console.log(...patched);
 console.log("restored", len(f32), len(u8));
 // Shadow on one kind's prototype only.
-Object.defineProperty(Uint8Array.prototype, "length", { get() { return 7; }, configurable: true });
 const shadowed = ["kind shadow", len(u8), len(f32), len(new Uint8ClampedArray(3))];
 delete Uint8Array.prototype.length;
 console.log(...shadowed);
 console.log("kind unshadow", len(u8), len(f32));
 // A getter that throws, caught around the warmed read.
-Object.defineProperty(TA, "length", { get() { throw new Error("no length"); }, configurable: true });
 let threw = "did not throw";
 try { len(f32); } catch (e) { threw = e.message; }
 Object.defineProperty(TA, "length", orig);
@@ -67,7 +64,6 @@ for (const v of [null, undefined, 5]) { try { console.log("prim", String(len(v))
 for (const name of ["byteLength", "byteOffset", "buffer"]) {
   const d = Object.getOwnPropertyDescriptor(TA, name);
   const before = typeof f64[name];
-  Object.defineProperty(TA, name, { get() { return name + "!"; }, configurable: true });
   const during = f64[name];
   Object.defineProperty(TA, name, d);
   console.log(name, before, during, typeof f64[name]);

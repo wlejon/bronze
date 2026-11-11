@@ -61,7 +61,6 @@ delete Array.isArray;
 try { check([]); log("deleted no throw"); } catch (e) { log("deleted", e.constructor.name); }
 Array.isArray = original;
 log("restored", sweep());
-Object.defineProperty(Array, "isArray", { value: (v) => "defined", configurable: true, writable: true });
 log("defined", check([]));
 Array.isArray = original;
 log("again", sweep());

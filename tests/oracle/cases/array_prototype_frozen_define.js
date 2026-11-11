@@ -1,4 +1,4 @@
-// A FROZEN `Array.prototype` — what embed::lockdown leaves every intrinsic,
+// A FROZEN `Array.prototype` — what lockdown leaves every intrinsic,
 // and what `Object.freeze` makes of it here — answers each change the way
 // ECMA-262 answers any frozen object: 20.1.2.4 Object.defineProperty and
 // 20.1.2.3 defineProperties throw (DefinePropertyOrThrow), 28.1.3

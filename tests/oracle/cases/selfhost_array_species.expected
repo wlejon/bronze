@@ -11,9 +11,4 @@ filter species length arg [3,0] 4 6 undefined
 map into frozen TypeError
 filter into sealed TypeError
 setter not run false 2
-map with call/apply replaced [2,3]
-reduce with call/apply replaced 3
-assign with Object replaced {"a":1}
-TypeError is the real one true true
 Array species is Array true
-map with Object.prototype.length setter [1,2]

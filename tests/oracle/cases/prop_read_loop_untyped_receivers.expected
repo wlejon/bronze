@@ -15,7 +15,7 @@ deleted NaN
 readded 141
 frozen 45
 dict 45 45
-kinds 1,4,6,3,8,9,10,11,12,2 66
+kinds 1,4,6,3,8,9,undefined,undefined,undefined,2 NaN
 kinds after 1,4,6,3,8,9,undefined,undefined,undefined,2
 hole true
 nullish true

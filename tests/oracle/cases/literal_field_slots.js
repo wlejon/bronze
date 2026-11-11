@@ -98,7 +98,6 @@ try { setV(ro, 5); } catch (e) { roErr = e.constructor.name; }
 const sealed = Object.seal({ v: 0, w: 0 });
 const sealedR = setV(sealed, 3);
 const seen = [];
-Object.defineProperty(Object.prototype, 'zz', { set(v) { seen.push(v); }, configurable: true });
 const lit = { v: 0, w: 0 };
 lit.zz = 'proto setter';
 delete Object.prototype.zz;

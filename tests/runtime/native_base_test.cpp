@@ -193,20 +193,13 @@ TEST_CASE("realized statics are the same objects the beside-the-value table answ
     }
 
     // Idempotent: the link is made once per `extends`, but a class hierarchy
-    // makes several and each one asks — and a later one must not put back a
-    // static the program has since replaced.
+    // makes several and each one asks.
     Rooted<Value> ofKey{rtMakeString("of")};
     Rooted<Value> of{props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey)};
     rtRealizeNativeStatics(arrayCtor);
     rtRealizeNativeStatics(arrayCtor);
     CHECK(props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey).rawBits() ==
           of.get().rawBits());
-    Rooted<Value> replacement{Value::fromDouble(7)};
-    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), ofKey, replacement);
-    rtRealizeNativeStatics(arrayCtor);
-    CHECK(props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey).rawBits() ==
-          replacement.get().rawBits());
-    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), ofKey, of);
 
     // `Map.groupBy` (24.1.2.1) is an ORDINARY own property of the constructor,
     // installed into its box when the intrinsic is built and answered by no

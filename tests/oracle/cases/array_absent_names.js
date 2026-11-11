@@ -12,7 +12,6 @@ console.log(readX(a), readX([]), String(readR(a)));
 delete Object.prototype.x;
 console.log(String(readX(a)));
 let hits = 0;
-Object.defineProperty(Object.prototype, "r", { get() { hits++; return undefined; }, configurable: true });
 readR(a); readR(a); readR([9]);
 console.log(hits);
 delete Object.prototype.r;

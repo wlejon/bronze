@@ -288,7 +288,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& specProfilePath, bool wpoStats,
              const std::string& wpoStatsFilter, bool wpoStatsPerSite,
              const std::string& feedbackOutPath, const std::string& feedbackInPath,
-             const std::string& harvestOutPath, size_t buildThreads, bool lockedBuiltins) {
+             const std::string& harvestOutPath, size_t buildThreads) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -393,7 +393,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (infer) {
         inferred = types::inferModule(*astModule, diags,
                                       hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      pins.empty() ? nullptr : &pins, lockedBuiltins);
+                                      pins.empty() ? nullptr : &pins);
         timer.mark("infer");
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);
@@ -521,16 +521,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    // `--lockdown`: the executable's host (host/host_main.cpp) locks the
-    // builtins down before the entry when the module exports this name. Its
-    // address means nothing; it is the stamp's.
-    if (lockedBuiltins && !emitShared) {
-        if (const auto* stamp = obj->find_symbol("bronze_object_abi_fingerprint")) {
-            auto mark = *stamp;
-            mark.name = "bronze_object_lockdown";
-            obj->add_symbol(std::move(mark));
-        }
-    }
     const bool linked = emitShared ? linkSharedModule(*obj, outputPath, diags, entrySymbol, machoVersion)
                                    : linkExecutable(*obj, outputPath, diags);
     timer.mark("link");
@@ -862,7 +852,6 @@ int runDriver(int argc, char** argv) {
         std::string feedbackInPath;
         std::string harvestOutPath;
         std::string jobsText;
-        bool lockedBuiltins = false;
         std::string flagErr;
 
         for (int i = 2; i < argc; ++i) {
@@ -917,8 +906,6 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
-            } else if (arg == "--lockdown") {
-                lockedBuiltins = true;
             } else if (arg == "--native-manifest") {
                 if (i + 1 < argc) {
                     nativeManifestPath = argv[++i];
@@ -1001,7 +988,7 @@ int runDriver(int argc, char** argv) {
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
                         wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath,
-                        buildThreads, lockedBuiltins);
+                        buildThreads);
     }
 
     return fail(kUsage);

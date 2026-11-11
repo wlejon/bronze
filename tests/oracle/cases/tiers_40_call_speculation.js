@@ -38,15 +38,6 @@ console.log(viaReceiver(fake, 3), viaReceiver(Math, 81));
 for (let i = 0; i < 30; i++) vr += viaReceiver(i % 2 ? fake : Math, i);
 console.log(vr.toFixed(4));
 
-// The builtin itself replaced after tier-up, then restored.
-const realSqrt = Math.sqrt;
-let calls = 0;
-Math.sqrt = function (v) { calls++; return -v; };
-console.log(norm(1, 2, 2), calls);
-let patched = 0;
-for (let i = 0; i < 5000; i++) patched += norm(i % 3, 0, 0);
-console.log(patched, calls);
-Math.sqrt = realSqrt;
 console.log(norm(2, 3, 6));
 
 // Guards in a function with an argv block: a method call of three

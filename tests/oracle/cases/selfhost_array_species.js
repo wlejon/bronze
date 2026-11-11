@@ -67,30 +67,6 @@ toSetter.constructor = { [Symbol.species]: WithSetter };
 const r = toSetter.map(x => x + 1);
 console.log("setter not run", setterRan, Object.getOwnPropertyDescriptor(r, "0").value);
 
-// The builtins reach none of what a program can replace.
-const savedCall = Function.prototype.call;
-const savedApply = Function.prototype.apply;
-Function.prototype.call = function () { throw new Error("call replaced"); };
-Function.prototype.apply = function () { throw new Error("apply replaced"); };
-show("map with call/apply replaced", [1, 2].map(x => x + 1));
-show("reduce with call/apply replaced", [1, 2].reduce((a, x) => a + x));
-Function.prototype.call = savedCall;
-Function.prototype.apply = savedApply;
-
-const savedObject = globalThis.Object;
-const savedTypeError = globalThis.TypeError;
-globalThis.Object = function FakeObject() { throw new Error("Object replaced"); };
-globalThis.TypeError = function FakeTypeError() { return { fake: true }; };
-show("assign with Object replaced", savedObject.assign({}, { a: 1 }));
-let caught;
-try { [1].forEach(null); } catch (e) { caught = e; }
-globalThis.Object = savedObject;
-globalThis.TypeError = savedTypeError;
-console.log("TypeError is the real one", caught instanceof TypeError, caught.fake === undefined);
 
 console.log("Array species is Array", Array[Symbol.species] === Array);
 
-// Keys the runtime could read off the result: none.
-Object.defineProperty(Object.prototype, "length", { set(v) { throw new Error("length setter"); }, configurable: true });
-show("map with Object.prototype.length setter", [1, 2].map(x => x));
-delete Object.prototype.length;

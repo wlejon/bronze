@@ -28,15 +28,10 @@ function show(label, v) {
 {
     const a = [1, , 3, , 5];
     show("map holes", JSON.stringify(a.map((x) => x * 2)));
-    Object.prototype[1] = 100;
     show("map proto index", JSON.stringify(a.map((x) => x * 2)));
     show("reduce proto index", a.reduce((s, x) => s + x, 0));
     show("filter proto index", JSON.stringify(a.filter((x) => x > 2)));
     delete Object.prototype[1];
-    Object.defineProperty(Object.prototype, 3, {
-        get() { return 7; },
-        configurable: true,
-    });
     show("forEach proto getter", (() => { let s = 0; a.forEach((x) => { s += x; }); return s; })());
     show("some proto getter", a.some((x) => x === 7));
     delete Object.prototype[3];
@@ -119,7 +114,6 @@ function show(label, v) {
     let hits = 0;
     for (let r = 0; r < 1000; r++) hits += objs.indexOf(obj);
     show("indexOf objects hot", hits);
-    Object.prototype[1] = "p";
     show("indexOf proto hole", ["x", , "z"].indexOf("p"));
     show("includes proto hole", ["x", , "z"].includes("p"));
     delete Object.prototype[1];

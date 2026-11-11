@@ -6,9 +6,11 @@
 // `rtResolveBuiltinGlobal` answers (realm.cpp copies the same values onto each
 // global object). An embedder that runs mutually distrustful code in several
 // realms on one thread — bro's compartments — therefore cannot let any of
-// them change what another calls. Lockdown is SES's answer: before the first
-// program runs, every object reachable from the intrinsics is frozen, so they
-// are shared and immutable at once. Each realm's global object stays its own
+// them change what another calls, and a compiler that lowers `Math.imul` inline
+// cannot let a program replace it. Lockdown is SES's answer, and it is the only
+// mode there is: when a thread's heap is made (rt_state.cpp, rtHeap),
+// before anything runs on it, every object reachable from the
+// intrinsics is frozen, so they are shared and immutable at once. Each realm's global object stays its own
 // and stays writable; only what the builtins hold is frozen.
 //
 // What is reached: the builtin global names (realm.h, rtBuiltinGlobalNames)
@@ -40,14 +42,14 @@
 // which is per realm (host_globals.h), and %ThrowTypeError%, which bronze makes
 // fresh per `arguments` object rather than sharing.
 //
-// Standalone bronze programs never call it: they run one program per process,
-// and node parity (which the oracle pins) leaves intrinsics mutable.
+// Last, the `Math` and `Number` global bindings are pinned (realm.h,
+// rtPinLockedGlobals): no program can patch a builtin or rebind those names,
+// which is where bronze departs from node on purpose.
 
 namespace bronze::runtime {
 
-// Harden the calling thread's intrinsics. Idempotent; a thread that has run a
-// program first gets whatever that program did to them frozen in place, so an
-// embedder calls it before its first script. `Error.stackTraceLimit` freezes at
+// Harden the calling thread's intrinsics. Idempotent; rtHeap calls it,
+// nothing else needs to. `Error.stackTraceLimit` freezes at
 // its default (10) along with the rest of `Error`.
 void rtLockdown();
 

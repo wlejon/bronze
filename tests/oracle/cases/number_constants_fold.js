@@ -1,6 +1,6 @@
-// Number's value properties are folded to constants at compile time when no
-// statement can rebind the name `Number` (types/builtin_taint.h,
-// types/math_builtins.h numberValueProperty). The table there must hold the
+// Number's value properties are folded to constants at compile time: nothing
+// can rebind the name `Number` (lockdown pins it; types/math_builtins.h
+// numberValueProperty). The table there must hold the
 // runtime's exact doubles: every constant is printed and compared to the
 // runtime's own value read through a computed key (never folded).
 //

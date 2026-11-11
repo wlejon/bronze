@@ -25,6 +25,7 @@
 #include <vector>
 
 
+#include "runtime/lockdown.h"
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/bigint.h"
@@ -120,6 +121,11 @@ Heap& rtHeap() {
         g_threadHeap = new Heap();
         g_threadHeap->bind_thread();
         registerThreadRootSources(*g_threadHeap);
+        // The thread's builtins are locked down with its heap, before
+        // anything can run over them (lockdown.h): there is one kind of
+        // thread, and no program or host ever sees a mutable intrinsic. Here
+        // and not at the realm, which a program can run a while without.
+        rtLockdown();
     }
     return *g_threadHeap;
 }

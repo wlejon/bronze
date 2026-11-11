@@ -28,11 +28,6 @@ for (let i = 0; i < 20000; i++) {
 }
 console.log('warm', acc);
 let log = '';
-Object.defineProperty(Object.prototype, 1, {
-  get() { log += 'get1,'; return 7; },
-  set(v) { log += 'set1=' + v + ','; },
-  configurable: true,
-});
 console.log('readHole', readHole(holey()));
 { const r = readRun(holey()); console.log('readRun', r[0], r[1], r[2]); }
 console.log('sumNums', sumNums(holey()));

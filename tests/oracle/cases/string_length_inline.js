@@ -32,7 +32,6 @@ for (const p of [undefined, null]) {
 
 // String.prototype cannot change a string's own length.
 String.prototype.length = 99;
-Object.defineProperty(String.prototype, "extra", { get() { return this.length; } });
 console.log("proto", len("abc"), "abcd".extra);
 
 // Strings created and dropped across collections.

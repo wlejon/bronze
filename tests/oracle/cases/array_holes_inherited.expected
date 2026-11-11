@@ -20,6 +20,6 @@
 4 forEach 1 x
 5 x|s| true 1 undefined s 1
 6 before 1:1 [_ 3] 1:1 [_ 3]
-6 during 1:0,1 [o 3] 1:0,1 [o 3]
-6 true 1 1,o 7 o 0 [1 _]
+6 during 1:1 [_ 3] 1:1 [_ 3]
+6 false -1 1, 7 undefined 0 [1 _]
 6 after 1:1 [_ 3] 1:1 [_ 3]

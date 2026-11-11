@@ -26,12 +26,6 @@ function own(o, k) {
 }
 
 for (const k of ["0", "1", "2"]) {
-  Object.defineProperty(Object.prototype, k, {
-    set(v) {
-      note("setter " + k + " " + v);
-    },
-    configurable: true,
-  });
 }
 
 const numeric = { 0: f(10), "1": f(11), [2]: f(12) };

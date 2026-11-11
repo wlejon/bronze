@@ -345,12 +345,13 @@ compiled code be optimized against the real `Math` once, and it is also a
 channel: a realm that patches `Array.prototype.push` changes every other realm
 on the thread.
 
-`embed::lockdown()` (`runtime/lockdown.h`) closes it, SES-style. A host calls
-it on each thread before that thread's first script; it walks everything
+Lockdown (`runtime/lockdown.h`) closes it, SES-style, and it is the only mode:
+`rtHeap` runs it when a thread's heap is made, before any program or host
+code, in a standalone `bronze` executable as in a host. It walks everything
 reachable from the builtin globals plus the intrinsics no global names
 (iterator, generator and async prototypes), through properties, accessors and
-prototypes, and freezes each object. A program never locks down by itself, so
-a plain `bronze` program keeps node's semantics.
+prototypes, and freezes each object. No program can patch a builtin, which is
+where bronze leaves node's semantics on purpose.
 
 Frozen objects keep their inline caches: a frozen object's shape is a
 dictionary whose layout can never change again, so `Shape::readCacheable()`
@@ -369,15 +370,13 @@ Lockdown also pins the global BINDINGS `Math` and `Number` in every realm of
 the thread (`rtPinLockedGlobals`, realm.cpp): read-only and not configurable,
 so `globalThis.Math = x` and a `defineProperty` over it are refused. No
 standard engine does that, and it is deliberate: with the object frozen and
-the name pinned, `Math.sin` is the builtin whatever the program does, so a
-compile for a locked-down host (`EvalOptions::lockedBuiltins`, `bronze build
---lockdown`) lowers Math and Number calls inline with no proof from the
-program's text. Without it the proof is a syntactic scan
-(`types/builtin_taint.cpp`) that one mention of `Function`, `eval` or a bare
-`globalThis` anywhere in the program withholds, for the whole program: pixi
-has such mentions, and every `Math.imul` of a program that had one cost about
-490 instructions. A `--lockdown` executable is locked by its host before its
-entry (the module exports `bronze_object_lockdown`).
+the name pinned, `Math.sin` is the builtin whatever the program does, so the
+compiler lowers Math and Number calls inline with no proof from the program's
+text (`types/infer.cpp`; only a module declaring its own `Math`, or a host
+claiming the name, withholds it). The proof used to be a syntactic scan that
+one mention of `Function`, `eval` or a bare `globalThis` anywhere withheld for
+the whole program: pixi has such mentions, and every `Math.imul` of a program
+that had one cost about 490 instructions.
 
 An intrinsic FUNCTION with no statics box is not given one to freeze: it is
 marked (`FunctionHeader::harden_on_box`) and its box is made frozen and

@@ -201,7 +201,6 @@ std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
     field("|natives");
     field(manifestJson);
     field(pinsText);
-    field(options.lockedBuiltins ? "locked" : "open");
     for (size_t i = 0; i < sources.size(); ++i) {
         const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
         field(buf.name());

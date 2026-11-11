@@ -3,7 +3,6 @@
 
 #include "runtime/gc.h"
 #include "runtime/locale_hooks.h"
-#include "runtime/lockdown.h"
 #include "runtime/realm.h"
 
 namespace bronze::embed {
@@ -51,13 +50,6 @@ bool sameRealmGroup(const Realm* a, const Realm* b) {
 }
 
 void addRealmDestroyHook(RealmDestroyHook hook) { bronze::rtAddRealmDestroyHook(hook); }
-
-void lockdown() {
-    ShadowStackFrame frame;
-    runtime::rtLockdown();
-}
-
-bool lockedDown() { return runtime::rtLockedDown(); }
 
 void setLocaleMethod(LocaleMethod which, NativeFn fn) {
     using runtime::LocaleHook;

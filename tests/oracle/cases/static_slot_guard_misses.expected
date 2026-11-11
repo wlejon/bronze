@@ -17,7 +17,7 @@ accessor 106002 1000 1001 15020
 read-only TypeError 7 1001,1001
 frozen TypeError 2 3 3
 number NaN
-number proto 4
+number proto NaN
 null TypeError
 relink small:t2:3 t2 true
 relink big big:hh:true true

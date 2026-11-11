@@ -49,25 +49,12 @@ const b1 = new B();
 console.log("base prototype", flush(), own(b1, "a"), own(b1, "b"), own(b1, "c"));
 
 // Object.prototype, for a field name, a computed one and an integer-like one.
-Object.defineProperty(Object.prototype, "op", {
-  set(v) {
-    log.push("Object.prototype set op " + v);
-  },
-  configurable: true,
-});
-Object.defineProperty(Object.prototype, "ro", { value: "inherited", writable: false, configurable: true });
 const key = "op";
 class C {
   op = "named";
   ro = "read-only";
   [key + "2"] = "computed";
 }
-Object.defineProperty(Object.prototype, "op2", {
-  set(v) {
-    log.push("Object.prototype set op2 " + v);
-  },
-  configurable: true,
-});
 const c1 = new C();
 console.log("Object.prototype", flush(), own(c1, "op"), own(c1, "ro"), own(c1, "op2"));
 

@@ -7,9 +7,9 @@ NaN|Infinity|-Infinity|0|0|3|0.3333333333333333
 750 17-118118-119119-中-0-1001-2002-3003-4004 20013
 600
 1,,3,,,5
-T,,3,P3,5
 T,,3,,5
-x/got3/z
+T,,3,,5
+x//z
 x//z
 1,cut,,, 2
 S0,b ,b
@@ -20,7 +20,7 @@ S0,b ,b
 2:a,b
 0:
 0:
-3:1,proto1,3
+3:1,undefined,3
 3:1,undefined,3
 0: 1:1 9:1,2,3,4,5,6,7,8,9
 1:undefined 2:undefined,undefined

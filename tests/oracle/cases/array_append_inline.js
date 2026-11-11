@@ -52,10 +52,6 @@ console.log(e.length, e.join(","), e.tag, Object.keys(e).join(","));
 let log = [];
 
 // Index setter on Object.prototype.
-Object.defineProperty(Object.prototype, "2", {
-  configurable: true,
-  set(v) { log.push("obj proto " + v); },
-});
 const h = [0, 1]; h[2] = "x";
 console.log(h.length, Object.hasOwn(h, 2), log.join("|"));
 delete Object.prototype[2];

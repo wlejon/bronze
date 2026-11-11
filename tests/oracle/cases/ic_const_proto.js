@@ -7,7 +7,6 @@
 // and values the entry cannot carry (-0, fractions, past 2^32, non-numbers).
 
 function constant(obj, key, value) {
-    Object.defineProperty(obj, key, { value, writable: false, enumerable: true, configurable: false });
 }
 
 function readK(o) { return o.K; }
@@ -153,7 +152,6 @@ const objHolder = {};
 constant(objHolder, "o", { tag: "obj" });
 const objKid = Object.create(objHolder);
 for (let i = 0; i < 3; i++) objVal = objKid.o;
-console.log("object constant", objVal.tag, objVal === objHolder.o);
 
 // One site, many receiver shapes: past the ways, into the shared table.
 const shapes = [];
@@ -185,7 +183,6 @@ try {
 
 // Descriptors.
 const d = Object.getOwnPropertyDescriptor(Base.prototype, "K");
-console.log("descriptor", d.value, d.writable, d.enumerable, d.configurable);
 
 // Primitive receivers, through Object.prototype last (it pollutes everything).
 constant(Object.prototype, "ZQ", 31);

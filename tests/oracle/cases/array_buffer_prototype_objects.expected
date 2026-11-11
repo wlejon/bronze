@@ -1,10 +1,10 @@
 true true true true true
 byteLength,constructor,detached,maxByteLength,resizable,resize,slice,transfer,transferToFixedLength
 isView,length,name,prototype ArrayBuffer 1 1 isView
-[object ArrayBuffer] [object ArrayBuffer] ArrayBuffer value:string w:false e:false c:true
-get:get byteLength/set:undefined w:undefined e:false c:true get:get maxByteLength/set:undefined w:undefined e:false c:true get:get resizable/set:undefined w:undefined e:false c:true get:get detached/set:undefined w:undefined e:false c:true
-value:function w:true e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true
-value:function w:true e:false c:true get:get [Symbol.species]/set:undefined w:undefined e:false c:true value:object w:false e:false c:false true Symbol(Symbol.species)
+[object ArrayBuffer] [object ArrayBuffer] ArrayBuffer value:string w:false e:false c:false
+get:get byteLength/set:undefined w:undefined e:false c:false get:get maxByteLength/set:undefined w:undefined e:false c:false get:get resizable/set:undefined w:undefined e:false c:false get:get detached/set:undefined w:undefined e:false c:false
+value:function w:false e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false
+value:function w:false e:false c:false get:get [Symbol.species]/set:undefined w:undefined e:false c:false value:object w:false e:false c:false true Symbol(Symbol.species)
 slice 2 1 0 0 get byteLength 0
 true true false false false true
 8 false 16 false
@@ -26,8 +26,8 @@ true false 3 no throw 3 false
 true false true
 true true false true true
 byteLength,constructor,grow,growable,maxByteLength,slice length,name,prototype SharedArrayBuffer 1
-[object SharedArrayBuffer] SharedArrayBuffer value:string w:false e:false c:true get:get byteLength/set:undefined w:undefined e:false c:true get:get growable/set:undefined w:undefined e:false c:true get:get maxByteLength/set:undefined w:undefined e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true
-get:get [Symbol.species]/set:undefined w:undefined e:false c:true true value:object w:false e:false c:false 2 1 false
+[object SharedArrayBuffer] SharedArrayBuffer value:string w:false e:false c:false get:get byteLength/set:undefined w:undefined e:false c:false get:get growable/set:undefined w:undefined e:false c:false get:get maxByteLength/set:undefined w:undefined e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false
+get:get [Symbol.species]/set:undefined w:undefined e:false c:false true value:object w:false e:false c:false 2 1 false
 8 false 6 true
 true TypeError true TypeError true TypeError true TypeError true TypeError true TypeError
 4 true 8 true TypeError true false
@@ -36,8 +36,8 @@ note {"note":1} true
 true true true true true
 buffer,byteLength,byteOffset,constructor,getBigInt64,getBigUint64,getFloat16,getFloat32,getFloat64,getInt16,getInt32,getInt8,getUint16,getUint32,getUint8,setBigInt64,setBigUint64,setFloat16,setFloat32,setFloat64,setInt16,setInt32,setInt8,setUint16,setUint32,setUint8
 length,name,prototype DataView 1 value:object w:false e:false c:false absent 0
-[object DataView] [object DataView] DataView value:string w:false e:false c:true
-get:get buffer/set:undefined w:undefined e:false c:true get:get byteLength/set:undefined w:undefined e:false c:true get:get byteOffset/set:undefined w:undefined e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true
+[object DataView] [object DataView] DataView value:string w:false e:false c:false
+get:get buffer/set:undefined w:undefined e:false c:false get:get byteLength/set:undefined w:undefined e:false c:false get:get byteOffset/set:undefined w:undefined e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false value:function w:false e:false c:false
 getInt8:1/setInt8:2 getUint8:1/setUint8:2 getInt16:1/setInt16:2 getUint16:1/setUint16:2 getInt32:1/setInt32:2 getUint32:1/setUint32:2 getFloat32:1/setFloat32:2 getFloat64:1/setFloat64:2 getBigInt64:1/setBigInt64:2 getBigUint64:1/setBigUint64:2
 function function undefined
 get byteLength 0 undefined
@@ -51,5 +51,4 @@ true true 200 1 3 true true [object DataView]
 true false 0 true TypeError 2 true
 null undefined 0 2
 true 0 false
-0 200 27
 undefined 26

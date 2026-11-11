@@ -13,5 +13,5 @@ defines-accessor: get=function set=undefined enumerable=true configurable=true
 read: 5
 defineProperties j: value=1 writable=false enumerable=true configurable=true
 defineProperties k: value=2 writable=false enumerable=false configurable=false
-proto-pollution: value=4 writable=false enumerable=false configurable=true
+proto-pollution: value=4 writable=false enumerable=false configurable=false
 after-cleanup: value=4 writable=false enumerable=false configurable=false

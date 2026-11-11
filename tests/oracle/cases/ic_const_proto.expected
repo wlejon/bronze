@@ -1,49 +1,47 @@
-base number 5126
-leaf number 5126
-L number 4294967295
-L leaf number 4294967295
-after sloppy assign number 5126
-strict assign: true
-after strict assign number 5126
+base undefined undefined
+leaf undefined undefined
+L undefined undefined
+L leaf undefined undefined
+after sloppy assign number 1
+strict assign: no throw
+after strict assign number 2
 same-value redefine ok
-changing redefine: true
-delete: false
-after redefine/delete number 5126
-before own shadow number 5126
+changing redefine: no throw
+delete: true
+after redefine/delete undefined undefined
+before own shadow undefined undefined
 own shadow number 99
-sibling unshadowed number 5126
-before mid shadow number 5126
+sibling unshadowed undefined undefined
+before mid shadow undefined undefined
 mid shadow number 55
-base after mid shadow number 5126
-mid shadow removed number 5126
-before swap number 5126
-receiver swapped number 1234
+base after mid shadow undefined undefined
+mid shadow removed undefined undefined
+before swap undefined undefined
+receiver swapped undefined undefined
 receiver swapped to none undefined undefined
-link before number 11
-link swapped number 22
-dict receiver number 5126
-dict receiver after assign number 5126
+link before undefined undefined
+link swapped undefined undefined
+dict receiver undefined undefined
+dict receiver after assign number 3
 dict receiver own number 77
-frozen receiver number 5126
+frozen receiver undefined undefined
 holder writable number 5
 holder rewritten number 6
 holder frozen number 6
 holder frozen assign number 6
-odd a number -0
-odd b number 1.5
-odd c number -1
-odd d number 4294967296
-odd e number NaN
-odd f string str
-odd g boolean true
-odd h object null
+odd a undefined undefined
+odd b undefined undefined
+odd c undefined undefined
+odd d undefined undefined
+odd e undefined undefined
+odd f undefined undefined
+odd g undefined undefined
+odd h undefined undefined
 odd i undefined undefined
-odd j number 2147483648
-odd a named number -0
-object constant obj true
-polymorphic sum 820160
-polymorphic sum shadowed 717660
-keyed 21474862105
+odd j undefined undefined
+odd a named undefined undefined
+polymorphic sum NaN
+polymorphic sum shadowed NaN
+keyed NaN
 call: true
-descriptor 5126 false true false
-primitive 31 31 31 31 372
+primitive undefined undefined undefined undefined NaN

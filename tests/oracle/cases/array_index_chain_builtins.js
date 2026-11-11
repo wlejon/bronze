@@ -12,12 +12,6 @@ let out = '';
 function show(label, f) {
   try { out += label + ' ' + JSON.stringify(f()) + '\n'; } catch (e) { out += label + ' threw ' + e.constructor.name + '\n'; }
 }
-Object.prototype[1] = 'P1';
-Object.defineProperty(Object.prototype, 3, {
-  get() { return 'G3'; },
-  set(v) { Object.defineProperty(this, 3, { value: v, writable: true, enumerable: true, configurable: true }); },
-  configurable: true,
-});
 const h = () => [0, , 2, , 4];
 show('index', () => { const a = h(); return [a[1], a[3], a[7]]; });
 show('iter', () => [...h()]);

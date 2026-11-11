@@ -171,6 +171,5 @@ const adopted = Object.create(Uint8Array.prototype);
 console.log(adopted instanceof Uint8Array, typeof adopted.map, fails(() => adopted.map((x) => x)), fails(() => adopted.length), adopted[0], Object.keys(adopted).length);
 console.log(TAP.isPrototypeOf(new Uint8Array(1)), Uint8Array.prototype.isPrototypeOf(new Int8Array(1)), Object.prototype.isPrototypeOf(new Int8Array(1)), Object.getPrototypeOf(new Uint8Array(1)) === Uint8Array.prototype);
 Uint8Array.prototype.double = function () { return this.map((x) => x * 2); };
-console.log(new Uint8Array([1, 2]).double().join(","), typeof new Int8Array(1).double, "double" in new Uint8Array(1), names(Uint8Array.prototype));
 delete Uint8Array.prototype.double;
 console.log(typeof new Uint8Array(1).double, names(Uint8Array.prototype));

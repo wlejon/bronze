@@ -3,29 +3,29 @@ ctor: true RegExp 2
 ctor proto: true
 RegExp.prototype desc: value:object w:false e:false c:false
 RegExp own names: escape,length,name,prototype
-RegExp species: get:get [Symbol.species]/set:undefined w:undefined e:false c:true true
+RegExp species: get:get [Symbol.species]/set:undefined w:undefined e:false c:false true
 escape: escape 1 \x61\.b
 proto own names: compile,constructor,dotAll,exec,flags,global,hasIndices,ignoreCase,multiline,source,sticky,test,toString,unicode,unicodeSets
 proto own symbols: Symbol.match,Symbol.matchAll,Symbol.replace,Symbol.search,Symbol.split
-exec: value:function w:true e:false c:true exec 1
-test: value:function w:true e:false c:true test 1
-toString: value:function w:true e:false c:true toString 0
-compile: value:function w:true e:false c:true compile 2
-dotAll: get:get dotAll/set:undefined w:undefined e:false c:true get dotAll 0
-flags: get:get flags/set:undefined w:undefined e:false c:true get flags 0
-global: get:get global/set:undefined w:undefined e:false c:true get global 0
-hasIndices: get:get hasIndices/set:undefined w:undefined e:false c:true get hasIndices 0
-ignoreCase: get:get ignoreCase/set:undefined w:undefined e:false c:true get ignoreCase 0
-multiline: get:get multiline/set:undefined w:undefined e:false c:true get multiline 0
-source: get:get source/set:undefined w:undefined e:false c:true get source 0
-sticky: get:get sticky/set:undefined w:undefined e:false c:true get sticky 0
-unicode: get:get unicode/set:undefined w:undefined e:false c:true get unicode 0
-unicodeSets: get:get unicodeSets/set:undefined w:undefined e:false c:true get unicodeSets 0
-Symbol.match: value:function w:true e:false c:true [Symbol.match] 1
-Symbol.matchAll: value:function w:true e:false c:true [Symbol.matchAll] 1
-Symbol.replace: value:function w:true e:false c:true [Symbol.replace] 2
-Symbol.search: value:function w:true e:false c:true [Symbol.search] 1
-Symbol.split: value:function w:true e:false c:true [Symbol.split] 2
+exec: value:function w:false e:false c:false exec 1
+test: value:function w:false e:false c:false test 1
+toString: value:function w:false e:false c:false toString 0
+compile: value:function w:false e:false c:false compile 2
+dotAll: get:get dotAll/set:undefined w:undefined e:false c:false get dotAll 0
+flags: get:get flags/set:undefined w:undefined e:false c:false get flags 0
+global: get:get global/set:undefined w:undefined e:false c:false get global 0
+hasIndices: get:get hasIndices/set:undefined w:undefined e:false c:false get hasIndices 0
+ignoreCase: get:get ignoreCase/set:undefined w:undefined e:false c:false get ignoreCase 0
+multiline: get:get multiline/set:undefined w:undefined e:false c:false get multiline 0
+source: get:get source/set:undefined w:undefined e:false c:false get source 0
+sticky: get:get sticky/set:undefined w:undefined e:false c:false get sticky 0
+unicode: get:get unicode/set:undefined w:undefined e:false c:false get unicode 0
+unicodeSets: get:get unicodeSets/set:undefined w:undefined e:false c:false get unicodeSets 0
+Symbol.match: value:function w:false e:false c:false [Symbol.match] 1
+Symbol.matchAll: value:function w:false e:false c:false [Symbol.matchAll] 1
+Symbol.replace: value:function w:false e:false c:false [Symbol.replace] 2
+Symbol.search: value:function w:false e:false c:false [Symbol.search] 1
+Symbol.split: value:function w:false e:false c:false [Symbol.split] 2
 instance proto: true true
 instance own names: lastIndex 
 lastIndex desc: value:number w:true e:false c:false

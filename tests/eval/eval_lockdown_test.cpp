@@ -19,25 +19,16 @@ using namespace bronze::eval;
 
 namespace {
 
-// `source` evaluates to "ok" or to a description of what went wrong. `lock`
-// false runs it on a thread of its own WITHOUT lockdown, for the intrinsics a
-// plain program has.
-std::string runLockedDown(const char* source, ExecutionTier tier = ExecutionTier::Auto,
-                          const std::function<void()>& beforeLockdown = nullptr,
-                          bool lock = true, bool lockedBuiltins = false) {
+// `source` evaluates to "ok" or to a description of what went wrong, on a
+// thread of its own: every thread's builtins are locked down when its heap
+// is made (rt_state.cpp, rtHeap).
+std::string runLockedDown(const char* source, ExecutionTier tier = ExecutionTier::Auto) {
     std::string out;
     std::thread worker([&] {
         ShadowStackFrame frame;
-        if (beforeLockdown) beforeLockdown();
-        if (lock) embed::lockdown();
-        if (lock && !embed::lockedDown()) {
-            out = "lockedDown() is false after lockdown()";
-            return;
-        }
         EvalOptions opts;
         opts.filename = "<lockdown>";
         opts.tier = tier;
-        opts.lockedBuiltins = lockedBuiltins;
         embed::CallResult r = evalScript(source, opts);
         if (r.thrown) {
             out = "threw: " + embed::toUtf8(r.value);
@@ -179,7 +170,6 @@ TEST_CASE("two realms on one thread share the frozen intrinsics and nothing else
     std::string out = "did not run";
     std::thread worker([&] {
         ShadowStackFrame frame;
-        embed::lockdown();
         embed::Realm* a = embed::createRealm();
         embed::Realm* b = embed::createRealm();
         EvalOptions opts;
@@ -233,63 +223,9 @@ s === 200000 * (1 + 5 + 2 + 1 + 1) && misses === 200000 ? "ok" : "s=" + s + " mi
     CHECK(runLockedDown(src, ExecutionTier::Tier2_Optimized) == "ok");
 }
 
-TEST_CASE("lockdown after a program patched a builtin freezes the patch in place") {
-    const char* src = R"JS(
-"use strict";
-let refused = false;
-try { Array.prototype.extra = 2; } catch (e) { refused = e instanceof TypeError; }
-typeof Object.prototype.early === "function" && Object.isFrozen(Object.prototype.early) && refused ? "ok" : "not frozen";
-)JS";
-    CHECK(runLockedDown(src, ExecutionTier::Auto, [] {
-              EvalOptions opts;
-              opts.filename = "<before-lockdown>";
-              evalScript("Object.prototype.early = function () {};", opts);
-          }) == "ok");
-}
-
-// `Array.prototype` is the one intrinsic no array's chain runs through: an
-// array answers its members from a table beside the value (rt_prop.cpp), so a
-// property put on the object would be read off it and by nothing an array
-// does. Unfrozen, every spelling of a change is therefore refused by name —
-// including `Reflect.defineProperty` and `Reflect.set`, whose `false` would
-// claim the object declined. Frozen, the object declines for itself: the
-// oracle case `array_prototype_frozen_define` pins that half against node.
-TEST_CASE("an unfrozen Array.prototype refuses every change by name") {
-    const char* src = R"JS(
-const bad = [];
-const refuses = (what, f) => {
-  try { f(); bad.push(what + " was accepted"); }
-  catch (e) { if (!(e instanceof TypeError) || !/Cannot decorate Array\.prototype/.test(e.message)) bad.push(what + ": " + e); }
-};
-refuses("assign", () => { Array.prototype.push = () => 1; });
-refuses("computed assign", () => { const k = "pu" + "sh"; Array.prototype[k] = 1; });
-refuses("an index", () => { Array.prototype[0] = 1; });
-refuses("a symbol", () => { Array.prototype[Symbol.iterator] = null; });
-refuses("defineProperty", () => Object.defineProperty(Array.prototype, "shift", { value() { return 7; } }));
-refuses("defineProperties", () => Object.defineProperties(Array.prototype, { pop: { value: 5 } }));
-refuses("an accessor", () => Object.defineProperty(Array.prototype, "qq", { get() { return 4; } }));
-refuses("Reflect.defineProperty", () => Reflect.defineProperty(Array.prototype, "slice", { value: 3 }));
-refuses("Reflect.set", () => Reflect.set(Array.prototype, "shift", 1));
-refuses("Reflect.set as receiver", () => Reflect.set({}, "shift", 1, Array.prototype));
-refuses("super.k = v", () => ({ m() { super.zz = 1; } }).m.call(Array.prototype));
-refuses("Object.assign", () => Object.assign(Array.prototype, { map() { return 1; } }));
-refuses("delete", () => { delete Array.prototype.shift; });
-refuses("Reflect.deleteProperty", () => Reflect.deleteProperty(Array.prototype, "map"));
-refuses("Object.setPrototypeOf", () => Object.setPrototypeOf(Array.prototype, {}));
-refuses("__proto__", () => { Array.prototype.__proto__ = {}; });
-refuses("a static block", () => { class C { static { Object.defineProperty(Array.prototype, "x", { value: 1 }); } } });
-if (delete Array.prototype.nope !== true) bad.push("deleting an absent key is no change, and true");
-if (Object.setPrototypeOf(Array.prototype, Object.prototype) !== Array.prototype) bad.push("the same prototype");
-if ([1, 2].shift() !== 1 || typeof Array.prototype.shift !== "function") bad.push("shift changed");
-if (Object.getOwnPropertyNames(Array.prototype).includes("qq")) bad.push("qq landed");
-bad.length ? bad.join("; ") : "ok";
-)JS";
-    for (ExecutionTier tier : {ExecutionTier::Auto, ExecutionTier::Tier0_Interpreter,
-                               ExecutionTier::Tier2_Optimized}) {
-        CHECK(runLockedDown(src, tier, nullptr, /*lock=*/false) == "ok");
-    }
-    // Under lockdown it is frozen like every intrinsic, and the answers are
-    // the specification's.
+// `Array.prototype` is frozen like every intrinsic, and declines a change the
+// way the specification says a frozen object does.
+TEST_CASE("the frozen Array.prototype declines every change") {
     const char* locked = R"JS(
 const bad = [];
 try { Object.defineProperty(Array.prototype, "shift", { value() { return 7; } }); bad.push("defined"); }
@@ -305,10 +241,9 @@ bad.length ? bad.join("; ") : "ok";
 }
 
 // `Math` and `Number` are frozen objects behind read-only global bindings, so
-// a compile told the host locks down (EvalOptions::lockedBuiltins) lowers
-// their calls inline in a program whose text would otherwise withhold that:
-// one that hands `globalThis` around and reads `Function` off it.
-TEST_CASE("lockdown pins Math and Number, and a locked compile needs no proof of them") {
+// their calls are lowered inline in any program, one that hands `globalThis`
+// around and reads `Function` off it included.
+TEST_CASE("Math and Number are pinned, and their calls need no proof") {
     const char* src = R"JS(
 const bad = [];
 const g = globalThis, F = g.Function;
@@ -336,7 +271,6 @@ bad.length ? bad.join("; ") : "ok";
 )JS";
     for (ExecutionTier tier : {ExecutionTier::Auto, ExecutionTier::Tier0_Interpreter,
                                ExecutionTier::Tier2_Optimized}) {
-        CHECK(runLockedDown(src, tier, nullptr, /*lock=*/true, /*lockedBuiltins=*/true) == "ok");
         CHECK(runLockedDown(src, tier) == "ok");
     }
 }

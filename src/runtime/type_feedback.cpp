@@ -1,3 +1,4 @@
+#include "runtime/dictionary.h"
 #include "runtime/type_feedback.h"
 
 #include <algorithm>
@@ -216,17 +217,31 @@ std::string protoName(Value proto) {
         auto* obj = proto.asObject<ObjectHeader>();
         const Shape* sh = obj->shape;
         if (sh == nullptr) return climbed + "?";
-        if (!sh->isDictionary()) {
-            for (const Shape* n = sh; n != nullptr && n->parent != nullptr; n = n->parent) {
-                if (n->accessor || !keyIs(n, "constructor")) continue;
-                const Value ctor = obj->getSlot(n->slot_index);
-                if (ctor.isObject() && ctor.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-                    const auto* fn = ctor.asObject<FunctionHeader>();
-                    std::string name = fn->name != nullptr ? rtUtf8Chars(fn->name) : std::string();
-                    return climbed + (name.empty() ? "<anonymous>" : name);
+        // The own data property `constructor`: a node of the transition tree,
+        // or an entry of a dictionary — which a frozen intrinsic may be, and
+        // every intrinsic is frozen (lockdown.h), `Object.prototype` included.
+        Value ctor = Value::fromUndefined();
+        if (sh->isDictionary()) {
+            for (const DictEntry& e : sh->dict->entries) {
+                const StringHeader* ks = e.live() ? e.key.string() : nullptr;
+                if (ks == nullptr || e.accessor || !ks->isLatin1() || ks->getLength() != 11 ||
+                    std::memcmp(ks->latin1Data(), "constructor", 11) != 0) {
+                    continue;
                 }
+                ctor = obj->getSlot(e.slot);
                 break;
             }
+        } else {
+            for (const Shape* n = sh; n != nullptr && n->parent != nullptr; n = n->parent) {
+                if (n->accessor || !keyIs(n, "constructor")) continue;
+                ctor = obj->getSlot(n->slot_index);
+                break;
+            }
+        }
+        if (ctor.isObject() && ctor.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+            const auto* fn = ctor.asObject<FunctionHeader>();
+            std::string name = fn->name != nullptr ? rtUtf8Chars(fn->name) : std::string();
+            return climbed + (name.empty() ? "<anonymous>" : name);
         }
         climbed += "^";
         proto = sh->prototypeValue();

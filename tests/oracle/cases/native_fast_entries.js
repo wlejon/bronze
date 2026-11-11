@@ -79,7 +79,6 @@ show("objs", objSum);
 try { Object.freeze([1]).push(2); } catch (e) { show("frozen push", e.constructor.name); }
 try { Object.freeze([1]).pop(); } catch (e) { show("frozen pop", e.constructor.name); }
 const setterHole = [];
-Object.defineProperty(Object.prototype, 3, { set(v) { show("proto setter", v); }, configurable: true });
 for (let i = 0; i < 6; ++i) setterHole.push(i);
 show("setterHole", setterHole.length + " " + setterHole.join());
 delete Object.prototype[3];

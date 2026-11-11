@@ -11,7 +11,6 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "ast/query_walk.h"
-#include "types/builtin_taint.h"
 #include "types/ctor_ident.h"
 #include "types/escape.h"
 #include "types/flow.h"
@@ -527,7 +526,7 @@ uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceRe
 
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
                                            const std::vector<std::string>* hostGlobals,
-                                           const PinManifest* pins, bool lockedBuiltins) {
+                                           const PinManifest* pins) {
     InferenceResult result;
     result.moduleName = module.name;
 
@@ -536,10 +535,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     std::vector<std::string> hostClaimNames;
     if (hostGlobals != nullptr) {
         for (const auto& g : *hostGlobals) {
-            // A host that locks down may hand out its global object: the
-            // names are pinned on it (realm.cpp, rtPinLockedGlobals).
-            if (g == "Math" || (g == "globalThis" && !lockedBuiltins)) hostOverridesMath = true;
-            if (g == "Number" || (g == "globalThis" && !lockedBuiltins)) hostOverridesNumber = true;
+            // The names alone: a host's `globalThis` is the global object the
+            // two are pinned on (realm.cpp, rtPinLockedGlobals).
+            if (g == "Math") hostOverridesMath = true;
+            if (g == "Number") hostOverridesNumber = true;
             // A host-provided constructor is not the builtin the typed-array
             // proof names; feeding it to the module-scope set makes every
             // claim site see a user binding and stand down.
@@ -577,10 +576,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     collectUniqueModuleConsts(module, mod.uniqueModuleConsts);
     for (const auto& name : hostClaimNames) mod.uniqueModuleConsts.erase(name);
     if (!hostOverridesMath && mod.moduleScopeNames.count("Math") == 0) {
-        mod.mathPristine = lockedBuiltins || !builtinTainted(module, "Math", /*aliasTaints=*/true);
+        mod.mathPristine = true;
     }
     if (!hostOverridesNumber && mod.moduleScopeNames.count("Number") == 0) {
-        mod.numberPristine = lockedBuiltins || !builtinTainted(module, "Number", /*aliasTaints=*/false);
+        mod.numberPristine = true;
     }
     result.classLayouts.setMathPristine(mod.mathPristine);
     // Before any body is walked: the flow pass reads class identities to type

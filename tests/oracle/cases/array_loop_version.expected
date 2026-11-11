@@ -5,9 +5,9 @@ into f64 [7,8,9]
 from array-like ["a","b"]
 into object {"0":4,"1":5}
 holes "3:true:undefined"
-inherited [1,"inherited",3]
-setter [[10,11,12,13,14,"g5",16],1]
-getter [null,"inherited",null,null,null,"g5",null]
+inherited [1,null,3]
+setter [[10,11,12,13,14,15,16],0]
+getter [null,null,null,null,null,null,null]
 grow 100 198
 props [[1,2,3],"p"]
 frozen [0,0]

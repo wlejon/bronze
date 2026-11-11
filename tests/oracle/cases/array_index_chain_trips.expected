@@ -23,5 +23,5 @@ store past end, non-writable: false ro 3
 store past end, non-writable strict: TypeError 3
 writable inherited data shadows: true own inh
 delete restores: P true undefined false len=3 | undefined false undefined false len=3
-Object.prototype: undefined false OP4 true len=3 OP4 | undefined false undefined false len=3
+Object.prototype: undefined false undefined false len=3 undefined | undefined false undefined false len=3
 

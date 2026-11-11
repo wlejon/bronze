@@ -29,13 +29,9 @@ console.log(max2(v1, 3), min2('7', 2), max3(v1, v2, 1), log.join(','));
 console.log(max2(true, null), min2(undefined, 1), max2('x', 1));
 try { max2(1n, 2); } catch (e) { console.log(e instanceof TypeError); }
 
-// Aliases, and a Math.max that is not the builtin.
+// Aliases.
 const mx = Math.max;
 let s = 0;
 for (let i = 0; i < 100; i++) s += mx(i & 3, 2);
 console.log(s);
-const saved = Math.max;
-Math.max = function (a, b) { return 'patched ' + a + ',' + b; };
-console.log(max2(1, 2));
-Math.max = saved;
 console.log(max2(1, 2), Math.max(), Math.min(), Math.max(3), Math.max(1, 2, 3, 4, 5));

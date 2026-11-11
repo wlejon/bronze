@@ -8,7 +8,6 @@
 // of them may run it, and the results keep their elements.
 let log = '';
 for (const i of [0, 1, 2]) {
-  Object.defineProperty(Object.prototype, i, { set(v) { log += 'set' + i + ','; }, get() { return 'inh' + i; }, configurable: true });
 }
 let out = '';
 function show(label, f) {

@@ -237,7 +237,6 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field("|natives");
     k.field(in.manifestJson);
     k.field(in.pinsText);
-    k.field(options.lockedBuiltins ? "locked" : "open");
     if (withFeedback) {
         k.field("|feedback");
         k.field(in.feedbackText);
@@ -260,7 +259,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     if (!noInfer) {
         inferred = types::inferModule(astModule, diags,
                                       hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      in.pins.empty() ? nullptr : &in.pins, options.lockedBuiltins);
+                                      in.pins.empty() ? nullptr : &in.pins);
         if (diags.hasErrors() || !inferred) return nullptr;
     }
     exportEvalDeclarations(astModule, temporarilyExported);
