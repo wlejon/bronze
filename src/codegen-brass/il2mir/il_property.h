@@ -107,6 +107,10 @@ struct StaticMiss {
     // its own plain-only path (plain_shape_or_miss) and hands it here, for
     // the memo, before it reads any memo hook.
     std::function<void(Value*)> memo_fresh;
+    // The receiver's family id where the memo holds it, and where a guard
+    // that read it hands it to the memo (before any memo hook is read).
+    Value* family = nullptr;
+    std::function<void(Value*)> memo_family;
 };
 
 // The shape memo (il_shape_memo.cpp) carried across an inline-cache read
@@ -186,8 +190,15 @@ public:
     // shape (keyed_shape), or the shape word itself where only a plain
     // receiver reaches (plain_shape_or_miss). `ptr` is the receiver's
     // payload, meaningful only where the i1 holds.
+    // `family_id`, when given, is the receiver's family id (family_id below)
+    // from an earlier guard, or null; a guard that reads it hands it back.
     Value* static_guard(Builder& b, Value* obj, Value* keyed, const std::vector<StaticGuardTerm>& terms,
-                        Value*& ptr);
+                        Value*& ptr, Value** family_id = nullptr);
+    // A keyed shape's FAMILY ID: its family stamp less the module's first
+    // family id, so that a site's range test is `id - lo <= span` with both
+    // constants. A fact about the shape, as the keyed shape is one about the
+    // receiver, and remembered beside it (il_shape_memo.cpp).
+    Value* family_id(Builder& b, Value* keyed);
     // A receiver's shape word, reached only when it is a plain object: the
     // object test and the plain-header test as two branches to `miss`, the
     // builder left in the block where both held. What a guard with no keyed

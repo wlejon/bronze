@@ -14,6 +14,13 @@
 // receiver while it is still the answer. A later site then pays only its own
 // compare: its cell (or way word) against the memo.
 //
+// A receiver whose guard tested a class family range has a second word here,
+// its FAMILY ID (PropertyLoweringHelper::family_id: the shape's stamp less the
+// module's first family id), under memo_family_key: the next family site on
+// it tests `id - lo <= span` and reads nothing. It is carried exactly as the
+// keyed shape is, and stays true as long: a shape's stamp is written once, by
+// the fill on a site's miss, after which the miss edge recomputes it.
+//
 // WHEN THE ANSWER STAYS TRUE. An object's shape word changes only when its
 // shape does — a property added, deleted or redefined, a prototype set, an
 // extensibility change, a slot's representation widened — and each of those
@@ -63,7 +70,7 @@ namespace {
 
 // More receivers than this alive at once is a function the memo's join
 // parameters would cost more in than they save; the oldest is dropped.
-constexpr size_t kMemoCap = 6;
+constexpr size_t kMemoCap = 10;
 
 // An instruction that performs no shape-changing operation on any object
 // and runs no code that could: see the header.
@@ -245,8 +252,9 @@ std::vector<Value*> IlLowering::memo_recompute(Builder& b, const std::unordered_
     for (const auto& entry : shape_memo_) {
         // The receiver is a tagged value the collector keeps current, so its
         // bits read here are the object's after whatever the miss ran.
-        Value* obj = ensure_type(get_val_by_id(entry.first, b, val_map), Type::i64(), b);
-        out.push_back(prop_lowering_.keyed_shape_flat(b, obj));
+        Value* obj = ensure_type(get_val_by_id(entry.first & ~kMemoFamilyBit, b, val_map), Type::i64(), b);
+        Value* keyed = prop_lowering_.keyed_shape_flat(b, obj);
+        out.push_back((entry.first & kMemoFamilyBit) != 0 ? prop_lowering_.family_id(b, keyed) : keyed);
     }
     return out;
 }
@@ -282,6 +290,8 @@ void IlLowering::memo_attach(Builder& b, StaticMiss& miss, uint32_t recv_id, Val
     (void)b;
     miss.keyed = memo_lookup(recv_id);
     if (shape_memo_off_) return;
+    miss.family = memo_lookup(memo_family_key(recv_id));
+    miss.memo_family = [this, recv_id](Value* family) { memo_add(memo_family_key(recv_id), family); };
     if (!miss.keyed) miss.memo_fresh = [this, recv_id](Value* shape) { memo_add(recv_id, shape); };
     miss.memo_hit = [this](Builder&) {
         std::vector<Value*> out;

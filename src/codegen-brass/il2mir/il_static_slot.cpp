@@ -171,8 +171,14 @@ Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, Basic
     return b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
 }
 
+Value* PropertyLoweringHelper::family_id(Builder& b, Value* keyed) {
+    Value* family_base = data_addr(b, family_base_sym_);
+    return b.build_sub(b.build_load(Type::i64(), keyed, kFamilyOffset), b.build_load(Type::i64(), family_base, 0));
+}
+
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
-                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr) {
+                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr,
+                                            Value** family_id_io) {
     // The payload, meaningful where the guard holds: an object's tag XORed
     // away. Every term below admits only a plain object (a cell or a family
     // stamp names a plain shape, and a non-plain receiver's keyed shape is
@@ -181,15 +187,13 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
     Value* ok = nullptr;
     auto all = [&](Value* term) { ok = ok ? b.build_and(ok, term) : term; };
     Value* cells = nullptr;
-    Value* family_base = nullptr;
     // A word read off the keyed shape, which is always a readable shape: a
     // plain receiver's own, or for anything else the stand-in
     // (not_plain_shape), whose stamp no family range admits and whose every
     // slot is boxed. So no term needs plainness ANDed in, and every term is
     // one more `and` before the guard's single branch.
     auto shape_word = [&](int32_t off) { return b.build_load(Type::i64(), keyed, off); };
-    Value* stamp = nullptr;
-    Value* first_id = nullptr;
+    Value* fid = family_id_io ? *family_id_io : nullptr;
     Value* doubles = nullptr;
     std::vector<std::pair<uint32_t, uint32_t>> ranges;
     std::vector<uint32_t> cells_asked;
@@ -201,12 +205,11 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
             const std::pair<uint32_t, uint32_t> range{site.family_lo, site.family_span};
             if (std::find(ranges.begin(), ranges.end(), range) == ranges.end()) {
                 ranges.push_back(range);
-                if (!stamp) {
-                    stamp = shape_word(kFamilyOffset);
-                    family_base = data_addr(b, family_base_sym_);
-                    first_id = b.build_load(Type::i64(), family_base, 0);
+                if (!fid) {
+                    fid = family_id(b, keyed);
+                    if (family_id_io) *family_id_io = fid;
                 }
-                Value* rel = b.build_sub(stamp, b.build_add(first_id, iconst(b, site.family_lo)));
+                Value* rel = site.family_lo == 0 ? fid : b.build_sub(fid, iconst(b, site.family_lo));
                 all(b.build_ule(rel, iconst(b, site.family_span)));
             }
         } else if (std::find(cells_asked.begin(), cells_asked.end(), site.cell) == cells_asked.end()) {
@@ -371,10 +374,15 @@ namespace {
 // memo first.
 Value* guard_or_miss(Builder& b, PropertyLoweringHelper& pl, Value* obj, const std::vector<StaticGuardTerm>& terms,
                      const StaticMiss& miss, BasicBlock* bb_miss, Value*& ptr) {
-    if (miss.keyed) return pl.static_guard(b, obj, miss.keyed, terms, ptr);
-    Value* shape = pl.plain_shape_or_miss(b, obj, bb_miss);
-    if (miss.memo_fresh) miss.memo_fresh(shape);
-    return pl.static_guard(b, obj, shape, terms, ptr);
+    Value* family = miss.family;
+    Value* shape = miss.keyed;
+    if (!shape) {
+        shape = pl.plain_shape_or_miss(b, obj, bb_miss);
+        if (miss.memo_fresh) miss.memo_fresh(shape);
+    }
+    Value* ok = pl.static_guard(b, obj, shape, terms, ptr, &family);
+    if (family != miss.family && miss.memo_family) miss.memo_family(family);
+    return ok;
 }
 }  // namespace
 

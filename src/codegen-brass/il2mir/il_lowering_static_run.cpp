@@ -183,13 +183,16 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     // refusals too, starts without it.
     const auto memo_pre = memo_snapshot();
     if (!terms.empty()) {
+        Value* const had = memo_lookup(memo_family_key(recv_id));
+        Value* family = had;
         if (Value* keyed = memo_lookup(recv_id)) {
-            ok = prop_lowering_.static_guard(b, obj, keyed, terms, ptr);
+            ok = prop_lowering_.static_guard(b, obj, keyed, terms, ptr, &family);
         } else {
             Value* shape = prop_lowering_.plain_shape_or_miss(b, obj, bb_slow);
             memo_add(recv_id, shape);
-            ok = prop_lowering_.static_guard(b, obj, shape, terms, ptr);
+            ok = prop_lowering_.static_guard(b, obj, shape, terms, ptr, &family);
         }
+        if (family != had) memo_add(memo_family_key(recv_id), family);
     } else {
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)));
     }

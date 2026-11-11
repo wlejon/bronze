@@ -189,6 +189,11 @@ public:
     // keyed shape remembered (a shape word read where the receiver is known
     // plain is its keyed shape there).
     Value* memo_lookup(uint32_t recv_id) const;
+    // The memo's key for a receiver's FAMILY ID (PropertyLoweringHelper::
+    // family_id), held beside its keyed shape and carried the same way: an
+    // IL value id never has this bit.
+    static constexpr uint32_t kMemoFamilyBit = 0x80000000u;
+    static uint32_t memo_family_key(uint32_t recv_id) { return recv_id | kMemoFamilyBit; }
     void memo_add(uint32_t recv_id, Value* keyed);
     // Says the instruction being lowered kept the memo true (a static site
     // that carried it across its join, a pure guard).
