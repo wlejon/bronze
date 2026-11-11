@@ -335,7 +335,8 @@ already existed. The harvest folds a table when its instance is dropped (a
 realm released, a reload resetting the image) and at the end of the run. A
 property site's four ways give `<form> <receiver>` per way:
 
-- `own`, `proto`, `absent` or `accessor`, from the depth word's flags;
+- `own`, `proto`, `absent` or `accessor`, from the depth word's flags, or
+  `store` for a write way a store filled;
 - `array`, from the array-method sentinel.
 
 A method site's two ways give `<form> <receiver> <callee>`:
@@ -389,10 +390,14 @@ executions go to `*other*`. No consumer claims `*other*`. This applies to:
 - a write whose mega counter is non-zero;
 - a mega method site.
 
-A write cache holds the shape after a transition. When a write cache holds a
-receiver whose last key is the site's key, the write may have been the
-transition that added the key, so half of that receiver's share also goes to
-`*other*`. The result:
+A write cache holds the shape after a transition. A write way filled by the
+add that made its key (form `own`, the key the shape's last) may have met only
+receivers one key short, so half of that receiver's share also goes to
+`*other*`. A way filled by a store to a key the receiver had is harvested as
+`store` (`InlineCache::fillForStore` marks it in the epoch word) and keeps its
+share. A write that met a shape and the one it grew from by one or two keys
+counts as the grown shape's, the other keeping one execution, which is what
+gives the claim its regrow. The result:
 
 - a single held receiver is dominant (consumers A and F);
 - two or three receivers are a chain (E). Four receivers fill the cache, so

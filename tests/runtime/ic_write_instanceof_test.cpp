@@ -179,9 +179,9 @@ TEST_CASE("3-way property write IC populates ways 0..2, preserves way 3, and har
     REQUIRE(rtIcHarvestConfigure(idBytes.data(), "/dev/null"));
     const std::string text3 = rtIcHarvestText(idBytes.data());
     CHECK(text3.find("ic\t0\tproperty\t-\n") != std::string::npos);
-    CHECK(text3.find("way\t0\town\tObject{w_x}\n") != std::string::npos);
-    CHECK(text3.find("way\t0\town\tObject{w_a,w_x}\n") != std::string::npos);
-    CHECK(text3.find("way\t0\town\tObject{w_a,w_b,w_x}\n") != std::string::npos);
+    CHECK(text3.find("way\t0\tstore\tObject{w_x}\n") != std::string::npos);
+    CHECK(text3.find("way\t0\tstore\tObject{w_a,w_x}\n") != std::string::npos);
+    CHECK(text3.find("way\t0\tstore\tObject{w_a,w_b,w_x}\n") != std::string::npos);
 
     // 4th shape rotates MRU into way 0 (`2 <- 1 <- 0`), keeps way 3 null,
     // resets the relatch counter on table miss, and updates the hot row to `s4`.
@@ -202,7 +202,7 @@ TEST_CASE("3-way property write IC populates ways 0..2, preserves way 3, and har
 
     const std::string text4 = rtIcHarvestText(idBytes.data());
     CHECK(text4.find("ic\t0\tproperty\tmega\n") != std::string::npos);
-    CHECK(text4.find("way\t0\town\tObject{w_a,w_b,w_c,w_x}\n") != std::string::npos);
+    CHECK(text4.find("way\t0\tstore\tObject{w_a,w_b,w_c,w_x}\n") != std::string::npos);
 
     rtIcHarvestConfigure(idBytes.data(), "");
     rtIcHotClearThread();

@@ -222,6 +222,24 @@ struct InlineCache {
         rtIcHotNoteWrite(this);
     }
 
+    // A SET site's fill by a store to a property the receiver already had.
+    // The way is the same as `fillForSet`'s but for its epoch, which no epoch
+    // ever equals: the transition hit (object.cpp, il_ic_lowering.cpp), the
+    // only reader of a write way's epoch, then refuses the way and the add
+    // that follows refills it, and a harvest (ic_harvest.cpp) can say the
+    // site stored to the key rather than added it.
+    static constexpr uint64_t kStoreFilledEpoch = ~uint64_t{0};
+    void fillForStore(Shape* receiverShape, uint32_t slot, bool doubleSlot) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = doubleSlot ? BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG : 0u;
+        cached_epoch = kStoreFilledEpoch;
+        rtIcHotNoteWrite(this);
+    }
+    bool isStoreFilled() const noexcept {
+        return isRealShape() && !isAccessor() && !isAbsent() && realDepth() == 0 && cached_epoch == kStoreFilledEpoch;
+    }
+
     void fillAccessor(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
         cached_shape = receiverShape;
         cached_slot = slot;

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
 
 #include "abi/bronze_feedback_site.h"
 #include "il/feedback_site.h"
@@ -80,6 +81,16 @@ std::unordered_map<std::string, uint32_t> resolveCallees(const il::Module& mod, 
     return out;
 }
 
+// Whether shape name `grown` is `from` with one or two more keys: an object
+// met before it was finished and after.
+bool grewFrom(const std::string& grown, const std::string& from) {
+    if (from.size() < 2 || from.back() != '}' || grown.size() <= from.size() || grown.back() != '}') return false;
+    const size_t stem = from.size() - 1;
+    if (grown.compare(0, stem, from, 0, stem) != 0 || grown[stem] != ',') return false;
+    const auto more = std::count(grown.begin() + static_cast<std::ptrdiff_t>(stem), grown.end(), ',');
+    return more <= 2;
+}
+
 // Whether `key` is the last key a shape name lists (`P{...,key}`): a write
 // cache holding that shape may have latched the transition that ADDS the key,
 // whose receivers have the shape one key short (object.cpp, the
@@ -103,10 +114,15 @@ bool lastKeyIs(const std::string& shape, const std::string& key) {
 //   - a write whose way-0 misses the table answered (it keeps one way);
 //   - a method call whose stub's table answered.
 // So one receiver held and nothing more is a dominant shape (A, F), two to
-// three a chain (E), two at a method site poly receivers (B). A write cache
-// holding a shape whose last key is the site's key is ambiguous (the
-// transition that adds it, or a store to it), and gives that receiver's share
-// half to `*other*`: no claim either way. A read's answers are what its ways
+// three a chain (E), two at a method site poly receivers (B). A write way
+// filled by the add that made its key (form `own`, the key the shape's last)
+// may have met only receivers one key short, and gives that receiver's share
+// half to `*other*`: no claim either way; a way a store filled (`store`) met
+// the shape it holds. A write that met a shape and the one it grew from by a
+// key or two (a setter run while the object was being built, and after)
+// counts as the grown shape's, the other keeping one execution for the
+// claim's regrow (feedback_apply.cpp): a write has no chain, so shared evenly
+// neither is claimed and every store takes the stub. A read's answers are what its ways
 // say: `absent` answered undefined, everything else a value.
 void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& plan) {
     plan.stats.harvest = true;
@@ -169,23 +185,34 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
         // Receivers, each once; a read's receiver answered undefined when a
         // way held the key absent for it.
         std::map<std::string, bool> receivers;
+        std::set<std::string> stored;
         for (const HarvestWay& way : site.ways) {
             bool& absent = receivers[way.receiver];
             absent = absent || way.form == "absent";
+            if (way.form == "store") stored.insert(way.receiver);
         }
         const bool more = site.full || (write && site.mega);
         const uint64_t n = receivers.size();
         const uint64_t share = more ? W / (2 * n) : W / n;
         NameCounts& counts = plan.shapesByIc[ic];
         uint64_t total = 0;
+        const std::string* grown = nullptr;
+        const std::string* from = nullptr;
+        if (write && n == 2) {
+            const std::string& a = receivers.begin()->first;
+            const std::string& b = std::next(receivers.begin())->first;
+            if (grewFrom(a, b)) grown = &a, from = &b;
+            if (grewFrom(b, a)) grown = &b, from = &a;
+        }
         for (const auto& [receiver, absent] : receivers) {
-            if (write && lastKeyIs(receiver, key)) {
-                counts.counts[receiver] += share / 2;
-                counts.counts["*other*"] += share - share / 2;
+            const uint64_t mine = &receiver == grown ? 2 * share - 1 : &receiver == from ? 1 : share;
+            if (write && stored.count(receiver) == 0 && lastKeyIs(receiver, key)) {
+                counts.counts[receiver] += mine / 2;
+                counts.counts["*other*"] += mine - mine / 2;
             } else {
-                counts.counts[receiver] += share;
+                counts.counts[receiver] += mine;
             }
-            total += share;
+            total += mine;
         }
         if (more) {
             counts.counts["*other*"] += W - total;

@@ -72,7 +72,7 @@ int kindFromName(std::string_view name) {
 }
 
 bool isPropertyForm(std::string_view form) {
-    return form == "own" || form == "proto" || form == "absent" || form == "accessor" || form == "array";
+    return form == "own" || form == "store" || form == "proto" || form == "absent" || form == "accessor" || form == "array";
 }
 
 bool isMethodForm(std::string_view form) { return form == "direct" || form == "slot" || form == "native"; }

@@ -585,7 +585,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         if ((setSite || ic) && !shape->isDictionary() && !shape->used_as_prototype &&
             !runtime::censusFillsSuppressed()) {
             InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
-            dst->fillForSet(shape, own.slot, shape->slotIsDouble(own.slot));
+            dst->fillForStore(shape, own.slot, shape->slotIsDouble(own.slot));
         }
         notePrototypeSlotOverwrite(own.slot);
         setSlot(own.slot, val.get());

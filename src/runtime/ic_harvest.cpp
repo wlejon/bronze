@@ -131,7 +131,7 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
             site.facts.insert(Fact{"array", "array", {}});
             continue;
         }
-        const char* form = way->isAbsent() ? "absent" : way->isAccessor() ? "accessor" : way->realDepth() != 0 ? "proto" : "own";
+        const char* form = way->isAbsent() ? "absent" : way->isAccessor() ? "accessor" : way->realDepth() != 0 ? "proto" : way->isStoreFilled() ? "store" : "own";
         site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}});
     }
     if (used == BRONZE_ABI_IC_WAYS) site.full = true;
