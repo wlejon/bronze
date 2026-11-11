@@ -272,13 +272,10 @@ public:
     Value* hot_row_ptr(Builder& b, const IcSite& site);
     Value* way0_shape(Builder& b, const IcSite& site);
     Value* way0_slot_word(Builder& b, const IcSite& site);
-    // Likewise the static-slot guards' two tables (the cells, and the family
-    // base word): `family` names which. Unset, every guard computes its own.
+    // The static-slot guards' two tables (the cells, and the family base
+    // word) as the function addresses them: `family` names which. Unset,
+    // every guard computes its own.
     void set_static_base_fn(std::function<Value*(Builder&, bool family)> fn) { static_base_fn_ = std::move(fn); }
-    // The table's address computed here, for the function's one shared copy.
-    Value* static_table_addr_here(Builder& b, bool family) {
-        return unshared_data_addr(b, family ? family_base_sym_ : static_cells_sym_);
-    }
 
     // Site `ic_index`, or a null site when the index names none in this
     // module's table (kNoIcIndex, or a module compiled without one).

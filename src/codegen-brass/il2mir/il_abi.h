@@ -80,6 +80,21 @@ constexpr int64_t ic_method_rows_offset(uint64_t site_count) {
     const uint64_t end = static_cast<uint64_t>(ic_hot_table_offset(n)) + n * BRONZE_ABI_IC_HOT_ENTRY_SIZE;
     return static_cast<int64_t>((end + 63) & ~uint64_t{63});
 }
+// Where the static-slot guards' cells (`__bronze_static_cells`) and, right
+// after them, the family base words (`__bronze_family_base`) start, relative
+// to the IC table: after the method rows, at the next word. One section, laid
+// out in this order (brass_backend_sections.cpp), so generated code reaches
+// all of it off the IC table's address and a function keeps one base, not
+// three, across its calls.
+constexpr int64_t ic_static_cells_offset(uint64_t site_count, uint64_t method_sites) {
+    const uint64_t rows = method_sites != 0 ? method_sites : 1;
+    const uint64_t end = static_cast<uint64_t>(ic_method_rows_offset(site_count)) + rows * BRONZE_ABI_METHOD_ROW_SIZE;
+    return static_cast<int64_t>((end + 7) & ~uint64_t{7});
+}
+constexpr int64_t ic_family_base_offset(uint64_t site_count, uint64_t method_sites, uint64_t static_sites) {
+    const uint64_t cells = static_sites != 0 ? static_sites : 1;
+    return ic_static_cells_offset(site_count, method_sites) + static_cast<int64_t>(cells * 8);
+}
 // The plain object's slots (ObjectHeader) and a heap block's header, which the
 // inline property paths address an overflow slot through.
 constexpr int32_t kBronzeObjOverflowOffset = BRONZE_ABI_OBJ_OVERFLOW_OFFSET;

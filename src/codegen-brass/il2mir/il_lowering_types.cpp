@@ -3,6 +3,7 @@
 // (IlLowering::ensure_type). Split from il_lowering.cpp.
 
 #include "il_lowering.h"
+#include "il_abi.h"
 #include "il_lowering_ops.h"
 
 namespace il2mir {
@@ -70,8 +71,16 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     // key map address or guard constant would join every guard's state for
     // nothing.
     prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
-    prop_lowering_.set_static_base_fn(
-        [this](Builder& b, bool family) { return hoisted(b, family ? Hoist::FamilyBase : Hoist::StaticCells); });
+    // The guard tables stand at fixed distances after the IC table
+    // (il_abi.h ic_static_cells_offset), so they are that base plus a
+    // constant where they are used: one value held across a function's calls.
+    prop_lowering_.set_static_base_fn([this](Builder& b, bool family) {
+        const uint64_t sites = options_.ic_site_count;
+        const uint64_t methods = options_.method_ic_sites.size();
+        const int64_t off = family ? ic_family_base_offset(sites, methods, options_.static_site_count)
+                                   : ic_static_cells_offset(sites, methods);
+        return b.build_add(hoisted(b, Hoist::IcTable), b.build_iconst_i64(off));
+    });
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

@@ -591,8 +591,10 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     // guard reads as the stamp and the double-slot map of a receiver that is
     // no plain object (il_static_slot.cpp): UNSTAMPED, which no family range
     // admits, and every slot boxed.
-    dataSec.align_to(8);
-    const size_t staticOffset = dataSec.data.size();
+    // Both at their fixed distances from the IC table (il_abi.h
+    // ic_static_cells_offset): generated code addresses them off its base.
+    const size_t staticOffset =
+        icTableOffset + static_cast<size_t>(il2mir::ic_static_cells_offset(icSites, module.methodIcSites().size()));
     const size_t staticBytes = std::max<size_t>(module.staticSiteCount, 1) * sizeof(uint64_t);
     dataSec.data.resize(staticOffset + staticBytes, 0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_static_cells"), dataIdx, staticOffset,

@@ -263,7 +263,7 @@ private:
     void memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb);
     // Per-function values computed once at the function's entry and shared
     // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
-    enum class Hoist : uint8_t { IcTable, StaticCells, FamilyBase, Count };
+    enum class Hoist : uint8_t { IcTable, Count };
     Value* hoisted(Builder& b, Hoist kind);
     // Starts a function's hoisting: values go into `block`, after whatever it
     // holds now.
