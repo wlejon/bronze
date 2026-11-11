@@ -17,15 +17,12 @@ namespace bronze::lower {
 //
 // The scan is deliberately syntactic and deliberately over-broad: it answers
 // "no" only when the program mentions nothing that could name or build a
-// BigInt. Every route in the language is a name — the literal suffix, the
-// `BigInt` constructor, the two BigInt-typed views, and `DataView`'s two
-// accessor pairs — so a walk that refuses on any of those spellings, in any
-// position, cannot miss one. Being wrong in the "yes" direction costs the
-// optimization; being wrong in the "no" direction is a miscompile, which is
-// why an unrecognised spelling is never assumed harmless.
+// BigInt to compute with: the literal suffix, the `BigInt` constructor and a
+// host's `bigint` member, in any position. The BigInt-typed views and
+// `DataView`'s accessor pairs are left out on purpose (bigint_reach.cpp).
 //
 // Host globals are checked by NAME too, from the manifest: a host that
-// registers `BigInt` or a BigInt view is a host whose values can carry one.
+// registers `BigInt` is a host whose values can carry one.
 bool bigIntMayReach(const ast::Module& module,
                     const std::vector<std::string>& hostGlobals);
 

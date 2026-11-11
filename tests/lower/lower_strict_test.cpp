@@ -58,11 +58,11 @@ TEST_CASE("a property write carries the mode of the code it is written in") {
     // The object literal's own property is a DEFINITION in both (il.h
     // kWriteDefine, 2): CreateDataPropertyOrThrow on an object it has just
     // created, not a reference for strictness to be a property of.
-    CHECK(has(sloppy, "prop.set %0, 0, %2, 0, 2\n"));
-    CHECK(has(strict, "prop.set %1, 1, %3, 0, 2\n"));
+    CHECK(has(sloppy, "prop.set %2, 0, %1, 0, 2\n"));
+    CHECK(has(strict, "prop.set %3, 1, %2, 0, 2\n"));
     // The assignment after it is the only instruction that differs.
-    CHECK(has(sloppy, "prop.set %0, 0, %4, 1, 0\n"));
-    CHECK(has(strict, "prop.set %1, 1, %5, 1, 1\n"));
+    CHECK(has(sloppy, "prop.set %2, 0, %4, 1, 0\n"));
+    CHECK(has(strict, "prop.set %3, 1, %5, 1, 1\n"));
 }
 
 TEST_CASE("every write form carries it, and a read carries nothing") {
@@ -81,17 +81,17 @@ TEST_CASE("every write form carries it, and a read carries nothing") {
     // so the flag is the fourth field rather than the fifth.
     CHECK(has(il, "elem.set %1, %2, %4, 1\n"));
     // A read carries no strictness flag: `prop.get` has no such field at all.
-    CHECK(has(il, "%8: dynamic = prop.get %5, 3, 1"));
-    CHECK(has(il, "prop.set %5, 2, %12, 3, 1\n"));
+    CHECK(has(il, "%8: dynamic = prop.get %7, 3, 1"));
+    CHECK(has(il, "prop.set %7, 2, %12, 3, 1\n"));
     // An update operator writes too (13.4.2.1) — and it steps through
     // ToNumeric first, because `q.k` could hold a BigInt (13.4.4.1's delta
     // has the operand's own numeric type).
     CHECK(has(il, "to.numeric %12\n"));
     CHECK(has(il, "numeric.step %14, +1\n"));
-    CHECK(has(il, "prop.set %5, 2, %15, 5, 1\n"));
+    CHECK(has(il, "prop.set %7, 2, %15, 5, 1\n"));
     // And `delete` carries it, because 13.5.1.2 step 5.b turns a refusal into
     // a TypeError on the same rule.
-    CHECK(has(il, "%16: bool = prop.delete %5, 2, 1\n"));
+    CHECK(has(il, "%16: bool = prop.delete %7, 2, 1\n"));
 }
 
 TEST_CASE("literal properties and class fields are definitions, __proto__ is not a property") {
@@ -113,7 +113,7 @@ TEST_CASE("literal properties and class fields are definitions, __proto__ is not
 }
 
 TEST_CASE("a sloppy delete is flagged 0") {
-    CHECK(has(lowerToIl("const o = { k: 1 };\ndelete o.k;\n"), "prop.delete %0, 0, 0\n"));
+    CHECK(has(lowerToIl("const o = { k: 1 };\ndelete o.k;\n"), "prop.delete %2, 0, 0\n"));
 }
 
 TEST_CASE("three bodies in one module, three answers") {

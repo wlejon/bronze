@@ -8,14 +8,22 @@
 namespace bronze::lower {
 namespace {
 
-// Every spelling that can name or build a BigInt. `BigInt` covers the
-// constructor, `asIntN`/`asUintN` and `typeof x === "bigint"` comparisons
-// reach it through this name too; the views and the DataView accessors are the
-// non-constructor routes by which one arrives already built.
-constexpr std::array<std::string_view, 7> kBigIntNames = {
-    "BigInt", "BigInt64Array", "BigUint64Array",
-    "getBigInt64", "getBigUint64", "setBigInt64", "setBigUint64",
-};
+// The spellings a program that does arithmetic on BigInts uses. `BigInt`
+// covers the constructor, `asIntN`/`asUintN` and `typeof x === "bigint"`
+// comparisons reach it through this name too; `bigint` is the member hosts
+// name a 64-bit clock or stat by (`process.hrtime.bigint()`).
+//
+// The BigInt views and DataView's 64-bit accessors are NOT here. They hand
+// over a BigInt already built, but arithmetic on one needs another BigInt,
+// and a program has no way to write one without the literal suffix or the
+// constructor: `view[0] * view[1]` and `view[0]++` are the only forms that
+// spell neither, and in a program that spells neither they throw the
+// TypeError ToNumber gives a BigInt. That is this compiler's rule and not the
+// language's. What it buys: pixi has one lazy `BigUint64Array` getter nothing
+// calls, and with the view names counted that one mention boxed every `++`,
+// `*`, `-`, `/` and `%` over a dynamic operand in the whole library
+// (pixi_graphics ran 3% more instructions for it).
+constexpr std::array<std::string_view, 2> kBigIntNames = {"BigInt", "bigint"};
 
 bool namesBigInt(std::string_view name) {
     for (std::string_view candidate : kBigIntNames) {

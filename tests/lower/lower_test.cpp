@@ -575,7 +575,7 @@ TEST_CASE("a lowered function carries its spec name and its ExpectedArgumentCoun
 //
 // The empty leading piece stays: without it `${a}${b}` would be `a + b`, which
 // for two numbers is addition rather than concatenation.
-TEST_CASE("a template substitution lowers to to.string, not to a bare concatenation") {
+TEST_CASE("a template substitution lowers to to.string, and the pieces join through one accumulator") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower("const o = {};\nconst s = `x${o}y`;\n", diags, buf);
@@ -584,14 +584,17 @@ TEST_CASE("a template substitution lowers to to.string, not to a bare concatenat
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
     CHECK(printed.find("= to.string ") != std::string::npos);
-    // One per substitution, and the pieces around it are still adds.
+    // One per substitution, and the pieces around it are appended to one
+    // accumulator, joined once.
     size_t occurrences = 0;
     for (size_t at = printed.find("to.string"); at != std::string::npos;
          at = printed.find("to.string", at + 1)) {
         ++occurrences;
     }
     CHECK(occurrences == 1);
-    CHECK(printed.find("= add ") != std::string::npos);
+    CHECK(printed.find("= concat.begin ") != std::string::npos);
+    CHECK(printed.find("= concat.end ") != std::string::npos);
+    CHECK(printed.find("= add ") == std::string::npos);
 }
 
 TEST_CASE("logical assignment operators lower to conditional branching") {
