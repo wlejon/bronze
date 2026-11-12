@@ -205,12 +205,13 @@ void sweepWeakReferences() {
 // translation unit, and reaching it from this one's initializers is the
 // cross-TU order fiasco.
 void ensureWeakRegistries() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_tracer_source(traceWeakTables);
-        rtHeap().add_post_collection_hook(sweepWeakReferences);
-        return true;
-    }();
-    (void)registered;
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_tracer_source(traceWeakTables);
+        heap.add_post_collection_hook(sweepWeakReferences);
+    }
 }
 
 }  // namespace

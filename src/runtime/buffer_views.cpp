@@ -128,12 +128,12 @@ void sweepViewTable() {
 // Registered on first use, for the cross-TU initialization-order reason
 // weak_ref.cpp records at its own.
 void ensureViewTable(Heap& heap) {
-    static thread_local const bool registered = [&heap] {
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
         heap.add_tracer_source(traceViewTable);
         heap.add_post_collection_hook(sweepViewTable);
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 }  // namespace

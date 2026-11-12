@@ -70,8 +70,11 @@ const int g_localSlotsLocal = runtime::registerStackLocalBox<std::vector<Value>,
 // exists to close. By the time a host calls anything here, main() has begun
 // and the runtime's statics are long constructed.
 void ensureRegistries() {
-    static thread_local const bool registered = [] {
-        runtime::rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = runtime::rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             if (g_registriesGone) return;
             for (Value& slot : g_registries.persistent) visit(slot);
             for (Value& slot : g_registries.local) visit(slot);
@@ -81,9 +84,7 @@ void ensureRegistries() {
                 for (Value& slot : *static_cast<std::vector<Value>*>(box)) visit(slot);
             });
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 uint32_t acquireSlot(Value v) {

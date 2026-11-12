@@ -131,16 +131,17 @@ void installErrorCause(Rooted<Value>& self, Rooted<Value>& options) {
 // constructor ran afterwards, and then as a crash under BRONZE_GC_STRESS=1
 // with the error prototypes collected out from under the classes.
 void ensureErrorRoots() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             for (ErrorClass& c : g_errorClasses) {
                 visit(c.constructor);
                 visit(c.prototype);
             }
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 // The constructor body: `this.message = argv[0]` when an argument was passed,
@@ -275,6 +276,7 @@ uint64_t errorCaptureStackTrace(uint64_t, uint64_t, uint32_t argc, const uint64_
 }
 
 void ensureErrorClasses() {
+    (void)rtHeap();
     if (g_errorClasses[0].constructor.isObject()) return;
     ensureErrorRoots();
 
@@ -458,9 +460,11 @@ Value rtThrowReferenceError(const std::string& message) {
 #endif
 
 Value rtErrorConstructor(const std::string& name) {
-    ensureErrorClasses();
     for (const ErrorClass& cls : g_errorClasses) {
-        if (name == cls.name) return cls.constructor;
+        if (name == cls.name) {
+            ensureErrorClasses();
+            return cls.constructor;
+        }
     }
     return Value::fromUndefined();
 }

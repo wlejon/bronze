@@ -93,13 +93,14 @@ ModuleNamespaceHeader* asNamespace(Value v) {
 thread_local std::vector<Value> g_importMetaObjects;
 
 void ensureImportMetaRoots() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& v : g_importMetaObjects) visit(v);
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 }  // namespace

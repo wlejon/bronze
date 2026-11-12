@@ -78,6 +78,7 @@ const char* rtGetNativeDisplayName(const void* code) {
 }
 
 bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
+    (void)rtHeap();
     if (keyStr == "Math") {
         out = rtMathObject();
     } else if (keyStr == "Object") {

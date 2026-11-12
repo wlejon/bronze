@@ -48,7 +48,11 @@ namespace {
 // table and `isPrivateTable` false of a Map. Held as a Value, not a root,
 // because the arena is the root.
 Value privateTableBrand() {
-    static thread_local Value brand = rtMakeSymbol(Value::fromUndefined());
+    static thread_local Value brand = Value::fromUndefined();
+    if (!brand.isSymbol()) {
+        (void)rtHeap();
+        if (!brand.isSymbol()) brand = rtMakeSymbol(Value::fromUndefined());
+    }
     return brand;
 }
 

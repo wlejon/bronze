@@ -65,8 +65,11 @@ thread_local RejectionHook g_rejectionHook = nullptr;
 // job's captures: a reaction enqueued by an already-settled promise has left
 // the promise's own reaction lists, and nothing on any frame holds it.
 void ensureQueueRoots() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             for (Job& job : g_queue) {
                 visit(job.v0);
                 visit(job.v1);
@@ -85,9 +88,7 @@ void ensureQueueRoots() {
                 for (Value& promise : *static_cast<std::vector<Value>*>(box)) visit(promise);
             });
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 // The report for one promise nothing handled. Stderr, so an oracle case can

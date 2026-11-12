@@ -40,13 +40,14 @@ thread_local std::vector<NativeEntry> g_natives;
 thread_local std::vector<std::unique_ptr<NativeClassInfo>> g_classes;
 
 void ensureClassRoots() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             for (auto& cls : g_classes) visit(cls->prototype);
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 bool resolveType(std::string_view text, bool asParam, abi::NativeTypeRef& out, std::string& err) {

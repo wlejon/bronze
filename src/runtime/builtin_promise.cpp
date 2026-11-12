@@ -50,14 +50,15 @@ bool isCallable(Value v) {
 // First-use registration, for the initialization-order reason
 // ensureExceptionRoots records.
 void ensurePromiseRoots() {
-    static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+    Heap& heap = rtHeap();
+    static thread_local bool registered = false;
+    if (!registered) {
+        registered = true;
+        heap.add_root_source([](const Heap::RootVisitor& visit) {
             visit(g_promiseCtor);
             visit(g_promiseProto);
         });
-        return true;
-    }();
-    (void)registered;
+    }
 }
 
 // A plain-shaped object used only as a closure's ENVIRONMENT: internal slots
@@ -578,6 +579,7 @@ uint64_t staticTry(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 // ---- building the intrinsics ------------------------------------------------
 
 void ensurePromiseIntrinsics() {
+    (void)rtHeap();
     if (g_promiseProto.isObject()) return;
     ensurePromiseRoots();
 

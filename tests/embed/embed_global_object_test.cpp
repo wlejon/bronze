@@ -13,12 +13,14 @@
 
 #include <algorithm>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/integrity.h"
 #include "runtime/object.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -268,4 +270,26 @@ TEST_CASE("a lazy init registers permanently inside an open module bracket") {
     CHECK(inside == 0);
     CHECK(after == h);
     CHECK(runtime::rtCurrentModuleEpoch() == 0);
+}
+
+TEST_CASE("globalValue before the thread's heap exists keeps builtins rooted and hardened") {
+    for (const char* firstProbe : {"__bro_native", "Error", "Promise"}) {
+        bool missing = false;
+        bool errHardened = false;
+        bool promiseHardened = false;
+        std::thread worker([&] {
+            const auto first = embed::globalValue(firstProbe);
+            missing = !first.found;
+            runtime::rtHeap().collect();
+            const auto err = embed::globalValue("Error");
+            const auto prom = embed::globalValue("Promise");
+            errHardened = err.found && err.value.isObject() && runtime::rtIsHardened(err.value);
+            promiseHardened =
+                prom.found && prom.value.isObject() && runtime::rtIsHardened(prom.value);
+        });
+        worker.join();
+        if (std::string(firstProbe) == "__bro_native") CHECK(missing);
+        CHECK(errHardened);
+        CHECK(promiseHardened);
+    }
 }

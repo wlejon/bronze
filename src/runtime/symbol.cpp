@@ -91,46 +91,54 @@ SymbolHeader* wellKnownSymbol(std::string_view description) {
         rtArena(), StringHeader::createFromUTF8(rtHeap(), description)));
 }
 
+SymbolHeader* wellKnownSymbolOnce(SymbolHeader*& slot, std::string_view description) {
+    if (!slot) {
+        (void)rtHeap();
+        if (!slot) slot = wellKnownSymbol(description);
+    }
+    return slot;
+}
+
 }  // namespace
 
 SymbolHeader* rtSymbolIterator() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.iterator");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.iterator");
 }
 
 SymbolHeader* rtSymbolAsyncIterator() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.asyncIterator");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.asyncIterator");
 }
 
 SymbolHeader* rtSymbolToStringTag() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.toStringTag");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.toStringTag");
 }
 
 SymbolHeader* rtSymbolToPrimitive() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.toPrimitive");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.toPrimitive");
 }
 
 SymbolHeader* rtSymbolHasInstance() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.hasInstance");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.hasInstance");
 }
 
 SymbolHeader* rtSymbolSpecies() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.species");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.species");
 }
 
 SymbolHeader* rtSymbolIsConcatSpreadable() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.isConcatSpreadable");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.isConcatSpreadable");
 }
 
 SymbolHeader* rtSymbolUnscopables() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.unscopables");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.unscopables");
 }
 
 // The five keys of the STRING/REGEXP protocol (22.1.3 dispatches on them,
@@ -139,28 +147,28 @@ SymbolHeader* rtSymbolUnscopables() {
 // exactly this identity — a second interning of "Symbol.replace" would be a
 // different symbol and would silently never be found.
 SymbolHeader* rtSymbolMatch() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.match");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.match");
 }
 
 SymbolHeader* rtSymbolMatchAll() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.matchAll");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.matchAll");
 }
 
 SymbolHeader* rtSymbolReplace() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.replace");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.replace");
 }
 
 SymbolHeader* rtSymbolSearch() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.search");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.search");
 }
 
 SymbolHeader* rtSymbolSplit() {
-    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.split");
-    return sym;
+    static thread_local SymbolHeader* sym = nullptr;
+    return wellKnownSymbolOnce(sym, "Symbol.split");
 }
 
 Value rtSymbolFor(Rooted<Value>& keyString) {
