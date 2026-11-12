@@ -421,6 +421,10 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     Rooted<Value> piece;
     Rooted<Value> captured;
     while (at < inputLen) {
+        // The indices no separator can begin at are the ones the match below
+        // would refuse one by one.
+        at = regex::firstCandidateIndex(pattern, haystack.view(), at);
+        if (at >= inputLen) break;
         const regex::ExecStatus status =
             runMatch(pattern, haystack.view(), at, true, scratch.result);
         if (status == regex::ExecStatus::Error) {

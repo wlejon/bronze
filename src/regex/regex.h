@@ -90,6 +90,12 @@ using PatternPtr = std::unique_ptr<Pattern, PatternDeleter>;
 // whose tail was silently ignored would match things it does not describe.
 PatternPtr compile(UnitsView source, const Flags& flags, std::string& error);
 
+// The first index at or after `from` where a match of `pattern` can begin,
+// going by the unit there alone (first_units.h); `input.size()` when there is
+// none, and `from` itself for a pattern whose first units say nothing. What a
+// caller that tries `matchAt` index by index, as [@@split] does, skips to.
+size_t firstCandidateIndex(const Pattern& pattern, UnitsView input, size_t from);
+
 // The flags a pattern was compiled with, and its group bookkeeping.
 const Flags& patternFlags(const Pattern& pattern);
 uint32_t captureCount(const Pattern& pattern);   // excludes capture 0

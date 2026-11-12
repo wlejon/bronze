@@ -177,7 +177,7 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
             }
             head_offset = 0;
         } else {
-            uint64_t new_cap = capacity ? static_cast<uint64_t>(capacity) * 2 : 4;
+            uint64_t new_cap = capacity ? static_cast<uint64_t>(capacity) + capacity / 2 + 16 : 4;
             while (new_cap <= index) {
                 new_cap *= 2;
             }

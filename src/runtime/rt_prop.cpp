@@ -398,7 +398,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
     // question, including the index properties 10.4.3.5 synthesises for a
     // string.
     if (!objVal.isObject()) {
-        return rtPrimitiveMember(objVal, keyText(), keyHeader, ic).rawBits();
+        return rtPrimitiveMember(objVal, optKeyStr, keyHeader, ic).rawBits();
     }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();

@@ -121,7 +121,7 @@ bool rtCreateDataPropertyOrThrow(Rooted<Value>& target, PropertyKey name, Rooted
 // prototype walk, while a number's and a symbol's members are still handed out
 // beside the value. The one branch of the property path that is not about the
 // receiver's own storage, which is why it is not in rt_prop.cpp.
-Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+Value rtPrimitiveMember(Value objVal, const std::string* optKeyStr, StringHeader* keyHeader,
                         struct InlineCacheSite* ic);
 
 // And the WRITE half of the same receiver kind, in the same file, because the

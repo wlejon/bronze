@@ -686,6 +686,13 @@ ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResu
     return matcher.run(at, out, error, extractCaptures);
 }
 
+size_t firstCandidateIndex(const Pattern& pattern, UnitsView input, size_t from) {
+    const FirstUnits& first = pattern.firstUnits;
+    if (!first.usable) return from;
+    while (from < input.size() && !first.admits(input[from])) ++from;
+    return from < input.size() ? from : input.size();
+}
+
 ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchResult& out,
                   std::string& error, bool extractCaptures) {
     if (from > input.size()) return ExecStatus::NoMatch;
@@ -700,6 +707,15 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
             return matcher.run(static_cast<size_t>(out.start()), out, error, extractCaptures);
         }
     }
+    // An index whose unit cannot begin a match is one the matcher would
+    // refuse; when none of them can, there is no matcher to set up. The index
+    // past the end is a candidate only for a pattern that matches the empty
+    // string, and such a pattern has no usable set.
+    const FirstUnits& first = pattern.firstUnits;
+    if (first.usable) {
+        from = firstCandidateIndex(pattern, input, from);
+        if (from >= input.size()) return ExecStatus::NoMatch;
+    }
     Matcher matcher(pattern, input);
     // The scan is the spec's own: 22.2.7.2 step 12 advances the start index by
     // AdvanceStringIndex and tries again, which is why a pattern anchored with
@@ -712,6 +728,7 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
     // position the scan visits.
     const bool unicode = pattern.flags.unicodeMode();
     for (size_t at = from; at <= input.size(); at = advanceStringIndex(input, at, unicode)) {
+        if (first.usable && (at == input.size() || !first.admits(input[at]))) continue;
         const ExecStatus status = matcher.run(at, out, error, extractCaptures);
         if (status != ExecStatus::NoMatch) return status;
     }

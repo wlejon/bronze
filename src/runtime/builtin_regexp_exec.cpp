@@ -18,8 +18,10 @@
 //    and `groups`, which is why arrays grew a named-property object.
 
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -536,7 +538,18 @@ bool storeLastIndex(Rooted<Value>& re, double value) {
 // and is compiled again by the ordinary path.
 struct LiteralMemo {
     const StringHeader* written{nullptr};
-    std::string flagsText;
+    // The flags as the arena string a literal's evaluation passes, when one
+    // has (rtRegExpLiteral); `flagsText` is its text.
+    const StringHeader* writtenFlags{nullptr};
+    // At most the eight flag letters; a longer spelling is never remembered.
+    // Characters and not a std::string so that the table is trivially
+    // destructible: the arena's teardown clears it (rtForgetRegExpLiteralMemo).
+    char flagsText[8]{};
+    uint8_t flagsLength{0};
+
+    bool flagsAre(const std::string& text) const noexcept {
+        return text.size() == flagsLength && std::memcmp(flagsText, text.data(), flagsLength) == 0;
+    }
     Value source;
     Value canonicalFlags;
     uint64_t programId{0};
@@ -544,10 +557,12 @@ struct LiteralMemo {
 
 constexpr size_t kLiteralMemoSize = 64;
 
+static_assert(std::is_trivially_destructible_v<LiteralMemo>);
+thread_local LiteralMemo t_literalMemo[kLiteralMemoSize];
+
 LiteralMemo& literalMemoFor(const StringHeader* written) {
-    static thread_local LiteralMemo memo[kLiteralMemoSize];
     const auto bits = reinterpret_cast<uintptr_t>(written);
-    return memo[(bits >> 4) % kLiteralMemoSize];
+    return t_literalMemo[(bits >> 4) % kLiteralMemoSize];
 }
 
 }  // namespace
@@ -555,7 +570,7 @@ LiteralMemo& literalMemoFor(const StringHeader* written) {
 bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::string& flagsText) {
     const StringHeader* writtenStr = sourceStr.get().asString<StringHeader>();
     LiteralMemo* memo = writtenStr->isArena() ? &literalMemoFor(writtenStr) : nullptr;
-    if (memo != nullptr && memo->written == writtenStr && memo->flagsText == flagsText) {
+    if (memo != nullptr && memo->written == writtenStr && memo->flagsAre(flagsText)) {
         const auto slot = static_cast<uint32_t>(memo->programId & 0xFFFF);
         auto& cache = regExpCache();
         if (cache.isValid(slot, memo->programId)) {
@@ -586,7 +601,7 @@ bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::
     header->lastIndex = Value::fromDouble(0.0);
     header->programIndex = Value::fromDouble(static_cast<double>(index));
 
-    if (memo != nullptr) {
+    if (memo != nullptr && flagsText.size() <= sizeof(memo->flagsText)) {
         // Interned, so both answers are immortal: the escaped source is the
         // written string itself when escaping changed nothing, and a flag
         // spelling is one of a handful.
@@ -594,7 +609,9 @@ bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::
         StringHeader* src = StringHeader::internToArena(arena, sourceStr.get().asString<StringHeader>());
         StringHeader* fl = StringHeader::internToArena(arena, canonicalFlags.get().asString<StringHeader>());
         memo->written = writtenStr;
-        memo->flagsText = flagsText;
+        memo->writtenFlags = nullptr;
+        memo->flagsLength = static_cast<uint8_t>(flagsText.size());
+        std::memcpy(memo->flagsText, flagsText.data(), flagsText.size());
         memo->source = Value::fromString(src);
         memo->canonicalFlags = Value::fromString(fl);
         memo->programId = index;
@@ -606,6 +623,44 @@ Value rtMakeRegExp(Rooted<Value>& sourceStr, const std::string& flagsText) {
     Rooted<Value> re{rtAllocateRegExp(rtRegExpInstanceShape())};
     if (!rtInitializeRegExp(re, sourceStr, flagsText)) return Value::fromUndefined();
     return re.get();
+}
+
+void rtForgetRegExpLiteralMemo() noexcept {
+    for (LiteralMemo& memo : t_literalMemo) {
+        memo.written = nullptr;
+        memo.writtenFlags = nullptr;
+    }
+}
+
+Value rtRegExpLiteral(Value sourceStr, Value flagsStr) {
+    const StringHeader* written = sourceStr.asString<StringHeader>();
+    const StringHeader* writtenFlags = flagsStr.asString<StringHeader>();
+    LiteralMemo& memo = literalMemoFor(written);
+    if (memo.written == written && memo.writtenFlags == writtenFlags) {
+        const auto slot = static_cast<uint32_t>(memo.programId & 0xFFFF);
+        auto& cache = regExpCache();
+        if (cache.isValid(slot, memo.programId)) {
+            cache.touch(slot);
+            // Nothing below is a pointer the allocation can move: the memo's
+            // strings are arena strings.
+            const Value re = rtAllocateRegExp(rtRegExpInstanceShape());
+            auto* header = re.asObject<RegExpHeader>();
+            header->source = memo.source;
+            header->flagsText = memo.canonicalFlags;
+            header->lastIndex = Value::fromDouble(0.0);
+            header->programIndex = Value::fromDouble(static_cast<double>(memo.programId));
+            return re;
+        }
+    }
+    Rooted<Value> source{sourceStr};
+    const std::string flagsText = rtUtf8Chars(writtenFlags);
+    const Value re = rtMakeRegExp(source, flagsText);
+    // The initialisation above has just filled the memo for this source; the
+    // flag string's address is what the next evaluation is recognised by.
+    if (re.isObject() && memo.written == written && memo.flagsAre(flagsText)) {
+        memo.writtenFlags = writtenFlags;
+    }
+    return re;
 }
 
 Value rtAllocateRegExp(Shape* shape) {

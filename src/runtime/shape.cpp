@@ -11,6 +11,8 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape_leave.h"
 #include "runtime/slot_repr.h"
@@ -557,6 +559,8 @@ void Shape::forgetLookupMemo() noexcept {
     }
     runtime::rtForgetElemSetFastCache();
     runtime::rtForgetSpreadShapeHints();
+    runtime::rtForgetSmallIntStrings();
+    runtime::rtForgetRegExpLiteralMemo();
     bumpProtoMutationEpoch();
 }
 

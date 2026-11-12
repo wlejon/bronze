@@ -27,8 +27,13 @@ namespace {
 // the same two rules `PropertyKey::matches` applies, restated as a hash. The
 // string's hash is cached on the string itself, so an interned key pays for
 // it once and a program's key constant once.
+//
+// The cached word's low two bits are the string's flags and read zero in the
+// hash, so they are shifted out: masked as it stands, every key's home cell
+// was a multiple of four and the table probed through runs four times as
+// dense as its load.
 uint32_t hashKey(PropertyKey key) noexcept {
-    if (const StringHeader* s = key.string()) return s->hash();
+    if (const StringHeader* s = key.string()) return s->hash() >> 2;
     auto bits = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key.symbol()));
     bits ^= bits >> 33;
     bits *= 0xff51afd7ed558ccdULL;

@@ -717,6 +717,10 @@ private:
     // --- lower_expr_binary.cpp: binary operators ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerAddChain(const ast::Binary* bin, il::Function& ilFn);
+    // `x == null` / `x != null` (and `undefined` in null's place) of a boxed
+    // `x`, as the nullish test it is; nullopt for any other comparison.
+    std::optional<Value> lowerNullishEquality(const ast::Binary& bin, Value lhs, Value rhs,
+                                              il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
                                        il::Function& ilFn);
     std::optional<Value> lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,

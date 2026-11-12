@@ -239,19 +239,79 @@ bool StringHeader::lessThan(const StringHeader& other) const noexcept {
     return length < other.length;
 }
 
+namespace {
+
+// One step of the content hash: a word of the string folded into the state.
+inline uint64_t hashStep(uint64_t h, uint64_t word) noexcept {
+    h = (h ^ word) * 0x9E3779B97F4A7C15ULL;
+    return h ^ (h >> 29);
+}
+
+// The hash of a string whose every unit fits a byte, eight units a step. A
+// key built by concatenation is hashed once per string object, so a long
+// cache key pays this every time it is rebuilt; a unit at a time was most of
+// such a lookup.
+uint64_t hashNarrow(const uint8_t* bytes, uint32_t length) noexcept {
+    uint64_t h = 0x243F6A8885A308D3ULL ^ length;
+    while (length >= 8) {
+        uint64_t word;
+        std::memcpy(&word, bytes, 8);
+        h = hashStep(h, word);
+        bytes += 8;
+        length -= 8;
+    }
+    if (length != 0) {
+        uint64_t word = 0;
+        std::memcpy(&word, bytes, length);
+        h = hashStep(h, word);
+    }
+    return h;
+}
+
+// A two-byte string hashes as the one-byte string of the same content would
+// when it could have been one, so the two spellings of one key are one key;
+// a string with a wider unit equals no one-byte string and hashes its units
+// as they lie.
+uint64_t hashWide(const uint16_t* units, uint32_t length) noexcept {
+    uint16_t any = 0;
+    for (uint32_t i = 0; i < length; ++i) any |= units[i];
+    if (any < 0x100) {
+        uint64_t h = 0x243F6A8885A308D3ULL ^ length;
+        uint32_t i = 0;
+        while (i < length) {
+            uint64_t word = 0;
+            const uint32_t take = length - i < 8 ? length - i : 8;
+            for (uint32_t k = 0; k < take; ++k) word |= static_cast<uint64_t>(units[i + k]) << (8 * k);
+            h = hashStep(h, word);
+            i += take;
+        }
+        return h;
+    }
+    uint64_t h = 0x13198A2E03707344ULL ^ length;
+    uint32_t i = 0;
+    while (i < length) {
+        uint64_t word = 0;
+        const uint32_t take = length - i < 4 ? length - i : 4;
+        for (uint32_t k = 0; k < take; ++k) word |= static_cast<uint64_t>(units[i + k]) << (16 * k);
+        h = hashStep(h, word);
+        i += take;
+    }
+    return h;
+}
+
+}  // namespace
+
 uint32_t StringHeader::hash() const noexcept {
     if ((flags & kHasHashFlag) != 0) {
         return flags & 0xFFFFFFFCU;
     }
 
-    uint32_t h = 0x811c9dc5U;
-    for (uint32_t i = 0; i < length; ++i) {
-        uint16_t u = charCodeAt(i);
-        h ^= (u & 0xFF);
-        h *= 0x01000193U;
-        h ^= (u >> 8);
-        h *= 0x01000193U;
-    }
+    const uint64_t wide = isLatin1()
+                              ? hashNarrow(reinterpret_cast<const uint8_t*>(latin1Data()), length)
+                              : hashWide(utf16Data(), length);
+    // The low two bits of the cached word are the flags, so the hash a table
+    // masks comes from the well-mixed top half.
+    const auto h = static_cast<uint32_t>(wide >> 32);
 
     uint32_t cached_hash = h & 0xFFFFFFFCU;
     flags = cached_hash | kHasHashFlag | (flags & kUTF16Flag);

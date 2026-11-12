@@ -197,6 +197,7 @@ std::optional<Lowerer::Value> Lowerer::emitInlineExpr(const ast::Expr& expr,
         if (!lhs) return std::nullopt;
         auto rhs = emitInlineExpr(*bin->rhs, frame, ilFn);
         if (!rhs) return std::nullopt;
+        if (auto nullish = lowerNullishEquality(*bin, *lhs, *rhs, ilFn)) return nullish;
         return lowerEquality(bin->op, *lhs, *rhs, ilFn);
     }
     if (const auto* tern = dynamic_cast<const ast::Ternary*>(&expr)) {

@@ -57,6 +57,29 @@
 
 namespace bronze::runtime {
 
+// ToString of a small non-negative integer, which is what most numbers a
+// program turns into text are: an id, a counter, a size in a cache key. One
+// immortal string apiece, made the first time it is asked for, so the
+// conversion is a load where it was a format and an allocation. Trivially
+// destructible, and emptied with the arena that holds the strings
+// (rtForgetSmallIntStrings).
+constexpr uint32_t kSmallIntStringCount = 1024;
+static thread_local StringHeader* t_smallIntStrings[kSmallIntStringCount];
+
+static Value smallIntString(uint32_t n) {
+    StringHeader*& cell = t_smallIntStrings[n];
+    if (cell == nullptr) {
+        char buf[16];
+        const size_t len = formatJsNumber(static_cast<double>(n), buf);
+        cell = StringHeader::createFromUTF8InArena(rtArena(), std::string_view(buf, len));
+    }
+    return Value::fromString(cell);
+}
+
+void rtForgetSmallIntStrings() noexcept {
+    for (StringHeader*& cell : t_smallIntStrings) cell = nullptr;
+}
+
 static Value valueToString(Value v) {
     if (v.isString()) return v;
     // A symbol does not coerce (ECMA-262 6.1.5.1: ToString of a Symbol throws a
@@ -77,7 +100,13 @@ static Value valueToString(Value v) {
     if (v.isBigInt()) return rtMakeString(rtBigIntToString(v, 10));
     char buf[64];
     if (v.isNumber()) {
-        size_t len = formatJsNumber(v.asNumber(), buf);
+        const double d = v.asNumber();
+        // -0 is "0" (6.1.6.1.20), and it is the cell 0 here as well.
+        if (d >= 0.0 && d < static_cast<double>(kSmallIntStringCount)) {
+            const auto n = static_cast<uint32_t>(d);
+            if (static_cast<double>(n) == d) return smallIntString(n);
+        }
+        size_t len = formatJsNumber(d, buf);
         return rtMakeString(std::string_view(buf, len));
     }
     if (v.isInt32()) {
@@ -498,6 +527,8 @@ extern "C" {
 // string on the left.
 uint64_t bronze_to_string(uint64_t bits) {
     recordHelperCall("bronze_to_string");
+    // A primitive converts with no ToPrimitive to run and nothing to root.
+    if (const Value prim(bits); !prim.isObject()) return valueToString(prim).rawBits();
     Rooted<Value> v{Value(bits)};
     return rtToStringValue(v).rawBits();
 }

@@ -150,6 +150,38 @@ Lowerer::Value Lowerer::emitPow(Value lhs, Value rhs, il::Function& ilFn) {
     return Value{res, il::Type::F64};
 }
 
+// `x == null`, `x != null`, and either with `undefined` or with the operands
+// the other way round: 7.2.14 IsLooselyEqual answers true for exactly null and
+// undefined (steps 2-3; every later step has a Number, String, BigInt, Boolean
+// or Object on the null side's opposite and answers false), which is
+// `is.nullish` and two compares where the general algorithm is a call. It is
+// the test a bundler's down-levelled `a ?? b` and `a?.b` are made of
+// (`(_a = x) != null ? _a : y`). Both operands have been evaluated, in order;
+// the literal's value is simply not read.
+std::optional<Lowerer::Value> Lowerer::lowerNullishEquality(const ast::Binary& bin, Value lhs,
+                                                            Value rhs, il::Function& ilFn) {
+    if (bin.op != ast::BinaryOp::Eq && bin.op != ast::BinaryOp::Ne) return std::nullopt;
+    auto nullishLiteral = [](const ast::Expr& e) {
+        return dynamic_cast<const ast::NullLit*>(&e) != nullptr ||
+               dynamic_cast<const ast::UndefinedLit*>(&e) != nullptr;
+    };
+    const bool lhsLit = nullishLiteral(*bin.lhs);
+    const bool rhsLit = nullishLiteral(*bin.rhs);
+    if (lhsLit == rhsLit) return std::nullopt;
+    const Value tested = lhsLit ? rhs : lhs;
+    if (tested.type != il::Type::Dynamic) return std::nullopt;
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::IsNullish;
+    inst.type = il::Type::Bool;
+    inst.result = res;
+    inst.operands = {tested.id};
+    emitInst(ilFn, inst);
+    Value answer{res, il::Type::Bool};
+    if (bin.op == ast::BinaryOp::Eq) return answer;
+    return emitLogicalNot(answer, ilFn);
+}
+
 // `a == b` / `a === b` and their negations.
 //
 // When both operands have the SAME proven primitive type, the two operators
@@ -369,6 +401,7 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     }
     if (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::StrictEq ||
         bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe) {
+        if (auto nullish = lowerNullishEquality(*bin, lhs, rhs, ilFn)) return nullish;
         if ((lhs.type == il::Type::F64 || provenNumber(*bin->lhs)) &&
             (rhs.type == il::Type::F64 || provenNumber(*bin->rhs))) {
             lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);

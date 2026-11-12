@@ -496,6 +496,32 @@ TEST_CASE("loose equality on two proven numbers is the same compare as strict") 
     CHECK(printed.find("loose.eq") == std::string::npos);
 }
 
+TEST_CASE("loose equality against a null or undefined literal is the nullish test") {
+    // `x == null` is true for null and undefined and nothing else (7.2.14
+    // steps 2-3), so it needs no call; either literal, either side, either
+    // polarity. Two unknowns compared with each other still take the algorithm.
+    for (const char* test : {"x == null", "x != null", "null == x", "undefined != x", "x == undefined"}) {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const std::string source =
+            std::string("function f(x: any): boolean { return ") + test + "; }\nf(1);\n";
+        const auto optMod = parseAndLower(source, diags, buf);
+
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const std::string printed = il::print(*optMod);
+        CAPTURE(test);
+        CHECK(printed.find("is.nullish") != std::string::npos);
+        CHECK(printed.find("loose.eq") == std::string::npos);
+    }
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod =
+        parseAndLower("function f(x: any, y: any): boolean { return x == y; }\nf(1, null);\n", diags, buf);
+    REQUIRE(optMod.has_value());
+    CHECK(il::print(*optMod).find("loose.eq") != std::string::npos);
+}
+
 // ---- 10.2.9 and 10.2.10, as far as lowering carries them --------------------
 //
 // The two own properties of a function object are decided here and passed to

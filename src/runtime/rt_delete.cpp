@@ -324,7 +324,9 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         return rtProxyDelete(objVal, idxVal, strict);
     }
 
-    if (idxVal.isString()) {
+    // Only a function has the sealed header keys, so only a function's delete
+    // spells the key out to ask.
+    if (idxVal.isString() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         const std::string text = rtUtf8Chars(idxVal.asString<StringHeader>());
         if (sealedFunctionHeaderKey(objVal, text)) return reportRefusedDelete(false, strict, text);
     }
@@ -350,9 +352,10 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     Rooted<Value> ownerRoot{Value::fromObject(owner)};
     Rooted<Value> key{rtValueToString(idxVal)};
     StringHeader* keyHeader = key.get().asString<StringHeader>();
-    return reportRefusedDelete(
-        ownerRoot.get().asObject<ObjectHeader>()->deleteProperty(rtArena(), keyHeader), strict,
-        rtUtf8Chars(keyHeader));
+    // The key's text is the refusal's message and nothing else: a delete
+    // that removed its property, a cache evicting an entry, builds none.
+    if (ownerRoot.get().asObject<ObjectHeader>()->deleteProperty(rtArena(), keyHeader)) return true;
+    return reportRefusedDelete(false, strict, rtUtf8Chars(key.get().asString<StringHeader>()));
 }
 
 }  // extern "C"

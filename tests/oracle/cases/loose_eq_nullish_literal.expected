@@ -1,0 +1,29 @@
+null true false true false true false true false
+undefined true false true false true false true false
+0 false true false true false true false true
+-0 false true false true false true false true
+NaN false true false true false true false true
+"" false true false true false true false true
+"0" false true false true false true false true
+"null" false true false true false true false true
+"undefined" false true false true false true false true
+false false true false true false true false true
+true false true false true false true false true
+array0 false true false true false true false true
+array1 false true false true false true false true
+array1 false true false true false true false true
+object false true false true false true false true
+object false true false true false true false true
+object false true false true false true false true
+function false true false true false true false true
+symbol false true false true false true false true
+1.5 false true false true false true false true
+Infinity false true false true false true false true
+true false true
+false true a,b
+0  false d d NaN
+undefined undefined n undefined undefined
+false true false true false true false true false true false true
+3 true true false false
+6
+false true true true

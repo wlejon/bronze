@@ -54,6 +54,9 @@ std::string rtAsciiChars(const StringHeader* s);
 // pair of conversions, so two callers cannot disagree about a lone surrogate.
 std::vector<uint16_t> rtStringUnits(const StringHeader* s);
 Value rtStringFromUnits(const std::vector<uint16_t>& units);
+// The same string from a run of units the caller does not own a vector of (a
+// slice of a longer one).
+Value rtStringFromUnits(const uint16_t* units, size_t count);
 
 // The same string as UTF-8, losing nothing. This is the conversion for text
 // that will be PRINTED; rtAsciiChars is the one for text that will be
@@ -91,6 +94,10 @@ Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
 Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
 Value rtToStringValue(Rooted<Value>& v);
 Value rtToPropertyKey(Rooted<Value>& key);
+
+// Drops the per-thread small-integer strings (rt_convert.cpp) when the arena
+// that holds them goes.
+void rtForgetSmallIntStrings() noexcept;
 
 // ToString (7.1.17) with step 1's ToPrimitive OMITTED, for a caller that has
 // already run it. It allocates for a number and THROWS for a Symbol, so a

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "regex/chars.h"
+#include "regex/first_units.h"
 #include "regex/regex.h"
 
 // The pattern tree ECMA-262 22.2.1 spells out, one node kind per production
@@ -122,6 +123,9 @@ public:
     // True when any group has a name, which is what decides whether a match
     // array's `groups` is an object or `undefined` (22.2.7.2 step 8).
     bool hasNamedGroups = false;
+    // The units a match can begin with, which lets `search` skip the indices
+    // the matcher would refuse (first_units.h).
+    FirstUnits firstUnits;
     // Optional native DFA JIT plan compiled via brass GrammarBuilder & run_mir_superopt.
     std::shared_ptr<const RegexJitPlan> jitPlan;
 };

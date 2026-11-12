@@ -321,6 +321,11 @@ Value rtRegExpConstructor(const std::string& name) {
     return g_regexp.ctor;
 }
 
+bool rtIsRegExpIntrinsicConstructor(Value fn) {
+    // Unbuilt intrinsics hold `undefined`, which no function's bits equal.
+    return fn.rawBits() == g_regexp.ctor.rawBits();
+}
+
 Value rtRegExpPrototypeObject() {
     ensureRegExpIntrinsics();
     return g_regexp.proto;

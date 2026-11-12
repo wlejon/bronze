@@ -293,9 +293,10 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 
     // Answers false once the array has reached the limit, so every caller stops
     // at the same place rather than each remembering to check.
-    auto pushPiece = [&](const Units& piece) {
+    // A piece is a slice of `self`, read in place: no vector of its own.
+    auto pushPiece = [&](size_t from, size_t to) {
         if (out.get().asObject<ArrayHeader>()->length >= limit) return false;
-        Rooted<Value> val{stringFromUnits(piece)};
+        Rooted<Value> val{rtStringFromUnits(self.data() + from, to - from)};
         uint32_t at = out.get().asObject<ArrayHeader>()->length;
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, val);
         return true;
@@ -306,7 +307,7 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     // No separator at all: the whole string, as one element. Distinct from
     // an empty separator, which splits into single code units.
     if (args[0].isUndefined()) {
-        pushPiece(self);
+        pushPiece(0, self.size());
         return out.get().rawBits();
     }
     Units sep = argUnits(args[0]);
@@ -315,8 +316,8 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         // An empty subject yields nothing here, which is why `"".split("")` is
         // `[]` where `"".split("x")` is `[""]` — the two exits are steps 9 and
         // 10 and they disagree on purpose.
-        for (uint16_t u : self) {
-            if (!pushPiece(Units{u})) break;
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!pushPiece(i, i + 1)) break;
         }
         return out.get().rawBits();
     }
@@ -325,12 +326,12 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     for (;;) {
         int64_t found = indexOfUnits(self, sep, at);
         if (found < 0) break;
-        if (!pushPiece(Units(self.begin() + at, self.begin() + found))) {
+        if (!pushPiece(at, static_cast<size_t>(found))) {
             return out.get().rawBits();
         }
         at = static_cast<size_t>(found) + sep.size();
     }
-    pushPiece(Units(self.begin() + at, self.end()));
+    pushPiece(at, self.size());
     return out.get().rawBits();
 }
 
@@ -548,10 +549,14 @@ std::vector<uint16_t> rtStringUnits(const StringHeader* s) {
 // Latin-1 when every unit fits, so an ASCII result of an ASCII input stays
 // in the compact representation instead of doubling in size.
 Value rtStringFromUnits(const std::vector<uint16_t>& units) {
-    if (units.empty()) {
+    return rtStringFromUnits(units.data(), units.size());
+}
+
+Value rtStringFromUnits(const uint16_t* units, size_t count) {
+    if (count == 0) {
         return Value::fromString(StringHeader::emptyInArena(rtArena()));
     }
-    if (units.size() == 1) {
+    if (count == 1) {
         const uint16_t u = units[0];
         if (u <= 0xFF) {
             return Value::fromString(
@@ -560,21 +565,19 @@ Value rtStringFromUnits(const std::vector<uint16_t>& units) {
         return Value::fromString(StringHeader::createUTF16(rtHeap(), &u, 1));
     }
     bool latin1 = true;
-    for (uint16_t u : units) {
-        if (u > 0xFF) {
+    for (size_t i = 0; i < count; ++i) {
+        if (units[i] > 0xFF) {
             latin1 = false;
             break;
         }
     }
     if (latin1) {
-        StringHeader* res =
-            StringHeader::createLatin1(rtHeap(), nullptr, static_cast<uint32_t>(units.size()));
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, static_cast<uint32_t>(count));
         char* dst = res->latin1Data();
-        for (size_t i = 0; i < units.size(); ++i) dst[i] = static_cast<char>(units[i]);
+        for (size_t i = 0; i < count; ++i) dst[i] = static_cast<char>(units[i]);
         return Value::fromString(res);
     }
-    return Value::fromString(
-        StringHeader::createUTF16(rtHeap(), units.data(), static_cast<uint32_t>(units.size())));
+    return Value::fromString(StringHeader::createUTF16(rtHeap(), units, static_cast<uint32_t>(count)));
 }
 
 // The members above, onto the `String.prototype` object builtin_wrappers.cpp

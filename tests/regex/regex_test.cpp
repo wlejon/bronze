@@ -472,3 +472,30 @@ TEST_CASE("deeply nested groups and classes fail cleanly without stack overflow"
     deepClasses += std::string(300, ']');
     CHECK(compileError(deepClasses, "v").find("nested too deeply") != std::string::npos);
 }
+
+TEST_CASE("search skips the indices whose unit cannot begin a match, and only those") {
+    // The interpreter's patterns (a backreference keeps them off the DFA):
+    // the answer is the scan's, with or without the first-unit set.
+    auto quoted = compileOk("([\"'])[^'\"]+\\1");
+    CHECK(firstMatch(*quoted, "sans-serif") == "<none>");
+    CHECK(firstMatch(*quoted, "a \"Fira Sans\" b") == "\"Fira Sans\"");
+    CHECK(firstMatch(*quoted, "it's 'x'") == "'s '");
+    CHECK(firstMatch(*quoted, "") == "<none>");
+    CHECK(firstMatch(*quoted, "\"") == "<none>");
+    CHECK(firstMatch(*quoted, "ab'c'", 3) == "<none>");
+    // A negated class begins with everything it does not name.
+    CHECK(firstMatch(*compileOk("([^a])\\1"), "aabbc") == "bb");
+    // A unit above ASCII is in the set or out of it as a whole.
+    const regex::Units eacute = unitsOf({'x', 0xE9, 0xE9, 'y'});
+    CHECK(extent(*compileUnitsOk(unitsOf({'(', 0xE9, ')', '\\', '1'}), ""), eacute) == "1..3");
+    // Patterns with no usable set: they can match the empty string, at the
+    // index past the end too, or begin with what an earlier group captured.
+    CHECK(firstMatch(*compileOk("(a)?\\1"), "xyz") == "");
+    CHECK(extent(*compileOk("(?:(a)|b)\\1$"), u("xb")) == "1..2");
+    CHECK(extent(*compileOk("(x)*\\1$"), u("abc")) == "3..3");
+    CHECK(firstMatch(*compileOk("(?=(b))\\1"), "abc") == "b");
+    CHECK(firstMatch(*compileOk("\\b(c)\\1"), "a cc") == "cc");
+    // Under `i` the unit at the index is not what the tree holds.
+    CHECK(firstMatch(*compileOk("(q)\\1", "i"), "aQqb") == "Qq");
+    CHECK(firstMatch(*compileOk("([k])\\1", "i"), "xKk") == "Kk");
+}

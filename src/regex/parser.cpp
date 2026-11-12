@@ -745,6 +745,7 @@ PatternPtr compile(UnitsView source, const Flags& flags, std::string& error) {
     pattern->hasNamedGroups =
         std::any_of(groups.names.begin(), groups.names.end(),
                     [](const std::string& n) { return !n.empty(); });
+    pattern->firstUnits = computeFirstUnits(*pattern->root, flags);
     pattern->jitPlan = RegexJitPlan::tryCompile(*pattern);
     return pattern;
 }

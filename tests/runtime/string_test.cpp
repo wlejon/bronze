@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/builtin_regexp_internal.h"
@@ -187,6 +188,33 @@ TEST_CASE("hash computation and caching") {
     StringHeader* utf = StringHeader::createUTF16(heap, u16_buf, 6);
     uint32_t h3 = utf->hash();
     CHECK(h1 == h3);
+}
+
+TEST_CASE("hash is the same for one-byte and two-byte storage at every length") {
+    // The hash reads eight units a step: each length from zero past two steps
+    // covers the whole steps, the tail, and their meeting.
+    Heap heap;
+    ShadowStackFrame frame;
+    const std::string text = "The quick brown fox jumps over";
+    for (uint32_t len = 0; len <= text.size(); ++len) {
+        std::vector<uint16_t> units(text.begin(), text.begin() + len);
+        Rooted<StringHeader*> narrow(StringHeader::createLatin1(heap, text.data(), len));
+        Rooted<StringHeader*> wide(StringHeader::createUTF16(heap, units.data(), len));
+        REQUIRE(wide.get()->isUTF16());
+        CHECK(narrow.get()->hash() == wide.get()->hash());
+        // One unit changed, anywhere, is another string and (for these) another hash.
+        for (uint32_t at = 0; at < len; ++at) {
+            std::string other = text.substr(0, len);
+            other[at] = static_cast<char>(other[at] ^ 0x01);
+            Rooted<StringHeader*> changed(StringHeader::createLatin1(heap, other.data(), len));
+            CHECK(changed.get()->hash() != narrow.get()->hash());
+            // Past one byte, the changed unit's high half counts too.
+            std::vector<uint16_t> high = units;
+            high[at] = static_cast<uint16_t>(high[at] | 0x4E00);
+            Rooted<StringHeader*> changedWide(StringHeader::createUTF16(heap, high.data(), len));
+            CHECK(changedWide.get()->hash() != narrow.get()->hash());
+        }
+    }
 }
 
 TEST_CASE("string concatenation") {

@@ -12,6 +12,7 @@ endif()
 bronze_add_module(regex
     SOURCES
         chars.cpp
+        first_units.cpp
         parser.cpp
         parser_class.cpp
         matcher.cpp

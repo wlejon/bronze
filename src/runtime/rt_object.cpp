@@ -495,6 +495,17 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
     }
+    // A regular expression literal: the intrinsic constructor on two
+    // constant strings. What the construction protocol below would build is
+    // rtRegExpLiteral's object, and a literal in a loop is this once a turn.
+    if (argc == 2 && rtIsRegExpIntrinsicConstructor(fnVal)) {
+        const Value source(argvBits[0]);
+        const Value flags(argvBits[1]);
+        if (source.isString() && flags.isString() && source.asString<StringHeader>()->isArena() &&
+            flags.asString<StringHeader>()->isArena()) {
+            return rtRegExpLiteral(source, flags).rawBits();
+        }
+    }
     NewTargetScope targetScope(fnVal);
 
     // A BOUND function constructs its TARGET (10.4.1.2): the bound arguments

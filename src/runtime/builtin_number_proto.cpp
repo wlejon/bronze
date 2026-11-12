@@ -298,6 +298,22 @@ uint64_t numberToString(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     const int radix = static_cast<int>(radixRaw);
     if (radix == 10 || !std::isfinite(x)) return stringResult(toStringOfNumber(x)).rawBits();
 
+    // A safe integer is its digits by division, with no exact arithmetic to
+    // set up: a colour written in hex, a hash in base 36.
+    if (x == std::trunc(x) && std::fabs(x) <= 9007199254740991.0) {
+        char buf[64];
+        char* const end = buf + sizeof(buf);
+        char* p = end;
+        auto n = static_cast<uint64_t>(std::fabs(x));
+        const auto base = static_cast<uint64_t>(radix);
+        do {
+            *--p = "0123456789abcdefghijklmnopqrstuvwxyz"[n % base];
+            n /= base;
+        } while (n != 0);
+        if (x < 0) *--p = '-';
+        return rtMakeString(std::string_view(p, static_cast<size_t>(end - p))).rawBits();
+    }
+
     std::string s;
     if (x < 0) {
         s = "-";

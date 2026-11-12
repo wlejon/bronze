@@ -1,0 +1,23 @@
+"sans-serif" false null null null
+"a \"Fira Sans\" b" true 2 "Fira Sans" "
+"it's 'x'" true 2 's ' '
+"" false null null null
+"\"" false null null null
+"serif, \"x" false null null null
+"'a'\"b\"" true 0 'a' '
+4 "hi" 8
+13 'bye' 18
+0 say <"hi"> and <'bye'> and "no 5
+4 -1 [ '"hi"', "'bye'" ]
+2 1 false
+2 false
+1
+0 3 1
+1 2 2
+2 2 1
+1 0
+1 1 true
+1 1
+false 0
+true 3
+200

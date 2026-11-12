@@ -29,6 +29,7 @@
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -58,8 +59,39 @@ Value protoMember(Value intrinsic, Rooted<Value>& receiver, Rooted<Value>& key,
     return proto.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic, receiver.slot_ptr());
 }
 
-Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
-                   InlineCacheSite* ic) {
+// The key's text, built only by the steps that read it as text: the
+// diagnostics of a miss and a String's index and `length` keys. A method
+// found on the intrinsic — `n.toString`, `s.trim` — never asks.
+class KeyText {
+public:
+    KeyText(const std::string* given, Rooted<Value>& key) : given_(given), key_(key) {}
+    const std::string& get() {
+        if (given_ != nullptr) return *given_;
+        if (!built_) {
+            text_ = rtUtf8Chars(key_.get().asString<StringHeader>());
+            built_ = true;
+        }
+        return text_;
+    }
+    // Can the key spell an array index or `length`? Decided on the header,
+    // so every other name skips the text.
+    bool mayBeIndexOrLength() const {
+        if (given_ != nullptr) return true;
+        const StringHeader* k = key_.get().asString<StringHeader>();
+        const uint32_t len = k->getLength();
+        if (len == 0) return false;
+        const uint32_t first = k->charCodeAt(0);
+        return (first >= '0' && first <= '9') || (len == 6 && first == 'l');
+    }
+
+private:
+    const std::string* given_;
+    Rooted<Value>& key_;
+    std::string text_;
+    bool built_ = false;
+};
+
+Value stringMember(Value strVal, KeyText& keyText, Rooted<Value>& key, InlineCacheSite* ic) {
     // Rooted first: the single-code-unit string below allocates, and so can the
     // prototype walk's first touch of the lazily built intrinsic.
     Rooted<Value> self{strVal};
@@ -70,17 +102,22 @@ Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
     // define shadows them. A canonical numeric string names one code unit; an
     // index past the end is `undefined` and not an error, because the search
     // simply has nothing more to find.
-    uint32_t index = 0;
-    if (rtIsIntegerLikeKey(keyStr, index)) {
-        return rtStringCharAsString(self.get(), index);
-    }
-    // 10.4.3.4 StringCreate's own `length`, above the chain for the same reason
-    // and below the indices only because a numeric key can never spell it.
-    if (keyStr == "length") {
-        return Value::fromDouble(self.get().asString<StringHeader>()->getLength());
+    if (keyText.mayBeIndexOrLength()) {
+        const std::string& keyStr = keyText.get();
+        uint32_t index = 0;
+        if (rtIsIntegerLikeKey(keyStr, index)) {
+            return rtStringCharAsString(self.get(), index);
+        }
+        // 10.4.3.4 StringCreate's own `length`, above the chain for the same
+        // reason and below the indices only because a numeric key can never
+        // spell it.
+        if (keyStr == "length") {
+            return Value::fromDouble(self.get().asString<StringHeader>()->getLength());
+        }
     }
     const Value found = protoMember(rtStringPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
+    const std::string& keyStr = keyText.get();
     // A full-chain miss, checked against the two holders that were on the chain
     // and in that order: `String.prototype` is the NEARER one, so a name 22.1.3
     // defines and bronze has not built is named as its member rather than as
@@ -90,11 +127,12 @@ Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
     return Value::fromUndefined();
 }
 
-Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key,
+Value booleanMember(Value boolVal, KeyText& keyText, Rooted<Value>& key,
                     InlineCacheSite* ic) {
     Rooted<Value> self{boolVal};
     const Value found = protoMember(rtBooleanPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
+    const std::string& keyStr = keyText.get();
     // No nearer table: `Boolean.prototype` is three names (20.3.3) and bronze
     // now answers all three, so the only unimplemented holder left on this
     // chain is `Object.prototype`.
@@ -102,10 +140,11 @@ Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key
     return Value::fromUndefined();
 }
 
-Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
+Value numberMember(Value numVal, KeyText& keyText, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{numVal};
     const Value found = protoMember(rtNumberPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
+    const std::string& keyStr = keyText.get();
     // The two holders on this chain, nearest first: 21.1.3 has one name bronze
     // has not built, and then `Object.prototype` has its own. Answering
     // `undefined` without asking either is what made `(1.5).toFixed(2)` die as
@@ -115,10 +154,11 @@ Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, 
     return Value::fromUndefined();
 }
 
-Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
+Value bigintMember(Value bigVal, KeyText& keyText, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{bigVal};
     const Value found = protoMember(rtBigIntPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
+    const std::string& keyStr = keyText.get();
     // The two holders on this chain, nearest first, exactly as a number's:
     // `BigInt.prototype` (21.2.3) and then `Object.prototype`. There is no
     // index or `length` step above the walk — a BigInt has no own properties
@@ -128,7 +168,7 @@ Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, 
     return Value::fromUndefined();
 }
 
-Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
+Value symbolMember(Value symVal, KeyText& keyText, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{symVal};
     const Value found = protoMember(rtSymbolPrototype(), self, key, ic);
     // No nearer unimplemented holder to name: 20.4.3 defines `constructor`,
@@ -138,24 +178,26 @@ Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, 
     // why this does not treat `undefined` as a miss worth diagnosing — or a
     // genuine miss for `Object.prototype` to have the last word on.
     if (!found.isUndefined()) return found;
+    const std::string& keyStr = keyText.get();
     rtObjectProtoCheckMissingMember(keyStr);
     return Value::fromUndefined();
 }
 
 }  // namespace
 
-Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+Value rtPrimitiveMember(Value objVal, const std::string* optKeyStr, StringHeader* keyHeader,
                         InlineCacheSite* ic) {
     // The key becomes a ROOT before anything below can allocate. `keyHeader` is
     // valid on entry and is a raw pointer for the rest of this call — the two
     // prototype walks below build their intrinsic on first use, and that build
     // moves a heap key out from under it.
     Rooted<Value> key{Value::fromString(keyHeader)};
-    if (objVal.isString()) return stringMember(objVal, keyStr, key, ic);
-    if (objVal.isBool()) return booleanMember(objVal, keyStr, key, ic);
-    if (objVal.isNumber()) return numberMember(objVal, keyStr, key, ic);
-    if (objVal.isSymbol()) return symbolMember(objVal, keyStr, key, ic);
-    if (objVal.isBigInt()) return bigintMember(objVal, keyStr, key, ic);
+    KeyText keyText(optKeyStr, key);
+    if (objVal.isString()) return stringMember(objVal, keyText, key, ic);
+    if (objVal.isBool()) return booleanMember(objVal, keyText, key, ic);
+    if (objVal.isNumber()) return numberMember(objVal, keyText, key, ic);
+    if (objVal.isSymbol()) return symbolMember(objVal, keyText, key, ic);
+    if (objVal.isBigInt()) return bigintMember(objVal, keyText, key, ic);
     // Everything a program can name has a branch above; what is left is a tag
     // no program can hold — a hole sentinel that escaped an array. That is not
     // "a property that happens to be absent", so it may not answer `undefined`.

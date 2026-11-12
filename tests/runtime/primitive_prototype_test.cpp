@@ -44,7 +44,9 @@ Value primitiveMember(Value prim, const char* name) {
     Rooted<Value> self{prim};
     Rooted<Value> key{runtime::rtMakeString(name)};
     StringHeader* header = key.get().asString<StringHeader>();
-    return runtime::rtPrimitiveMember(self.get(), std::string(name), header, /*ic=*/nullptr);
+    // No key text handed down, as a keyed read has none: the member builds
+    // it from the header only where it reads it (an index, `length`, a miss).
+    return runtime::rtPrimitiveMember(self.get(), /*optKeyStr=*/nullptr, header, /*ic=*/nullptr);
 }
 
 }  // namespace
@@ -162,8 +164,8 @@ TEST_CASE("building an intrinsic prototype survives the allocation it triggers")
     // computed read, and an arena-interned one would not move and would not
     // test anything.
     StringHeader* header = key.get().asString<StringHeader>();
-    const Value found =
-        runtime::rtPrimitiveMember(five.get(), std::string("toFixed"), header, /*ic=*/nullptr);
+    const std::string toFixed = "toFixed";
+    const Value found = runtime::rtPrimitiveMember(five.get(), &toFixed, header, /*ic=*/nullptr);
     REQUIRE(found.isObject());
     CHECK(found.asObject<HeapObjectHeader>()->flags == HeapKind::Function);
 
@@ -172,8 +174,9 @@ TEST_CASE("building an intrinsic prototype survives the allocation it triggers")
     Rooted<Value> sym{runtime::rtMakeSymbol(runtime::rtMakeString("tag"))};
     Rooted<Value> descKey{runtime::rtMakeString("description")};
     StringHeader* descHeader = descKey.get().asString<StringHeader>();
-    Rooted<Value> desc{runtime::rtPrimitiveMember(sym.get(), std::string("description"),
-                                                  descHeader, /*ic=*/nullptr)};
+    const std::string description = "description";
+    Rooted<Value> desc{
+        runtime::rtPrimitiveMember(sym.get(), &description, descHeader, /*ic=*/nullptr)};
     REQUIRE(desc.get().isString());
     CHECK(runtime::rtAsciiChars(desc.get().asString<StringHeader>()) == "tag");
 }
