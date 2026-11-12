@@ -40,7 +40,7 @@ const none = deep(8);
 Error.stackTraceLimit = saved;
 console.log('limit3', frames(three.stack));
 console.log('limit1', frames(one.stack));
-console.log('limit0', JSON.stringify(none.stack));
+console.log('limit0', frames(none.stack));
 console.log('default', frames(deep(3).stack));
 
 // Through a builtin's callback.
