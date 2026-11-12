@@ -209,8 +209,14 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
                     fid = family_id(b, keyed);
                     if (family_id_io) *family_id_io = fid;
                 }
-                Value* rel = site.family_lo == 0 ? fid : b.build_sub(fid, iconst(b, site.family_lo));
-                all(b.build_ule(rel, iconst(b, site.family_span)));
+                // One family is an equality: a compare against the id, where
+                // the range form costs a subtract and a test as well.
+                if (site.family_span == 0) {
+                    all(b.build_eq(fid, iconst(b, site.family_lo)));
+                } else {
+                    Value* rel = site.family_lo == 0 ? fid : b.build_sub(fid, iconst(b, site.family_lo));
+                    all(b.build_ule(rel, iconst(b, site.family_span)));
+                }
             }
         } else if (std::find(cells_asked.begin(), cells_asked.end(), site.cell) == cells_asked.end()) {
             cells_asked.push_back(site.cell);
