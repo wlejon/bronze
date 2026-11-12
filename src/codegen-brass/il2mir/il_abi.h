@@ -6,6 +6,7 @@
 
 #include "abi/bronze_abi.h"
 #include "il_ast.h"
+#include <brass/mir/builder.hpp>
 #include <brass/mir/instruction.hpp>
 #include <cstdint>
 #include <string>
@@ -103,6 +104,21 @@ constexpr int64_t kBronzeObjOverflowSlot = BRONZE_ABI_OBJ_OVERFLOW_SLOT;
 constexpr int64_t kBronzeHdrBytes = BRONZE_ABI_HDR_BYTES;
 // Every Number's bits are at most this; every other value's are above it.
 constexpr uint64_t kBronzeNumberMaxBits = BRONZE_ABI_NUMBER_MAX_BITS;
+
+// The address of the object whose Value bits are `bits`: the bits with the
+// object tag taken off by xor, which answers "is it an object at all" too (the
+// result is below 2^48 exactly when the tag was there), so a tested receiver
+// costs one xor and one compare where a tag mask, a compare and a payload mask
+// were three. It is also the form brass's untag_reuse carries across a join
+// whose cold arm called something, so the next access to the same receiver
+// finds the address in a register. Not an address unless the value is an
+// object: read through it only behind is_object_address or a proof.
+inline brass::Value* object_address(brass::Builder& b, brass::Value* bits) {
+    return b.build_xor(bits, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)));
+}
+inline brass::Value* is_object_address(brass::Builder& b, brass::Value* address) {
+    return b.build_ult(address, b.build_iconst_i64(int64_t{1} << 48));
+}
 
 // Declare every runtime helper and module data symbol the lowered module
 // may reference, with the optimizer contracts (SymbolRole) of the ones it

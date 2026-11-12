@@ -410,7 +410,7 @@ void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_a
 } // namespace
 
 void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
-    Value* ptr = b.build_and(obj, iconst64(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
     Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     out_block = b.build_add(block, b.build_shl(head, iconst64(b, 3)));

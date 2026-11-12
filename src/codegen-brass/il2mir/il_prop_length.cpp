@@ -11,12 +11,7 @@ namespace il2mir {
 
 namespace {
 
-constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
-constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
-constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
-
-Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
 }  // namespace
 
@@ -108,7 +103,7 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
 // kPropGetArrayLength): the header's length, boxed so that a region's
 // `is.number` and raw unbox of it fold to the double (boxed_f64_source).
 Value* PropertyLoweringHelper::lower_array_length(Builder& b, Value* obj) {
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     return box_number(b, b.build_sitofp_f64_i64(length));
 }
@@ -131,11 +126,11 @@ Value* PropertyLoweringHelper::lower_length_of_array_like(Builder& b, Value* obj
     bb_slow->set_cold();
 
     b.position_at_end(cur);
-    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    Value* is_obj = is_object_address(b, object_address(b, obj));
     b.build_br_if(is_obj, bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_array,
                   bb_slow);
 

@@ -43,11 +43,11 @@ Value* PropertyLoweringHelper::lower_is_array(Builder& b, Value* obj) {
     Value* result = b.add_block_param(bb_merge, Type::i32());
 
     b.position_at_end(cur);
-    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    Value* is_obj = is_object_address(b, object_address(b, obj));
     b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
 
     b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     b.build_br(bb_merge, {b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow))});
 
     b.position_at_end(bb_merge);
@@ -66,11 +66,11 @@ Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
     Value* result = b.add_block_param(bb_merge, Type::i32());
 
     b.position_at_end(cur);
-    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    Value* is_obj = is_object_address(b, object_address(b, obj));
     b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
 
     b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* is_arr = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
     b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
 
@@ -117,15 +117,15 @@ Value* PropertyLoweringHelper::lower_has_index_array(Builder& b, Value* key, Val
     b.position_at_end(cur);
     Value* ptr = nullptr;
     if (elem_array_receiver(flags)) {
-        ptr = b.build_and(obj, iconst(b, kPayloadMask));
+        ptr = object_address(b, obj);
         b.build_br(bb_obj);
         b.position_at_end(bb_obj);
         b.build_br(bb_array);
     } else {
-        Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+        Value* is_obj = is_object_address(b, object_address(b, obj));
         b.build_br_if(is_obj, bb_obj, bb_slow);
         b.position_at_end(bb_obj);
-        ptr = b.build_and(obj, iconst(b, kPayloadMask));
+        ptr = object_address(b, obj);
         b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_array,
                       bb_slow);
     }
@@ -202,7 +202,7 @@ Value* PropertyLoweringHelper::lower_elem_get_array(Builder& b, Value* obj, Valu
     bb_slow->set_cold();
 
     b.position_at_end(cur);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* idx = nullptr;
     Value* ok = nullptr;
     emit_elem_index_guard(b, index, idx, ok, (flags & bronze::il::kElemFlagProvenIntegralIndex) != 0);
@@ -239,7 +239,7 @@ void PropertyLoweringHelper::lower_elem_set_array(Builder& b, Value* obj, Value*
     bb_slow->set_cold();
 
     b.position_at_end(cur);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* idx = nullptr;
     Value* ok = nullptr;
     emit_elem_index_guard(b, index, idx, ok, (flags & bronze::il::kElemFlagProvenIntegralIndex) != 0);
@@ -297,11 +297,11 @@ void PropertyLoweringHelper::lower_elem_define_array(Builder& b, Value* obj, Val
     bb_slow->set_cold();
 
     b.position_at_end(cur);
-    Value* is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    Value* is_obj = is_object_address(b, object_address(b, obj));
     b.build_br_if(is_obj, bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_array,
                   bb_slow);
 

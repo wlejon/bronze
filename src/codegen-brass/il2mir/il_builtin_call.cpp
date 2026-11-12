@@ -249,18 +249,38 @@ Value* lower_builtin_call_impl(IlLowering* lowering, const BuiltinTarget& target
 } // namespace
 
 // 21.3.2.24 Math.max / 21.3.2.25 Math.min of two Numbers, as the runtime's
-// bronze_math_max2_f64 / bronze_math_min2_f64 answer it: a NaN operand is the
-// answer, two zeros are -0 only when both are (max) or either is (min) — which
-// is what `x + y` and `-(-x + -y)` give for zeros — and otherwise the ordered
-// compare picks (equal non-zeros are one value). A NaN result stays the result
-// of every later step, so a fold of it over more operands is the variadic one.
+// bronze_math_max2_f64 / bronze_math_min2_f64 answer it. An ordered compare
+// that one operand wins strictly is the answer, by a branch each way: two
+// compares on the path nearly every call takes. What is left is a tie or a
+// NaN, laid out cold: a NaN operand is the answer, two zeros are -0 only when
+// both are (max) or either is (min) — which is what `x + y` and `-(-x + -y)`
+// give for zeros — and equal non-zeros are one value. A NaN result stays the
+// result of every later step, so a fold of it over more operands is the
+// variadic one.
 Value* build_min_max_f64(Builder& b, bool max, Value* x, Value* y) {
-    Value* pick = b.build_select(max ? b.build_slt(x, y) : b.build_slt(y, x), y, x);
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = (max ? "max_" : "min_") + std::to_string(fn->next_block_id());
+    BasicBlock* bb_other = b.append_block(prefix + "_other");
+    BasicBlock* bb_tie = b.append_block(prefix + "_tie");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::f64());
+    bb_tie->set_cold();
+
+    b.position_at_end(cur);
+    b.build_br_if(max ? b.build_sgt(x, y) : b.build_slt(x, y), bb_merge, {x}, bb_other, {});
+
+    b.position_at_end(bb_other);
+    b.build_br_if(max ? b.build_slt(x, y) : b.build_sgt(x, y), bb_merge, {y}, bb_tie, {});
+
+    // Equal, or one is NaN. x NaN: neither test below holds, so x is the answer already.
+    b.position_at_end(bb_tie);
     Value* zeros = max ? b.build_add(x, y) : b.build_neg(b.build_add(b.build_neg(x), b.build_neg(y)));
-    Value* both_zero = b.build_and(b.build_eq(x, y), b.build_eq(x, b.build_fconst_f64(0.0)));
-    Value* r = b.build_select(both_zero, zeros, pick);
-    // x NaN: the compares above are all false, so `r` is x already.
-    return b.build_select(b.build_ne(y, y), y, r);
+    Value* tie = b.build_select(b.build_eq(x, b.build_fconst_f64(0.0)), zeros, x);
+    b.build_br(bb_merge, {b.build_select(b.build_ne(y, y), y, tie)});
+
+    b.position_at_end(bb_merge);
+    return result;
 }
 
 bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeInstruction& inst) {

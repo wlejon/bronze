@@ -30,7 +30,6 @@ namespace il2mir {
 
 namespace {
 
-constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -83,7 +82,7 @@ Value* PropertyLoweringHelper::lower_elem_get_word_view(Builder& b, Value* obj, 
     // access by a Number index calls anything, so nothing between two
     // accesses clobbers them.
     b.position_at_end(cur);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* length = view_length(b, ptr);
     Value* data = load_typed_array_data(b, ptr);
     Value* kind = view_kind(b, ptr);
@@ -148,7 +147,7 @@ void PropertyLoweringHelper::lower_elem_set_word_view(Builder& b, Value* obj, Va
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
     b.position_at_end(cur);
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = object_address(b, obj);
     Value* length = view_length(b, ptr);
     Value* data = load_typed_array_data(b, ptr);
     Value* kind = view_kind(b, ptr);

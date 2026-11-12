@@ -20,7 +20,6 @@ namespace il2mir {
 namespace {
 
 constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
-constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
@@ -127,8 +126,8 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
 
 // The payload pointer of `obj` and whether it is an object at all.
 void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
-    is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    is_obj = is_object_address(b, object_address(b, obj));
+    ptr = object_address(b, obj);
 }
 
 // The first byte of the typed array at `ptr`'s window: its buffer's external
@@ -442,7 +441,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     const ElemIndex idx = elem_index(b, index, proven_integral);
     if (proven_in_bounds && proven_integral && known_num_idx) {
         Value* data = preloaded_data ? preloaded_data
-                                     : typed_array_data(b, b.build_and(obj, iconst(b, kPayloadMask)));
+                                     : typed_array_data(b, object_address(b, obj));
         return load_typed_array_elem(b, data, idx.i64, elem_kind);
     }
 
@@ -454,7 +453,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     Value* result = b.add_block_param(bb_merge, Type::f64());
 
     b.position_at_end(cur);
-    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : object_address(b, obj);
     Value* ta_len = preloaded_length
                         ? preloaded_length
                         : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
@@ -780,7 +779,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     const ElemIndex idx = elem_index(b, index, proven_integral);
     if (proven_in_bounds && proven_integral && known_num_idx) {
         Value* data = preloaded_data ? preloaded_data
-                                     : typed_array_data(b, b.build_and(obj, iconst(b, kPayloadMask)));
+                                     : typed_array_data(b, object_address(b, obj));
         emit_typed_store(data, idx.i64);
         return;
     }
@@ -792,7 +791,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
     b.position_at_end(cur);
-    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : object_address(b, obj);
     Value* ta_len = preloaded_length
                         ? preloaded_length
                         : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));

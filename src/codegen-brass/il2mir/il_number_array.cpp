@@ -42,8 +42,8 @@ Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<in
 
 // The payload pointer of `obj` and whether it is an object at all.
 void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
-    is_obj = b.build_eq(b.build_and(obj, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    is_obj = is_object_address(b, object_address(b, obj));
+    ptr = object_address(b, obj);
 }
 
 }  // namespace
@@ -93,7 +93,7 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
     if (proven_dense) {
         // An Array with `max_index` below its length, proven on this path: only
         // the bit is left to read.
-        ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+        ptr = object_address(b, obj);
         b.build_br(bb_arr);
         b.position_at_end(bb_arr);
         len = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
@@ -133,14 +133,14 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
 }
 
 void PropertyLoweringHelper::forget_numbers(Builder& b, Value* obj) {
-    Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    Value* ptr = object_address(b, obj);
     Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
     b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                   b.build_and(bits, b.build_iconst_i32(~static_cast<int32_t>(BRONZE_ABI_ARRAY_BIT_NUMBERS))));
 }
 
 void PropertyLoweringHelper::forget_numbers_unless_number(Builder& b, Value* obj, Value* val) {
-    Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    Value* ptr = object_address(b, obj);
     Value* not_num = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     Value* mask = b.build_select(not_num, b.build_iconst_i32(~static_cast<int32_t>(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
                                  b.build_iconst_i32(-1));

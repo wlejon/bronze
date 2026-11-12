@@ -332,3 +332,71 @@ TEST_CASE("a layout fact carries the epoch word's bits and no site converts it")
     CHECK(toFact >= 1);
     CHECK(toWord >= 1);
 }
+
+// An element read's receiver (il_abi.h `object_address`): its address is the
+// bits xor the object tag, the object test is that address below 2^48, and
+// nothing masks the receiver's bits, so brass's untag_reuse can hand the
+// address to the next access.
+TEST_CASE("an element read untags its receiver by xor and tests the address") {
+    bronze::il::Module m;
+    m.name = "elem_untag_test";
+    bronze::il::Function fn;
+    fn.name = "read_elem";
+    fn.params = {{"a", bronze::il::Type::Dynamic}, {"i", bronze::il::Type::Dynamic}};
+    fn.returnType = bronze::il::Type::Dynamic;
+    fn.valueCount = 3;
+    bronze::il::Block b0;
+    b0.id = 0;
+    bronze::il::Instruction get;
+    get.op = bronze::il::Op::ElemGet;
+    get.type = bronze::il::Type::Dynamic;
+    get.result = 2;
+    get.operands = {0, 1};
+    b0.instructions.push_back(get);
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Dynamic, bronze::il::kNoValue, {2}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> names = {"read_elem"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, names);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+    opts.direct_js_calls = true;
+    opts.pin_tls_register = true;
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    brass::Function* reader = tr.module->get_function("read_elem");
+    REQUIRE(reader != nullptr);
+    CHECK(brass::verify_function(*reader));
+
+    const brass::Value* receiver = reader->entry_block()->param(0);
+    const auto is_receiver_bits = [&](const brass::Value* v) {
+        const brass::Instruction* d = v && v->is_instruction() ? v->defining_instruction() : nullptr;
+        return v == receiver ||
+               (d && d->opcode() == brass::Opcode::bitcast_i64_tagged && d->operand(0) == receiver);
+    };
+    const uint64_t objectTag = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
+    int masked = 0;
+    int untagged = 0;
+    int tested = 0;
+    for (brass::BasicBlock* bb : reader->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (inst->operand_count() != 2) continue;
+            const brass::Instruction* k = inst->operand(1)->is_instruction() ? inst->operand(1)->defining_instruction() : nullptr;
+            const bool constant = k && k->opcode() == brass::Opcode::iconst_i64;
+            if (inst->opcode() == brass::Opcode::and_ && is_receiver_bits(inst->operand(0))) ++masked;
+            if (inst->opcode() == brass::Opcode::xor_ && is_receiver_bits(inst->operand(0)) && constant &&
+                static_cast<uint64_t>(k->imm_i64()) == objectTag) {
+                ++untagged;
+            }
+            if (inst->opcode() == brass::Opcode::ult && constant && k->imm_i64() == (int64_t{1} << 48)) {
+                const brass::Instruction* x = inst->operand(0)->is_instruction() ? inst->operand(0)->defining_instruction() : nullptr;
+                if (x && x->opcode() == brass::Opcode::xor_ && is_receiver_bits(x->operand(0))) ++tested;
+            }
+        }
+    }
+    CHECK(masked == 0);
+    CHECK(untagged >= 1);
+    CHECK(tested >= 1);
+}
