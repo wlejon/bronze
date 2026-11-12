@@ -151,6 +151,7 @@ add_test(NAME oracle-threejs-jit COMMAND bronze_oracle_tests "--test-case=threej
 set_tests_properties(oracle-threejs-jit PROPERTIES LABELS "threejs;jit-milestone")
 add_test(NAME oracle-pixi-jit COMMAND bronze_oracle_tests "--test-case=pixi-jit*")
 set_tests_properties(oracle-pixi-jit PROPERTIES LABELS "pixi;jit-milestone")
+set_tests_properties(oracle-threejs oracle-pixi oracle-threejs-jit oracle-pixi-jit PROPERTIES PROCESSORS 4)
 
 # An index run storing young objects far into a large old array, under
 # brass's heap verification (BRASS_GC_VERIFY: a slot naming a young object
