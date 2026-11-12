@@ -17,6 +17,7 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/property_key.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -293,4 +294,48 @@ TEST_CASE("objects given a fresh name each stop growing the transition tree") {
         heap, arena, key, val, /*ic=*/nullptr, /*enumerable=*/true)));
     CHECK(!self.get().asObject<ObjectHeader>()->shape->isDictionary());
     CHECK(root->transitions.size() == Shape::kComputedTransitionLimit + 1);
+}
+
+TEST_CASE("an object keyed by ids past a few dozen properties is a dictionary a number finds") {
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
+    Rooted<Value> self{
+        Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena)))};
+    Rooted<Value> key{Value::fromUndefined()};
+    Rooted<Value> val{Value::fromUndefined()};
+    auto add = [&](const std::string& name, double v) {
+        key.set(Value::fromString(StringHeader::createFromUTF8(heap, name.c_str())));
+        val.set(Value::fromDouble(v));
+        self.set(Value::fromObject(self.get().asObject<ObjectHeader>()->setProp(
+            heap, arena, key, val, /*ic=*/nullptr, /*enumerable=*/true)));
+    };
+    auto isDict = [&] { return self.get().asObject<ObjectHeader>()->shape->isDictionary(); };
+
+    // Ids up to the bound are a record's numbered fields, and no entry answers.
+    for (uint32_t i = 0; i < Shape::kIndexKeyedMapAfter; ++i) add(std::to_string(100 + i), i);
+    CHECK(!isDict());
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(100.0)) == nullptr);
+    // A name past the bound leaves it a record; the next id makes it a map.
+    add("name", 1.0);
+    CHECK(!isDict());
+    add("07", 2.0);  // not an array index
+    CHECK(!isDict());
+    add("7", 3.0);
+    REQUIRE(isDict());
+
+    const DictEntry* seven = runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(7.0));
+    REQUIRE(seven != nullptr);
+    CHECK(self.get().asObject<ObjectHeader>()->getSlot(seven->slot).asNumber() == 3.0);
+    const DictEntry* first = runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(100.0));
+    REQUIRE(first != nullptr);
+    CHECK(self.get().asObject<ObjectHeader>()->getSlot(first->slot).asNumber() == 0.0);
+    // -0 is the key "0"; a fraction, a negative, an absent id and a string
+    // key are not this path's to answer.
+    add("0", 4.0);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(-0.0)) != nullptr);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(7.5)) == nullptr);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(-7.0)) == nullptr);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(8.0)) == nullptr);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), key.get()) == nullptr);
 }

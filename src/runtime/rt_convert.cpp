@@ -66,7 +66,8 @@ namespace bronze::runtime {
 constexpr uint32_t kSmallIntStringCount = 1024;
 static thread_local StringHeader* t_smallIntStrings[kSmallIntStringCount];
 
-static Value smallIntString(uint32_t n) {
+Value rtSmallIntString(uint32_t n) {
+    if (n >= kSmallIntStringCount) return Value::fromUndefined();
     StringHeader*& cell = t_smallIntStrings[n];
     if (cell == nullptr) {
         char buf[16];
@@ -104,7 +105,7 @@ static Value valueToString(Value v) {
         // -0 is "0" (6.1.6.1.20), and it is the cell 0 here as well.
         if (d >= 0.0 && d < static_cast<double>(kSmallIntStringCount)) {
             const auto n = static_cast<uint32_t>(d);
-            if (static_cast<double>(n) == d) return smallIntString(n);
+            if (static_cast<double>(n) == d) return rtSmallIntString(n);
         }
         size_t len = formatJsNumber(d, buf);
         return rtMakeString(std::string_view(buf, len));

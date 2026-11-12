@@ -3,7 +3,9 @@
 // cache the runtime fills (runtime/elem_ic.h, laid out in bronze_abi_layout.h
 // "the COMPUTED-read cache"), the two hits that need nothing but loads — an
 // own data slot of a plain receiver, and an absent key while the epoch holds —
-// and calls bronze_elem_get, with the same operands, for everything else.
+// plus a data slot up the prototype chain while the epoch holds (the property
+// stubs' walk, il_direct_common.h), and calls bronze_elem_get, with the same
+// operands, for everything else.
 //
 // Why a stub and not the runtime's probe. A three.js frame makes millions of
 // these reads (`this.map[name]` in WebGLUniforms, `enabledCapabilities[id]` in
@@ -38,6 +40,7 @@
 //    (describesAbsent).
 
 #include "il_abi.h"
+#include "il_direct_common.h"
 #include "il_elem_stub.h"
 #include "il_lowering.h"
 #include "il_lowering_ops.h"
@@ -77,6 +80,7 @@ struct KeyedEntry {
     Value* tls = nullptr;
     Value* ptr = nullptr;
     Value* entry = nullptr;
+    Value* shape = nullptr;
     Value* match = nullptr;
 };
 
@@ -145,6 +149,7 @@ KeyedEntry keyed_entry(Builder& b, Value* obj, Value* key, int32_t tbl_off, int6
     Value* shape_ok = b.build_eq(
         b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), shape);
     k.match = b.build_and(b.build_and(kind_ok, key_ok), shape_ok);
+    k.shape = shape;
     return k;
 }
 
@@ -158,6 +163,8 @@ void build_elem_get_stub(PropertyLoweringHelper& pl, Function* fn) {
     BasicBlock* own = b.append_block("eget_own");
     BasicBlock* not_own = b.append_block("eget_notown");
     BasicBlock* absent = b.append_block("eget_absent");
+    BasicBlock* not_absent = b.append_block("eget_notabsent");
+    BasicBlock* chain = b.append_block("eget_chain");
     BasicBlock* slow = b.append_block("eget_slow");
 
     b.position_at_end(cur);
@@ -178,10 +185,21 @@ void build_elem_get_stub(PropertyLoweringHelper& pl, Function* fn) {
     Value* epoch_ok =
         b.build_eq(b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET),
                    b.build_load(Type::i64(), k.tls, BRONZE_TLS_PROTO_EPOCH_OFF));
-    b.build_br_if(b.build_and(is_absent, epoch_ok), absent, slow);
+    b.build_br_if(b.build_and(is_absent, epoch_ok), absent, not_absent);
 
     b.position_at_end(absent);
     b.build_ret(iconst(b, kUndefinedTag));
+
+    // A data property up the chain while the epoch holds (`gl[name]`, a method
+    // picked by a computed name off a class's prototype): the holder's slot,
+    // each link asked what the runtime's probe asks of it.
+    b.position_at_end(not_absent);
+    Value* data = b.build_eq(b.build_and(depth, b.build_iconst_i64(direct::kAccessorDepth)), iconst(b, 0));
+    b.build_br_if(b.build_and(epoch_ok, b.build_and(data, direct::walkable_depth(b, depth))), chain, slow);
+
+    b.position_at_end(chain);
+    Value* holder = direct::walk_to_prototype(b, k.shape, depth, slow, "eget");
+    b.build_ret(pl.load_slot(b, holder, b.build_and(slot_word, b.build_iconst_i64(direct::kSlotMask))));
 
     b.position_at_end(slow);
     b.build_ret(b.build_call("bronze_elem_get", Type::i64(), {obj, key}));

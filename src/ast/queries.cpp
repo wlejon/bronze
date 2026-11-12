@@ -326,6 +326,7 @@ class ArgumentsListVisitor final : public CaptureVisitor {
 public:
     size_t mentions = 0;
     size_t reads = 0;
+    size_t arrowMentions = 0;
     bool written = false;
     static bool isArguments(const Expr* e) {
         const auto* id = dynamic_cast<const Ident*>(e);
@@ -337,7 +338,9 @@ public:
         return false;
     }
     void visit(const Ident& i) override {
-        if (i.name == "arguments") ++mentions;
+        if (i.name != "arguments") return;
+        ++mentions;
+        if (arrowDepth_ > 0) ++arrowMentions;
     }
     void visit(const MemberAccess& m) override {
         if (isArguments(m.object.get()) && m.property == "length") ++reads;
@@ -364,14 +367,19 @@ public:
     }
     void visit(const FunctionExpr& f) override {
         if (!f.isArrow) return;
+        ++arrowDepth_;
         visitParamExprs(f.params, *this);
         for (const auto& s : f.body) {
             if (s) s->accept(*this);
         }
+        --arrowDepth_;
     }
     void visit(const FunctionDecl&) override {}
     void visit(const ClassDecl&) override {}
     void visit(const ClassExpr&) override {}
+
+private:
+    size_t arrowDepth_ = 0;
 };
 }  // namespace
 
@@ -383,6 +391,17 @@ bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<St
         if (s) s->accept(v);
     }
     return !v.written && v.mentions == v.reads;
+}
+
+bool readsArgumentsInBodyOnly(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
+    if (!params.empty() && params.back().isRest) return false;
+    if (!usesArguments(params, body)) return false;
+    ArgumentsListVisitor v;
+    visitParamExprs(params, v);
+    for (const auto& s : body) {
+        if (s) s->accept(v);
+    }
+    return !v.written && v.mentions == v.reads && v.arrowMentions == 0;
 }
 
 bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {

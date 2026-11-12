@@ -16,10 +16,12 @@ constexpr const char* kLeadingStubs[] = {
     "__bronze_method_call_ic", "__bronze_elem_get_keyed",  "__bronze_elem_set_keyed",
 };
 // The stubs a module calls on slower paths (kPropGetSlowStub: a getter or a
-// receiver no way names; kSortMergeStub: Array.prototype.sort's merge): hot
+// receiver no way names; kPropSetSlowStub: a write past its site's way 0;
+// kSortMergeStub: Array.prototype.sort's merge): hot
 // in some programs, so they follow the hot functions rather than lead them.
 constexpr const char* kTrailingStubs[] = {
     "__bronze_prop_get_slow",
+    "__bronze_prop_set_slow",
     "__bronze_sort_merge",
 };
 

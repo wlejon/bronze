@@ -432,6 +432,14 @@ public:
     // objects the inline caches are for never convert.
     static constexpr uint32_t kDictionaryThreshold = 1024;
 
+    // An object given an array index for a name ("7", "1024") once it already
+    // has this many properties is a map keyed by ids, whatever its size: each
+    // id is a transition node, each node a new shape for every cache that
+    // spoke of the object, and an id is not a name a call site carries. The
+    // add moves it to dictionary mode. A record with a few numbered fields, or
+    // a table of a few dozen enum values, stays a record.
+    static constexpr uint32_t kIndexKeyedMapAfter = 32;
+
     // THE TRANSITION BOUND. Shape nodes are immortal, so every edge the tree
     // grows is kept for the life of the thread — which is right for a key the
     // program names in its text (bounded by the text) and wrong for one it

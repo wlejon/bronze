@@ -84,6 +84,8 @@ std::optional<il::Module> Lowerer::lower() {
             if (ast::usesArguments(fnDecl->params, fnDecl->body)) {
                 fn.needsArguments = true;
                 fn.argumentsIsList = ast::readsArgumentsAsList(fnDecl->params, fnDecl->body);
+                fn.argumentsIsCount = fn.argumentsIsList && !fnDecl->isGenerator && !fnDecl->isAsync &&
+                                      ast::readsArgumentsInBodyOnly(fnDecl->params, fnDecl->body);
                 fn.params.push_back({"__arguments", il::Type::Dynamic});
             }
             // Every source parameter starts on the uniform dynamic convention

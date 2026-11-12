@@ -44,6 +44,10 @@ inline constexpr const char* kPolyScanHelper = "bronze_prop_poly_scan";
 // the same operands.
 inline constexpr const char* kPropGetStub = "__bronze_prop_get_ic";
 inline constexpr const char* kPropSetStub = "__bronze_prop_set_ic";
+// kPropSetStub is the write's way-0 answers alone (il_prop_set_fast.cpp: an
+// own data slot, an add into an inline slot); the other ways, the table, a
+// setter and the helper are kPropSetSlowStub's, with the site's operands.
+inline constexpr const char* kPropSetSlowStub = "__bronze_prop_set_slow";
 // kPropGetStub is the read's hit paths alone (il_prop_get_fast.cpp: own and
 // prototype data slots and absent keys, from any way or the megamorphic
 // table), written for a leaf's registers; everything else (a getter, a
@@ -527,12 +531,14 @@ public:
                                 Value*& out_ok, Value*& out_block, Value*& out_head, BasicBlock* miss = nullptr);
 
     // A constant-index property read or write (`o[0]`, `o[15] = v`): an inline
-    // Array element access in front of `bronze_prop_get` / `bronze_prop_set`.
-    Value* lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index, uint32_t elem_index,
-                                const IcSite& site, bool check_hole = true);
-    void lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index, uint32_t elem_index,
-                              Value* val, uint32_t strict, const IcSite& site,
+    // Array element access in front of the computed access's helper, called
+    // with the index as a Number.
+    Value* lower_prop_get_index(Builder& b, Value* obj, uint32_t elem_index, bool check_hole = true);
+    void lower_prop_set_index(Builder& b, Value* obj, uint32_t elem_index, Value* val, uint32_t strict,
                               bool val_is_primitive = false);
+    // The same access past the Array test (il_property_lowering.cpp).
+    Value* lower_index_get_helper(Builder& b, Value* obj, uint32_t elem_index);
+    void lower_index_set_helper(Builder& b, Value* obj, uint32_t elem_index, Value* val, uint32_t strict);
 
     // `obj.length` with inline Array and typed-array arms (each header's
     // length) in front of the site's way-0 guard (`mono`) or the helper.

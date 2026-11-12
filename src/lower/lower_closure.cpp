@@ -139,6 +139,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     if (!isArrow && ast::usesArguments(params, body)) {
         newFn.needsArguments = true;
         newFn.argumentsIsList = ast::readsArgumentsAsList(params, body);
+        newFn.argumentsIsCount = newFn.argumentsIsList && !isGenerator && !isAsync &&
+                                 ast::readsArgumentsInBodyOnly(params, body);
         newFn.params.push_back({"__arguments", il::Type::Dynamic});
     }
     // A closure's parameters and return are always the uniform dynamic
@@ -191,6 +193,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // closure.
     size_t outerBlockIdx = currentBlockIdx_;
     auto outerVarBindings = std::move(varBindings_);
+    const size_t outerArgumentsBinding = argumentsBinding_;
     varBindings_.clear();
     auto outerVarNativeClasses = std::move(varNativeClasses_);
     varNativeClasses_.clear();
@@ -296,6 +299,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
 
     strictCode_ = outerStrict;
     varBindings_ = std::move(outerVarBindings);
+    argumentsBinding_ = outerArgumentsBinding;
     varNativeClasses_ = std::move(outerVarNativeClasses);
     activeVarMap_ = std::move(outerActiveVarMap);
     functionRefMap_ = std::move(outerFunctionRefMap);

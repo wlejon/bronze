@@ -8,6 +8,8 @@
 
 #include "runtime/heap.h"
 
+#include <atomic>
+
 #include "abi/bronze_abi.h"
 #include "runtime/elem_ic.h"
 #include "runtime/exception.h"
@@ -208,6 +210,13 @@ void VirtualMemory::release(void* ptr, size_t bytes) {
 #endif
 }
 
+namespace {
+// The collector's layout id of each GcLayout but Auto, by the enum's value:
+// the process-wide ids of heap_trace.h, where an allocation reads them with
+// one load in place of a call through a function-local static's guard.
+std::atomic<brass::gc::LayoutId> g_layoutIds[5];
+}  // namespace
+
 Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
     gc_detail::BarrierHeaps& barrier = gc_detail::t_barrierHeaps;
     if (barrier.count >= gc_detail::BarrierHeaps::kMax) {
@@ -220,6 +229,13 @@ Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
         last_full_ = kind == brass::gc::CollectionKind::Full;
     });
     registerFrameRoots();
+
+    // Before this heap's first allocation; every heap stores the same ids.
+    const gc_detail::LayoutIds& ids = gc_detail::layoutIds();
+    g_layoutIds[static_cast<size_t>(GcLayout::Cell)].store(ids.cell, std::memory_order_relaxed);
+    g_layoutIds[static_cast<size_t>(GcLayout::Leaf)].store(ids.leaf, std::memory_order_relaxed);
+    g_layoutIds[static_cast<size_t>(GcLayout::WeakLast)].store(ids.weakLast, std::memory_order_relaxed);
+    g_layoutIds[static_cast<size_t>(GcLayout::Ephemerons)].store(ids.ephemerons, std::memory_order_relaxed);
 
     if (envIsOn("BRONZE_GC_STRESS")) set_gc_stress(true);
     if (envIsOne("BRONZE_GC_POISON")) set_gc_poison(true);
@@ -316,17 +332,10 @@ HeapObjectHeader* Heap::allocateOld(size_t bytes, Tag tag) {
 HeapObjectHeader* Heap::allocateWith(size_t bytes, Tag tag, GcLayout layout, uint32_t gcFlags) {
     const size_t total = (sizeof(HeapObjectHeader) + bytes + 7) & ~static_cast<size_t>(7);
     if (total > UINT32_MAX) throw std::bad_alloc();
-    const gc_detail::LayoutIds& ids = gc_detail::layoutIds();
-    brass::gc::LayoutId id = ids.cell;
-    switch (layout) {
-        case GcLayout::Auto:
-            id = (tag == Tag::String || tag == Tag::BigInt) ? ids.leaf : ids.cell;
-            break;
-        case GcLayout::Cell: id = ids.cell; break;
-        case GcLayout::Leaf: id = ids.leaf; break;
-        case GcLayout::WeakLast: id = ids.weakLast; break;
-        case GcLayout::Ephemerons: id = ids.ephemerons; break;
+    if (layout == GcLayout::Auto) {
+        layout = (tag == Tag::String || tag == Tag::BigInt) ? GcLayout::Leaf : GcLayout::Cell;
     }
+    const brass::gc::LayoutId id = g_layoutIds[static_cast<size_t>(layout)].load(std::memory_order_relaxed);
     uintptr_t object = 0;
     bool outOfMemory = false;
     try {

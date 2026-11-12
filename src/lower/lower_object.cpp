@@ -552,6 +552,26 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
         return Value{inst.result, il::Type::F64};
     }
 
+    // `arguments.length` where the parameter may hold the count itself.
+    if (mem->property == "length" && !mem->isPrivate) {
+        if (const std::optional<Value> args = countedArguments(*mem->object, ilFn)) {
+            const il::BlockId bList = createBlock(ilFn);
+            const il::BlockId bJoin = createBlock(ilFn);
+            const il::ValueId res = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({res, il::Type::Dynamic});
+            emitArgumentsIsCountBranch(*args, bJoin, bList, ilFn);
+            setCurrentBlock(bList);
+            const Value length = emitMemberRead(*mem, *args, ilFn);
+            il::Instruction jmp;
+            jmp.op = il::Op::Jump;
+            jmp.type = il::Type::Void;
+            jmp.target = il::BlockTarget{.block = bJoin, .args = {length.id}};
+            emitInst(ilFn, jmp);
+            setCurrentBlock(bJoin);
+            return Value{res, il::Type::Dynamic};
+        }
+    }
+
     auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -559,6 +579,110 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     // `o.#x` reads no property and consults no inline cache: a private element
     // has no shape and no slot (lower_private.cpp).
     if (mem->isPrivate) return lowerPrivateRead(*mem, objBoxed, ilFn);
+    return emitMemberRead(*mem, objBoxed, ilFn);
+}
+
+// The function's own `arguments` where it may be the count (il.h
+// `argumentsIsCount`): the synthetic parameter, unless a declaration shadows
+// the name here.
+std::optional<Lowerer::Value> Lowerer::countedArguments(const ast::Expr& object, const il::Function& ilFn) const {
+    if (!ilFn.argumentsIsCount) return std::nullopt;
+    const auto* ident = dynamic_cast<const ast::Ident*>(&object);
+    if (ident == nullptr || ident->name != "arguments") return std::nullopt;
+    const auto it = activeVarMap_.find("arguments");
+    if (it == activeVarMap_.end() || it->second != argumentsBinding_) return std::nullopt;
+    return Value{static_cast<il::ValueId>(ilFn.firstSourceParam() - 1), il::Type::Dynamic};
+}
+
+// Ends the block on whether `args` is the count: `onCount` is entered with it
+// as the one argument, `onList` with none.
+void Lowerer::emitArgumentsIsCountBranch(Value args, il::BlockId onCount, il::BlockId onList, il::Function& ilFn) {
+    il::Instruction test;
+    test.op = il::Op::IsNumber;
+    test.type = il::Type::Bool;
+    test.result = ilFn.valueCount++;
+    test.operands = {args.id};
+    emitInst(ilFn, test);
+    const il::BlockId bCount = createBlock(ilFn);
+    il::Instruction br;
+    br.op = il::Op::Branch;
+    br.type = il::Type::Void;
+    br.operands = {test.result};
+    br.target = il::BlockTarget{.block = bCount, .args = {}};
+    br.elseTarget = il::BlockTarget{.block = onList, .args = {}};
+    emitInst(ilFn, br);
+    setCurrentBlock(bCount);
+    il::Instruction jmp;
+    jmp.op = il::Op::Jump;
+    jmp.type = il::Type::Void;
+    jmp.target = il::BlockTarget{.block = onCount, .args = {args.id}};
+    emitInst(ilFn, jmp);
+}
+
+// The list `arguments[i]` reads: the Array the wrapper built, or, when it
+// passed the count, an Array of the values the parameters arrived with, cut
+// to the count (no more arguments were passed than there are parameters
+// then).
+Lowerer::Value Lowerer::lazyArgumentsList(Value args, il::Function& ilFn) {
+    const il::BlockId bBuild = createBlock(ilFn);
+    const il::BlockId bJoin = createBlock(ilFn);
+    const il::ValueId list = ilFn.valueCount++;
+    ilFn.blocks[bJoin].params.push_back({list, il::Type::Dynamic});
+    const il::ValueId count = ilFn.valueCount++;
+    ilFn.blocks[bBuild].params.push_back({count, il::Type::Dynamic});
+    il::Instruction test;
+    test.op = il::Op::IsNumber;
+    test.type = il::Type::Bool;
+    test.result = ilFn.valueCount++;
+    test.operands = {args.id};
+    emitInst(ilFn, test);
+    il::Instruction br;
+    br.op = il::Op::Branch;
+    br.type = il::Type::Void;
+    br.operands = {test.result};
+    br.target = il::BlockTarget{.block = bBuild, .args = {args.id}};
+    br.elseTarget = il::BlockTarget{.block = bJoin, .args = {args.id}};
+    emitInst(ilFn, br);
+
+    setCurrentBlock(bBuild);
+    const size_t first = ilFn.firstSourceParam();
+    const size_t n = ilFn.params.size() - first;
+    il::Instruction create;
+    create.op = il::Op::CreateArray;
+    create.type = il::Type::Dynamic;
+    create.result = ilFn.valueCount++;
+    create.immI32 = static_cast<int32_t>(n);
+    emitInst(ilFn, create);
+    for (size_t i = 0; i < n; ++i) {
+        const Value param = boxValueIfNeeded(Value{static_cast<il::ValueId>(first + i), ilFn.params[first + i].type}, ilFn);
+        il::Instruction set;
+        set.op = il::Op::PropSet;
+        set.type = il::Type::Void;
+        set.operands = {create.result, param.id};
+        set.keyIndex = getKeyConstantIndex(std::to_string(i));
+        set.icIndex = icSiteCounter_++;
+        set.immI32 = il::kWriteLiteralElement;
+        emitInst(ilFn, set);
+    }
+    // The list is as long as the count, whatever key reads it.
+    il::Instruction setLength;
+    setLength.op = il::Op::PropSet;
+    setLength.type = il::Type::Void;
+    setLength.operands = {create.result, count};
+    setLength.keyIndex = getKeyConstantIndex("length");
+    setLength.icIndex = icSiteCounter_++;
+    emitInst(ilFn, setLength);
+    il::Instruction jmp;
+    jmp.op = il::Op::Jump;
+    jmp.type = il::Type::Void;
+    jmp.target = il::BlockTarget{.block = bJoin, .args = {create.result}};
+    emitInst(ilFn, jmp);
+    setCurrentBlock(bJoin);
+    return Value{list, il::Type::Dynamic};
+}
+
+Lowerer::Value Lowerer::emitMemberRead(const ast::MemberAccess& memRef, Value objBoxed, il::Function& ilFn) {
+    const ast::MemberAccess* mem = &memRef;
 
     const std::string* forwarded = devirtualizedKey(inference_, *mem->object, mem->property);
     uint32_t keyIdx = getKeyConstantIndex(forwarded != nullptr ? *forwarded : mem->property);
@@ -608,6 +732,12 @@ std::optional<uint32_t> Lowerer::literalIndexKey(const ast::Expr& index) {
 
 std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* idxAccess,
                                                         il::Function& ilFn, bool onSpine) {
+    // `arguments[i]` where the parameter may hold the count (and is never
+    // nullish, so `?.` skips nothing).
+    if (const std::optional<Value> args = countedArguments(*idxAccess->object, ilFn)) {
+        return emitIndexRead(*idxAccess, lazyArgumentsList(*args, ilFn), ilFn);
+    }
+
     // Here the read's value is used as it is (`a[i] === undefined`, `return
     // a[i]`), not coerced, so the f64 form, which reads an invalid index as
     // NaN, is exact only where every index is proven a valid one.

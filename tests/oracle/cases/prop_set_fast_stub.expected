@@ -1,0 +1,18 @@
+0:0:true 1:1:false 2:2:false 3:3:true 4:4:false 5:5:false
+fn,context,once {"fn":7,"context":{"i":7},"once":false}
+58 a,y
+new o undefined s undefined a
+true
+0 29
+set 5 | trap x=7 ro 7
+before from proto first proto setter after
+fixed first
+again first,late
+undefined
+inherited k,m
+23 79 20 1 79
+12 20 24 24 24 2 end
+v v v undefined undefined
+true
+true
+number,number-0,number,string,object,undefined,boolean,bigint,symbol,object,object,function false

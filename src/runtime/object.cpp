@@ -456,6 +456,18 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
     return runtime::rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
+namespace {
+// Is this add the one that shows the object to be a map keyed by ids
+// (Shape::kIndexKeyedMapAfter)?
+bool indexKeyedMapAdd(const Shape* shape, PropertyKey added) noexcept {
+    if (shape->slotsUsedAfterAdd() <= Shape::kIndexKeyedMapAfter) return false;
+    const StringHeader* s = added.string();
+    if (s == nullptr || !s->isLatin1()) return false;
+    uint32_t index = 0;
+    return runtime::rtIsIntegerLikeKey(std::string_view(s->latin1Data(), s->getLength()), index);
+}
+}  // namespace
+
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                                     Rooted<Value>& val, InlineCache* ic, bool enumerable,
                                     bool defineOwn, const Value* receiver, SetRefusal* refused,
@@ -696,7 +708,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // The same move for a computed key the transition tree will not grow for
     // (Shape::refusesNewTransition): a map keyed by names nobody else has.
     if (!shape->isDictionary() && (shape->slotsUsedAfterAdd() > Shape::kDictionaryThreshold ||
-                                   shape->refusesNewTransition(prop_name))) {
+                                   shape->refusesNewTransition(prop_name) ||
+                                   indexKeyedMapAdd(shape, prop_name))) {
         runtime::ShapeLeaveReason why(ShapeLeave::Threshold);
         toDictionary(arena, self);
     }

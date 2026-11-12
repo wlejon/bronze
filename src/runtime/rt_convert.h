@@ -98,6 +98,10 @@ Value rtToPropertyKey(Rooted<Value>& key);
 // Drops the per-thread small-integer strings (rt_convert.cpp) when the arena
 // that holds them goes.
 void rtForgetSmallIntStrings() noexcept;
+// The immortal string of a small non-negative integer (rt_convert.cpp), or
+// undefined for one past the cache. Allocates in the arena only, so a caller
+// holding a raw header may ask.
+Value rtSmallIntString(uint32_t n);
 
 // ToString (7.1.17) with step 1's ToPrimitive OMITTED, for a caller that has
 // already run it. It allocates for a number and THROWS for a Symbol, so a

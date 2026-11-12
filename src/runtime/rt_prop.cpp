@@ -786,6 +786,11 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         }
     }
 
+    // A map keyed by ids (rtIdKeyedOwnEntry): an own data entry is the answer.
+    if (const DictEntry* own = rtIdKeyedOwnEntry(objVal, Value(idxBits))) {
+        return objVal.asObject<ObjectHeader>()->getSlot(own->slot).rawBits();
+    }
+
     if (Value(idxBits).isSymbol()) {
         // Reading a property of null or undefined is the TypeError of 7.3.2
         // whatever the key is; the `fatal` below would kill the process where

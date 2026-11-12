@@ -177,6 +177,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     // rule of its own. Declared before the parameters so that any real
     // declaration of the name — which `ast::usesArguments` already refuses to
     // create this for — would shadow rather than collide with it.
+    argumentsBinding_ = SIZE_MAX;
     if (ilFn.needsArguments) {
         const il::ValueId argsVal = static_cast<il::ValueId>(ilFn.firstSourceParam() - 1);
         if (functionEnvScope_ != SIZE_MAX &&
@@ -189,6 +190,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                              /*isVar=*/true, /*isInitialized=*/true, argsVal, Span{})) {
             return false;
         }
+        argumentsBinding_ = activeVarMap_.at("arguments");
     }
 
     if (!lowerParamBindings(params, paramBase, ilFn)) return false;

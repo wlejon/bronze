@@ -25,6 +25,16 @@ Value* iconst(Builder& b, uint64_t v) {
     return b.build_iconst_i64(static_cast<int64_t>(v));
 }
 
+// A run member's read once the run's receiver has proven no dense Array: the
+// index key's computed read (lower_index_get_helper), any other key's named
+// one.
+Value* lower_index_key_get(PropertyLoweringHelper& pl, Builder& b, Value* recv, const BronzeInstruction& inst) {
+    if (const auto parsed = bronze::il::parseIndexKey(pl.key_tag(inst.index))) {
+        return pl.lower_index_get_helper(b, recv, *parsed);
+    }
+    return pl.lower_prop_get(b, recv, inst.index, pl.ic_site_ref(b, inst.ic_index));
+}
+
 }  // namespace
 
 bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
@@ -185,8 +195,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 const BronzeInstruction& inst = blk_ast.instructions[j];
                 apply_loc(inst);
                 Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, val_map), Type::i64(), b);
-                const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
-                Value* v = prop_lowering_.lower_prop_get(b, recv, inst.index, site);
+                Value* v = lower_index_key_get(prop_lowering_, b, recv, inst);
                 slow_args.push_back(ensure_type(v, inst.number_bits ? Type::tagged() : merge_params[j - inst_idx]->type(), b));
             }
             // The helper reads are GC points, so a double-held read's bits
@@ -607,8 +616,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         } else if (inst.op == BronzeOp::PropGet) {
             apply_loc(inst);
             Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, slow_val_map), Type::i64(), b);
-            const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
-            Value* slow_val = prop_lowering_.lower_prop_get(b, recv, inst.index, site);
+            Value* slow_val = lower_index_key_get(prop_lowering_, b, recv, inst);
             slow_get_vals[inst.result_id] = ensure_type(slow_val, Type::tagged(), b);
         } else if (inst.op == BronzeOp::PropSet) {
             apply_loc(inst);
@@ -620,10 +628,14 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             } else {
                 val = ensure_type(get_val_by_id(val_id, b, slow_val_map), Type::i64(), b);
             }
-            const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
             const uint32_t strict = static_cast<uint32_t>(inst.imm_i64);
-            prop_lowering_.lower_prop_set(b, recv, inst.index, val, strict,
-                                          site ? prop_lowering_.site_ptr(b, site) : nullptr);
+            if (const auto parsed = bronze::il::parseIndexKey(prop_lowering_.key_tag(inst.index))) {
+                prop_lowering_.lower_index_set_helper(b, recv, *parsed, val, strict);
+            } else {
+                const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
+                prop_lowering_.lower_prop_set(b, recv, inst.index, val, strict,
+                                              site ? prop_lowering_.site_ptr(b, site) : nullptr);
+            }
         } else if (is_run_local_scalar(inst)) {
             apply_loc(inst);
             if (!lower_instruction(inst, b, fn, slow_val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {

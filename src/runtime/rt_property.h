@@ -80,6 +80,14 @@ Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly);
 // the two answers cannot drift.
 bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 
+// `map[id]` on a map keyed by ids: the own DATA entry a small non-negative
+// integer key names on a bare plain object in dictionary mode (which is where
+// such a map lives, Shape::kIndexKeyedMapAfter), or null for any other
+// receiver, key or answer. Nothing is allocated on the GC heap, so a caller
+// may hold a raw receiver across it; the slot is read or written by the
+// caller, who also owns the questions a write asks (`writable`).
+const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key);
+
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
 // which is what the language says for a property that does not exist.

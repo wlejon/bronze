@@ -470,8 +470,26 @@ void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* bl
     }
 }
 
-Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index,
-                                                    uint32_t elem_index, const IcSite& site,
+namespace {
+// An array index as the Number a computed access carries for a key.
+uint64_t number_bits(uint32_t index) { return std::bit_cast<uint64_t>(static_cast<double>(index)); }
+}  // namespace
+
+// What a constant-index access calls once its receiver has proven no dense
+// Array: the computed access with the index as its key, which answers a typed
+// array's element and a string's unit at the helper's door. The named access
+// went through the site's cache to learn that an index is no shape's slot.
+Value* PropertyLoweringHelper::lower_index_get_helper(Builder& b, Value* obj, uint32_t elem_index) {
+    return b.build_call(elem_get_helper(), Type::i64(), {obj, iconst64(b, number_bits(elem_index))});
+}
+
+void PropertyLoweringHelper::lower_index_set_helper(Builder& b, Value* obj, uint32_t elem_index, Value* val,
+                                                    uint32_t strict) {
+    b.build_call(elem_set_helper(), Type::void_type(),
+                 {obj, iconst64(b, number_bits(elem_index)), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+}
+
+Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t elem_index,
                                                     bool check_hole) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -493,16 +511,15 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     b.build_br(bb_merge, {fast_val});
 
     b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site);
+    Value* slow_val = lower_index_get_helper(b, obj, elem_index);
     b.build_br(bb_merge, {slow_val});
 
     b.position_at_end(bb_merge);
     return result;
 }
 
-void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
-                                                  uint32_t elem_index, Value* val, uint32_t strict,
-                                                  const IcSite& site, bool val_is_primitive) {
+void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t elem_index, Value* val,
+                                                  uint32_t strict, bool val_is_primitive) {
     BasicBlock* cur = b.current_block();
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     Function* fn = cur->parent();
@@ -536,7 +553,7 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
     }
 
     b.position_at_end(bb_slow);
-    lower_prop_set(b, obj, key_index, val, strict, site ? site_ptr(b, site) : nullptr);
+    lower_index_set_helper(b, obj, elem_index, val, strict);
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);
@@ -669,8 +686,7 @@ bool lower_property_instruction(
                             return true;
                         }
                         if (!lowering->run_once()) {
-                            res_val = prop_lowering.lower_prop_get_index(b, obj_val, inst_ast.index, *elem_idx, site,
-                                                                         check_hole);
+                            res_val = prop_lowering.lower_prop_get_index(b, obj_val, *elem_idx, check_hole);
                             lowering->invalidate_dense_array_proofs();
                             return true;
                         }
@@ -704,8 +720,7 @@ bool lower_property_instruction(
                     if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets() &&
                         !lowering->run_once()) {
                         const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                        prop_lowering.lower_prop_set_index(b, obj_val, inst_ast.index, *elem_idx, val, strict, site,
-                                                           val_prim);
+                        prop_lowering.lower_prop_set_index(b, obj_val, *elem_idx, val, strict, val_prim);
                         lowering->invalidate_dense_array_proofs();
                         return true;
                     }

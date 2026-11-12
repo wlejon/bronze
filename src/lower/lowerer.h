@@ -183,6 +183,10 @@ private:
     il::ValueId currentEnv(il::Function& ilFn);
     il::ValueId currentThisValue_ = il::kNoValue;
     bool currentFunctionIsArrow_ = false;
+    // The binding of the function's own `arguments` (lower_function.cpp),
+    // SIZE_MAX when it has none: what `countedArguments` tells from a
+    // declaration that shadows the name.
+    size_t argumentsBinding_ = SIZE_MAX;
     bool derivedCtorThis_ = false;
     bool pendingDerivedCtor_ = false;
     // The receiver-binding plan of the derived constructor being lowered, and
@@ -747,6 +751,10 @@ private:
                                            bool onSpine = false);
     std::optional<Value> lowerIndexAccess(const ast::IndexAccess* idxAccess, il::Function& ilFn,
                                           bool onSpine = false);
+    Value emitMemberRead(const ast::MemberAccess& mem, Value objBoxed, il::Function& ilFn);
+    std::optional<Value> countedArguments(const ast::Expr& object, const il::Function& ilFn) const;
+    void emitArgumentsIsCountBranch(Value args, il::BlockId onCount, il::BlockId onList, il::Function& ilFn);
+    Value lazyArgumentsList(Value args, il::Function& ilFn);
     std::optional<Value> emitIndexRead(const ast::IndexAccess& idxAccess, Value objBoxed,
                                        il::Function& ilFn);
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,

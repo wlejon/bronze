@@ -30,6 +30,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     bool needs_this = false;
     bool needs_arguments = false;
     bool arguments_is_list = false;
+    bool arguments_is_count = false;
     bool has_rest = false;
     bool is_strict = false;
     size_t first_source_param = 0;
@@ -43,6 +44,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
         needs_this = it_meta->second.needs_this;
         needs_arguments = it_meta->second.needs_arguments;
         arguments_is_list = it_meta->second.arguments_is_list;
+        arguments_is_count = it_meta->second.arguments_is_count;
         has_rest = it_meta->second.has_rest_param;
         is_strict = it_meta->second.is_strict;
         first_source_param = it_meta->second.first_source_param;
@@ -126,7 +128,23 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     }
 
     Value* arguments_arg = nullptr;
-    if (needs_arguments && arguments_is_list) {
+    if (needs_arguments && arguments_is_list && arguments_is_count) {
+        // The count when no more was passed than there are parameters, else
+        // the rest array from 0 (il.h argumentsIsCount).
+        BasicBlock* cur = b.current_block();
+        const std::string prefix = "args_" + std::to_string(cur->parent()->next_block_id());
+        BasicBlock* more = b.append_block(prefix + "_list");
+        BasicBlock* merge = b.append_block(prefix + "_merge");
+        Value* raw = b.add_block_param(merge, Type::i64());
+        b.position_at_end(cur);
+        Value* count = b.build_bitcast_i64_f64(b.build_sitofp_f64_i64(b.build_zext_i64(val_argc)));
+        b.build_br_if(b.build_ugt(val_argc, b.build_iconst_i32(static_cast<int32_t>(named_count))), more, {}, merge,
+                      {count});
+        b.position_at_end(more);
+        b.build_br(merge, {b.build_call("bronze_rest_args", Type::i64(), {val_argc, val_argv, b.build_iconst_i32(0)})});
+        b.position_at_end(merge);
+        arguments_arg = ensure_type(raw, Type::tagged(), b);
+    } else if (needs_arguments && arguments_is_list) {
         // Read only as a list (il.h argumentsIsList): the rest array from 0.
         arguments_arg = ensure_type(
             b.build_call("bronze_rest_args", Type::i64(), {val_argc, val_argv, b.build_iconst_i32(0)}),

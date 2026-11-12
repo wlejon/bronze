@@ -225,6 +225,13 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
 // does not, which is the one difference.
 bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
 
+// `readsArgumentsAsList`, with every mention in the function's own body (no
+// arrow reads `arguments`) and no rest parameter. Such a function needs the
+// list only when the caller passed more arguments than it has parameters:
+// with no more, `arguments.length` is the count and `arguments[i]` is the
+// value parameter i arrived with (il.h `argumentsIsCount`).
+bool readsArgumentsInBodyOnly(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
+
 // Does this function body contain a `return <expr>;`? Like `usesThis`, it
 // does NOT descend into nested functions: an inner `return` returns from
 // that function.

@@ -30,6 +30,8 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/number_format.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -219,6 +221,26 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
     return true;
 }
 
+const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key) {
+    if (!objVal.isObject() || !key.isNumber()) return nullptr;
+    const auto* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Plain) return nullptr;
+    const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
+    const Shape* sh = obj->shape;
+    if (sh == nullptr || sh->dict == nullptr || sh->used_as_prototype || !obj->isBarePlain() ||
+        rtMaybeGlobalObjectShape(sh)) {
+        return nullptr;
+    }
+    const double d = key.asNumber();
+    if (!(d >= 0.0 && d < 4294967296.0)) return nullptr;
+    const auto n = static_cast<uint32_t>(d);
+    if (static_cast<double>(n) != d) return nullptr;
+    const Value text = rtSmallIntString(n);
+    if (!text.isString()) return nullptr;
+    const DictEntry* e = sh->dict->find(PropertyKey::forString(text.asString<StringHeader>()));
+    return e != nullptr && !e->accessor ? e : nullptr;
+}
+
 // ToPropertyKey (ECMA-262 7.1.19) as a heap string: every property name is a
 // string, so `o[2]` and `o["2"]` name the same property and `{ [2]: v }` and `{
 // 2: v }` write the same one. ToString(Number) is `formatJsNumber` and not
@@ -237,7 +259,16 @@ Value rtElemKeyAsString(Value idxVal) {
     char buf[64];
     size_t len = 0;
     if (idxVal.isNumber()) {
-        len = formatJsNumber(idxVal.asNumber(), buf);
+        // An id, a counter, a slot number: the key of `map[id]`, whose string
+        // is immortal and carries its hash (-0 is "0", and the cell 0).
+        const double d = idxVal.asNumber();
+        if (d >= 0.0 && d < 4294967296.0) {
+            const auto n = static_cast<uint32_t>(d);
+            if (static_cast<double>(n) == d) {
+                if (const Value cached = rtSmallIntString(n); cached.isString()) return cached;
+            }
+        }
+        len = formatJsNumber(d, buf);
     } else if (idxVal.isBool()) {
         len = idxVal.asBool() ? 4 : 5;
         std::memcpy(buf, idxVal.asBool() ? "true" : "false", len);

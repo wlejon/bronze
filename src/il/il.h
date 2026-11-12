@@ -587,6 +587,13 @@ struct Function {
     // The body only reads `arguments.length` and `arguments[i]`
     // (ast::readsArgumentsAsList): the wrapper passes a plain Array.
     bool argumentsIsList = false;
+    // With `argumentsIsList`, and every mention in the body itself
+    // (ast::readsArgumentsInBodyOnly): a call that passes no more arguments
+    // than there are source parameters hands `__arguments` the COUNT, a
+    // Number, and builds no Array. The body tests which it holds: the length
+    // is the count, and an element is read off an Array of the values the
+    // parameters arrived with (lower_object.cpp `lazyArgumentsList`).
+    bool argumentsIsCount = false;
     bool isStrict = false;
     bool isGenerator = false;
     // The BODY of a generator, async function or async generator: a coroutine

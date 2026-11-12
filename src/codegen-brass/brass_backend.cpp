@@ -390,6 +390,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         meta.needs_this = fn.needsThis;
         meta.needs_arguments = fn.needsArguments;
         meta.arguments_is_list = fn.argumentsIsList;
+        meta.arguments_is_count = fn.argumentsIsCount;
         meta.has_rest_param = fn.hasRestParam;
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());

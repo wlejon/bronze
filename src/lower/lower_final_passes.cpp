@@ -25,6 +25,7 @@
 #include "lower/layout_facts.h"
 #include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
+#include "lower/loop_truth_hoist.h"
 #include "lower/lower_feedback.h"
 #include "lower/lowerer.h"
 #include "lower/own_callee_calls.h"
@@ -122,6 +123,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     sanitizeLoopInBoundsProofs(mod);
     hoistLoopInvariantProps(mod, &directMethods_);
     eliminateRepeatedReads(mod);
+    hoistLoopInvariantTruths(mod);
     GuardRegionStats stats;
     applyGuardedRegions(mod, &stats);
     if (!probe) guardRegionStatsReport(stats);
