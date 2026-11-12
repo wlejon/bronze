@@ -13,13 +13,15 @@ namespace {
 // IsStrictlyEqual (7.2.15) of each element of an Array's block in [from, end)
 // against `needle`, split by the needle's type so the walk is a compare per
 // element: a Number matches a Number of the same value (NaN nothing, so the
-// walk is skipped); a String or a BigInt asks bronze_strict_eq only of
-// elements of its own tag; anything else is equal exactly when the bits are.
-// A hole is a tag no needle carries, so it matches nothing and needs no test
-// of its own. Returns the index, or -1.
+// walk is skipped); a String matches itself, or a String of its length and
+// units; a BigInt asks bronze_strict_eq only of BigInts (strictSearchBlock);
+// anything else is equal exactly when the bits are. A hole is a tag no needle
+// carries, so it matches nothing and needs no test of its own. Returns the
+// index, or -1.
 //
-// A needle that is no String or BigInt compares without a call, so nothing
-// here allocates and the block may be walked through a bare pointer.
+// A needle that is no BigInt compares without allocating (a String is flat,
+// its compare a length test and a memcmp), so the block may be walked through
+// a bare pointer.
 int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value needle) {
     end = std::min(end, arr->length);  // a fromIndex valueOf may have shrunk it
     if (needle.isNumber()) {
@@ -32,6 +34,14 @@ int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, V
         return -1;
     }
     const Value* elems = arr->elementsData();
+    if (needle.isString()) {
+        const StringHeader* str = needle.asString<StringHeader>();
+        for (uint32_t i = from; i < end; ++i) {
+            if (elems[i].rawBits() == needle.rawBits()) return i;
+            if (elems[i].isString() && elems[i].asString<StringHeader>()->equals(*str)) return i;
+        }
+        return -1;
+    }
     for (uint32_t i = from; i < end; ++i) {
         if (elems[i].rawBits() == needle.rawBits()) return i;
     }
@@ -39,17 +49,16 @@ int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, V
 }
 
 int64_t strictSearchBlock(Rooted<Value>& self, uint32_t from, uint32_t end, Value needle) {
-    if (!needle.isString() && !needle.isBigInt()) {
+    if (!needle.isBigInt()) {
         return strictSearchPlain(self.get().asObject<ArrayHeader>(), from, end, needle);
     }
-    const uint16_t tag = needle.tag();
     Rooted<Value> rootedNeedle{needle};
     for (uint32_t i = from; i < end; ++i) {
-        // Re-read through the roots: a String compare may flatten a rope.
+        // Re-read through the roots, whatever the compare does.
         const ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (i >= arr->length) return -1;
         const Value elem = arr->elementsData()[i];
-        if (elem.tag() == tag && bronze_strict_eq(elem.rawBits(), rootedNeedle.get().rawBits())) return i;
+        if (elem.isBigInt() && bronze_strict_eq(elem.rawBits(), rootedNeedle.get().rawBits())) return i;
     }
     return -1;
 }
@@ -57,12 +66,12 @@ int64_t strictSearchBlock(Rooted<Value>& self, uint32_t from, uint32_t end, Valu
 }  // namespace
 
 uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    // `array.indexOf(x)` with no fromIndex, x no String or BigInt: nothing
-    // converts or allocates, so the walk needs no roots (what the steps below
-    // compute for this case, without their bookkeeping).
+    // `array.indexOf(x)` with no fromIndex, x no BigInt: nothing converts or
+    // allocates, so the walk needs no roots (what the steps below compute for
+    // this case, without their bookkeeping).
     if (argc < 2 && isArray(Value(thisBits))) {
         const Value needle = argc > 0 ? Value(argv[0]) : Value::fromUndefined();
-        if (!needle.isString() && !needle.isBigInt() && !rtArrayChainHoldsIndex(Value(thisBits))) {
+        if (!needle.isBigInt() && !rtArrayChainHoldsIndex(Value(thisBits))) {
             const ArrayHeader* arr = Value(thisBits).asObject<ArrayHeader>();
             return Value::fromDouble(static_cast<double>(strictSearchPlain(arr, 0, arr->length, needle))).rawBits();
         }
@@ -97,14 +106,14 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 // The fast entries (native_fast.h): the receiver an Array with no box, one
 // argument. What arrayIndexOf's own first test answers, without the call
-// through argv: a needle no String or BigInt compares without a call, and a
-// chain with no index lets the block's holes read as absent.
+// through argv: a needle no BigInt compares without allocating, and a chain
+// with no index lets the block's holes read as absent.
 extern "C" uint64_t bronze_fast_array_index_of(uint64_t thisBits, uint64_t needleBits) {
     using namespace bronze;
     using namespace bronze::runtime;
     const Value self(thisBits);
     const Value needle(needleBits);
-    if (isArray(self) && !needle.isString() && !needle.isBigInt() && !rtArrayChainHoldsIndex(self)) {
+    if (isArray(self) && !needle.isBigInt() && !rtArrayChainHoldsIndex(self)) {
         const ArrayHeader* arr = self.asObject<ArrayHeader>();
         return Value::fromDouble(static_cast<double>(strictSearchPlain(arr, 0, arr->length, needle))).rawBits();
     }
