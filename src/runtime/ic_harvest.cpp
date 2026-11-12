@@ -150,10 +150,11 @@ void foldMethodWay(State& s, Site& site, uint64_t shapeWord, uint64_t codeWord, 
     const bool slotForm = (arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0;
     if (shapeWord & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) {
         const uint32_t kind = static_cast<uint32_t>(shapeWord) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT;
-        // A kind at or above the first value tag is a primitive receiver's
-        // tag: a string, whose methods are String.prototype's.
-        if (kind >= 0xFFF0u) {
-            site.facts.insert(Fact{"native", "string", "native:string"});
+        // A kind in the tag space is a primitive receiver's: a string, whose
+        // methods are String.prototype's, or the number word.
+        if (kind >= BRONZE_ABI_METHOD_IC_KIND_NUMBER) {
+            const char* prim = kind == BRONZE_ABI_METHOD_IC_KIND_NUMBER ? "number" : "string";
+            site.facts.insert(Fact{"native", prim, std::string("native:") + prim});
             return;
         }
         const std::string word = typeFeedbackKindWord(static_cast<uint16_t>(kind));

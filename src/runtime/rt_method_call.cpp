@@ -9,6 +9,7 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/realm.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_prop_mega.h"
 #include "runtime/rt_property.h"
@@ -68,7 +69,7 @@ uint64_t directArityWord(const FunctionHeader* fn) {
 static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE,
               "a method site's words must fit the site");
 
-// The EXOTIC-receiver latch: an Array, a typed-array view, or a
+// The EXOTIC-receiver latch: an Array, a typed-array view, a RegExp, or a
 // global-constructor function receiver, whose method is a native builtin from
 // an immutable C table. The entry is the DIRECT form under a kind guard
 // instead of a shape guard — bronze_abi.h's method-site contract states the
@@ -94,8 +95,8 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 // whether it installed, so a Function receiver it declines can be offered to
 // the statics latch below.
 // The PRIMITIVE-receiver latch (bronze_abi.h's method-site contract, the
-// primitive form): a STRING `this` whose method was read off
-// `String.prototype`'s own slots. The probe is the scratch site the read
+// primitive form): a STRING or NUMBER `this` whose method was read off
+// `String.prototype`'s (`Number.prototype`'s) own slots. The probe is the scratch site the read
 // filled, and it is what proves where the answer came from — its shape is
 // the intrinsic's, at depth 0, a data slot, and that slot holds the callee.
 // The entry is the SLOT form against the INTRINSIC: the env word names the
@@ -107,19 +108,22 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 // walk that filled it, so `rtStringPrototype` here is a fetch and not a build.
 bool latchPrimitiveMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal,
                             const InlineCache& probe) {
-    if (!thisVal.isString()) return false;
+    // A number's kind word is BRONZE_ABI_METHOD_IC_KIND_NUMBER and its holder
+    // `Number.prototype` (`n.toString(16)`): the same proof off the same
+    // probe, which numberMember fills as stringMember does.
+    const bool number = thisVal.isNumber();
+    if (!number && !thisVal.isString()) return false;
     if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent() || probe.realDepth() != 0) {
         return false;
     }
     if (fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
-    const Value proto = rtStringPrototype();
+    const Value proto = number ? rtNumberPrototype() : rtStringPrototype();
     if (!proto.isObject()) return false;
     const auto* holder = proto.asObject<ObjectHeader>();
     if (probe.cached_shape != holder->shape) return false;
     if (holder->getSlot(probe.cached_slot).rawBits() != fnVal.rawBits()) return false;
-    const uint64_t newWord0 =
-        (static_cast<uint64_t>(BRONZE_ABI_TAG_STRING) << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
-        BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+    const uint64_t kind = number ? BRONZE_ABI_METHOD_IC_KIND_NUMBER : BRONZE_ABI_TAG_STRING;
+    const uint64_t newWord0 = (kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT) | BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
     displaceMethodWay0(icEntry, newWord0);
     icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(holder->shape);
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
@@ -179,6 +183,23 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(view->object.shape);
         epochWord = probe.cached_epoch;
         auxOffset = offsetof(TypedArrayHeader, object.shape);
+        guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
+    } else if (kind == RegExpHeader::kFlags) {
+        // A RegExp is the view's case one link shorter: a shape-carrying
+        // object whose builtins (`exec`, `test`) live on `RegExp.prototype`,
+        // read through the ordinary walk (rt_prop.cpp; `lastIndex`, the one
+        // name its header answers, is no function and fills nothing). The
+        // same form and the same argument: the shape word against the latched
+        // Shape*, the probe's epoch, and builtins only. Without it every
+        // `re.exec(s)` was a by-name read and a refused latch.
+        if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent()) return false;
+        if (probe.realDepth() == 0) return false;
+        if (!fn->isNativeCode()) return false;
+        const auto* re = reinterpret_cast<const RegExpHeader*>(objHdr);
+        if (probe.cached_shape != re->object.shape) return false;
+        icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(re->object.shape);
+        epochWord = probe.cached_epoch;
+        auxOffset = offsetof(RegExpHeader, object.shape);
         guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
     } else if (kind == HeapKind::Function) {
         // A global constructor's static (`Array.isArray`, `String.raw`):
@@ -531,9 +552,9 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
         // The PRIMITIVE form: the kind field carries the receiver's value tag,
         // the env word names the intrinsic holder, the aux word pins its shape.
         if ((w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) == 0) return false;
-        if ((static_cast<uint32_t>(w0) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT) != thisVal.tag()) {
-            return false;
-        }
+        const uint32_t kind =
+            thisVal.isNumber() ? BRONZE_ABI_METHOD_IC_KIND_NUMBER : uint32_t{thisVal.tag()};
+        if ((static_cast<uint32_t>(w0) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT) != kind) return false;
         if (slotPlusOne == 0) return false;
         const Value holderVal(icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD]);
         if (!holderVal.isObject()) return false;
@@ -564,7 +585,7 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
         // the program can write to, so its entry carries an epoch as the
         // typed-array one does; one never touched answers from the C table.
         const bool epochGuarded =
-            kind == TypedArrayHeader::kFlags ||
+            kind == TypedArrayHeader::kFlags || kind == RegExpHeader::kFlags ||
             (kind == HeapKind::Function &&
              ((w0 & BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT) == 0 ||
               reinterpret_cast<const FunctionHeader*>(hdr)->statics_materialized));

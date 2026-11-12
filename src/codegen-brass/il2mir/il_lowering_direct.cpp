@@ -26,6 +26,8 @@ using namespace direct;
 namespace {
 
 constexpr const char* kMethodCallStub = "__bronze_method_call_ic";
+// The highest bits a number carries (runtime/value.h, kNumberMaxBits).
+constexpr uint64_t kNumberMaxBits = 0xFFF0000000000000ULL;
 
 }  // namespace
 
@@ -118,6 +120,8 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* mega_callee = b.append_block(prefix + "_megacallee");
     Value* mega_fn = b.add_block_param(mega_callee, Type::i64());
     BasicBlock* exotic = b.append_block(prefix + "_exotic");
+    BasicBlock* exotic_obj = b.append_block(prefix + "_exotic_obj");
+    BasicBlock* prim = b.append_block(prefix + "_prim");
     BasicBlock* exotic_box = b.append_block(prefix + "_exotic_box");
     BasicBlock* exotic_code = b.append_block(prefix + "_exotic_code");
     BasicBlock* fn_recv = b.append_block(prefix + "_fnrecv");
@@ -258,6 +262,62 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     // The box offset comes out of word 0, so it is read only once word 0 is
     // known to be that encoding.
     b.position_at_end(exotic);
+    b.build_br_if(b.build_eq(b.build_lshr(recv, b.build_iconst_i64(48)), b.build_iconst_i64(BRONZE_ABI_TAG_OBJECT)),
+                  exotic_obj, prim);
+
+    // The PRIMITIVE form (bronze_abi_layout.h): a String or Number receiver
+    // whose member is a slot of its intrinsic prototype. The entry's tests as
+    // methodIcHit makes them, then the function in the slot: a builtin of the
+    // shared intrinsics is entered as its own code when the site passes at
+    // least its arity (bronze_dynamic_call pads a shorter call), compiled
+    // code as the SLOT arm enters it. `s.trim()` and `n.toString(16)` paid the
+    // helper, its hit and bronze_dynamic_call around a builtin of a few dozen
+    // instructions.
+    b.position_at_end(prim);
+    {
+        BasicBlock* pholder = b.append_block(prefix + "_prim_holder");
+        BasicBlock* pslot = b.append_block(prefix + "_prim_slot");
+        BasicBlock* pjs = b.append_block(prefix + "_prim_js");
+        b.position_at_end(prim);
+        auto prim_word = [&](uint64_t kind) {
+            return b.build_iconst_i64(static_cast<int64_t>((kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
+                                                           BRONZE_ABI_METHOD_IC_EXOTIC_BIT));
+        };
+        Value* is_str = b.build_eq(b.build_lshr(recv, b.build_iconst_i64(48)), b.build_iconst_i64(BRONZE_ABI_TAG_STRING));
+        Value* is_num = b.build_ule(recv, b.build_iconst_i64(static_cast<int64_t>(kNumberMaxBits)));
+        Value* want = b.build_select(is_str, prim_word(BRONZE_ABI_TAG_STRING), prim_word(BRONZE_ABI_METHOD_IC_KIND_NUMBER));
+        Value* holder = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ENV_WORD * kWord);
+        Value* hptr = b.build_xor(holder, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        Value* latched = b.build_and(b.build_and(b.build_or(is_str, is_num), b.build_eq(w0, want)),
+                                     b.build_and(b.build_ult(hptr, b.build_iconst_i64(kPayloadLimit)),
+                                                 b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))));
+        b.build_br_if(latched, pholder, slow);
+        b.position_at_end(pholder);
+        Value* holder_ok = b.build_and(
+            b.build_eq(b.build_load(Type::i32(), hptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
+            b.build_eq(b.build_load(Type::i64(), hptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                       b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_AUX_WORD * kWord)));
+        b.build_br_if(holder_ok, pslot, slow);
+        b.position_at_end(pslot);
+        Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                                       b.build_iconst_i64(1));
+        Value* callee = pl.load_slot_br(b, hptr, slot_word);
+        const EntryTest t = entry_test_br(b, tls, callee, kCallMask, kCallBits, slow);
+        Value* flags = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
+        Value* native = b.build_eq(
+            b.build_and(flags, b.build_iconst_i64(static_cast<int64_t>(kRealmMask | BRONZE_ABI_FN_FLAG_NATIVE |
+                                                                       BRONZE_ABI_FN_FLAG_CLASS_CTOR))),
+            b.build_iconst_i64(BRONZE_ABI_FN_FLAG_NATIVE));
+        Value* enough = b.build_ule(b.build_zext_i64(b.build_load(Type::i32(), t.fn, BRONZE_ABI_FN_ARITY_OFFSET)),
+                                    b.build_zext_i64(argc));
+        Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+        Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+        b.build_br_if(b.build_and(native, enough), enter, {code, env}, pjs, {});
+        b.position_at_end(pjs);
+        b.build_br_if(t.ok, enter, {code, env}, slow, {});
+    }
+
+    b.position_at_end(exotic_obj);
     {
         Value* form = b.build_and(w0, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_METHOD_IC_EXOTIC_BIT |
                                                                               BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT)));
@@ -278,7 +338,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
                                                  BRONZE_ABI_METHOD_IC_EXOTIC_BIT | BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT)));
         Value* latched = b.build_and(is_obj, b.build_and(kind_ok, entry_ok));
         BasicBlock* not_box = b.append_block(prefix + "_exotic_notbox");
-        b.position_at_end(exotic);
+        b.position_at_end(exotic_obj);
         b.build_br_if(b.build_and(box_form, latched), exotic_box, not_box);
         b.position_at_end(not_box);
         b.build_br_if(b.build_and(code_form, latched), exotic_code, fn_recv);

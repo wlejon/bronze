@@ -1,0 +1,60 @@
+"a\tb" "a\tb\t\t" "\ta\tb" 0
+"a\nb" "a\nb\n\n" "\na\nb" 0
+"a\u000bb" "a\u000bb\u000b\u000b" "\u000ba\u000bb" 0
+"a\fb" "a\fb\f\f" "\fa\fb" 0
+"a\rb" "a\rb\r\r" "\ra\rb" 0
+"a b" "a b  " " a b" 0
+"a\u00a0b" "a\u00a0b\u00a0\u00a0" "\u00a0a\u00a0b" 0
+"a\u1680b" "a\u1680b\u1680\u1680" "\u1680a\u1680b" 0
+"a\u2000b" "a\u2000b\u2000\u2000" "\u2000a\u2000b" 0
+"a\u2005b" "a\u2005b\u2005\u2005" "\u2005a\u2005b" 0
+"a\u200ab" "a\u200ab\u200a\u200a" "\u200aa\u200ab" 0
+"a\u2028b" "a\u2028b\u2028\u2028" "\u2028a\u2028b" 0
+"a\u2029b" "a\u2029b\u2029\u2029" "\u2029a\u2029b" 0
+"a\u202fb" "a\u202fb\u202f\u202f" "\u202fa\u202fb" 0
+"a\u205fb" "a\u205fb\u205f\u205f" "\u205fa\u205fb" 0
+"a\u3000b" "a\u3000b\u3000\u3000" "\u3000a\u3000b" 0
+"a\ufeffb" "a\ufeffb\ufeff\ufeff" "\ufeffa\ufeffb" 0
+"\u200ba\u200b" true 3 3
+"\u0085a\u0085" true 3 3
+"\u180ea\u180e" true 3 3
+"\u2060a\u2060" true 3 3
+"\u0000a\u0000" true 3 3
+"\u001fa\u001f" true 3 3
+"\u00a1a\u00a1" true 3 3
+"xa\u2001x" false 4 5
+"_a_" true 3 3
+true true true 0
+true true true 1
+true true true 5
+true true true 10
+true true true 3
+true true true 2
+true true true 2
+true true true 300
+""
+"\u0416"
+"abc"
+"\u3000abc"
+"left"
+"  left"
+"right"
+"right  "
+mid
+1
+a|b|c
+abcd
+x
+"12"
+"true"
+"a , b"
+"obj"
+"boxed"
+"0"
+"1.5"
+true
+true
+true
+400
+x
+2

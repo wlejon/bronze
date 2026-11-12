@@ -506,6 +506,24 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
             return rtRegExpLiteral(source, flags).rawBits();
         }
     }
+    // `new Array()` and `new Array(n)` on the intrinsic itself: the instance
+    // the protocol below would allocate (NewTarget's own, so the same
+    // allocation) and the length write arrayConstructor would make on it,
+    // without the scopes and the call between them. A length it would refuse,
+    // or a long one, takes the constructor and gets its answer.
+    constexpr double kDirectArrayLength = 4096.0;
+    if (argc <= 1 && rtIsArrayConstructor(fnVal)) {
+        const Value lenArg = argc == 1 ? Value(argvBits[0]) : Value::fromDouble(0.0);
+        if (lenArg.isNumber()) {
+            const double len = lenArg.asNumber();
+            if (len >= 0.0 && len <= kDirectArrayLength && std::floor(len) == len) {
+                Rooted<Value> ctor{fnVal};
+                Rooted<Value> self{rtAllocateNativeBaseInstance(NativeBase::Array, ctor)};
+                if (len > 0.0) ArrayHeader::setLength(rtHeap(), self, static_cast<uint32_t>(len));
+                return self.get().rawBits();
+            }
+        }
+    }
     NewTargetScope targetScope(fnVal);
 
     // A BOUND function constructs its TARGET (10.4.1.2): the bound arguments

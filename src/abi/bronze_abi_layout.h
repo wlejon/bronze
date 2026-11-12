@@ -334,7 +334,8 @@
  *     against, so the guard is the plain DIRECT form's own shape compare —
  *     with the plain form's depth >= 1 envelope — spelled for a receiver
  *     generated code's Plain arm does not take. A Shape is an immortal,
- *     non-moving arena allocation.
+ *     non-moving arena allocation. A RegExp (`re.exec(s)`, `re.test(s)`)
+ *     takes the same entry: its builtins are one link up its shape's chain.
  *
  *   The aux word is a raw C pointer either way, never a Value: the collector
  *   must not touch it, and it never does — a module's method-site
@@ -406,7 +407,20 @@
  * function, Function test included, through the same path the receiver's own
  * slot takes. `this` is the string itself, exactly as the helper passes it.
  * The env word is never an env here: a SLOT hit derives the callee's env
- * from the function it finds, so the word is free to name the holder. */
+ * from the function it finds, so the word is free to name the holder.
+ *
+ * A NUMBER receiver (`n.toString(16)`, `x.toFixed(2)`) takes the same form
+ * against `Number.prototype`. A double has no one tag, so its kind field is
+ * BRONZE_ABI_METHOD_IC_KIND_NUMBER, the lowest word of the tag space, which
+ * no value carries as a tag and no heap kind reaches.
+ *
+ * The module's method stub answers both itself (il_lowering_direct.cpp, the
+ * `mcall_prim` arm): the tests above, then the function found in the slot
+ * entered directly when it is a builtin of the shared intrinsics (the NATIVE
+ * flag, realm slot zero) given at least its arity in arguments, or compiled
+ * code a direct entry may call. Both intrinsics are frozen before the first
+ * script, so the slot holds the builtin it was built with. */
+#define BRONZE_ABI_METHOD_IC_KIND_NUMBER 0xFFF0u
 #define BRONZE_ABI_METHOD_IC_CODE_WORD   1
 #define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
 #define BRONZE_ABI_METHOD_IC_ENV_WORD    3

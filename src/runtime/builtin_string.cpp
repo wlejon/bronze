@@ -162,6 +162,23 @@ uint64_t stringRepeat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 template <bool Start, bool End>
 uint64_t stringTrimImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    // A string receiver is trimmed on its header: the ends are found without
+    // a copy, a string with nothing to strip is its own answer, and the rest
+    // is a slice. Every other receiver converts first, below.
+    if (Value(thisBits).isString()) {
+        Rooted<Value> str{Value(thisBits)};
+        const StringHeader* s = str.get().asString<StringHeader>();
+        uint32_t a = 0;
+        uint32_t b = s->getLength();
+        if constexpr (Start) {
+            while (a < b && isTrimmable(static_cast<uint16_t>(s->charCodeAt(a)))) ++a;
+        }
+        if constexpr (End) {
+            while (b > a && isTrimmable(static_cast<uint16_t>(s->charCodeAt(b - 1)))) --b;
+        }
+        if (a == 0 && b == s->getLength()) return thisBits;
+        return Value::fromString(StringHeader::slice(rtHeap(), rtArena(), str, a, b)).rawBits();
+    }
     Units self = thisUnits(Value(thisBits), "trim");
     size_t a = 0;
     size_t b = self.size();
