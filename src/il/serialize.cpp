@@ -33,6 +33,7 @@ struct InstructionMirror {
     bool icFnRecv;
     bool rawUnbox;
     bool nullishUnbox;
+    bool rawBox;
     bool numberBits;
     bool shapeGuarded;
     uint32_t staticSlot;
@@ -312,7 +313,8 @@ enum InstBits : uint64_t {
     kNumberHint = uint64_t{1} << 33,
     kHasTruthHint = uint64_t{1} << 34,
     kHasIcChain = uint64_t{1} << 35,
-    kKnownBits = (uint64_t{1} << 36) - 1,
+    kRawBox = uint64_t{1} << 36,
+    kKnownBits = (uint64_t{1} << 37) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -362,6 +364,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.icFnRecv) m |= kIcFnRecv;
     if (inst.rawUnbox) m |= kRawUnbox;
     if (inst.nullishUnbox) m |= kNullishUnbox;
+    if (inst.rawBox) m |= kRawBox;
     if (inst.numberBits) m |= kNumberBits;
     if (inst.shapeGuarded) m |= kShapeGuarded;
     if (inst.staticSlotGuessed) m |= kStaticSlotGuessed;
@@ -472,6 +475,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     inst.icFnRecv = (m & kIcFnRecv) != 0;
     inst.rawUnbox = (m & kRawUnbox) != 0;
     inst.nullishUnbox = (m & kNullishUnbox) != 0;
+    inst.rawBox = (m & kRawBox) != 0;
     inst.numberBits = (m & kNumberBits) != 0;
     inst.shapeGuarded = (m & kShapeGuarded) != 0;
     inst.staticSlotGuessed = (m & kStaticSlotGuessed) != 0;

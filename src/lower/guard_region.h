@@ -144,7 +144,8 @@ namespace bronze::lower {
 // trampoline carrying every partial product live at that point.
 //
 // The rule instead is COALESCED, per block: the guard point for a set of
-// candidates is the first promoted use of ANY of them, and every candidate
+// candidates is the earliest place any of them wants its test (its first
+// promoted use, or sooner: "GUARD AT DEFINITION" below), and every candidate
 // whose definition precedes that point is guarded there — one chain of
 // `is.number` + `br`, every failing edge landing on ONE trampoline. Candidates
 // defined after that point take the next coalesced point, and so on.
@@ -166,6 +167,41 @@ namespace bronze::lower {
 // definition comes after it cannot: a guard in front of its own definition has
 // nothing to read, so the later point is forced rather than chosen.
 // `setFromEuler` is the first shape: nine values, one chain, one trampoline.
+//
+// ---------------------------------------------------------------------------
+// GUARD AT DEFINITION
+//
+// A guarded value has two forms in the fast copy, the box it was read as and
+// the double its test licenses, and the box is a GC root: the backend keeps a
+// root that is live across any call in the frame for its whole life, storing it
+// at its definition and loading it back at each use. With the test at the first
+// use, `Matrix.appendFrom`'s ten reads off two receivers each sat in the frame
+// across the second receiver's miss call and came back for the test and again
+// for the unbox.
+//
+// So a value's test stands as soon after its definition as costs nothing
+// (`guardReach`, guard_region_select.cpp): past what is pure in the fast copy,
+// and past the rest of the definition's READ STRETCH, the reads the backend
+// lowers behind one guard with one out-of-line miss and cuts at a block end
+// (after a named read, the accesses off the same receiver; after a
+// constant-index read, the constant-index reads off any receiver). Nothing in
+// that span calls, so the box lives in a register from its load to its test
+// and is dead there. Coalescing is unchanged: a point takes every candidate
+// defined in front of it.
+//
+// Past its test a value leaves the fast copy as a box REBUILT from its double
+// (`box.f64` flagged `rawBox`: the same bits, by a move between registers,
+// whatever number it is, NaN and -0 included, because the double was made by a
+// raw unbox of those bits). A trampoline behind the test, a call's argument, a
+// store: each takes the rebuilt box, and none keeps the original alive. The
+// jump that leaves the fast copy re-roots what it passes, since the slow copy
+// does call. A value not yet tested at an exit (defined before a point that
+// some other value's test opened) is passed as the box it is.
+//
+// An element read (`a[i]`) is the exception and keeps its test at its first
+// use: `typed_loop_version.cpp` types the read only when the false edge of its
+// `is.number` is a trampoline of its own, and a point pulled up to the read
+// collects the shape tests of the sites behind it onto that trampoline.
 //
 // ---------------------------------------------------------------------------
 // READ RUNS: WHEN A LATER GUARD POINT IS ALLOWED

@@ -39,7 +39,7 @@ namespace bronze::il {
 // 24: is.array (il_op.h).
 // 26: Module::icLayoutDigest, feedbackApplied, harvestOutPath (the IC harvest).
 // 28: Module::hotFunctions, coldFunctions (lower/function_placement.h).
-inline constexpr uint32_t kFormatVersion = 28;
+inline constexpr uint32_t kFormatVersion = 29;
 
 std::string serializeModule(const Module& module);
 

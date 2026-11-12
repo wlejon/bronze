@@ -219,6 +219,11 @@ struct BronzeInstruction {
     BronzeType box_type = BronzeType::Unknown;
     bool raw_unbox = false;
     bool nullish_unbox = false;
+    // Box f64: the operand is a tested Number's own bits (il.h `rawBox`).
+    bool raw_box = false;
+    // Jump: the edge by which a guarded region's fast copy leaves for its
+    // slow copy (il.h `CopyClass`), taken when a guard failed.
+    bool leaves_fast_copy = false;
     // A type-feedback hint (il.h `numberHint`): the Number arm falls through
     // and the generic path is laid out cold.
     bool number_hint = false;

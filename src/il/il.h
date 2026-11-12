@@ -153,6 +153,21 @@ struct Instruction {
     // because there is no lattice element for "number or nullish" and there is
     // deliberately never going to be one.
     bool nullishUnbox = false;
+    // Box (f64): the operand is the `unbox.f64 raw` of a boxed value, so the
+    // double's bits are that value's own bits and the box is a move of them:
+    // no NaN to canonicalise, because no arithmetic made this double. Set by
+    // exactly one thing, the guarded-region pass, where a fast copy needs the
+    // boxed form of a value again past its `is.number` test (a trampoline's
+    // argument, a store): the value is rebuilt from the double there, so the
+    // box it was read as dies at its test and is never live across a call
+    // (lower/guard_region.h, "GUARD AT DEFINITION"). A REQUEST and not a
+    // claim: the backend moves the bits only when the operand it is handed
+    // is visibly a Value's bits reinterpreted (a round trip that is the
+    // identity on any bits, Number or not), and otherwise boxes as it always
+    // does, so a pass that replaces the operand with some other double costs
+    // the move and nothing else. Where it does move them it must not answer
+    // with the original box, whose live range this exists to end.
+    bool rawBox = false;
     // PropGet of a canonical index key: the backend may hold the element's
     // bits as a DOUBLE rather than as a tagged value. Set by exactly one
     // thing, the guarded-region pass, on the fast copy of a read that a guard

@@ -184,6 +184,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         } else {
                             out += " %" + std::to_string(inst.operands[0]);
                         }
+                        // A move of the bits rather than a canonicalising box
+                        // (il.h `rawBox`): different emitted code, so named.
+                        if (inst.rawBox) out += ", raw";
                         break;
                     case Op::Neg:
                         out += "neg %" +

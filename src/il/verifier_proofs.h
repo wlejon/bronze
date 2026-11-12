@@ -10,7 +10,8 @@ namespace bronze::il {
 //      types, positive proof origin (dominating `IsNumber`, dominating `PinGuard`,
 //      `Box(F64|I32)`, audited `PropGet`/`ElemGet`, consistent `EnvGet`, or
 //      parameter/phi), and rejection of known non-Number origins or false-edge
-//      `IsNumber` paths.
+//      `IsNumber` paths. `Op::Box` (`rawBox`): only on a `box.f64` of one
+//      operand (a request the backend checks for itself, so nothing more).
 //   2. `Op::PinGuard`: operand count/type, valid `PinBarrier` kind, and
 //      `keyIndex < module.keyConstants.size()`.
 //   3. `Param::pinned` and `Function::returnPinned`: `Type::F64` requirement and

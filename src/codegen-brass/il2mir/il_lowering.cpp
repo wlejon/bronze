@@ -152,7 +152,10 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     if (a.operands != b.operands) return false;
     if (std::memcmp(&a.imm_f64, &b.imm_f64, sizeof(double)) != 0) return false;
     if (a.imm_i64 != b.imm_i64 || a.imm_bool != b.imm_bool) return false;
-    if (a.box_type != b.box_type || a.raw_unbox != b.raw_unbox || a.nullish_unbox != b.nullish_unbox) return false;
+    if (a.box_type != b.box_type || a.raw_unbox != b.raw_unbox || a.nullish_unbox != b.nullish_unbox ||
+        a.raw_box != b.raw_box || a.leaves_fast_copy != b.leaves_fast_copy) {
+        return false;
+    }
     if (a.callee_name != b.callee_name || a.string_literal != b.string_literal) return false;
     if (a.typed_callee_name != b.typed_callee_name) return false;
     if (a.depth != b.depth || a.index != b.index || a.param_count != b.param_count) return false;

@@ -208,6 +208,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::Box;
             out.box_type = mapType(inst.boxType);
             out.index = inst.keyIndex;
+            out.raw_box = inst.rawBox;
             if (inst.operands.empty()) {
                 out.string_literal = 'k';
                 out.string_literal += std::to_string(inst.keyIndex);
@@ -718,6 +719,16 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
                     globalReadKeys->push_back(inst.keyIndex);
                 }
                 bblk.instructions.push_back(lowerInstruction(inst, ctx));
+            }
+            // A guarded region's trampoline: a fast block whose jump enters
+            // the slow copy of its own region.
+            if (block.copyClass == il::CopyClass::Fast && !block.instructions.empty()) {
+                const il::Instruction& term = block.instructions.back();
+                if (term.op == il::Op::Jump && term.target.block < fn.blocks.size()) {
+                    const il::Block& to = fn.blocks[term.target.block];
+                    bblk.instructions.back().leaves_fast_copy =
+                        to.copyClass == il::CopyClass::Slow && to.copyRegion == block.copyRegion;
+                }
             }
 
             bfn.blocks.push_back(std::move(bblk));

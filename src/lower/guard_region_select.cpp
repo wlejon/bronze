@@ -218,11 +218,46 @@ bool dominatesReachable(const Cfg& cfg, const RegionPlan& plan, il::BlockId from
 // A candidate waiting to be assigned to a coalesced guard point in its own
 // block. `definedAt` is the first instruction index at which the value EXISTS
 // — one past its def — so "already defined at point p" is `definedAt <= p`.
+// `guardAt` is where its own test would stand: `guardReach` of its definition,
+// or its first promoted use when that comes sooner.
 struct Pending {
     il::ValueId value = il::kNoValue;
     uint32_t definedAt = 0;
-    uint32_t firstUse = 0;
+    uint32_t guardAt = 0;
 };
+
+// How far past its definition a value's test may wait and still find the boxed
+// value in a register (guard_region.h, "GUARD AT DEFINITION"): the index of the
+// first instruction after `defIndex` that is neither pure in the fast copy nor
+// a member of the definition's READ STRETCH. Never past the terminator.
+//
+// The stretch is what the backend lowers behind one guard, its collecting miss
+// out of line, and cuts at a block end: after a named read, the accesses off
+// that same receiver (il2mir's static run, once the site has its slot); after
+// a constant-index read, the constant-index reads off any receiver (il2mir's
+// index run takes `ae[0..15]` and `be[0..15]` as one).
+uint32_t guardReach(const il::Block& block, uint32_t defIndex, const std::vector<std::string>& keys,
+                    const std::vector<il::Type>& types, const std::vector<uint8_t>& isCandidate) {
+    const il::Instruction& def = block.instructions[defIndex];
+    const il::ValueId recv =
+        def.op == il::Op::PropGet && !def.operands.empty() ? def.operands[0] : il::kNoValue;
+    const bool indexed = indexReadReceiver(def, keys) != il::kNoValue;
+    // An element read keeps its test at its first use, alone at its point
+    // where it can be: `typed_loop_version.cpp` types the read only when the
+    // false edge of its `is.number` is a trampoline nothing else enters, and a
+    // point pulled up to the read collects the shape tests of the sites after
+    // it (guard_region_shapes.cpp) onto that trampoline.
+    if (def.op == il::Op::ElemGet) return static_cast<uint32_t>(block.instructions.size()) - 1;
+    uint32_t i = defIndex + 1;
+    for (; i < block.instructions.size(); ++i) {
+        const il::Instruction& inst = block.instructions[i];
+        const bool sameReceiver = recv != il::kNoValue && (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                                  !inst.operands.empty() && inst.operands[0] == recv && inst.result != recv;
+        const bool indexRead = indexed && indexReadReceiver(inst, keys) != il::kNoValue;
+        if (!sameReceiver && !indexRead && !pureInFastCopy(inst, types, isCandidate)) break;
+    }
+    return i;
+}
 
 // ---------------------------------------------------------------------------
 // The analysis both region kinds share. `plan` arrives with `header`, `blocks`,
@@ -575,7 +610,8 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             plan.candidates.push_back(cand);
             continue;
         }
-        pendingOf[def.block].push_back(Pending{v, def.index + 1, first});
+        const uint32_t reach = guardReach(fn.blocks[def.block], def.index, keys, types, plan.isCandidate);
+        pendingOf[def.block].push_back(Pending{v, def.index + 1, std::min(first, reach)});
     }
 
     // 7. COALESCING. Within a block the guard point is the first promoted use
@@ -586,7 +622,7 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     for (il::BlockId b : plan.blocks) {
         auto& pending = pendingOf[b];
         std::sort(pending.begin(), pending.end(), [](const Pending& a, const Pending& c) {
-            return a.firstUse != c.firstUse ? a.firstUse < c.firstUse : a.value < c.value;
+            return a.guardAt != c.guardAt ? a.guardAt < c.guardAt : a.value < c.value;
         });
         size_t done = 0;
         std::vector<uint8_t> taken(pending.size(), 0);
@@ -594,7 +630,7 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             uint32_t point = UINT32_MAX;
             for (size_t i = 0; i < pending.size(); ++i) {
                 if (!taken[i]) {
-                    point = pending[i].firstUse;
+                    point = pending[i].guardAt;
                     break;
                 }
             }

@@ -526,6 +526,15 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
                 }
             }
 
+            // --- (a') Op::Box (`rawBox`) ---
+            // A request, not a claim (il.h): the backend moves the bits only
+            // where the operand is visibly a Value's own, and boxes any other
+            // double as usual, so a pass that rewrites the operand breaks
+            // nothing. What is checked is that it stands on a box of a double.
+            if (inst.rawBox && (inst.op != Op::Box || inst.boxType != Type::F64 || inst.operands.size() != 1)) {
+                return fail(std::string(opName(inst.op)) + " carries raw, which only a box.f64 of one operand may");
+            }
+
             // --- (b) Op::PinGuard ---
             if (inst.op == Op::PinGuard) {
                 if (inst.operands.size() != 1 || inst.result != kNoValue ||

@@ -6,6 +6,7 @@
 // in one block and consumed only in others. The answer is a point at the END of
 // the defining block, and the two things it has to keep true are that the point
 // still reaches every use and that the slow copy can still be entered at it.
+// The last case is the other placement rule, "GUARD AT DEFINITION".
 
 #include <doctest/doctest.h>
 
@@ -380,6 +381,82 @@ TEST_CASE("a join the slow copy reaches from a tail and from its head takes a pa
         }
     }
     CHECK(joinParam);
+
+    DiagnosticSink diags;
+    CHECK(il::verify(module, diags));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+// ---------------------------------------------------------------------------
+// GUARD AT DEFINITION: a test stands where its value's read stretch ends.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a read is tested where its receiver's reads end, and leaves a later exit rebuilt from its double") {
+    // `const a = o.x, b = o.y, c = p.z; return a * b + c + a;` — `a`'s first
+    // use is past the read off `p`, whose miss is a call. Its test does not
+    // wait for that use: it stands with `b`'s behind the two reads off `o`, in
+    // front of the read off `p`, so neither box is live across that read. `c`
+    // is tested at its own first use, and the trampoline there passes `a`,
+    // which the slow copy still adds, as a raw box of its double and the
+    // untested `c` as the box it is.
+    il::Function fn;
+    fn.name = "h";
+    fn.params = {{"o", il::Type::Dynamic}, {"p", il::Type::Dynamic}};
+    fn.returnType = il::Type::Dynamic;
+    fn.valueCount = 8;
+    fn.blocks = {
+        block(0, {propGet(2, 0, 10, 0), propGet(3, 0, 11, 1), propGet(4, 1, 12, 2), arith(il::Op::Mul, 5, 2, 3),
+                  arith(il::Op::Add, 6, 5, 4), arith(il::Op::Add, 7, 6, 2), ret(7)}),
+    };
+
+    il::Module module = oneFunction(std::move(fn));
+    GuardRegionStats stats;
+    REQUIRE(applyGuardedRegions(module, &stats));
+
+    CHECK(stats.duplicated == 1);
+    CHECK(stats.guards == 3);
+    CHECK(stats.guardPoints == 2);
+
+    CHECK(body(module) ==
+          "func h(%0: dynamic, %1: dynamic) -> dynamic {\n"
+          "  b0:\n"
+          "    jump b3\n"
+          "  b1(%17: dynamic, %18: dynamic) [slow 0]:\n"
+          "    %4: dynamic = prop.get %1, 12, 2\n"
+          "    %5: dynamic = mul %17, %18\n"
+          "    jump b2(%17, %4, %5)\n"
+          "  b2(%19: dynamic, %20: dynamic, %21: dynamic) [slow 0]:\n"
+          "    %6: dynamic = add %21, %20\n"
+          "    %7: dynamic = add %6, %19\n"
+          "    ret %7\n"
+          "  b3 [fast 0]:\n"
+          "    %8: dynamic = prop.get %0, 10, 0\n"
+          "    %9: dynamic = prop.get %0, 11, 1\n"
+          "    %22: bool = is.number %8\n"
+          "    br %22, b4, b7\n"
+          "  b4 [fast 0]:\n"
+          "    %23: bool = is.number %9\n"
+          "    br %23, b5, b7\n"
+          "  b5 [fast 0]:\n"
+          "    %14: f64 = unbox.f64 %8, raw\n"
+          "    %15: f64 = unbox.f64 %9, raw\n"
+          "    %10: dynamic = prop.get %1, 12, 2\n"
+          "    %11: f64 = mul %14, %15\n"
+          "    %24: bool = is.number %10\n"
+          "    br %24, b6, b8\n"
+          "  b6 [fast 0]:\n"
+          "    %16: f64 = unbox.f64 %10, raw\n"
+          "    %12: f64 = add %11, %16\n"
+          "    %13: f64 = add %12, %14\n"
+          "    %27: dynamic = box.f64 %13\n"
+          "    ret %27\n"
+          "  b7 [fast 0]:\n"
+          "    jump b1(%8, %9)\n"
+          "  b8 [fast 0]:\n"
+          "    %25: dynamic = box.f64 %14, raw\n"
+          "    %26: dynamic = box.f64 %11\n"
+          "    jump b2(%25, %10, %26)\n"
+          "}\n");
 
     DiagnosticSink diags;
     CHECK(il::verify(module, diags));

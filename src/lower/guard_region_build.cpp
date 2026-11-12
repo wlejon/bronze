@@ -67,6 +67,13 @@ il::Instruction makeBoxF64(il::ValueId result, il::ValueId operand) {
     return inst;
 }
 
+// The boxed form of a tested Number, rebuilt from its double (il.h `rawBox`).
+il::Instruction makeRawBoxF64(il::ValueId result, il::ValueId operand) {
+    il::Instruction inst = makeBoxF64(result, operand);
+    inst.rawBox = true;
+    return inst;
+}
+
 il::Instruction makeJump(il::BlockId target, std::vector<il::ValueId> args = {}) {
     il::Instruction inst;
     inst.op = il::Op::Jump;
@@ -650,17 +657,33 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         return il::kNoValue;
     };
 
-    // The BOXED form, which for a promoted value has to be made. `box.f64` of a
-    // value that was raw-unboxed out of a box is the identity (the backend's
-    // peephole returns the bits it started from), and of an `fadd` result it is
-    // bit-identical to what the dynamic add's own fast arm would have produced
-    // — so a value leaving through a trampoline is the value the original IL
-    // would have had.
-    auto fastDyn = [&](il::ValueId v, il::Block& into, std::vector<std::pair<il::ValueId,
-                                                                             il::ValueId>>* cache) {
+    // The BOXED form, which for a promoted value has to be made: `box.f64` of
+    // an `fadd` result is bit-identical to what the dynamic add's own fast arm
+    // would have produced, so a value leaving through a trampoline is the
+    // value the original IL would have had.
+    //
+    // A GUARDED value past its test is rebuilt the same way, by a raw box of
+    // its double (guard_region.h, "GUARD AT DEFINITION"): the box it was read
+    // as is then dead at the test. `at` is the block being emitted and `part`
+    // how many of its points lie behind the place the value is wanted at.
+    auto testedBefore = [&](const Candidate& c, il::BlockId at, size_t part) {
+        if (c.kind != CandidateKind::UseGuard) return false;
+        if (c.guardBlock != at) return cfg.dominates(c.guardBlock, at);
+        for (size_t j = 0; j < part && j < guardPoints[at].size(); ++j) {
+            if (guardPoints[at][j].index == c.guardIndex) return true;
+        }
+        return false;
+    };
+    // `leaving` says the value is an argument of a jump or a trampoline. Only
+    // there is a tested value rebuilt: an instruction that reads it boxed (a
+    // receiver whose proof names its definition, a store of it) keeps the box
+    // it was read as, as it did before the test moved.
+    auto fastDyn = [&](il::ValueId v, il::Block& into, std::vector<std::pair<il::ValueId, il::ValueId>>* cache,
+                       il::BlockId at, size_t part, bool leaving = false) {
         const Candidate* c = candidateOf[v];
         if (c == nullptr) return definedInRegion(v) ? fastOf[v] : v;
-        if (c->kind != CandidateKind::Promoted) {
+        const bool tested = leaving && testedBefore(*c, at, part);
+        if (c->kind != CandidateKind::Promoted && !tested) {
             return definedInRegion(v) ? fastOf[v] : v;
         }
         if (cache != nullptr) {
@@ -669,7 +692,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             }
         }
         const il::ValueId boxed = newValue();
-        into.instructions.push_back(makeBoxF64(boxed, fastF64(v)));
+        into.instructions.push_back(tested ? makeRawBoxF64(boxed, fastF64(v)) : makeBoxF64(boxed, fastF64(v)));
         if (cache != nullptr) cache->push_back({v, boxed});
         return boxed;
     };
@@ -691,7 +714,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         // block's fast copy a chain of THREE — up to the receiver test, the run
         // itself, then the rest — so the body is a function of the block it
         // writes into rather than of the loop variable below.
-        auto emitRange = [&](il::Block& part, size_t from, size_t to) {
+        auto emitRange = [&](il::Block& part, size_t from, size_t to, size_t behind) {
             for (size_t i = from; i < to; ++i) {
                 for (const auto& [index, j] : claimsAt[b]) {
                     if (index != i) continue;
@@ -699,7 +722,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                     for (size_t k = 0; k < point.numbers.claims.size(); ++k) {
                         const RegionPlan::NumberClaim& claim = point.numbers.claims[k];
                         part.instructions.push_back(makeIsNumberArray(
-                            ownedClaimIds[b][j][k], fastDyn(claim.receiver, part, &boxCache), claim.maxIndex));
+                            ownedClaimIds[b][j][k], fastDyn(claim.receiver, part, &boxCache, b, behind), claim.maxIndex));
                     }
                 }
                 for (const auto& [index, value] : inlineUnbox[b]) {
@@ -761,7 +784,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                     for (il::ValueId& id : inst.operands) id = fastF64(id);
                     ++comparesPromoted;
                 } else {
-                    for (il::ValueId& id : inst.operands) id = fastDyn(id, part, &boxCache);
+                    for (il::ValueId& id : inst.operands) id = fastDyn(id, part, &boxCache, b, behind);
                 }
 
                 for (int side = 0; side < 2; ++side) {
@@ -773,14 +796,14 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                         for (size_t k = 0; k < t.args.size() && k < params.size(); ++k) {
                             t.args[k] = candidateOf[params[k].id] != nullptr
                                             ? fastF64(t.args[k])
-                                            : fastDyn(t.args[k], part, &boxCache);
+                                            : fastDyn(t.args[k], part, &boxCache, b, behind, true);
                         }
                         t.block = fastPartId[target][0];
                     } else if (exitTrampolineId[b][side] != il::kNoBlock) {
                         t.block = exitTrampolineId[b][side];
                         t.args.clear();
                     } else {
-                        for (il::ValueId& id : t.args) id = fastDyn(id, part, &boxCache);
+                        for (il::ValueId& id : t.args) id = fastDyn(id, part, &boxCache, b, behind, true);
                         t.block = slowHeadId[target];
                     }
                 }
@@ -801,7 +824,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             }
             const size_t limit = j < guardPoints[b].size() ? guardPoints[b][j].index
                                                            : source.instructions.size();
-            emitRange(*part, cursor, limit);
+            emitRange(*part, cursor, limit, j);
             cursor = limit;
 
             if (j == guardPoints[b].size()) break;
@@ -817,7 +840,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             for (size_t k = 0; k < guardPoints[b][j].shapes.size(); ++k) {
                 const RegionPlan::ShapeTest& test = guardPoints[b][j].shapes[k];
                 const il::ValueId cond = newValue();
-                part->instructions.push_back(makeIsShape(cond, fastDyn(test.receiver, *part, &boxCache), test));
+                part->instructions.push_back(makeIsShape(cond, fastDyn(test.receiver, *part, &boxCache, b, j), test));
                 part->instructions.push_back(makeBranch(cond, fastShapeId[b][j][k], trampolineId[b][j]));
                 part = &out[fastShapeId[b][j][k]];
                 ++emittedShapeTests;
@@ -826,13 +849,13 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             if (run.receiver != il::kNoValue) {
                 const il::ValueId dense = newValue();
                 part->instructions.push_back(makeIsDenseArray(
-                    dense, fastDyn(run.receiver, *part, &boxCache), run.maxIndex));
+                    dense, fastDyn(run.receiver, *part, &boxCache, b, j), run.maxIndex));
                 part->instructions.push_back(
                     makeBranch(dense, fastRunId[b][j], trampolineId[b][j]));
                 part = &out[fastRunId[b][j]];
             }
             if (run.isRun()) {
-                emitRange(*part, cursor, run.guardIndex);
+                emitRange(*part, cursor, run.guardIndex, j);
                 cursor = run.guardIndex;
             }
 
@@ -867,7 +890,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 // AN IC EXIT: the guard itself, its false edge the trampoline.
                 // The slow copy is entered in front of its own copy of the
                 // guard, which misses as this one did.
-                emitRange(*part, cursor, cursor + 1);
+                emitRange(*part, cursor, cursor + 1, j);
                 part->instructions.push_back(makeBranch(part->instructions.back().result, done, trampolineId[b][j]));
                 ++cursor;
             } else if (length == 0) {
@@ -880,7 +903,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             il::Block& tramp = out[trampolineId[b][j]];
             std::vector<il::ValueId> args;
             for (il::ValueId v : slowSplits[b][j].params) {
-                args.push_back(fastDyn(v, tramp, nullptr));
+                args.push_back(fastDyn(v, tramp, nullptr, b, j, true));
             }
             tramp.instructions.push_back(makeJump(slowTailId[b][j], std::move(args)));
         }
@@ -893,7 +916,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             const il::BlockTarget& t = side == 0 ? term.target : term.elseTarget;
             il::Block& tramp = out[exitTrampolineId[b][side]];
             std::vector<il::ValueId> args;
-            for (il::ValueId v : t.args) args.push_back(fastDyn(v, tramp, nullptr));
+            for (il::ValueId v : t.args) args.push_back(fastDyn(v, tramp, nullptr, b, guardPoints[b].size(), true));
             tramp.instructions.push_back(makeJump(slowHeadId[t.block], std::move(args)));
         }
     }

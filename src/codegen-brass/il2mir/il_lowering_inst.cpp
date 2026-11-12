@@ -16,6 +16,18 @@ namespace il2mir {
 
 namespace {
 
+// A double that is a Value's bits and no arithmetic's result: an i64
+// reinterpreted, or a boxed element loaded as one (il.h `numberBits`). The
+// bridge verifier's rule for a bitcast back that canonicalises nothing
+// (il_bridge_verifier.cpp `is_value_bits_f64`), asked of the definition alone.
+bool is_value_bits(const Value* v) {
+    const Instruction* def = v->type() == Type::f64() && v->is_instruction() ? v->defining_instruction() : nullptr;
+    if (!def) return false;
+    if (def->opcode() == Opcode::bitcast_f64_i64) return def->operand(0)->type() == Type::i64();
+    return (def->opcode() == Opcode::load || def->opcode() == Opcode::load_indexed) &&
+           def->alias_class() == kBoxedElementAliasClass;
+}
+
 // ToNumber of the Value bits `bits`. A Number's bits are its double, so that
 // operand (nearly every one: `queue.length`, a field holding a double) is a
 // compare and a bitcast; everything else is the helper's ToNumber, which may
@@ -601,7 +613,12 @@ bool IlLowering::lower_instruction(
             }
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            if (inst_ast.box_type == BronzeType::F64) {
+            if (inst_ast.box_type == BronzeType::F64 && inst_ast.raw_box && is_value_bits(op0)) {
+                // A Value's own bits (il.h `rawBox`): moved, with no NaN to
+                // canonicalise, and never answered with the boxed value they
+                // were read from, whose live range ends at its test.
+                res_val = b.build_bitcast_i64_f64(op0);
+            } else if (inst_ast.box_type == BronzeType::F64) {
                 if (op0->type() == Type::i64()) {
                     res_val = op0;
                 } else if (op0->defining_instruction() &&
@@ -781,7 +798,19 @@ bool IlLowering::lower_instruction(
             std::vector<Value*> target_args;
             for (size_t i = 0; i < inst_ast.target.args.size(); ++i) {
                 Value* aval = get_val_by_id(inst_ast.target.args[i]);
-                if (i < target_bb->params().size() && aval) aval = ensure_type(aval, target_bb->params()[i]->type(), b);
+                const bool to_tagged = i < target_bb->params().size() && target_bb->params()[i]->type().is_tagged();
+                if (inst_ast.leaves_fast_copy && to_tagged && aval && aval->type() == Type::i64()) {
+                    // A value the fast copy hands its slow copy is rooted
+                    // again from its bits, as a value of the slow copy's own.
+                    // Handed over as itself it would be one value live through
+                    // the slow copy's calls, and a root live across any call is
+                    // kept in its frame slot for the whole of its life: stored
+                    // where the fast copy defines it and reloaded at each use
+                    // there, for the sake of the copy that did not run.
+                    aval = b.build_bitcast_tagged_i64(aval);
+                } else if (i < target_bb->params().size() && aval) {
+                    aval = ensure_type(aval, target_bb->params()[i]->type(), b);
+                }
                 target_args.push_back(aval);
             }
             b.build_br(target_bb, target_args);
