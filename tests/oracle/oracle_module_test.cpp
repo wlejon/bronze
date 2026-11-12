@@ -62,7 +62,7 @@ TEST_CASE("Oracle module test suite") {
         MESSAGE("BRONZE_MODULE_RUN_HOST is not set: no module runner in this build");
         return;
     }
-    REQUIRE_MESSAGE(std::filesystem::exists(runner), ("module runner not found at " + runner).c_str());
+    REQUIRE_MESSAGE(std::filesystem::exists(runner), ("module runner not found at " + runner));
     std::filesystem::path casesDir = oracle::findCasesDirectory();
     REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
     auto caseFiles = oracle::casesIn(casesDir);
@@ -97,19 +97,19 @@ TEST_CASE("Oracle module test suite") {
 
     for (const auto& res : results) {
         SUBCASE(res.oracleCase.id.c_str()) {
-            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + res.oracleCase.id).c_str());
-            CHECK_MESSAGE(!res.run.timedOut, ("Module run did not finish within the timeout: " + res.oracleCase.id).c_str());
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + res.oracleCase.id));
+            CHECK_MESSAGE(!res.run.timedOut, ("Module run did not finish within the timeout: " + res.oracleCase.id));
             if (res.run.ran) {
                 CHECK_MESSAGE(res.expected == res.run.output,
                               ("Module output differs from the pinned expectation for " + res.oracleCase.id +
-                               summary(res.run)).c_str());
+                               summary(res.run)));
             }
             CHECK_MESSAGE(!res.runGc.timedOut,
-                          ("Module run did not finish within the timeout (gc-stress): " + res.oracleCase.id).c_str());
+                          ("Module run did not finish within the timeout (gc-stress): " + res.oracleCase.id));
             if (res.runGc.ran) {
                 CHECK_MESSAGE(res.expected == res.runGc.output,
                               ("Module output differs from the pinned expectation for " + res.oracleCase.id +
-                               " (gc-stress)" + summary(res.runGc)).c_str());
+                               " (gc-stress)" + summary(res.runGc)));
             }
         }
     }

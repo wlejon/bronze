@@ -125,6 +125,18 @@ RunResult runAtTier(const std::filesystem::path& entry, const std::string& tier,
     return oracle::runCommand(cmd, gcStress, kRunTimeoutMs);
 }
 
+// `bronze build` in its own process for multi-megabyte bundles so the OS
+// reclaims all compiler dirty pages before the next build or gc-stress run.
+RunResult buildInSubprocess(const std::filesystem::path& entry, const std::filesystem::path& outExe,
+                            bool infer, const std::string& hostGlobals = {},
+                            uint32_t timeoutMs = 300000) {
+    std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " build ";
+    if (!infer) cmd += "--no-infer ";
+    if (!hostGlobals.empty()) cmd += "--host-globals " + oracle::quoted(hostGlobals) + " ";
+    cmd += oracle::quoted(entry.string()) + " -o " + oracle::quoted(outExe.string());
+    return oracle::runCommand(cmd, /*gcStress=*/false, timeoutMs);
+}
+
 // The lines of a run's stderr that are the JIT's own diagnostics, not the
 // program's: brass reports an unresolved symbol or a bad relocation with
 // "JIT Error: ..." and a fatal runtime state with "brass: ...", and the
@@ -275,8 +287,7 @@ TEST_CASE("Oracle differential test suite") {
             REQUIRE(res.codeReadOk);
             CHECK_MESSAGE(!res.hasNonDeterminism,
                           "Banned non-determinism (a clock read or Math.random) in this case");
-            REQUIRE_MESSAGE(res.expectedReadOk,
-                            ("Missing pinned expectation " + res.expectedPathStr).c_str());
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation " + res.expectedPathStr));
 
             // Inference on
             std::string inferBuildMsg = "Bronze build failed for " + res.oracleCase.entry.string() +
@@ -286,21 +297,21 @@ TEST_CASE("Oracle differential test suite") {
             REQUIRE(res.inferExeExists);
             CHECK_MESSAGE(!res.runInfer.timedOut,
                           ("Compiled case did not finish within the timeout: " +
-                           res.oracleCase.entry.string() + " (inference on)").c_str());
+                           res.oracleCase.entry.string() + " (inference on)"));
             if (res.runInfer.ran) {
                 CHECK_MESSAGE(res.expected == res.runInfer.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (inference on)" + runSummary(res.runInfer)).c_str());
+                               res.oracleCase.id + " (inference on)" + runSummary(res.runInfer)));
             }
 
             // GC stress (inference on)
             CHECK_MESSAGE(!res.runInferGc.timedOut,
                           ("Compiled case did not finish within the timeout (gc-stress): " +
-                           res.oracleCase.entry.string()).c_str());
+                           res.oracleCase.entry.string()));
             if (res.runInferGc.ran) {
                 CHECK_MESSAGE(res.expected == res.runInferGc.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (gc-stress)" + runSummary(res.runInferGc)).c_str());
+                               res.oracleCase.id + " (gc-stress)" + runSummary(res.runInferGc)));
             }
 
             // No-inference mode
@@ -311,22 +322,22 @@ TEST_CASE("Oracle differential test suite") {
             REQUIRE(res.noInferExeExists);
             CHECK_MESSAGE(!res.runNoInfer.timedOut,
                           ("Compiled case did not finish within the timeout: " +
-                           res.oracleCase.entry.string() + " (--no-infer)").c_str());
+                           res.oracleCase.entry.string() + " (--no-infer)"));
             if (res.runNoInfer.ran) {
                 CHECK_MESSAGE(res.expected == res.runNoInfer.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (--no-infer)" + runSummary(res.runNoInfer)).c_str());
+                               res.oracleCase.id + " (--no-infer)" + runSummary(res.runNoInfer)));
             }
 
             // GC stress (--no-infer)
             CHECK_MESSAGE(!res.runNoInferGc.timedOut,
                           ("Compiled case did not finish within the timeout (gc-stress, --no-infer): " +
-                           res.oracleCase.entry.string()).c_str());
+                           res.oracleCase.entry.string()));
             if (res.runNoInferGc.ran) {
                 CHECK_MESSAGE(res.expected == res.runNoInferGc.output,
                               ("Output differs from the pinned expectation for " +
                                res.oracleCase.id + " (gc-stress, --no-infer)" +
-                               runSummary(res.runNoInferGc)).c_str());
+                               runSummary(res.runNoInferGc)));
             }
         }
     }
@@ -358,36 +369,34 @@ struct JitCaseResult {
 void checkJitMatchesBuilt(const JitCaseResult& res) {
     const std::string& id = res.oracleCase.id;
     CHECK_MESSAGE(!res.runJit.timedOut,
-                  ("bronze run did not finish within the timeout: " + res.oracleCase.entry.string()).c_str());
+                  ("bronze run did not finish within the timeout: " + res.oracleCase.entry.string()));
     if (res.runJit.ran) {
         CHECK_MESSAGE(res.expected == res.runJit.output,
-                      ("JIT output differs from the pinned expectation for " + id).c_str());
+                      ("JIT output differs from the pinned expectation for " + id));
         CHECK_MESSAGE(jitDiagnostics(res.runJit.errors).empty(),
-                      ("JIT diagnostics on stderr for " + id + ":\n" + jitDiagnostics(res.runJit.errors)).c_str());
+                      ("JIT diagnostics on stderr for " + id + ":\n" + jitDiagnostics(res.runJit.errors)));
         if (res.runBuilt.ran) {
             CHECK_MESSAGE(res.runBuilt.exitCode == res.runJit.exitCode,
                           ("JIT exit code " + std::to_string(res.runJit.exitCode) +
                            " differs from the built program's " + std::to_string(res.runBuilt.exitCode) +
-                           " for " + id)
-                              .c_str());
+                           " for " + id));
             CHECK_MESSAGE(res.runBuilt.errors == res.runJit.errors,
                           ("JIT stderr differs from the built program's for " + id + "\n--- built ---\n" +
-                           res.runBuilt.errors + "\n--- jit ---\n" + res.runJit.errors)
-                              .c_str());
+                           res.runBuilt.errors + "\n--- jit ---\n" + res.runJit.errors));
         }
     }
     CHECK_MESSAGE(!res.runJitGc.timedOut,
                   ("bronze run did not finish within the timeout (gc-stress): " +
-                   res.oracleCase.entry.string()).c_str());
+                   res.oracleCase.entry.string()));
     if (res.runJitGc.ran) {
         CHECK_MESSAGE(res.expected == res.runJitGc.output,
-                      ("JIT output differs from the pinned expectation for " + id + " (gc-stress)").c_str());
+                      ("JIT output differs from the pinned expectation for " + id + " (gc-stress)"));
         CHECK_MESSAGE(jitDiagnostics(res.runJitGc.errors).empty(),
                       ("JIT diagnostics on stderr for " + id + " (gc-stress):\n" +
-                       jitDiagnostics(res.runJitGc.errors)).c_str());
+                       jitDiagnostics(res.runJitGc.errors)));
         if (res.runBuilt.ran) {
             CHECK_MESSAGE(res.runBuilt.exitCode == res.runJitGc.exitCode,
-                          ("JIT exit code differs from the built program's for " + id + " (gc-stress)").c_str());
+                          ("JIT exit code differs from the built program's for " + id + " (gc-stress)"));
         }
     }
 }
@@ -457,8 +466,7 @@ TEST_CASE("Oracle JIT differential test suite") {
 
     for (const auto& res : results) {
         SUBCASE(res.oracleCase.id.c_str()) {
-            REQUIRE_MESSAGE(res.expectedReadOk,
-                            ("Missing pinned expectation " + res.expectedPathStr).c_str());
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation " + res.expectedPathStr));
             std::string buildMsg =
                 "Bronze build failed for " + res.oracleCase.entry.string() + ": " + res.buildErr;
             INFO(buildMsg);
@@ -466,7 +474,7 @@ TEST_CASE("Oracle JIT differential test suite") {
             REQUIRE(res.exeExists);
             CHECK_MESSAGE(!res.runBuilt.timedOut,
                           ("Compiled case did not finish within the timeout: " +
-                           res.oracleCase.entry.string()).c_str());
+                           res.oracleCase.entry.string()));
             checkJitMatchesBuilt(res);
         }
     }
@@ -534,19 +542,19 @@ TEST_CASE("Oracle tiers test suite") {
                 CHECK_MESSAGE(!res.plain[t].timedOut, ("timed out: " + where));
                 CHECK_MESSAGE(res.plain[t].exitCode == 0,
                               ("exit " + std::to_string(res.plain[t].exitCode) + ": " + where +
-                               "\n" + res.plain[t].errors).c_str());
+                               "\n" + res.plain[t].errors));
                 CHECK_MESSAGE(res.expected == res.plain[t].output,
-                              ("output differs from the pinned expectation: " + where).c_str());
+                              ("output differs from the pinned expectation: " + where));
                 CHECK_MESSAGE(!res.gc[t].timedOut, ("timed out (gc-stress): " + where));
                 CHECK_MESSAGE(res.expected == res.gc[t].output,
                               ("output differs from the pinned expectation (gc-stress): " + where +
-                               "\n" + res.gc[t].errors).c_str());
+                               "\n" + res.gc[t].errors));
                 CHECK_MESSAGE(jitDiagnostics(res.plain[t].errors).empty(),
                               ("JIT diagnostics on stderr: " + where + "\n" +
-                               jitDiagnostics(res.plain[t].errors)).c_str());
+                               jitDiagnostics(res.plain[t].errors)));
                 CHECK_MESSAGE(jitDiagnostics(res.gc[t].errors).empty(),
                               ("JIT diagnostics on stderr (gc-stress): " + where + "\n" +
-                               jitDiagnostics(res.gc[t].errors)).c_str());
+                               jitDiagnostics(res.gc[t].errors)));
             }
         }
     }
@@ -625,7 +633,7 @@ TEST_CASE("Oracle spec-profile suite") {
             CHECK_MESSAGE(res.built.exitCode == 0, ("exit " + std::to_string(res.built.exitCode)));
             CHECK_MESSAGE(res.built.output == res.expected,
                           ("built with its profile, output differs from the pinned expectation\n" +
-                           res.built.errors).c_str());
+                           res.built.errors));
         }
     }
 }
@@ -652,7 +660,7 @@ TEST_CASE("Oracle blocked test suite") {
             expectedPath.replace_extension(".expected");
             std::string expected;
             REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
-                            ("Missing pinned expectation " + expectedPath.string()).c_str());
+                            ("Missing pinned expectation " + expectedPath.string()));
 
             std::filesystem::path exePath =
                 bronze_test::tempDir() / (oracleCase.id + "_blocked.exe");
@@ -667,7 +675,7 @@ TEST_CASE("Oracle blocked test suite") {
                 bool matches = run.ran && (expected == run.output);
                 CHECK_MESSAGE(!matches,
                               ("Blocked oracle case passes! Promote " + oracleCase.id +
-                               " (and its .expected) from cases/blocked/ to cases/").c_str());
+                               " (and its .expected) from cases/blocked/ to cases/"));
             } else {
                 CHECK(true);  // still blocked at build time
             }
@@ -678,6 +686,8 @@ TEST_CASE("Oracle blocked test suite") {
 TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds") {
     std::filesystem::path dir = findTestDirectory(TEST_THREEJS_DIR, "tests/oracle/threejs");
     REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/threejs not found");
+    REQUIRE_MESSAGE(std::filesystem::exists(TEST_BRONZE_CLI),
+                    "bronze CLI not found at " TEST_BRONZE_CLI);
 
     std::filesystem::path casePath = dir / "main.js";
     REQUIRE(std::filesystem::exists(casePath));
@@ -685,7 +695,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
     std::string expected;
     std::filesystem::path expectedPath = dir / "main.expected";
     REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
-                    ("Missing pinned expectation " + expectedPath.string()).c_str());
+                    ("Missing pinned expectation " + expectedPath.string()));
 
     for (const bool infer : {true, false}) {
         const std::string mode = infer ? " (inference on)" : " (--no-infer)";
@@ -694,32 +704,32 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         std::error_code ec;
         removeProgram(exePath, ec);
 
-        std::string errOut;
-        int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
-        std::string threeMsg = "Bronze failed to build three.js" + mode + ": " + errOut;
-        INFO(threeMsg);
-        REQUIRE(status == 0);
+        RunResult build = buildInSubprocess(casePath, exePath, infer);
+        REQUIRE_MESSAGE(!build.timedOut, ("Bronze timed out building three.js" + mode));
+        REQUIRE(build.ran);
+        REQUIRE_MESSAGE(build.exitCode == 0,
+                        ("Bronze failed to build three.js" + mode + ": " + build.errors));
         REQUIRE(std::filesystem::exists(exePath));
 
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
         CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode));
         if (run.ran) {
             CHECK_MESSAGE(run.exitCode == 0,
-                          ("three.js exited with code " + std::to_string(run.exitCode) + mode).c_str());
+                          ("three.js exited with code " + std::to_string(run.exitCode) + mode));
             CHECK_MESSAGE(expected == run.output,
-                          ("three.js output differs from the pinned expectation" + mode).c_str());
+                          ("three.js output differs from the pinned expectation" + mode));
         }
 
         // Same executable, every allocation now moving the whole live set.
         RunResult stressed = runWithTimeout(exePath.string(), /*gcStress=*/true);
         CHECK_MESSAGE(!stressed.timedOut,
-                      ("three.js case did not finish within the timeout (gc-stress" + mode + ")").c_str());
+                      ("three.js case did not finish within the timeout (gc-stress" + mode + ")"));
         if (stressed.ran) {
             CHECK_MESSAGE(stressed.exitCode == 0,
                           ("three.js exited with code " + std::to_string(stressed.exitCode) +
-                           " (gc-stress" + mode + ")").c_str());
+                           " (gc-stress" + mode + ")"));
             CHECK_MESSAGE(expected == stressed.output,
-                          ("three.js output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
+                          ("three.js output differs from the pinned expectation (gc-stress" + mode + ")"));
         }
         removeProgram(exePath, ec);
     }
@@ -735,6 +745,8 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
 TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds") {
     std::filesystem::path dir = findTestDirectory(TEST_PIXI_DIR, "tests/oracle/pixi");
     REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/pixi not found");
+    REQUIRE_MESSAGE(std::filesystem::exists(TEST_BRONZE_CLI),
+                    "bronze CLI not found at " TEST_BRONZE_CLI);
 
     std::filesystem::path casePath = dir / "main.js";
     REQUIRE(std::filesystem::exists(casePath));
@@ -742,7 +754,7 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
     std::string expected;
     std::filesystem::path expectedPath = dir / "main.expected";
     REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
-                    ("Missing pinned expectation " + expectedPath.string()).c_str());
+                    ("Missing pinned expectation " + expectedPath.string()));
 
     const std::string hostGlobals = (dir / "host.globals").string();
     REQUIRE(std::filesystem::exists(hostGlobals));
@@ -754,20 +766,20 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         std::error_code ec;
         removeProgram(exePath, ec);
 
-        std::string errOut;
-        int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer,
-                                           /*timings=*/false, /*emitObj=*/false, hostGlobals);
-        REQUIRE_MESSAGE(status == 0,
-                        ("Bronze failed to build pixi" + mode + ": " + errOut).c_str());
+        RunResult build = buildInSubprocess(casePath, exePath, infer, hostGlobals);
+        REQUIRE_MESSAGE(!build.timedOut, ("Bronze timed out building pixi" + mode));
+        REQUIRE(build.ran);
+        REQUIRE_MESSAGE(build.exitCode == 0,
+                        ("Bronze failed to build pixi" + mode + ": " + build.errors));
         REQUIRE(std::filesystem::exists(exePath));
 
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
         CHECK_MESSAGE(!run.timedOut, ("pixi case did not finish within the timeout" + mode));
         if (run.ran) {
             CHECK_MESSAGE(run.exitCode == 0,
-                          ("pixi exited with code " + std::to_string(run.exitCode) + mode).c_str());
+                          ("pixi exited with code " + std::to_string(run.exitCode) + mode));
             CHECK_MESSAGE(expected == run.output,
-                          ("pixi output differs from the pinned expectation" + mode).c_str());
+                          ("pixi output differs from the pinned expectation" + mode));
         }
 
         // Same executable, every allocation now moving the whole live set. A
@@ -777,13 +789,13 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         RunResult stressed =
             runWithTimeout(exePath.string(), /*gcStress=*/true, /*timeoutMs=*/300000);
         CHECK_MESSAGE(!stressed.timedOut,
-                      ("pixi case did not finish within the timeout (gc-stress" + mode + ")").c_str());
+                      ("pixi case did not finish within the timeout (gc-stress" + mode + ")"));
         if (stressed.ran) {
             CHECK_MESSAGE(stressed.exitCode == 0,
                           ("pixi exited with code " + std::to_string(stressed.exitCode) +
-                           " (gc-stress" + mode + ")").c_str());
+                           " (gc-stress" + mode + ")"));
             CHECK_MESSAGE(expected == stressed.output,
-                          ("pixi output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
+                          ("pixi output differs from the pinned expectation (gc-stress" + mode + ")"));
         }
         removeProgram(exePath, ec);
     }
@@ -809,10 +821,10 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
     CHECK_MESSAGE(!run.timedOut, (what + " did not finish within the timeout"));
     if (run.ran) {
         CHECK_MESSAGE(run.exitCode == 0,
-                      (what + " exited with code " + std::to_string(run.exitCode) + "\n" + run.errors).c_str());
+                      (what + " exited with code " + std::to_string(run.exitCode) + "\n" + run.errors));
         CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation"));
         CHECK_MESSAGE(jitDiagnostics(run.errors).empty(),
-                      (what + " printed JIT diagnostics:\n" + jitDiagnostics(run.errors)).c_str());
+                      (what + " printed JIT diagnostics:\n" + jitDiagnostics(run.errors)));
     }
 
     RunResult stressed =
@@ -821,11 +833,11 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
     if (stressed.ran) {
         CHECK_MESSAGE(stressed.exitCode == 0,
                       (what + " exited with code " + std::to_string(stressed.exitCode) + " (gc-stress)\n" +
-                       stressed.errors).c_str());
+                       stressed.errors));
         CHECK_MESSAGE(expected == stressed.output,
-                      (what + " output differs from the pinned expectation (gc-stress)").c_str());
+                      (what + " output differs from the pinned expectation (gc-stress)"));
         CHECK_MESSAGE(jitDiagnostics(stressed.errors).empty(),
-                      (what + " printed JIT diagnostics (gc-stress):\n" + jitDiagnostics(stressed.errors)).c_str());
+                      (what + " printed JIT diagnostics (gc-stress):\n" + jitDiagnostics(stressed.errors)));
     }
 }
 
@@ -837,7 +849,7 @@ TEST_CASE("threejs-jit milestone: unmodified r160 runs under bronze run") {
     REQUIRE(std::filesystem::exists(dir / "main.js"));
     std::string expected;
     REQUIRE_MESSAGE(readFileBytes(dir / "main.expected", expected),
-                    ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
+                    ("Missing pinned expectation " + (dir / "main.expected").string()));
     // Run budgets as the built program's (runWithTimeout's default for both);
     // the compile allowance is the old 4x budget less the run it contained.
     checkJitMilestone("three.js", dir / "main.js", expected, {}, kRunTimeoutMs, kRunTimeoutMs,
@@ -960,7 +972,7 @@ TEST_CASE("pixi-jit milestone: unmodified v8.19.0 runs under bronze run") {
     REQUIRE(std::filesystem::exists(dir / "main.js"));
     std::string expected;
     REQUIRE_MESSAGE(readFileBytes(dir / "main.expected", expected),
-                    ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
+                    ("Missing pinned expectation " + (dir / "main.expected").string()));
     const std::string hostGlobals = (dir / "host.globals").string();
     REQUIRE(std::filesystem::exists(hostGlobals));
     // The built program's budgets (the pixi milestone above: the default run

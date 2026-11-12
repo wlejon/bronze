@@ -509,6 +509,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_threads(buildThreads_);
     compiler.set_placement(codegen::functionPlacement(module, uniqueNames, entrySymbol_));
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
+    mirMod.reset();
     timer.mark("brass compile");
 
     renameEntrySymbol(obj, entrySymbol_);

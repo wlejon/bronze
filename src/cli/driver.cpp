@@ -253,6 +253,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     }
 
     reportWarnings(diags, sources);
+    inferred.reset();
+    astModule.reset();
     // The statistics before the dump, not after it: this command's artefact is
     // megabytes of IL on a real library, and a report that has to be found at
     // the end of it is a report nobody reads. Both are deterministic, so the
@@ -456,6 +458,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (wpoStats) std::fputs(wpoReport.c_str(), stdout);
 
     reportWarnings(diags, sources);
+    inferred.reset();
+    astModule.reset();
 
     // `--emit-obj`: same pipeline, stopped after object emission. The output
     // path is used exactly as given — the host's build owns naming and layout
@@ -497,6 +501,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setDirectJsCalls(true);
     backend.setBuildThreads(buildThreads);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
+    ilModule.reset();
     timer.mark("codegen");
     if (!obj) {
         std::string msg = diags.render(sources);
