@@ -322,7 +322,18 @@ bool lower_call_instruction(
                 b.build_br_if(accessor_cell_hit(lowering, b, recv, inst_ast.static_cell, keyed), merge,
                               {b.build_iconst_i32(1)}, row_bb, {});
                 b.position_at_end(row_bb);
-                b.build_br(merge, {row_hit()});
+                Value* row = row_hit();
+                // The entry answered what the pair could not: the pair learns
+                // this receiver's shape (il_accessor_direct.h).
+                BasicBlock* asked = b.current_block();
+                BasicBlock* learn = b.append_block(prefix + "_learn_cold");
+                b.position_at_end(asked);
+                b.build_br_if(row, learn, {}, merge, {b.build_iconst_i32(0)});
+                b.position_at_end(learn);
+                emit_method_cell_learn(lowering, b, recv, keyed, inst_ast.static_cell,
+                                       lowering->method_cell_key(inst_ast), inst_ast.callee_name);
+                b.build_br(merge, {b.build_iconst_i32(1)});
+                learn->set_cold();
                 row_bb->set_cold();
                 b.position_at_end(merge);
                 res_val = hit;

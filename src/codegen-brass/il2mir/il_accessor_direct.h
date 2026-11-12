@@ -33,6 +33,19 @@ Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t
 void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
                            const std::string& callee);
 
+// What a method guard does when its cell pair said no and the site's cache
+// entry said yes: the pair learns this receiver's shape. The pair holds one
+// shape, the first its site's miss published at this epoch, so a site whose
+// first receiver was the rare one (a scene's root before its ten thousand
+// children) would send every other receiver through the entry's four
+// compares for good; so would a pair whose epoch moved while another copy of
+// the site kept the entry filled. A pair that names a shape at this epoch
+// takes the new one as a store (the entry's hit is the pair's own claim:
+// this shape resolves the key to the guessed code now); any other pair is
+// published by the runtime, which lists it for the epoch's reset.
+void emit_method_cell_learn(IlLowering* lowering, Builder& b, Value* obj, Value* keyed, uint32_t cell,
+                            uint32_t key_index, const std::string& callee);
+
 // What a direct accessor site does on a miss: the ordinary read (`get`) or
 // write (`set`), and the receiver's bits read afresh after it, for the fill.
 struct AccessorMiss {

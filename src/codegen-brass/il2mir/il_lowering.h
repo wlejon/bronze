@@ -199,6 +199,9 @@ public:
     }
     // Whether `guard` is such a guard: its cell is filled, so it tests it.
     bool method_cell_filled(const BronzeInstruction& guard) const { return method_cells_filled_.count(&guard) != 0; }
+    // The key index of the call that fills such a guard's cell pair, which a
+    // publish of the pair names.
+    uint32_t method_cell_key(const BronzeInstruction& guard) const { return method_cell_keys_.at(guard.static_cell); }
     Value* memo_lookup(uint32_t recv_id) const;
     // The memo's key for a receiver's FAMILY ID (PropertyLoweringHelper::
     // family_id), held beside its keyed shape and carried the same way: an
@@ -491,6 +494,7 @@ private:
     std::unordered_set<const BronzeInstruction*> guard_missed_;
     std::unordered_map<const BronzeInstruction*, const BronzeInstruction*> method_cell_guards_;
     std::unordered_set<const BronzeInstruction*> method_cells_filled_;
+    std::unordered_map<uint32_t, uint32_t> method_cell_keys_;
     std::unordered_set<const Value*> boolean_values_;
     // The current function's fused `in` / element read pairs: read id -> in
     // id, and each lowered `in`'s element (il_in_elem_fuse.cpp).

@@ -187,7 +187,11 @@ void bronze_method_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
     if (censusFillsSuppressed()) return;
     if (cell == nullptr) return;
     const uint64_t epoch = protoMutationEpoch();
-    if (cell[1] == epoch) return;
+    // A pair that names a shape at this epoch is listed and stays as it is. A
+    // refusal is asked again: it was one receiver's answer, and a guard whose
+    // cache entry hit sends another (il_accessor_direct.h,
+    // `emit_method_cell_learn`).
+    if (cell[1] == epoch && cell[0] != kRefused) return;
 
     uint64_t published = kRefused;
     Value objVal(objBits);

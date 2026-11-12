@@ -113,6 +113,37 @@ void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_
     emit_cell_fill(lowering, b, obj, cell, key_index, callee, 2);
 }
 
+void emit_method_cell_learn(IlLowering* lowering, Builder& b, Value* obj, Value* keyed, uint32_t cell,
+                            uint32_t key_index, const std::string& callee) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = block_prefix(b, "cell_learn");
+    BasicBlock* store = b.append_block(prefix + "_store_cold");
+    BasicBlock* call = b.append_block(prefix + "_call_cold");
+    BasicBlock* done = b.append_block(prefix + "_done_cold");
+    b.position_at_end(cur);
+    Value* cells = pl.static_cells_addr(b);
+    const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
+    Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
+    Value* current = b.build_eq(b.build_load(Type::i64(), cells, off + 8), epoch);
+    // 0 is empty and 1 a refusal (runtime/accessor_cell.cpp); a shape is neither.
+    Value* names = b.build_ugt(b.build_load(Type::i64(), cells, off), b.build_iconst_i64(1));
+    b.build_br_if(b.build_and(current, names), store, call);
+    b.position_at_end(store);
+    b.build_store(Type::i64(), cells, off, keyed);
+    b.build_br(done);
+    b.position_at_end(call);
+    Value* key = lowering->get_key_id(b, key_index);
+    Value* addr = b.build_add(cells, b.build_iconst_i64(off));
+    b.build_call("bronze_method_cell_publish", Type::void_type(),
+                 {obj, key, addr, b.build_func_addr("__wrapper_" + callee)});
+    b.build_br(done);
+    store->set_cold();
+    call->set_cold();
+    done->set_cold();
+    b.position_at_end(done);
+}
+
 bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst) {
     if (!lowering || inst.callee_name.empty() || inst.operands.empty()) return false;
     if (!direct_method_ic_here(lowering) || lowering->run_once()) return false;

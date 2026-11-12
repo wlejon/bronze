@@ -119,6 +119,7 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
     guard_missed_.clear();
     method_cell_guards_.clear();
     method_cells_filled_.clear();
+    method_cell_keys_.clear();
     std::unordered_map<uint32_t, uint32_t> entries;
     std::unordered_map<uint32_t, const BronzeBlock*> by_id;
     std::unordered_set<uint32_t> filled_cells;
@@ -157,6 +158,7 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
             method_cell_guards_.emplace(&site, &guard);
             method_cells_filled_.insert(&guard);
             filled_cells.insert(guard.static_cell);
+            method_cell_keys_.emplace(guard.static_cell, site.index);
         }
     }
     // A guard on a filled pair whose own miss is not the site: a guarded
