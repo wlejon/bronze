@@ -118,10 +118,17 @@ std::vector<std::string> getConstDeclarations(const std::vector<const Stmt*>& st
 //   - the names not yet declared. A statement that mentions one of those reads
 //     it in its own dead zone, which is the ReferenceError the check is for.
 //
-// A statement also stops the scan if it CREATES a function or class value
-// anywhere inside itself other than as the whole of a declaration's
-// initializer: an IIFE, a callback argument and an object literal's method are
-// each a closure over this record that the statement itself can enter.
+// A statement that CREATES a function or class value inside itself (an IIFE,
+// a callback argument, an object literal's method) makes a closure over this
+// record that the statement itself can enter and that lives on below it. What
+// such a closure can read of the record is what its body names, and the
+// mention walk descends into the body, so the statement is judged by its
+// names like any other: `xs.map((h) => make(h))` stops nothing, and the same
+// callback naming a binding below it stops the scan. One thing changes after
+// the closure is made: a `var` it names can be given a function expression
+// later, whose body nothing judges. So a `var` declaration that is wholly a
+// function expression stops the scan when anything walked past named it.
+// `tests/oracle/cases/dead_zone_closure_names.js` pins both sides.
 //
 // `params` is the enclosing function's parameter list, or null for a list that
 // has none (the module top level, a block). A parameter DEFAULT is code of this

@@ -609,9 +609,10 @@ enum class Op : uint8_t {
     // still equal it? If so, the receiver still has every slot the shape it
     // was checked at described, across any calls (S1), and the site is its
     // bare load or store; if not, the site is its ordinary self. The value is
-    // the epoch as an exact double (as `layout.epoch` reads it), or 1, which
-    // no epoch is. Loads only, cannot throw; impure like `layout.epoch`
-    // (never merged, hoisted or dropped).
+    // the epoch word, or 1, which no epoch is, as the f64 of the same bits:
+    // it is compared and never computed with, so nothing converts it. Loads
+    // only, cannot throw; impure like `layout.epoch` (never merged, hoisted or
+    // dropped).
     LayoutFact,
     // `feedback.record [<value>], <key_const_index>, <immI32: site info>`:
     // hands one observation to the type-feedback recorder

@@ -310,10 +310,11 @@ the layout epoch is unchanged.
 
 - **The fact** is an IL value: `layout.fact %r` (`LayoutFact`, f64, impure,
   cannot throw) carries one site's claim (identity cell or family range) and
-  evaluates to the layout epoch, as an exact double, when `r` passes that
-  claim's guard, else 1, which no epoch is. A covered site (`PropGet` /
-  `PropSet` with `shapeGuarded` and the fact as its last operand) is lowered by
-  il2mir as `epoch == fact ? bare slot access : the site's ordinary lowering`
+  evaluates to the layout epoch word when `r` passes that claim's guard, else
+  1, which no epoch is (the f64 holds the word's bits, never its conversion).
+  A covered site (`PropGet` / `PropSet` with `shapeGuarded` and the fact as
+  its last operand) is lowered by il2mir as
+  `epoch == fact ? bare slot access : the site's ordinary lowering`
   (`lower_fact_site`). The miss path is the full static site (guard, cache,
   fill), so a failed fact costs one compare more than before and never runs
   anything twice. Covered sites the backend batches into one static run share

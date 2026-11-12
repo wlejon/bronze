@@ -1,0 +1,10 @@
+30
+ReferenceError/late
+ReferenceError/stored
+ReferenceError/nested
+ReferenceError/assigned
+ReferenceError/hoisted
+33/43
+28
+ReferenceError/class
+201

@@ -30,6 +30,7 @@ bronze_add_module(lower
                  ../../tests/lower/guard_region_test.cpp
                  ../../tests/lower/guard_region_entry_test.cpp
                  ../../tests/lower/guard_region_placement_test.cpp
+                 ../../tests/lower/guard_region_fallback_test.cpp
                  ../../tests/lower/guard_region_run_test.cpp
                  ../../tests/lower/guard_region_shape_test.cpp
                  ../../tests/lower/guard_region_ic_test.cpp

@@ -200,7 +200,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         Value* epoch = load_layout_epoch(b);
         for (uint32_t fact : facts) {
             Value* f = ensure_type(get_val_by_id(fact, b, val_map), Type::f64(), b);
-            Value* holds = b.build_eq(epoch, b.build_fptosi_i64(f));
+            Value* holds = b.build_eq(epoch, layout_fact_word(b, f));
             ok = ok ? b.build_and(ok, holds) : holds;
         }
     }

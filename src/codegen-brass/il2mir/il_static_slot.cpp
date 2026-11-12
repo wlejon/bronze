@@ -510,10 +510,17 @@ bool has_layout_fact(const BronzeInstruction& inst_ast) {
            (inst_ast.op == BronzeOp::PropSet && inst_ast.operands.size() == 3);
 }
 
+// A fact's f64 is the word's bits and not its value (the IL's "exact double"
+// is the interpreter's reading; here its only readers are the fact sites and
+// nothing computes with it), so making one and asking one are moves between
+// register classes that fold away where the two meet, and neither is a
+// conversion. Either word is a small integer, so the bits are never a NaN's
+// and a box of them keeps them.
+static Value* layout_fact_of(Builder& b, Value* word) { return b.build_bitcast_f64_i64(word); }
+Value* layout_fact_word(Builder& b, Value* fact) { return b.build_bitcast_i64_f64(fact); }
+
 Value* layout_fact_holds(Builder& b, Value* fact) {
-    // The fact is the epoch as an exact double (il_op.h `LayoutFact`): one
-    // truncation back and one integer compare against the word.
-    return b.build_eq(load_layout_epoch(b), b.build_fptosi_i64(fact));
+    return b.build_eq(load_layout_epoch(b), layout_fact_word(b, fact));
 }
 
 bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
@@ -526,12 +533,12 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
     // and every site holding it takes its ordinary path.
     if (inst_ast.op == BronzeOp::LayoutFact) {
         if (!here) {
-            res = b.build_sitofp_f64_i64(iconst(b, 1));
+            res = layout_fact_of(b, iconst(b, 1));
             return true;
         }
         Value* ok = prop_lowering.lower_is_shape(b, obj, lowering->memo_keyed(b, inst_ast.operands[0], obj),
                                                  StaticSlotSite::of(inst_ast));
-        res = b.build_sitofp_f64_i64(b.build_select(ok, load_layout_epoch(b), iconst(b, 1)));
+        res = layout_fact_of(b, b.build_select(ok, load_layout_epoch(b), iconst(b, 1)));
         lowering->memo_keep();
         return true;
     }

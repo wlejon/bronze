@@ -26,10 +26,12 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
                          Value*& res);
 
 // LAYOUT FACTS (il.h `layoutFactOperand`, lower/layout_facts.h): whether a
-// site holds one; the layout epoch word as an i64; and whether `fact` (the
-// operand, the epoch as a double) still holds, as an i1.
+// site holds one; the layout epoch word as an i64; the word `fact` (the
+// operand, an f64 holding the word's bits) was made of; and whether it still
+// holds, as an i1.
 bool has_layout_fact(const BronzeInstruction& inst_ast);
 Value* load_layout_epoch(Builder& b);
+Value* layout_fact_word(Builder& b, Value* fact);
 Value* layout_fact_holds(Builder& b, Value* fact);
 
 // A site holding a fact: `bare` (the slot's load or store) where the fact

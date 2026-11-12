@@ -173,16 +173,20 @@ bool inertInitializer(const Expr& e) {
             static_cast<const TemplateLit&>(e).exprs.empty());
 }
 
-// Every name mentioned anywhere under a node, plus the one question that stops
-// the scan on sight: does the node BUILD a function or a class?
+// Every name mentioned anywhere under a node, and whether the node BUILDS a
+// function or a class.
 //
 // A function expression written inside a prefix statement is a closure over
 // this record that the statement can then enter — `(function () { return v })()`
-// and `xs.forEach(x => v)` are both that, and neither mentions a dangerous
-// name. A class is the same thing wearing method syntax. So the scan refuses
-// any statement whose subtree contains one; the single position where creating
-// a function is harmless — a declaration's initializer being wholly one — is
-// handled by the caller, which never sends that expression here.
+// and `xs.forEach(x => v)` are both that. What such a closure can read of this
+// record is what its body NAMES, and the walk descends into the body, so it is
+// judged as any other code is: by the names under it. `xs.map(h => f(h))` in
+// front of a declaration names nothing in a dead zone and delays nothing; the
+// same call with a later binding in the arrow's body stops the scan. A closure
+// lives on past its statement, though, and a name it mentions can come to
+// hold a closure over a dead zone afterwards — which is what `mentioned` in
+// definitelyAssigned is for. `buildsFunction` is still what refuses a
+// parameter default and a destructuring declaration, which are not modelled.
 //
 // Built on IdentVisitor because the mention question has to be answered by THE
 // walk that finds mentions: a form this one forgot to descend into would be a
@@ -190,15 +194,14 @@ bool inertInitializer(const Expr& e) {
 // declares one PURE virtual per node kind, so that walk cannot silently skip a
 // form — a new node type stops the build until someone says how to descend it.
 //
-// A nested `function` DECLARATION is deliberately NOT flagged below, and that
-// is load-bearing rather than an omission: IdentVisitor descends into its body,
-// so every name the declaration could ever read is collected here and a
-// dangerous one refuses the statement — while a declaration whose body names
-// nothing dangerous has no way to read one either, whatever is done with the
-// value afterwards. `tests/oracle/cases/dead_zone_reach_boundary.js` cases 1
-// and 2 are that argument as programs, including the two-hop form where the
-// declaration reaches the binding through one of the outer list's own hoisted
-// functions.
+// A nested `function` DECLARATION is judged the same way: IdentVisitor
+// descends into its body, so every name the declaration could ever read is
+// collected here and a dangerous one refuses the statement — while a
+// declaration whose body names nothing dangerous has no way to read one
+// either, whatever is done with the value afterwards.
+// `tests/oracle/cases/dead_zone_reach_boundary.js` cases 1 and 2 are that
+// argument as programs, including the two-hop form where the declaration
+// reaches the binding through one of the outer list's own hoisted functions.
 class ReachScan final : public detail::IdentVisitor {
 public:
     bool buildsFunction = false;
@@ -217,15 +220,18 @@ public:
     }
 };
 
-// Does `node` mention any name in `stop`, or build a function?
-bool reachesAnythingDangerous(const Node& node, const std::unordered_set<std::string>& stop) {
+// Does `node` mention any name in `stop`? Every name it mentions is added to
+// `mentioned`.
+bool reachesAnythingDangerous(const Node& node, const std::unordered_set<std::string>& stop,
+                              std::unordered_set<std::string>& mentioned) {
     ReachScan scan;
     node.accept(scan);
-    if (scan.buildsFunction) return true;
+    bool dangerous = false;
     for (const auto& name : scan.names) {
-        if (stop.count(name) != 0) return true;
+        if (stop.count(name) != 0) dangerous = true;
     }
-    return false;
+    mentioned.insert(scan.names.begin(), scan.names.end());
+    return dangerous;
 }
 
 // Whether a parameter default can put a closure over this record into a
@@ -260,6 +266,10 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
         if (const auto* f = dynamic_cast<const FunctionDecl*>(stmt)) stop.insert(f->name);
     }
     for (const auto& name : getLexicalDeclarations(stmts)) stop.insert(name);
+    // Every name a statement walked past mentions. A closure such a statement
+    // made (or a nested declaration it holds) is still there below it, and
+    // reads these names whenever it is called.
+    std::unordered_set<std::string> mentioned;
 
     for (const Stmt* stmt : stmts) {
         if (stmt == nullptr) continue;
@@ -274,11 +284,11 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
         if (dynamic_cast<const ExportNamesDecl*>(stmt) != nullptr) continue;
         if (const auto* c = dynamic_cast<const ClassDecl*>(stmt)) {
             bool dangerous = false;
-            if (c->superClass != nullptr && reachesAnythingDangerous(*c->superClass, stop)) {
+            if (c->superClass != nullptr && reachesAnythingDangerous(*c->superClass, stop, mentioned)) {
                 dangerous = true;
             }
             for (const auto& m : c->methods) {
-                if (m.keyExpr != nullptr && reachesAnythingDangerous(*m.keyExpr, stop)) {
+                if (m.keyExpr != nullptr && reachesAnythingDangerous(*m.keyExpr, stop, mentioned)) {
                     dangerous = true;
                     break;
                 }
@@ -296,6 +306,11 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
         // runs no user code, and the closure it makes goes into this binding —
         // which is what keeps the NAME in `stop` from here down.
         if (plainDecl && dynamic_cast<const FunctionExpr*>(v->init.get()) != nullptr) {
+            // A `var` was never in `stop`, so a closure made above may name
+            // it, and from here it would call this one, whose body nothing
+            // has judged: `const o = {m: () => h()}; var h = function () {
+            // return late }; o.m(); let late`.
+            if (v->isVar && mentioned.count(v->name) != 0) break;
             if (!v->isVar) names.push_back(v->name);
             stop.insert(v->name);
             continue;
@@ -342,16 +357,16 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
         // nor disqualifies — but its initializer is code like any other. A
         // destructuring declaration binds no single name and is refused with
         // everything else that falls through to the break.
-        if (plainDecl && !reachesAnythingDangerous(*v->init, stop)) {
+        if (plainDecl && !reachesAnythingDangerous(*v->init, stop, mentioned)) {
             if (!v->isVar) names.push_back(v->name);
             stop.erase(v->name);
             continue;
         }
         // Not a declaration at all. Stage E3 stopped here unconditionally; now
-        // a statement that can neither reach a closure over this record nor
-        // read a binding still in its dead zone carries the scan on — which is
-        // what lets the declarations BELOW a setup loop be proven.
-        if (v == nullptr && !reachesAnythingDangerous(*stmt, stop)) continue;
+        // a statement that names no binding still in its dead zone, in itself
+        // or in a function it builds, carries the scan on — which is what lets
+        // the declarations BELOW a setup loop be proven.
+        if (v == nullptr && !reachesAnythingDangerous(*stmt, stop, mentioned)) continue;
         break;
     }
     return names;

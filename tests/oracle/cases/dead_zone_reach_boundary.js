@@ -3,8 +3,9 @@
 //
 // `dead_zone_reachability.js` beside this file pins stage E3's rule: the PREFIX
 // of a statement list that runs no user code at all. Stage E4 widened that to a
-// REACH — the scan now walks PAST a statement that neither BUILDS A FUNCTION
-// nor MENTIONS a name still in its dead zone, so a setup loop or a `try` no
+// REACH — the scan now walks PAST a statement that MENTIONS no name still in
+// its dead zone, in itself or in the body of a function it builds
+// (`dead_zone_closure_names.js` is that half), so a setup loop or a `try` no
 // longer stops it. That widening is what this file is about, because every
 // other mechanism in the campaign fails LOUD and this one fails quiet: an
 // elided check on a binding the analysis wrongly cleared answers `undefined`
@@ -23,7 +24,8 @@
 //
 //   (2) Any OTHER reader is a closure over this record, and a closure over
 //       this record is created either by a function-or-class-building node
-//       written inside this list — which stops the scan on sight — or by one
+//       written inside this list — whose body is walked for mentions like any
+//       other code, so it reads no binding the scan has not passed — or by one
 //       of this list's own hoisted `function` declarations, whose names are in
 //       the stop set for the whole scan and can therefore never be mentioned
 //       by a statement the scan walks past.
@@ -42,9 +44,8 @@ function tryIt(fn) {
 }
 
 // 1. A `function` DECLARATION nested inside a block statement in the prefix.
-//    The scan's "builds a function" test does not fire on a FunctionDecl —
-//    only on a function or class EXPRESSION — so what has to catch this is
-//    clause (1) walking the declaration's BODY and finding the mention.
+//    What has to catch this is clause (1) walking the declaration's BODY and
+//    finding the mention.
 function nestedDeclInBlock() {
   const marks = [];
   {
@@ -72,7 +73,7 @@ function nestedDeclTwoHops() {
 
 // 3. A closure stored on an object and called from the prefix. The store is an
 //    ordinary expression statement, so nothing about it is a declaration —
-//    what refuses it is the FunctionExpr in its subtree.
+//    what refuses it is the mention in the FunctionExpr's body.
 function storedThenCalled() {
   const box = {};
   box.f = function () { return hidden; };

@@ -261,3 +261,74 @@ TEST_CASE("a read site's stub answers hits without a call and hands the rest to 
     }
     CHECK(stub_calls == 1);
 }
+
+// `layout.fact` (il_op.h `LayoutFact`, il_static_slot.cpp `layout_fact_of` /
+// `layout_fact_word`): the fact is the epoch word's bits in an f64 and a site
+// compares those bits, so neither making one nor asking one converts between
+// integer and double.
+TEST_CASE("a layout fact carries the epoch word's bits and no site converts it") {
+    bronze::il::Module m;
+    m.name = "layout_fact_test";
+    m.keyConstants = {"x"};
+    m.icSiteCount = 1;
+    m.staticSiteCount = 1;
+    bronze::il::Function fn;
+    fn.name = "read_x";
+    fn.params = {{"o", bronze::il::Type::Dynamic}};
+    fn.returnType = bronze::il::Type::Dynamic;
+    fn.valueCount = 3;
+    bronze::il::Block b0;
+    b0.id = 0;
+    bronze::il::Instruction fact;
+    fact.op = bronze::il::Op::LayoutFact;
+    fact.type = bronze::il::Type::F64;
+    fact.result = 1;
+    fact.operands = {0};
+    fact.staticSlot = 0;
+    fact.staticCellIndex = 0;
+    fact.icIndex = 0;
+    bronze::il::Instruction get;
+    get.op = bronze::il::Op::PropGet;
+    get.type = bronze::il::Type::Dynamic;
+    get.result = 2;
+    get.operands = {0, 1};
+    get.keyIndex = 0;
+    get.icIndex = 0;
+    get.staticSlot = 0;
+    get.staticCellIndex = 0;
+    get.shapeGuarded = true;
+    b0.instructions.push_back(fact);
+    b0.instructions.push_back(get);
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Dynamic, bronze::il::kNoValue, {2}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> names = {"read_x"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, names);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+    opts.direct_js_calls = true;
+    opts.pin_tls_register = true;
+    opts.ic_site_count = 1;
+    opts.static_site_count = 1;
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    brass::Function* reader = tr.module->get_function("read_x");
+    REQUIRE(reader != nullptr);
+    CHECK(brass::verify_function(*reader));
+    int conversions = 0;
+    int toFact = 0;
+    int toWord = 0;
+    for (brass::BasicBlock* bb : reader->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            const brass::Opcode op = inst->opcode();
+            if (op == brass::Opcode::sitofp_f64_i64 || op == brass::Opcode::fptosi_i64) ++conversions;
+            if (op == brass::Opcode::bitcast_f64_i64) ++toFact;
+            if (op == brass::Opcode::bitcast_i64_f64) ++toWord;
+        }
+    }
+    CHECK(conversions == 0);
+    CHECK(toFact >= 1);
+    CHECK(toWord >= 1);
+}

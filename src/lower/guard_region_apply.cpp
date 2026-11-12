@@ -137,6 +137,21 @@ namespace {
 // A function of its own so that the module loop above it can bracket it — the
 // per-function trace is the difference between the counters before and after
 // this call, which a body full of `continue` could not report.
+// Whether the loop is the one typed_loop_version.cpp kept beside its typed
+// copies: entered from the last of their entry tests, on the test's failing
+// edge, so it runs only for a receiver no copy takes. Read off the blocks and
+// not off that pass's block list, which the inliner in between renumbers.
+bool fallbackOfTypedCopies(const il::Function& fn, const RegionPlan& plan) {
+    if (plan.entryPred >= fn.blocks.size()) return false;
+    const auto& insts = fn.blocks[plan.entryPred].instructions;
+    if (insts.size() < 2) return false;
+    const il::Instruction& test = insts[insts.size() - 2];
+    const il::Instruction& br = insts.back();
+    if (test.op != il::Op::IsArray && test.op != il::Op::IsTypedArray && test.op != il::Op::IsNumber) return false;
+    return br.op == il::Op::Branch && br.operands.size() == 1 && br.operands[0] == test.result &&
+           br.elseTarget.block == plan.header && br.target.block != plan.header;
+}
+
 bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
                      GuardRegionStats& stats, const RegionFeedback* feedback, bool afterInlining) {
     size_t originalInsts = 0;
@@ -167,6 +182,11 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         std::vector<RegionPlan> plans =
             selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining);
         if (plans.empty()) break;
+        // The budget below is one for the function. Taken in block order it
+        // went to a versioned loop's original, which comes first, and the
+        // typed copy that runs in its place was left without a region.
+        std::stable_partition(plans.begin(), plans.end(),
+                              [&](const RegionPlan& p) { return !fallbackOfTypedCopies(fn, p); });
 
         RegionPlan plan = std::move(plans.front());
         size_t regionInsts = 0;
