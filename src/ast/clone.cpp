@@ -191,6 +191,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         if (c->callee) res->callee = cloneExpr(*c->callee, origins);
         for (const auto& a : c->args) res->args.push_back(cloneExpr(*a, origins));
         res->optional = c->optional;
+        res->isObjectRest = c->isObjectRest;
         return res;
     }
     if (const auto* ne = dynamic_cast<const NewExpr*>(&expr)) {

@@ -11,6 +11,7 @@
 #include "il/verifier_proofs.h"
 #include "lower/guard_region_cfg.h"
 #include "lower/typed_loop_index_proof.h"
+#include "lower/typed_loop_uses.h"
 
 namespace bronze::lower {
 
@@ -20,6 +21,11 @@ namespace {
 // kind is made, so a loop costs up to twice this again; what this pass is for
 // is a vertex or matrix loop of a few dozen.
 constexpr size_t kMaxLoopInstructions = 200;
+// A loop with no typed op is copied for Arrays alone, once (twice when it
+// fills views), and its copy saves the tag and header compares of every
+// element op whatever its size: pixi's stroke builder reads six elements an
+// iteration in a loop of a few hundred instructions.
+constexpr size_t kMaxArrayLoopInstructions = 700;
 constexpr int32_t kKindFloat32 = BRONZE_ABI_TA_KIND_FLOAT32;
 constexpr int32_t kKindFloat64 = BRONZE_ABI_TA_KIND_FLOAT64;
 // The plain Array copy's kind, outside every element kind's range.
@@ -42,78 +48,6 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
         }
     }
     return t;
-}
-
-// One use of a value: the instruction it is in, and whether it is an operand
-// or an argument of one of the instruction's block targets.
-struct Use {
-    il::BlockId block = il::kNoBlock;
-    uint32_t index = 0;
-    enum Where : uint8_t { Operand, ThenArg, ElseArg } where = Operand;
-    uint32_t slot = 0;  // which operand
-};
-
-std::vector<std::vector<Use>> computeUses(const il::Function& fn) {
-    std::vector<std::vector<Use>> uses(fn.valueCount);
-    for (const auto& blk : fn.blocks) {
-        for (uint32_t i = 0; i < blk.instructions.size(); ++i) {
-            const il::Instruction& inst = blk.instructions[i];
-            for (uint32_t k = 0; k < inst.operands.size(); ++k) {
-                const il::ValueId v = inst.operands[k];
-                if (v < uses.size()) uses[v].push_back({blk.id, i, Use::Operand, k});
-            }
-            for (il::ValueId v : inst.target.args) {
-                if (v < uses.size()) uses[v].push_back({blk.id, i, Use::ThenArg, 0});
-            }
-            for (il::ValueId v : inst.elseTarget.args) {
-                if (v < uses.size()) uses[v].push_back({blk.id, i, Use::ElseArg, 0});
-            }
-        }
-    }
-    return uses;
-}
-
-// The f64 or i32 a dynamic index or value was boxed from, or kNoValue.
-il::ValueId numberSource(const il::Function& fn, const std::vector<DefSite>& defs, il::ValueId v, bool allowI32) {
-    if (v >= defs.size() || defs[v].block == il::kNoBlock || defs[v].index == UINT32_MAX) return il::kNoValue;
-    const il::Instruction& def = fn.blocks[defs[v].block].instructions[defs[v].index];
-    if (def.op != il::Op::Box || def.operands.size() != 1) return il::kNoValue;
-    if (def.boxType == il::Type::F64 || (allowI32 && def.boxType == il::Type::I32)) return def.operands[0];
-    return il::kNoValue;
-}
-
-// An instruction that reads an f64 operand and answers the same for NaN as the
-// language answers for `undefined` in that position: each of these applies
-// ToNumber (or ToNumeric, whose answer for `undefined` is the same NaN) to it,
-// and the other operand of a binary one is an f64 too, so no string or BigInt
-// branch is reachable. `slot` matters only for the typed store, whose index is
-// not such a position: a property key `"undefined"` is a named lookup on the
-// view's chain, and `"NaN"` is an index that misses.
-bool isCoercingF64Use(const il::Instruction& inst, uint32_t slot) {
-    switch (inst.op) {
-        case il::Op::Add:
-        case il::Op::Sub:
-        case il::Op::Mul:
-        case il::Op::Div:
-        case il::Op::Mod:
-        case il::Op::Pow:
-        case il::Op::Neg:
-            return inst.type == il::Type::F64;
-        case il::Op::CmpLt:
-        case il::Op::CmpLe:
-        case il::Op::CmpGt:
-        case il::Op::CmpGe:
-        case il::Op::CmpEq:
-        case il::Op::CmpNe:
-        case il::Op::MathUnary:
-            return true;
-        case il::Op::ToInt32:
-            return inst.boxType == il::Type::F64;
-        case il::Op::ElemSetTyped:
-            return slot == 2;
-        default:
-            return false;
-    }
 }
 
 struct Loop {
@@ -231,7 +165,7 @@ private:
             copied[blk.id] = 1;
             size += blk.instructions.size();
         }
-        if (size > kMaxLoopInstructions) return false;
+        if (size > kMaxArrayLoopInstructions) return false;
         for (il::BlockId s : stubs) {
             for (const auto& inst : fn_.blocks[s].instructions) {
                 if (inst.result == il::kNoValue) continue;
@@ -391,6 +325,7 @@ private:
             if (kinds.empty()) return false;
         }
         if (typedOps == 0) kinds.clear();
+        if (size > kMaxLoopInstructions && !kinds.empty()) return false;
         // PLAIN ARRAYS: one more copy, in which every element op on an
         // invariant receiver by a Number index is flagged as an Array's, for
         // a loop no typed op anywhere says is over a view.
@@ -584,10 +519,13 @@ private:
         if (prove) {
             const Cfg after = buildCfg(fn_);
             const std::vector<DefSite> afterDefs = computeDefSites(fn_);
-            for (const Copy& c : copies) {
-                if (c.array || !c.lengths.empty()) {
-                    integral += proveIntegralIndices(fn_, after, afterDefs, c.header, c.lengths, c.sites, c.array);
-                }
+            for (size_t c = 0; c < copies.size(); ++c) {
+                const Copy& cp = copies[c];
+                if (!cp.array && cp.lengths.empty()) continue;
+                std::vector<il::ValueId> onEntry;
+                integral += proveIntegralIndices(fn_, after, afterDefs, cp.header, cp.lengths, cp.sites, cp.array,
+                                                 cp.array ? &onEntry : nullptr);
+                guardIntegralOnEntry(fn_, entries[c].block, entries[c].miss, onEntry);
             }
         }
         if (!dominanceHolds(fn_)) {
@@ -848,6 +786,7 @@ private:
         std::vector<il::ValueId> pristine;
         std::vector<il::ValueId> numbers;  // tested is.number after the receivers
         std::vector<il::ValueId> views;    // the Array copy's receivers tested as word views
+        il::BlockTarget miss;              // where a failed test of it goes (enterThrough)
     };
 
     // The preheader's `jump h(args)` becomes a chain of tests, one block per
@@ -855,7 +794,7 @@ private:
     // entry block, and the first that is not falls through to the next copy
     // and, last, to the original loop. A view kind's test is is.typed_array,
     // the Array copy's is.array.
-    void enterThrough(const Loop& loop, const std::vector<Entry>& entries) {
+    void enterThrough(const Loop& loop, std::vector<Entry>& entries) {
         il::Block& pre = fn_.blocks[loop.preheader];
         const il::Instruction jump = pre.instructions.back();
         pre.instructions.pop_back();
@@ -904,6 +843,7 @@ private:
                 br.target = il::BlockTarget{r + 1 < n ? test[e][r + 1] : en.block, {}};
                 br.elseTarget = e + 1 < entries.size() ? il::BlockTarget{test[e + 1][0], {}}
                                                        : il::BlockTarget{loop.header, jump.target.args};
+                entries[e].miss = br.elseTarget;
                 fn_.blocks[test[e][r]].instructions.push_back(std::move(t));
                 fn_.blocks[test[e][r]].instructions.push_back(std::move(br));
             }

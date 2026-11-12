@@ -1,3 +1,4 @@
+#include "runtime/spread_plain.h"
 #include "runtime/shape.h"
 
 #include <algorithm>
@@ -555,6 +556,7 @@ void Shape::forgetLookupMemo() noexcept {
         m.isMiss = false;
     }
     runtime::rtForgetElemSetFastCache();
+    runtime::rtForgetSpreadShapeHints();
     bumpProtoMutationEpoch();
 }
 

@@ -299,6 +299,14 @@ struct Call final : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
     bool optional = false;
+    // The REST OBJECT of a destructuring (`const { a, ...rest } = src`), as a
+    // bundler lowered it: a call of esbuild's `__objRest(src, ["a"])` helper,
+    // which the module linker verified against the helper's text
+    // (modules/bundled_spread.cpp). `args[0]` is the source and `args[1]` an
+    // array literal of string literals, the excluded keys; lowering emits the
+    // copy a rest pattern makes and never evaluates `callee`. Set only there:
+    // no source syntax can.
+    bool isObjectRest = false;
     void accept(Visitor& v) const override;
 };
 

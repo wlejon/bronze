@@ -28,6 +28,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
+#include "runtime/spread_plain.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -264,6 +265,29 @@ void writeKey(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& val, Cop
                     kSpreadWriteThrows);
 }
 
+// The keys a rest pattern already named (14.3.3.2's excludedNames), as the
+// array `bronze_object_rest` was handed with every entry a string or a symbol;
+// null for a spread, which copies them all. Asked BEFORE a key is read: an
+// excluded property's getter does not run.
+bool excludes(const Rooted<Value>* excluded, PropertyKey name) {
+    if (!excluded) return false;
+    const auto* keys = excluded->get().asObject<ArrayHeader>();
+    for (uint32_t i = 0; i < keys->length; ++i) {
+        if (PropertyKey::fromValue(keys->getElem(i)).matches(name)) return true;
+    }
+    return false;
+}
+
+// The same for a key held as a value: an index is compared by its spelling.
+bool excludesKey(const Rooted<Value>* excluded, Rooted<Value>& key) {
+    if (!excluded) return false;
+    if (key.get().isString() || key.get().isSymbol()) {
+        return excludes(excluded, PropertyKey::fromValue(key.get()));
+    }
+    Rooted<Value> text{rtElemKeyAsString(key.get())};
+    return excludes(excluded, PropertyKey::fromValue(text.get()));
+}
+
 // A copy into a String exotic TARGET that 10.4.3 forbids.
 bool stringTargetRefuses(Value stringData, const std::string& key) {
     return rtStringDataWriteRefused(stringData, key, kSpreadWriteThrows);
@@ -279,7 +303,7 @@ bool stringTargetRefuses(Value stringData, const std::string& key) {
 // properties and not three, and it is one place that decides that.
 bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
                            Rooted<Value>& stringTarget, const std::string& keyText,
-                           CopyWrite mode) {
+                           CopyWrite mode, const Rooted<Value>* excluded) {
     StringOwnProperty own;
     if (!rtStringDataOwnProperty(stringData.get(), keyText, own)) return true;
     Rooted<Value> val{own.value};
@@ -288,6 +312,7 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
         return false;
     }
     Rooted<Value> key{rtMakeString(keyText)};
+    if (excludesKey(excluded, key)) return true;
     writeKey(target, key, val, mode);
     return true;
 }
@@ -297,14 +322,16 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
 // object ToObject would box it into answer from the same characters, which is
 // why this takes the [[StringData]] and never a wrapper.
 void spreadStringSource(Rooted<Value>& target, Rooted<Value>& stringData,
-                        Rooted<Value>& stringTarget, CopyWrite mode) {
+                        Rooted<Value>& stringTarget, CopyWrite mode,
+                        const Rooted<Value>* excluded) {
     const uint32_t length = stringData.get().asString<StringHeader>()->getLength();
     for (uint32_t i = 0; i < length; ++i) {
-        if (!copyStringOwnProperty(target, stringData, stringTarget, std::to_string(i), mode)) {
+        if (!copyStringOwnProperty(target, stringData, stringTarget, std::to_string(i), mode,
+                                   excluded)) {
             return;
         }
     }
-    copyStringOwnProperty(target, stringData, stringTarget, "length", mode);
+    copyStringOwnProperty(target, stringData, stringTarget, "length", mode, excluded);
 }
 
 // One own enumerable property, copied into `target` under the same key. The
@@ -346,7 +373,8 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
                        name.isSymbol() ? "<symbol>" : rtUtf8Chars(name.string()));
 }
 
-void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode);
+void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode,
+                       const Rooted<Value>* excluded = nullptr);
 
 }  // namespace
 
@@ -516,9 +544,12 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
 
 namespace {
 
-void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode) {
+void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode,
+                       const Rooted<Value>* excluded) {
     const Value srcVal = src.get();
     if (srcVal.isUndefined() || srcVal.isNull()) return;
+    // Plain to plain, which is nearly every spread a program runs.
+    if (mode == CopyWrite::Define && rtSpreadPlain(target, src, excluded)) return;
 
     // Asked once, outside the loops: only `Object.assign` with a primitive
     // string target ever produces one, and every other spread in the program
@@ -530,7 +561,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
     }
 
     if (srcVal.isString()) {
-        spreadStringSource(target, src, stringTarget, mode);
+        spreadStringSource(target, src, stringTarget, mode, excluded);
         return;
     }
     if (!srcVal.isObject()) return;  // a number, a boolean or a symbol: nothing to copy
@@ -548,6 +579,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                 return;
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
+            if (excludesKey(excluded, key)) continue;
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
             writeKey(target, key, val, mode);
             // The write can now refuse, and copying the next index after that
@@ -566,6 +598,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                 return;
             }
             Rooted<Value> key{rtKeyAsValue(named)};
+            if (excludesKey(excluded, key)) continue;
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             writeKey(target, key, val, mode);
@@ -585,6 +618,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                 return;
             }
             Rooted<Value> key{rtKeyAsValue(name)};
+            if (excludesKey(excluded, key)) continue;
             // The read runs the export's getter, so it can throw; carrying on
             // to the next name would be the runtime continuing past an
             // exception.
@@ -614,6 +648,9 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                                     rtUtf8Chars(key.get().asString<StringHeader>()))) {
                 return;
             }
+            // 7.3.25 step 5.a-b: an excluded key is passed over before the
+            // proxy is asked anything about it.
+            if (excludesKey(excluded, key)) continue;
             OwnPropertyDetail found;
             const bool present = rtProxyGetOwnProperty(src.get(), key.get(), found);
             // 7.3.25 step 5.b.ii: absent, or present and non-enumerable, and
@@ -641,6 +678,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
                 return;
             }
+            if (excludes(excluded, name)) continue;
             copyProperty(target, propsRoot, name, mode);
         }
         return;
@@ -650,6 +688,12 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
     // empty, because "no properties" is a wrong answer about a receiver with
     // elements in it and not a missing one.
     if (!HeapKind::carriesShape(srcVal.asObject<HeapObjectHeader>()->flags)) {
+        if (excluded) {
+            rtThrowTypeError(std::string("object rest from ") + rtObjectKindName(srcVal) +
+                             " is unsupported (its own keys are not in a property table a "
+                             "rest pattern could read)");
+            return;
+        }
         fatal((std::string("object spread of ") + rtObjectKindName(srcVal) +
                " (its own keys are not in a property table a spread could read)")
                   .c_str());
@@ -667,6 +711,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                 return;
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
+            if (excludesKey(excluded, key)) continue;
             Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             writeKey(target, key, val, mode);
         }
@@ -689,6 +734,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
             stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
             return;
         }
+        if (excludes(excluded, name)) continue;
         copyProperty(target, src, name, mode);
         // `copyProperty` reads with Get, so a source property that is an
         // accessor runs user code. Copying the next one after that threw would
@@ -710,20 +756,6 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
     Rooted<Value> excluded{Value(excludedBits)};
     Rooted<Value> out{Value(bronze_create_object())};
     if (src.get().isUndefined() || src.get().isNull()) return out.get().rawBits();
-    // A buffer and a DataView are ordinary objects with internal slots, so the
-    // shape walk below is their whole answer. A typed array is not: its
-    // elements are own keys ahead of the names (10.4.5.7) and live outside the
-    // shape, and a rest pattern over one is refused by name until that walk
-    // takes them — the alternative is a rest object silently missing them.
-    if (!src.get().isObject() ||
-        !HeapKind::carriesShape(src.get().asObject<HeapObjectHeader>()->flags) ||
-        src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
-        const std::string name = src.get().isObject() ? rtObjectKindName(src.get()) : "primitive";
-        rtThrowTypeError(std::string("object rest from ") + name +
-                         " is unsupported (only a receiver whose own keys are all in its shape)");
-        return out.get().rawBits();
-    }
-
     // The exclusions are compared as KEYS: 14.3.3.2 step 2 (and 13.15.5.6 for
     // an assignment) puts each computed key through ToPropertyKey before the
     // read and adds THAT to excludedNames, so `{ 0: v, ...rest }` and
@@ -751,20 +783,10 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
             excluded.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, asKey);
         }
     }
-    for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
-        bool skip = false;
-        if (isArray(excluded.get())) {
-            // Re-derived per iteration: copyProperty below allocates, and a
-            // collection moves both the key array and its element block.
-            auto* keys = excluded.get().asObject<ArrayHeader>();
-            for (uint32_t i = 0; i < keys->length && !skip; ++i) {
-                Value k = keys->getElem(i);
-                skip = PropertyKey::fromValue(k).matches(name);
-            }
-        }
-        if (skip) continue;
-        copyProperty(out, src, name, CopyWrite::Define);
-    }
+    // The walk `{ ...src }` makes, less those keys: a string's indices, an
+    // array's elements, a proxy's traps and a plain object's shape are the
+    // same questions for a rest pattern as for a spread.
+    copyOwnEnumerable(out, src, CopyWrite::Define, isArray(excluded.get()) ? &excluded : nullptr);
     return out.get().rawBits();
 }
 

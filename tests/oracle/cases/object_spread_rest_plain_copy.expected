@@ -1,0 +1,46 @@
+copy [color,alpha,texture,matrix] color=1:ewc alpha=0.5:ewc texture=white:ewc matrix=null:ewc
+override [color,alpha,texture,matrix,width] color=red:ewc alpha=0.25:ewc texture=white:ewc matrix=null:ewc width=3:ewc
+after-own [first,alpha,color,texture,matrix,width,last] first=0:ewc alpha=0.25:ewc color=red:ewc texture=white:ewc matrix=null:ewc width=3:ewc last=true:ewc
+twice [color,alpha,texture,matrix] color=1:ewc alpha=0.5:ewc texture=white:ewc matrix=null:ewc
+loop4 [out,again,src] out={"color":1,"alpha":0.5,"texture":"white","matrix":null,"x":4,"y":{"n":4},"z":4}:ewc again={"x":"s4","y":{"n":4},"z":"z"}:ewc src={"x":"s4","y":{"n":4},"z":4}:ewc
+loop5 [out,again,src] out={"color":1,"alpha":0.5,"texture":"white","matrix":null,"x":5,"y":{"n":5},"z":5}:ewc again={"x":5.5,"y":{"n":5},"z":"z"}:ewc src={"x":5.5,"y":{"n":5},"z":5}:ewc
+getters [z,a,b,c,d] z=0:ewc a=1:ewc b=2:ewc c=3:ewc d=11:ewc
+get b|get d
+indices [0,2,10,b,a,-1,1.5] 0=zero:ewc 2=two:ewc 10=ten:ewc b=1:ewc a=2:ewc -1=neg:ewc 1.5=frac:ewc
+indices-into [0,2,5,10,q,b,a,-1,1.5] 0=zero:ewc 2=two:ewc 5=five:ewc 10=ten:ewc q=1:ewc b=1:ewc a=2:ewc -1=neg:ewc 1.5=frac:ewc
+symbols [p,q,frozenLike,Symbol(s)] p=1:ewc q=2:ewc frozenLike=7:ewc Symbol(s)=sym:ewc
+dictionary [a,c,d,e] a=1:ewc c=3:ewc d=4:ewc e=5:ewc
+null-proto [x,y] x=1:ewc y=2:ewc
+frozen [f,g] f=1:ewc g=2:ewc
+instance [x,y] x=1:ewc y=2:ewc
+proto-literal [own,color,alpha,texture,matrix] own=1:ewc color=1:ewc alpha=0.5:ewc texture=white:ewc matrix=null:ewc
+accessor-target [alpha,color,texture,matrix] alpha=0.5:ewc color=1:ewc texture=white:ewc matrix=null:ewc
+array [0,2] 0=a:ewc 2=c:ewc
+string [0,1] 0=h:ewc 1=i:ewc
+null [] 
+undefined [] 
+number [] 
+function [stat] stat=1:ewc
+array-named [0,1,extra] 0=1:ewc 1=2:ewc extra=named:ewc
+typed [0,1] 0=7:ewc 1=8:ewc
+wide [k0,k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12,k13,k14,k15,k16,k17,k18,k19] k0=0:ewc k1=1:ewc k2=2:ewc k3=3:ewc k4=4:ewc k5=5:ewc k6=6:ewc k7=7:ewc k8=8:ewc k9=9:ewc k10=10:ewc k11=11:ewc k12=12:ewc k13=13:ewc k14=14:ewc k15=15:ewc k16=16:ewc k17=17:ewc k18=18:ewc k19=19:ewc
+wide-again [pre,k0,k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12,k13,k14,k15,k16,k17,k18,k19] pre=1:ewc k0=0:ewc k1=1:ewc k2=2:ewc k3=over:ewc k4=4:ewc k5=5:ewc k6=6:ewc k7=7:ewc k8=8:ewc k9=9:ewc k10=10:ewc k11=11:ewc k12=12:ewc k13=13:ewc k14=14:ewc k15=15:ewc k16=16:ewc k17=17:ewc k18=18:ewc k19=19:ewc
+60 80
+rest [alpha,texture,matrix] alpha=0.5:ewc texture=white:ewc matrix=null:ewc
+rest-getters [b,c,d] b=2:ewc c=3:ewc d=11:ewc
+get b|get d
+rest-skips [a,c] a=1:ewc c=3:ewc
+get b|get d
+rest-symbols [q,frozenLike] q=2:ewc frozenLike=7:ewc
+rest-indices [0,10,b,-1,1.5] 0=zero:ewc 10=ten:ewc b=1:ewc -1=neg:ewc 1.5=frac:ewc
+rest-dictionary [a,d,e] a=1:ewc d=4:ewc e=5:ewc
+rest-string [1,2] 1=e:ewc 2=y:ewc
+rest-array [0,2] 0=a:ewc 2=c:ewc
+rest-number [] 
+rest-wide [k0,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12,k13,k14,k15,k16,k17,k18] k0=0:ewc k2=2:ewc k3=3:ewc k4=4:ewc k5=5:ewc k6=6:ewc k7=7:ewc k8=8:ewc k9=9:ewc k10=10:ewc k11=11:ewc k12=12:ewc k13=13:ewc k14=14:ewc k15=15:ewc k16=16:ewc k17=17:ewc k18=18:ewc
+rest-loop2 [others,others2] others={"y":1,"z":[2]}:ewc others2={"x":2,"z":2}:ewc
+rest-loop3 [others,others2] others={"y":"odd","z":[3]}:ewc others2={"x":3,"z":3}:ewc
+rest-proxy [a,c] a=1:ewc c=3:ewc
+ownKeys|gopd a|get a|gopd c|get c
+spread-proxy [a,b,c] a=1:ewc b=2:ewc c=3:ewc
+ownKeys|gopd a|get a|gopd b|get b|gopd c|get c

@@ -31,11 +31,12 @@ public:
     Renamer(const std::map<std::string, std::string>& renames, uint16_t fileId,
             const std::map<std::string, std::string>& importedBindings, DiagnosticSink& diags,
             const std::map<std::string, ExternalRead>* liveReads,
-            const DynamicImportRewrite* dynImports)
+            const DynamicImportRewrite* dynImports, const ModuleCallRewrite* calls)
         : renames_(renames),
           importedBindings_(importedBindings),
           liveReads_(liveReads),
           dynImports_(dynImports),
+          calls_(calls),
           diags_(diags),
           fileId_(fileId) {}
 
@@ -320,6 +321,18 @@ private:
     // `DynamicImportRewrite`), after its specifier has been walked.
     void slot(ast::ExprPtr& p, bool callee = false) {
         if (!p) return;
+        if (calls_) {
+            if (auto* call = dynamic_cast<ast::Call*>(p.get())) {
+                const auto* name = dynamic_cast<const ast::Ident*>(call->callee.get());
+                if (name && !shadowed(name->name)) {
+                    const std::string written = name->name;
+                    expr(*p);
+                    if (!ok_) return;
+                    if (auto replacement = (*calls_)(written, *call)) p = std::move(replacement);
+                    return;
+                }
+            }
+        }
         expr(*p);
         if (!ok_) return;
         if (dynImports_) {
@@ -508,6 +521,7 @@ private:
     const std::map<std::string, std::string>& importedBindings_;
     const std::map<std::string, ExternalRead>* liveReads_ = nullptr;
     const DynamicImportRewrite* dynImports_ = nullptr;
+    const ModuleCallRewrite* calls_ = nullptr;
     DiagnosticSink& diags_;
     uint16_t fileId_ = 0;
     bool ok_ = true;
@@ -521,8 +535,10 @@ bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags,
                        const std::map<std::string, ExternalRead>* liveReads,
-                       const DynamicImportRewrite* dynImports) {
-    return Renamer(renames, fileId, importedBindings, diags, liveReads, dynImports).run(stmts);
+                       const DynamicImportRewrite* dynImports,
+                       const ModuleCallRewrite* calls) {
+    return Renamer(renames, fileId, importedBindings, diags, liveReads, dynImports, calls)
+        .run(stmts);
 }
 
 }  // namespace bronze::modules

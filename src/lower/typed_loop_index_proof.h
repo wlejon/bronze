@@ -18,26 +18,43 @@ il::ValueId soleIncoming(const il::Function& fn, const Cfg& cfg, il::BlockId b, 
 
 // INTEGRAL INDICES for the typed-loop versioning pass (typed_loop_version.h):
 // flags kElemFlagProvenIntegralIndex on the element ops at `sites` (positions
-// in `fn`) whose index is `p` or `p + k`, where `p` is a parameter of
-// `header` of the counted shape — entered as an integral constant, only ever
-// advanced by a non-negative integral constant k <= 2^31.
+// in `fn`), by what their index is made of. A COUNTER is a parameter `p` of
+// `header` entered as an integral constant and only ever advanced by
+// non-negative integral constants k <= 2^31.
 //
 // A TYPED op (`boxedIndex` false) reads its index as the f64 operand, and is
-// flagged only where the access is reached through the true edge of
-// `p < L` (or `<=`) with L an unboxed entry `length` read in `lengths`, a
-// pristine view's length below 2^32: then `p` is a finite safe integer there.
+// flagged where that is `p` or `p + k` and the access is reached through the
+// true edge of `p < L` (or `<=`) with L an unboxed entry `length` read in
+// `lengths`, a pristine view's length below 2^32: then `p` is a finite safe
+// integer there.
 //
-// A PROVEN-ARRAY elem.get / elem.set (`boxedIndex` true) reads it through the
-// `box.f64` its index operand is, and needs no bound: an integer plus an
-// integer is an integer in doubles (every double from 2^53 up is one, and the
-// sum rounds to one; a finite sum of a finite value and a constant at most
-// 2^31 never reaches infinity), and an integral index past any array — or a
-// negative one — is one the unsigned bounds compare sends to the helper with
-// the boxed index as it is.
+// A PROVEN-ARRAY or word-view elem.get / elem.set (`boxedIndex` true) reads
+// it through the `box.f64` its index operand is, and needs no bound: an
+// integral index past any array, or a negative one, is one the unsigned
+// bounds compare sends to the helper with the boxed index as it is. So its
+// index may be any sum, difference or constant multiple of integers:
+// `(i + 1) * 2 + 1`, `i + offset`. An integer plus, minus or times an integer
+// is an integer in doubles (every double from 2^53 up is one, and the result
+// rounds to one), and a few such steps over values that start below 2^53 and
+// grow by at most 2^31 an iteration never reach infinity, so never NaN.
+//
+// `onEntry`, when given, widens what counts as an integer to f64 values
+// defined ahead of the loop: a counter's start that is no constant
+// (`let i = offset`, `index++` on a parameter) and a loop-invariant operand.
+// Each one the proof leaned on is appended, and the flags hold only if the
+// copy is entered behind `guardIntegralOnEntry` of them.
 //
 // Returns how many ops were flagged.
 size_t proveIntegralIndices(il::Function& fn, const Cfg& cfg, const std::vector<DefSite>& defs, il::BlockId header,
                             const std::vector<il::ValueId>& lengths,
-                            const std::vector<std::pair<il::BlockId, uint32_t>>& sites, bool boxedIndex);
+                            const std::vector<std::pair<il::BlockId, uint32_t>>& sites, bool boxedIndex,
+                            std::vector<il::ValueId>* onEntry = nullptr);
+
+// Puts a copy's entry behind a test of each of `values` (f64): an integer of
+// magnitude at most 2^53. `entry` is the copy's entry block, ending in the
+// jump to its header; a value that fails goes to `miss`, where the entry
+// tests that failed before it went.
+void guardIntegralOnEntry(il::Function& fn, il::BlockId entry, const il::BlockTarget& miss,
+                          const std::vector<il::ValueId>& values);
 
 }  // namespace bronze::lower

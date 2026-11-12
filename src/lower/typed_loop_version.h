@@ -78,7 +78,11 @@ namespace bronze::lower {
 // the generic path makes per access, and keep every test that changes with
 // the array (bounds, holes, the props word), whatever the loop calls. A
 // counter index in it is flagged kElemFlagProvenIntegralIndex with no bound
-// (typed_loop_index_proof.h says why none is owed). No copy is made when a
+// (typed_loop_index_proof.h says why none is owed), and so is any sum,
+// difference or constant multiple of counters and of numbers computed ahead
+// of the loop, which the copy's entry then tests for being integers. A loop
+// with no typed op in it is copied for Arrays alone, so it may be larger
+// (kMaxArrayLoopInstructions). No copy is made when a
 // typed op anywhere names one of the receivers: then it is a view.
 // `three.js`'s uniform cache (`copyArray`, `arraysEqual`) is what it is for.
 //

@@ -7,6 +7,7 @@ bronze_add_module(modules
         link.cpp
         link_exports.cpp
         link_types.cpp
+        bundled_spread.cpp
         rename.cpp
         deps.cpp
     DEPS parse lex ast support json

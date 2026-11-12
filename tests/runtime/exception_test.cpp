@@ -213,10 +213,14 @@ TEST_CASE("exotic receiver and invalid operations raise catchable TypeError rath
         return rtIsErrorInstance(thrown) && textOf(thrown).find("TypeError") != std::string::npos;
     };
 
-    // 1. bronze_object_rest on non-plain receiver
-    CHECK(isTypeError(thrownBy([] {
-        bronze_object_rest(Value::fromDouble(42.0).rawBits(), Value::fromUndefined().rawBits());
-    })));
+    // 1. bronze_object_rest of a number is not an error at all: its box has
+    // no own property, so `const { ...r } = 42` is an empty object.
+    {
+        Rooted<Value> rest{Value(
+            bronze_object_rest(Value::fromDouble(42.0).rawBits(), Value::fromUndefined().rawBits()))};
+        REQUIRE(rest.get().isObject());
+        CHECK(rest.get().asObject<ObjectHeader>()->shape->ownKeysInInsertionOrder().empty());
+    }
 
     // 2. bronze_elem_set on invalid receiver (null)
     CHECK(isTypeError(thrownBy([] {

@@ -1,0 +1,15 @@
+style: 1="one" 3="three" color=1 alpha=2 late=accessor! texture="white" width=7 toString="own toString" Symbol(s)="sym"
+style-null: 3="three" color=1 alpha=0.5 late=accessor! texture="white" Symbol(s)="sym"
+style-string: 0="a" 1="b" 3="three" color=1 alpha=0.5 late=accessor! texture="white" Symbol(s)="sym"
+style-zero: 3="three" color=1 alpha=0.5 late=accessor! texture="white" Symbol(s)="sym"
+get width
+true {"kept":1,"added":2}
+shadow ab
+rest-all: 3="three" color=1 alpha=0.5 texture="white" Symbol(s)="sym"
+rest-string: 0="x" 2="z"
+rest-array: 1="q"
+rest-null: 
+rest-getter: 1="one" alpha=2
+0
+other: 1="one" 3="three" color=1 alpha=2 texture="white" width=7 toString="own toString" Symbol(s)="sym"
+2

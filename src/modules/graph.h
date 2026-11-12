@@ -171,11 +171,25 @@ struct ExternalRead {
 // in a parameter default, a class field, a destructuring default or target.
 using DynamicImportRewrite = std::function<ast::ExprPtr(ast::DynamicImportExpr&)>;
 
+// `calls` sees every call whose callee is a bare name that resolves to the
+// file's MODULE scope (`name`, as the source wrote it), once the call's own
+// subexpressions have been walked, and returns a replacement for the call or
+// null to keep it. The walk is what knows the name is not shadowed there.
+using ModuleCallRewrite = std::function<ast::ExprPtr(const std::string& name, ast::Call&)>;
+
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
                        const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags,
                        const std::map<std::string, ExternalRead>* liveReads = nullptr,
-                       const DynamicImportRewrite* dynImports = nullptr);
+                       const DynamicImportRewrite* dynImports = nullptr,
+                       const ModuleCallRewrite* calls = nullptr);
+
+// esbuild lowers object spread and object rest to calls of helpers it emits
+// into the file (`__spreadValues`, `__objRest`), which copy one key at a time
+// through `for-in`, `hasOwnProperty.call` and a computed write. Where a file's
+// helpers are exactly esbuild's and nothing rebinds them, their calls are
+// turned back into the syntax they came from (bundled_spread.cpp).
+bool restoreBundledObjectSpread(ModuleFile& file, DiagnosticSink& diags);
 
 }  // namespace bronze::modules

@@ -182,6 +182,7 @@ bronze_add_module(runtime
         rt_enumerate.cpp
         rt_prop_mega.cpp
         rt_spread.cpp
+        spread_plain.cpp
         rt_print.cpp
         namespace.cpp
         proxy.cpp
@@ -208,6 +209,7 @@ bronze_add_module(runtime
         ../../tests/runtime/dictionary_test.cpp
         ../../tests/runtime/slot_repr_test.cpp
         ../../tests/runtime/object_test.cpp
+        ../../tests/runtime/spread_plain_test.cpp
         ../../tests/runtime/ic_hot_test.cpp
         ../../tests/runtime/object_proto_chain_test.cpp
         ../../tests/runtime/primitive_prototype_test.cpp

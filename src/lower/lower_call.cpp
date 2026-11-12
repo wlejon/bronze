@@ -149,6 +149,22 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
 
 std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
                                                  bool onSpine) {
+    // A rest pattern a bundler lowered to its helper's call (ast.h
+    // `Call::isObjectRest`): the copy the pattern itself makes, over the
+    // source and the excluded keys in the order the call evaluated them.
+    if (call->isObjectRest) {
+        auto src = lowerExpr(*call->args[0], ilFn);
+        if (!src) return std::nullopt;
+        auto excluded = lowerExpr(*call->args[1], ilFn);
+        if (!excluded) return std::nullopt;
+        il::Instruction inst;
+        inst.op = il::Op::ObjectRest;
+        inst.type = il::Type::Dynamic;
+        inst.result = ilFn.valueCount++;
+        inst.operands = {src->id, excluded->id};
+        emitInst(ilFn, inst);
+        return Value{inst.result, il::Type::Dynamic};
+    }
     if (selfHost_) {
         std::optional<Value> intrinsic;
         if (lowerIntrinsicCall(call, ilFn, intrinsic)) return intrinsic;

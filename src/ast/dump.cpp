@@ -60,7 +60,7 @@ public:
         emit(")");
     }
     void visit(const Call& n) override {
-        emit(n.optional ? "(call?." : "(call");
+        emit(n.isObjectRest ? "(call-object-rest" : n.optional ? "(call?." : "(call");
         indented([&] {
             n.callee->accept(*this);
             for (const auto& a : n.args) a->accept(*this);

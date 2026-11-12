@@ -445,6 +445,7 @@ bool canonicalizeBundledClassAliases(ModuleFile& file, DiagnosticSink& diags) {
 
 bool Linker::run(ast::Module& out) {
     for (const uint16_t id : graph_.evaluationOrder) {
+        if (!restoreBundledObjectSpread(*graph_.modules[id], diags_)) return false;
         if (!canonicalizeBundledClassAliases(*graph_.modules[id], diags_)) return false;
     }
     // Tables first, in evaluation order, so that a module's dependencies are
