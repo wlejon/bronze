@@ -399,10 +399,10 @@ thread_local Value g_mathObject = Value::fromUndefined();
 // ones, so every tier answers alike. `sqrt` and `abs` have no kernel because
 // they are single instructions.
 //
-// sin and cos are brass's trig runtime (brass/runtime/fast_trig.hpp): V8's
-// fdlibm-derived ieee754::sin/cos, so Math.sin and Math.cos give node's bits,
-// and faster than the platform libm's, which saves and restores the FP
-// environment on every call.
+// sin, cos, asin, atan and atan2 are brass's trig runtime
+// (brass/runtime/fast_trig.hpp): V8's fdlibm-derived ieee754 functions, so
+// they give node's bits, and faster than the platform libm's, which saves and
+// restores the FP environment on every call.
 
 extern "C" double bronze_math_sin_f64(double x) { return brass::math::sin_f64(x); }
 extern "C" double bronze_math_cos_f64(double x) { return brass::math::cos_f64(x); }
@@ -421,10 +421,10 @@ extern "C" void bronze_math_sincos_f64(double x, void* out) {
 extern "C" double bronze_math_exp_f64(double x) { return std::exp(x); }
 extern "C" double bronze_math_log_f64(double x) { return std::log(x); }
 extern "C" double bronze_math_tan_f64(double x) { return std::tan(x); }
-extern "C" double bronze_math_asin_f64(double x) { return std::asin(x); }
+extern "C" double bronze_math_asin_f64(double x) { return brass::math::asin_f64(x); }
 extern "C" double bronze_math_acos_f64(double x) { return std::acos(x); }
-extern "C" double bronze_math_atan_f64(double x) { return std::atan(x); }
-extern "C" double bronze_math_atan2_f64(double y, double x) { return std::atan2(y, x); }
+extern "C" double bronze_math_atan_f64(double x) { return brass::math::atan_f64(x); }
+extern "C" double bronze_math_atan2_f64(double y, double x) { return brass::math::atan2_f64(y, x); }
 
 // `math.random` (il_op.h): a proven `Math.random()` call compiled to this, the
 // native's own generator, so the two forms draw from one sequence.

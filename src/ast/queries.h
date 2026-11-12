@@ -216,17 +216,21 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
 
 // Whether a function that uses `arguments` only READS it as a list: every
 // mention is `arguments.length` or `arguments[i]` as a value (not assigned,
-// updated, deleted or called). eventemitter3's `emit` is the case: it
-// switches on the count and copies the tail. Such a function is handed the
+// updated, deleted or called), or the list of `f.apply(t, arguments)`.
+// eventemitter3's `emit` is the case: it switches on the count and copies the
+// tail; three.js's WebGLState forwards to the context
+// (`gl.texSubImage2D.apply(gl, arguments)`). Such a function is handed the
 // arguments the caller passed as a plain Array, which answers both the same
 // and costs an array where the arguments object is an exotic object with its
 // own properties defined one by one. A sloppy function's mapped object would
 // also show an assignment to a parameter through `arguments[i]`; the list
-// does not, which is the one difference.
+// does not, and an `apply` that is not Function.prototype's is handed an
+// Array with no `callee`: the two differences.
 bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
 
 // `readsArgumentsAsList`, with every mention in the function's own body (no
-// arrow reads `arguments`) and no rest parameter. Such a function needs the
+// arrow reads `arguments`), none of them an `apply`'s list, and no rest
+// parameter. Such a function needs the
 // list only when the caller passed more arguments than it has parameters:
 // with no more, `arguments.length` is the count and `arguments[i]` is the
 // value parameter i arrived with (il.h `argumentsIsCount`).

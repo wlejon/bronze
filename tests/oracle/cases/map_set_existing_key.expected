@@ -1,0 +1,13 @@
+12 3317=4 3333=4 37440=false name=a NaN=1 0=zero obj=o sym=y true=t null=n undefined=u 10=big
+3000
+12 3317=2999 3333=4 37440=false name=n3 NaN=5998 0=2999.5 obj=2999 sym=-2999 true=2999 null=2999 undefined=2999 10=2999
+2999.5 2999.5 5998 2999 -2999 2999 true
+joined 12
+true true 12
+10,3317 again
+1 b
+3 3
+50 49 1
+true
+true
+undefined true 1

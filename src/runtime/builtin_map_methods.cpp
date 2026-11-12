@@ -141,6 +141,18 @@ uint64_t rtMapGetBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 }
 
 uint64_t rtMapSetBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // A key the map already holds, found against a valid index: the value is
+    // stored in place and nothing allocates, so nothing is rooted (`get`'s
+    // prologue, with a store). A new key, a stale index and a refused
+    // receiver take the full path.
+    if (argc >= 2 && rtIsMapKind(Value(thisBits))) {
+        auto* map = Value(thisBits).asObject<MapHeader>();
+        uint32_t slot;
+        if (MapHeader::findFast(rtHeap(), map, Value(argv[0]), slot) && slot != UINT32_MAX) {
+            map->entryData()[slot * 2 + 1] = Value(argv[1]);
+            return thisBits;
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!rtRequireCollection(self.get(), false, "set")) return Value::fromUndefined().rawBits();

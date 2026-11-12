@@ -327,6 +327,8 @@ public:
     size_t mentions = 0;
     size_t reads = 0;
     size_t arrowMentions = 0;
+    // Mentions as the list of an `apply`, which needs the Array itself.
+    size_t forwards = 0;
     bool written = false;
     static bool isArguments(const Expr* e) {
         const auto* id = dynamic_cast<const Ident*>(e);
@@ -363,6 +365,14 @@ public:
     void visit(const Call& c) override {
         // `arguments[i](...)` calls with the object as `this`.
         if (isElementOf(c.callee.get())) written = true;
+        // `f.apply(t, arguments)` hands the list on: Function.prototype.apply
+        // reads its length and its elements.
+        if (const auto* m = dynamic_cast<const MemberAccess*>(c.callee.get());
+            m != nullptr && m->property == "apply" && !m->isPrivate && c.args.size() == 2 &&
+            isArguments(c.args[1].get())) {
+            ++reads;
+            ++forwards;
+        }
         CaptureVisitor::visit(c);
     }
     void visit(const FunctionExpr& f) override {
@@ -401,7 +411,7 @@ bool readsArgumentsInBodyOnly(const std::vector<Param>& params, const std::vecto
     for (const auto& s : body) {
         if (s) s->accept(v);
     }
-    return !v.written && v.mentions == v.reads && v.arrowMentions == 0;
+    return !v.written && v.mentions == v.reads && v.arrowMentions == 0 && v.forwards == 0;
 }
 
 bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {

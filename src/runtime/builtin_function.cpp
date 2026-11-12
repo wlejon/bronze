@@ -208,6 +208,22 @@ uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 // said bronze had no array-like protocol; it has one now (rt_builtins.h), and
 // `Array.from` and the typed-array constructors read the same one.
 uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // The forwarding call first, `f.apply(t, arguments)` or `f.apply(t, list)`
+    // with an array whose chain holds no index: its elements are the
+    // arguments (a hole as undefined), and nothing before the call allocates
+    // or runs script, so the list's copy is the only block rooted.
+    if (argc >= 2 && Value(argv[1]).isObject() &&
+        Value(argv[1]).asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+        !rtArrayChainHoldsIndex(Value(argv[1])) && rtIsCallableValue(Value(thisBits))) {
+        const ArrayHeader* arr = Value(argv[1]).asObject<ArrayHeader>();
+        const uint32_t count = arr->length;
+        if (count <= kMaxAppliedArguments) {
+            const uint64_t thisArg = argv[0];
+            RootedBlock block(count);
+            for (uint32_t i = 0; i < count; ++i) block.set(i, arr->getElem(i));
+            return bronze_dynamic_call(thisBits, thisArg, count, block.data());
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> fn{Value(thisBits)};
     if (!requireFunctionReceiver(fn.get(), "apply")) return Value::fromUndefined().rawBits();
