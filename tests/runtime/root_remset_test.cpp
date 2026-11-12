@@ -78,16 +78,18 @@ double tagOf(Value v) {
 
 uint64_t visits() { return rtRootRemsetStats().rememberedVisits; }
 
-// Every set is empty after a full collection: it promotes everything young.
-void settle() { rtHeap().collect(); }
+// Every set is empty after a full collection: it promotes everything young,
+// once any stale stack words from earlier calls are cleared.
+void settle() {
+    bronze::test::scrubStack();
+    rtHeap().collect();
+}
 
 uint64_t probeNative(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromDouble(1234.5).rawBits();
 }
 
-}  // namespace
-
-TEST_CASE("a quiet minor visits no remembered cell, and one write costs about one visit") {
+BRONZE_TEST_NOINLINE void runQuietMinorCheck() {
     ShadowStackFrame frame;
     registerTables();
     settle();
@@ -96,6 +98,7 @@ TEST_CASE("a quiet minor visits no remembered cell, and one write costs about on
     // Nothing has been allocated since the full collection: nothing is young,
     // so no table has a cell for the minor to visit, however large it is.
     uint64_t before = visits();
+    bronze::test::scrubStack();
     rtHeap().collect_minor();
     CHECK(visits() == before);
 
@@ -132,9 +135,17 @@ TEST_CASE("a quiet minor visits no remembered cell, and one write costs about on
     rtHeap().collect_minor();
     CHECK_FALSE(gcHoldsYoung(Value(g_templateCells[700])));
     before = visits();
+    bronze::test::scrubStack();
     rtHeap().collect_minor();
     CHECK(visits() == before);
     CHECK(g_templateCells[700] == cooked.get().rawBits());
+}
+
+}  // namespace
+
+TEST_CASE("a quiet minor visits no remembered cell, and one write costs about one visit") {
+    bronze::test::scrubStack();
+    runQuietMinorCheck();
 }
 
 TEST_CASE("a young object stored through each table's writer is forwarded by the next minor") {

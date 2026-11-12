@@ -254,7 +254,7 @@ void SymbolicHeapState::unifyBranchAlias(SymbolicHeapTable& table,
         cur.smin = std::max(cur.smin, lo);
         cur.smax = std::min(cur.smax, hi);
         if (cur.smin <= cur.smax) refinedIntervals[id] = cur;
-        const auto& n = ctx.nodes()[id];
+        const brass::verify::BVNode n = ctx.nodes()[id];
         if (n.op == BVOp::Add && ctx.nodes()[n.b].op == BVOp::Const) {
             int64_t c = static_cast<int64_t>(ctx.nodes()[n.b].imm);
             int64_t nLo = (lo == INT64_MIN) ? INT64_MIN : (lo - c);
@@ -282,7 +282,7 @@ void SymbolicHeapState::unifyBranchAlias(SymbolicHeapTable& table,
     };
     auto refineCond = [&](auto& self, BVNodeId cId, bool truth) -> void {
         if (cId >= ctx.nodes().size()) return;
-        const auto& cn = ctx.nodes()[cId];
+        const brass::verify::BVNode cn = ctx.nodes()[cId];
         if (cn.op == BVOp::ZExt || cn.op == BVOp::SExt) {
             self(self, cn.a, truth);
             return;

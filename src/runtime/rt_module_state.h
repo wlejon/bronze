@@ -1,7 +1,7 @@
 #pragma once
 
-// The per-thread module tables (rt_state.cpp owns them; only it and
-// rt_module_remset.cpp, which keeps their remembered sets, include this):
+// The per-thread module tables (rt_state.cpp owns them; only it,
+// rt_module_remset.cpp, and rt_global_cache.cpp include this):
 // the function singletons and every module's registered root spans.
 
 #include <atomic>
@@ -130,5 +130,8 @@ void moduleRemsetNoteCell(ThreadModuleState& s, uint64_t* cell) noexcept;
 // The verification walk: the first young cell on no set, or "".
 std::string moduleTablesRemsetCheck(ThreadModuleState& s, const brass::gc::Heap& heap);
 
+// Accessors into rt_state.cpp's thread_local module state for rt_global_cache.cpp.
+ThreadModuleState& rtThreadModuleState();
+uint64_t rtStackModuleEpoch() noexcept;
 
 }  // namespace bronze::runtime

@@ -113,7 +113,7 @@ BVNodeId makeConstAwareDivOrRem(BVContext& ctx,
                                 BVNodeId b,
                                 int32_t domainMin = INT32_MIN,
                                 int32_t domainMax = INT32_MAX) {
-    const auto& bNode = ctx.nodes()[b];
+    const brass::verify::BVNode bNode = ctx.nodes()[b];
     if (bNode.op == BVOp::Const) {
         int64_t divisor = static_cast<int64_t>(bNode.imm);
         if (divisor > 0 && divisor <= INT32_MAX &&
@@ -363,7 +363,7 @@ BVNodeId evalFloatToInt32Node(BVContext& ctx, BVNodeId f64) {
 }
 
 BVNodeId roundSignedInt64AsDouble(BVContext& ctx, BVNodeId val) {
-    const auto& n = ctx.nodes()[val];
+    const brass::verify::BVNode n = ctx.nodes()[val];
     if (n.op == BVOp::Const) {
         int64_t sv = static_cast<int64_t>(n.imm);
         double dv = static_cast<double>(sv);
@@ -404,8 +404,8 @@ bool evalDivOrModSymbolic(BVContext& ctx,
                           int32_t domainMin,
                           int32_t domainMax) {
     const auto& inst = blk.instructions[instIdx];
-    const auto& aNode = ctx.nodes()[a];
-    const auto& bNode = ctx.nodes()[b];
+    const brass::verify::BVNode aNode = ctx.nodes()[a];
+    const brass::verify::BVNode bNode = ctx.nodes()[b];
 
     if (bNode.op == BVOp::Const && static_cast<int64_t>(bNode.imm) == 0) {
         if (outReason) *outReason = "division by zero constant";
@@ -565,8 +565,8 @@ BVNodeId evalPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& 
                          int32_t domainMin, int32_t domainMax) {
     ok = true;
     BVNodeId one64 = ctx.make_const(1, 64);
-    const auto& bNode = ctx.nodes()[base64];
-    const auto& eNode = ctx.nodes()[exp64];
+    const brass::verify::BVNode bNode = ctx.nodes()[base64];
+    const brass::verify::BVNode eNode = ctx.nodes()[exp64];
     if (bNode.op == BVOp::Const && static_cast<int64_t>(bNode.imm) == 2) {
         BVNodeId clamped = ctx.make_binary(BVOp::And, exp64, ctx.make_const(63, 64));
         return ctx.make_binary(BVOp::Shl, one64, clamped);
@@ -728,7 +728,7 @@ BVNodeId evalFloatRoundSymbolic(BVContext& ctx, BVNodeId a) {
 
 BVNodeId evalFloatPowSymbolic(BVContext& ctx, BVNodeId base64, BVNodeId exp64, bool& ok) {
     ok = true;
-    const auto& eNode = ctx.nodes()[exp64];
+    const brass::verify::BVNode eNode = ctx.nodes()[exp64];
     if (eNode.op == BVOp::Const) {
         double expD = 0.0;
         std::memcpy(&expD, &eNode.imm, sizeof(double));
@@ -768,7 +768,7 @@ bool evalFloatBinaryOpSymbolic(BVContext& ctx,
         return true;
     }
     if (op == Op::Div) {
-        const auto& rNode = ctx.nodes()[rhs];
+        const brass::verify::BVNode rNode = ctx.nodes()[rhs];
         if (rNode.op == BVOp::Const) {
             double d = 0.0;
             std::memcpy(&d, &rNode.imm, sizeof(double));
@@ -788,7 +788,7 @@ bool evalFloatBinaryOpSymbolic(BVContext& ctx,
                 }
             }
         }
-        const auto& lNode = ctx.nodes()[lhs];
+        const brass::verify::BVNode lNode = ctx.nodes()[lhs];
         BVNodeId rawDiv = ctx.make_binary(BVOp::FDiv, lhs, rhs, 64);
         if (lNode.op == BVOp::Const) {
             double numD = 0.0;
@@ -810,7 +810,7 @@ bool evalFloatBinaryOpSymbolic(BVContext& ctx,
         return true;
     }
     if (op == Op::Mod) {
-        const auto& rNode = ctx.nodes()[rhs];
+        const brass::verify::BVNode rNode = ctx.nodes()[rhs];
         if (rNode.op == BVOp::Const) {
             double d = 0.0;
             std::memcpy(&d, &rNode.imm, sizeof(double));

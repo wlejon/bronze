@@ -40,6 +40,14 @@ int main() {
     volatile auto inProcessCompiler = &brass_default_coro_create;
     (void)inProcessCompiler;
 
+    // Over-aligned local + RAII Persistent before any other runtime call: on
+    // MSVC x64 this gives main() both dynamic stack alignment and EH unwind
+    // data while calling embed::createObject() before rtHeap() exists.
+    alignas(64) volatile uint64_t alignedFrameProbe[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    (void)alignedFrameProbe;
+    embed::Persistent bootObj(embed::createObject());
+    (void)bootObj;
+
     embed::runEntry(bronze_static_brass_mod);
     embed::collectGarbage();
 

@@ -244,7 +244,7 @@ BVNodeId SymbolicIlBuilder::getVal(const SymState& st, il::ValueId v) const {
 BVNodeId SymbolicIlBuilder::toBool1(BVNodeId node) {
     if (ctx_.width(node) == 1) return node;
     BVNodeId b64 = toBV64(node);
-    const auto& n = ctx_.nodes()[b64];
+    const brass::verify::BVNode n = ctx_.nodes()[b64];
     if (!floatMode_) {
         if (n.op == BVOp::ZExt && ctx_.width(n.a) == 1) return n.a;
         return ctx_.make_binary(BVOp::Ne, b64, zero64_);
@@ -596,7 +596,7 @@ bool collectFuncIteArms(BVContext& ctx,
                         BVNodeId& outInvalidCond,
                         int depth = 0) {
     if (depth > 8 || node >= ctx.nodes().size()) return false;
-    const auto& n = ctx.nodes()[node];
+    const brass::verify::BVNode n = ctx.nodes()[node];
     if (n.op == BVOp::Const) {
         if ((n.imm >> 48) == 0x00F0u) {
             arms.push_back({pathCond, static_cast<uint32_t>(n.imm & 0xFFFFFFFFu),

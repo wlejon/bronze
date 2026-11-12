@@ -540,6 +540,7 @@ thread_local Value g_objectPrototype = Value::fromUndefined();
 // `undefined`, which is a silent wrong answer, and one that would appear or
 // disappear depending on whether the program had mentioned `Object` anywhere.
 void ensureObjectIntrinsics() {
+    Heap& heap = rtHeap();
     if (g_objectPrototype.isObject()) return;
 
     // Object.prototype's own prototype is NULL, and it is the one object in the
@@ -547,8 +548,8 @@ void ensureObjectIntrinsics() {
     // (20.1.3: "the value of [[Prototype]] is null"). It must not come from
     // `rtPlainObjectShape`, which is about to name THIS object as its
     // prototype — that would be the chain closing on itself.
-    Rooted<Value> proto{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromNull())))};
+    Shape* nullRoot = rtNewRootShape(Value::fromNull());
+    Rooted<Value> proto{Value::fromObject(ObjectHeader::create(heap, rtArena(), nullRoot))};
     proto.get().asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
     g_objectPrototype = proto.get();
     rtHeap().add_permanent_root(&g_objectPrototype);

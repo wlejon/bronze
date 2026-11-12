@@ -159,6 +159,7 @@ static void pushRootShape(Shape* root) {
 }
 
 Shape* rtNewRootShape(Value proto, uint32_t inlineSlots) {
+    if (proto.isPointer()) (void)rtHeap();
     Shape* root = Shape::createRoot(rtArena(), proto, inlineSlots);
     pushRootShape(root);
     return root;
@@ -185,6 +186,7 @@ Shape* rtRootShapeForPrototype(Value proto) {
     // The caller gives the shape to an object, which may be one a marking
     // cycle has already scanned (setPrototypeOf): the prototype is reached
     // only through the shape, so it is shaded here.
+    if (proto.isPointer()) (void)rtHeap();
     gcShadeEdge(proto);
     for (Shape* root : g_userPrototypeShapes) {
         if (root->prototype.rawBits() == proto.rawBits()) return root;
@@ -250,13 +252,16 @@ static thread_local Shape* g_plainObjectShape = nullptr;
 
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
-        Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype());
-        pushRootShape(shape);
-        g_plainObjectShape = shape;
-        // Published into this thread's ABI block for the inline object
-        // creation fast path; shapes are arena storage, immortal and
-        // non-moving, so the raw pointer never goes stale.
-        bronze_tls_block_addr()->plain_shape = reinterpret_cast<uint64_t>(shape);
+        const Value proto = rtObjectPrototype();
+        if (!g_plainObjectShape) {
+            Shape* shape = Shape::createRoot(rtArena(), proto);
+            pushRootShape(shape);
+            g_plainObjectShape = shape;
+            // Published into this thread's ABI block for the inline object
+            // creation fast path; shapes are arena storage, immortal and
+            // non-moving, so the raw pointer never goes stale.
+            bronze_tls_block_addr()->plain_shape = reinterpret_cast<uint64_t>(shape);
+        }
     }
     return g_plainObjectShape;
 }
@@ -278,10 +283,13 @@ Shape* rtPlainObjectShapeSized(uint32_t inlineSlots) {
         return shape;
     }
     if (!g_plainObjectShapes[n]) {
-        Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype(), n);
-        pushRootShape(shape);
-        g_plainObjectShapes[n] = shape;
-        bronze_tls_block_addr()->plain_shapes[n] = reinterpret_cast<uint64_t>(shape);
+        const Value proto = rtObjectPrototype();
+        if (!g_plainObjectShapes[n]) {
+            Shape* shape = Shape::createRoot(rtArena(), proto, n);
+            pushRootShape(shape);
+            g_plainObjectShapes[n] = shape;
+            bronze_tls_block_addr()->plain_shapes[n] = reinterpret_cast<uint64_t>(shape);
+        }
     }
     return g_plainObjectShapes[n];
 }
@@ -350,6 +358,9 @@ static ThreadModuleState& threadModules() {
     }
     return *g_threadModules;
 }
+
+ThreadModuleState& rtThreadModuleState() { return threadModules(); }
+uint64_t rtStackModuleEpoch() noexcept { return stackModuleEpoch(); }
 
 static ThreadModuleState* moduleStateForGcHeap(const brass::gc::Heap& gcHeap) noexcept {
     if (g_threadHeap && &g_threadHeap->gc() == &gcHeap && g_threadModules) {
@@ -880,104 +891,6 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         moduleRemsetNoteCell(s, reinterpret_cast<uint64_t*>(&slot->value));
     }
     return result.rawBits();
-}
-
-}  // extern "C"
-
-
-extern "C" {
-
-uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
-    recordPropCall("bronze_global_get", keyIndex, nullptr);
-    const std::string& keyStr = rtKeyString(keyIndex);
-    if (keyStr == "globalThis") {
-        return rtGlobalThisObject().rawBits();
-    }
-    if (rtHostShadowsBuiltin(keyStr)) {
-        if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
-            return host.rawBits();
-        }
-    }
-    Value resolved = Value::fromUndefined();
-    if (!rtResolveBuiltinGlobal(keyStr, resolved)) {
-        if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
-            return host.rawBits();
-        }
-        if (Value fromGlobalObject = Value::fromUndefined();
-            rtGlobalThisOwnLookup(keyStr, fromGlobalObject)) {
-            return fromGlobalObject.rawBits();
-        }
-        fatal(("internal: no global named " + keyStr).c_str());
-    }
-    bool cacheable = true;
-    rtGlobalObjectBinding(keyStr, resolved, cacheable);
-    if (cacheCell && cacheable) {
-        *cacheCell = resolved.rawBits();
-        rtNoteRootCellWrite(cacheCell);
-    }
-    return resolved.rawBits();
-}
-
-}  // extern "C"
-
-void rtInvalidateGlobalReadCells() {
-    for (const auto& span : threadModules().globalCacheSpans) {
-        for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value(BRONZE_ABI_HOLE_BITS);
-    }
-}
-
-extern "C" {
-
-uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t count,
-                                  uint32_t slot) {
-    recordPropCall("bronze_global_get_cached", keyIndex, nullptr);
-    ThreadModuleState& s = threadModules();
-    auto* valueCells = reinterpret_cast<Value*>(cells);
-    if (cells && count != 0 && slot < count) {
-        bool known = false;
-        for (const auto& span : s.globalCacheSpans) {
-            if (span.cells == valueCells) {
-                known = true;
-                break;
-            }
-        }
-        if (!known) {
-            uint64_t spanEpoch = stackModuleEpoch();
-            for (const auto* spans : {&s.moduleValueCells, &s.moduleRememberedCells}) {
-                for (const auto& vspan : *spans) {
-                    if (vspan.cells + vspan.count == valueCells) {
-                        spanEpoch = vspan.epoch;
-                        break;
-                    }
-                }
-            }
-            s.globalCacheSpans.push_back({valueCells, count, spanEpoch});
-            moduleRemsetSpanAdded(s, s.globalCacheSpans.back());
-        }
-    }
-    const std::string& keyStr = rtKeyString(keyIndex);
-    Value resolved = Value::fromUndefined();
-    bool cacheable = false;
-    if (keyStr == "globalThis") {
-        resolved = rtGlobalThisObject();
-        cacheable = false;
-    } else if (rtHostShadowsBuiltin(keyStr) && rtHostGlobalLookup(keyStr, resolved)) {
-        cacheable = true;
-    } else if (rtResolveBuiltinGlobal(keyStr, resolved)) {
-        // The global object's property, which starts as the builtin; the cell
-        // is emptied when a program writes it (rtNoteGlobalObjectWrite).
-        cacheable = true;
-        rtGlobalObjectBinding(keyStr, resolved, cacheable);
-    } else if (rtHostGlobalLookup(keyStr, resolved)) {
-        cacheable = true;
-    } else if (!rtGlobalThisOwnLookup(keyStr, resolved)) {
-        fatal(("internal: no global named " + keyStr).c_str());
-    }
-    if (cacheable && cells && slot < count) {
-        valueCells[slot] = resolved;
-        moduleRemsetNoteCell(s, cells + slot);
-    }
-    return resolved.rawBits();
 }
 
 }  // extern "C"

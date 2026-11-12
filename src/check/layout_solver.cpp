@@ -251,7 +251,7 @@ private:
             } else if (match("%")) {
                 BVNodeId right = parseUnary();
                 BVNodeId r64 = toBV64(right);
-                const auto& rNode = ctx_.nodes()[r64];
+                const brass::verify::BVNode rNode = ctx_.nodes()[r64];
                 if (rNode.op == BVOp::Const && static_cast<int64_t>(rNode.imm) > 1) {
                     int64_t div = static_cast<int64_t>(rNode.imm);
                     uint64_t udiv = static_cast<uint64_t>(div);

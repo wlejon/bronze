@@ -48,4 +48,4 @@ add_test(NAME static-brass-host-gc-stress COMMAND ${CMAKE_COMMAND}
     -P ${_sb_src}/run.cmake)
 set_tests_properties(static-brass-host-gc-stress PROPERTIES
     LABELS embed
-    ENVIRONMENT "BRONZE_GC_STRESS=1")
+    ENVIRONMENT "BRONZE_GC_STRESS=1;BRONZE_GC_POISON=1")

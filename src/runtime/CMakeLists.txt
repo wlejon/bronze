@@ -93,6 +93,7 @@ bronze_add_module(runtime
         builtin_wrappers.cpp
         inspect.cpp
         rt_state.cpp
+        rt_global_cache.cpp
         inline_slots.cpp
         rt_host_globals.cpp
         root_remset.cpp

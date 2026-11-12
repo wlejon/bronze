@@ -429,7 +429,7 @@ private:
                                                     : "modulo by zero (divisor == 0 -> NaN)");
                     }
                     BVOp bvOp = (inst.op == Op::Div) ? BVOp::SDiv : BVOp::SRem;
-                    const auto& bNode = ctx_.nodes()[b];
+                    const brass::verify::BVNode bNode = ctx_.nodes()[b];
                     if (bNode.op == BVOp::Const && static_cast<int64_t>(bNode.imm) > 0 &&
                         static_cast<int64_t>(bNode.imm) <= INT32_MAX &&
                         (bNode.imm & (bNode.imm - 1)) != 0) {
