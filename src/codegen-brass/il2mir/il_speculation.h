@@ -127,7 +127,28 @@ private:
 // holding one gets its resume twin (named resume_twin_name), its guards armed
 // and pointed at the twin. A function whose twin cannot be built keeps its
 // branches.
+//
+// FAILURE POLICY. Each such function `f` also gets its generic entry
+// `f__generic` (f as lowered, every site a branch), a probe `f__probe`, and
+// an entry cell `__bronze_twin_entry_f` in the image's shared data (names
+// and layout in il_abi.h, the cell defined in brass_backend_sections.cpp):
+// the word every direct call of f in the module goes through (`call @f via
+// @cell`, one instruction as before), then two counts. Nothing of it is in
+// f. The cell's word is one of
+//   f           trusted. The twin's guard entries count f's exits, and the
+//               kTwinExitLimit'th starts a probe.
+//   f__probe    counts the call and calls f. kTwinExitLimit exits before
+//               kTwinProbeCalls calls: f fails too often, generic from now
+//               on. Else f is trusted again, counts at zero.
+//   f__generic  for good.
+// So a function is given up when more than one call in
+// kTwinProbeCalls / kTwinExitLimit leaves, and a function that leaves now
+// and then pays a probe's count for kTwinProbeCalls calls each
+// kTwinExitLimit exits. A site's identity cell is filled by the generic code
+// its first exit runs, so every function leaves a few times as it warms up.
 void make_resume_twins(Module& mod);
+inline constexpr int64_t kTwinExitLimit = 256;
+inline constexpr int64_t kTwinProbeCalls = 8 * kTwinExitLimit;
 
 // brass's tier-2 front pass for a program lowered with `feedback`.
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback);

@@ -224,16 +224,31 @@ loop, in recursion, with GC between, inside `try`/`finally`, after side
 effects). Shape tests that leave and accessor guards: 24.27M. A hot
 function's twin is placed with the cold functions.
 
+**The failure policy** (`il2mir/il_speculation.h`, "FAILURE POLICY"). Without
+one, pixi_text ran 38.30M instructions a frame with twins against 36.35M
+without: `removeListener`, `CanvasTextMetrics.measureText`,
+`_renderTextToCanvas` and `TextureStyle` left on every call. Each twinned
+function `f` now has an entry cell in the image's shared data, the word its
+direct calls go through (brass's `call @f via @cell`, `call [rip + cell]`: one
+instruction, as the direct call was, and nothing in `f`). The twin's guard
+entries count exits there. After 256 the cell holds `f__probe`, which counts
+calls and calls `f`: 256 more exits within 2048 calls and the cell holds
+`f__generic` for good, else `f` again with the counts at zero. So a function
+is given up when more than one call in eight leaves, and one that leaves now
+and then stays speculated. `f__generic` is a third copy of the function, as
+lowered with every site a branch. The twin entered at the function's own entry
+(brass `build_twin_entry`) would have saved that copy and was measured first:
+38.96M, because every resume block of a twin is also reached from its
+dispatch, so nothing the function established before a site is known behind
+it. With the copy pixi_text is at 36.28M and pixi_sprites unchanged at 24.27M.
+`tests/oracle/cases/twin_exit_failure_policy.js` passes through every state
+(built on a one-way harvest: samples in `total__probe`, `total__generic` and
+`total__twin`). A function given up is never tried again.
+
 **Open, and why twins are not a gain yet.** Twins on / off on one tree:
 pixi_sprites 24.27M / 24.29M, three_skinned 42.55M / 42.51M, three_meshes
-59.15M / 59.13M, pixi_text 38.30M / 36.35M.
+59.15M / 59.13M, pixi_text 36.28M / 36.35M.
 
-- *Nothing stops trusting a function whose guards keep failing.* 14.3% of
-  pixi_text's samples are in resume twins (`removeListener` 6.1%,
-  `CanvasTextMetrics.measureText` 1.8%, `_renderTextToCanvas` 1.7%): each
-  call runs the speculated prefix, the exit and the generic code. brass's
-  `ResumeTwinOptions::on_exit` and `build_twin_entry` (section 7.3.7 there)
-  are not wired.
 - *The guards that repeat a fact compare one shape word against different
   cells.* After brass's passes no load or guard of the four hot functions
   repeats a dominating one with nothing between. What repeats is the
