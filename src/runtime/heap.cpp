@@ -44,7 +44,7 @@
 namespace bronze {
 
 namespace gc_detail {
-thread_local BarrierHeaps t_barrierHeaps{};
+constinit thread_local BarrierHeaps t_barrierHeaps{};
 
 void writeBarrierAnyHeap(uintptr_t slot, uint64_t bits) noexcept {
     const BarrierHeaps& b = t_barrierHeaps;
@@ -210,12 +210,7 @@ void VirtualMemory::release(void* ptr, size_t bytes) {
 #endif
 }
 
-namespace {
-// The collector's layout id of each GcLayout but Auto, by the enum's value:
-// the process-wide ids of heap_trace.h, where an allocation reads them with
-// one load in place of a call through a function-local static's guard.
-std::atomic<brass::gc::LayoutId> g_layoutIds[5];
-}  // namespace
+std::atomic<brass::gc::LayoutId> gc_detail::g_layoutIds[5];
 
 Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
     gc_detail::BarrierHeaps& barrier = gc_detail::t_barrierHeaps;
@@ -232,10 +227,10 @@ Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
 
     // Before this heap's first allocation; every heap stores the same ids.
     const gc_detail::LayoutIds& ids = gc_detail::layoutIds();
-    g_layoutIds[static_cast<size_t>(GcLayout::Cell)].store(ids.cell, std::memory_order_relaxed);
-    g_layoutIds[static_cast<size_t>(GcLayout::Leaf)].store(ids.leaf, std::memory_order_relaxed);
-    g_layoutIds[static_cast<size_t>(GcLayout::WeakLast)].store(ids.weakLast, std::memory_order_relaxed);
-    g_layoutIds[static_cast<size_t>(GcLayout::Ephemerons)].store(ids.ephemerons, std::memory_order_relaxed);
+    gc_detail::g_layoutIds[static_cast<size_t>(GcLayout::Cell)].store(ids.cell, std::memory_order_relaxed);
+    gc_detail::g_layoutIds[static_cast<size_t>(GcLayout::Leaf)].store(ids.leaf, std::memory_order_relaxed);
+    gc_detail::g_layoutIds[static_cast<size_t>(GcLayout::WeakLast)].store(ids.weakLast, std::memory_order_relaxed);
+    gc_detail::g_layoutIds[static_cast<size_t>(GcLayout::Ephemerons)].store(ids.ephemerons, std::memory_order_relaxed);
 
     if (envIsOn("BRONZE_GC_STRESS")) set_gc_stress(true);
     if (envIsOne("BRONZE_GC_POISON")) set_gc_poison(true);
@@ -321,10 +316,6 @@ void Heap::registerFrameRoots() {
     });
 }
 
-HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag, GcLayout layout) {
-    return allocateWith(bytes, tag, layout, 0);
-}
-
 HeapObjectHeader* Heap::allocateOld(size_t bytes, Tag tag) {
     return allocateWith(bytes, tag, GcLayout::Auto, brass::gc::kAllocOld);
 }
@@ -335,7 +326,7 @@ HeapObjectHeader* Heap::allocateWith(size_t bytes, Tag tag, GcLayout layout, uin
     if (layout == GcLayout::Auto) {
         layout = (tag == Tag::String || tag == Tag::BigInt) ? GcLayout::Leaf : GcLayout::Cell;
     }
-    const brass::gc::LayoutId id = g_layoutIds[static_cast<size_t>(layout)].load(std::memory_order_relaxed);
+    const brass::gc::LayoutId id = gc_detail::g_layoutIds[static_cast<size_t>(layout)].load(std::memory_order_relaxed);
     uintptr_t object = 0;
     bool outOfMemory = false;
     try {

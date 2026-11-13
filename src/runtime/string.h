@@ -136,7 +136,15 @@ struct StringHeader {
     // heap header's size rather than stored, so a builder needs no field a
     // plain string does not have — and so the collector, which copies by that
     // same size, cannot disagree with the appender about where the room ends.
-    uint32_t capacity() const noexcept;
+    uint32_t capacity() const noexcept {
+        // The heap header's `size` is what the collector copies and what the
+        // heap walk steps by, so it is the only honest answer to "where does
+        // this allocation end".
+        const size_t avail = header.size - sizeof(HeapObjectHeader) - 2 * sizeof(uint32_t);
+        const size_t units = isUTF16() ? avail / sizeof(uint16_t) : avail;
+        // One unit is the terminator, which is not capacity.
+        return static_cast<uint32_t>(units - 1);
+    }
 
     // A string of `len` units with room for `cap` (cap >= len), marked. The
     // units past `len` are uninitialized; the terminator at `len` is written.

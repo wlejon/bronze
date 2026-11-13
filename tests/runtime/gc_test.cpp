@@ -316,6 +316,49 @@ TEST_CASE("heap verify passes a clean heap and keeps it live across collections"
     CHECK(bytes[31] == 0xFF);
 }
 
+TEST_CASE("tryAllocate takes the young window or returns null, and never collects") {
+    Heap heap;
+    heap.set_gc_stress(false);  // the stress run of this suite starts every heap stressed
+    // With room in the window: the object allocate() would have made, at the
+    // window's next address, zeroed, with the tag and total size in its header.
+    const uint64_t before = heap.collection_count();
+    HeapObjectHeader* first = heap.tryAllocate(24, Tag::Object);
+    HeapObjectHeader* second = heap.allocate(24, Tag::Object);
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    CHECK(first->tag == static_cast<uint16_t>(Tag::Object));
+    CHECK(first->flags == 0);
+    CHECK(first->size == 32);
+    CHECK(second->size == first->size);
+    CHECK(reinterpret_cast<uintptr_t>(second) - reinterpret_cast<uintptr_t>(first) ==
+          first->size + brass::gc::kHeaderBytes);
+    for (int i = 0; i < 3; ++i) CHECK(first->payload<uint64_t>()[i] == 0);
+    CHECK(heap.is_movable(first));
+    // A string is a leaf to the collector and an object a cell, as allocate() has it.
+    HeapObjectHeader* text = heap.tryAllocate(9, Tag::String);
+    REQUIRE(text != nullptr);
+    CHECK(text->size == 24);
+    CHECK(brass::gc::header_of(reinterpret_cast<uintptr_t>(text))->layout !=
+          brass::gc::header_of(reinterpret_cast<uintptr_t>(first))->layout);
+    CHECK(heap.collection_count() == before);
+
+    // Too large for the young generation: null, where allocate() goes to the
+    // large-object space.
+    CHECK(heap.tryAllocate(size_t{8} << 20, Tag::String) == nullptr);
+    HeapObjectHeader* large = heap.allocate(size_t{8} << 20, Tag::String);
+    REQUIRE(large != nullptr);
+    CHECK_FALSE(heap.is_movable(large));
+
+    // Under stress the window is closed (every allocation is the runtime's to
+    // see): null, and nothing collected, while allocate() collects and succeeds.
+    heap.set_gc_stress(true);
+    const uint64_t stressed = heap.collection_count();
+    CHECK(heap.tryAllocate(24, Tag::Object) == nullptr);
+    CHECK(heap.collection_count() == stressed);
+    CHECK(heap.allocate(24, Tag::Object) != nullptr);
+    CHECK(heap.collection_count() > stressed);
+}
+
 TEST_CASE("gc stress mode collects at every allocation") {
     Heap heap;
     heap.set_gc_stress(true);

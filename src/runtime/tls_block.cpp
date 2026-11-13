@@ -90,7 +90,7 @@ static constexpr uint64_t kNoTypedArrayLengthTable[BRONZE_ABI_TA_LENGTH_TBL_WORD
 static_assert(offsetof(bronze_tls_area, block) == 8 * BRONZE_TLS_CONSTANT_COUNT, "constants abut the block");
 static_assert(BRONZE_TLS_CONSTANT_OFF(0) >= -128, "constants within a one-byte displacement");
 
-thread_local bronze_tls_area g_tls_area = {
+constinit thread_local bronze_tls_area g_tls_area = {
 #define BRONZE_TLS_CONSTANT_WORD(v) static_cast<uint64_t>(v),
     /*constants=*/{BRONZE_TLS_CONSTANTS(BRONZE_TLS_CONSTANT_WORD)},
 #undef BRONZE_TLS_CONSTANT_WORD

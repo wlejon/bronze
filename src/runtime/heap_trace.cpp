@@ -100,25 +100,29 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
     return {1, words, false};
 }
 
-void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
-    auto* w = reinterpret_cast<uint64_t*>(payload);
-    const ValueWords v = valueWordsOf(payload, payload_bytes);
-    const bool traceDyn =
-        (t.purpose() == Tracer::Purpose::Full) && runtime::rtHasDynamicModules();
-    if (traceDyn) {
-        const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
+// A full collection's trace of a Cell: its Values, and what only a full
+// collection follows (a dynamic module's token, the shape's prototype).
+[[gnu::noinline]] void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
+    if (runtime::rtHasDynamicModules()) {
+        const auto* h = reinterpret_cast<const HeapObjectHeader*>(w);
         if (h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Function) {
-            const auto* fn = reinterpret_cast<const FunctionHeader*>(payload);
+            const auto* fn = reinterpret_cast<const FunctionHeader*>(w);
             if (fn->code) {
                 runtime::rtTraceDynamicModuleToken(reinterpret_cast<const void*>(fn->code), t);
             }
         }
+        for (size_t i = v.first; i < v.end; ++i) traceDynamicModuleFromWord(w[i], t);
     }
-    for (size_t i = v.first; i < v.end; ++i) {
-        if (traceDyn) traceDynamicModuleFromWord(w[i], t);
-        t.visit(w + i);
-    }
+    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
     if (v.shaped) traceShapePrototype(w, t);
+}
+
+void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
+    auto* w = reinterpret_cast<uint64_t*>(payload);
+    const ValueWords v = valueWordsOf(payload, payload_bytes);
+    if (t.purpose() == Tracer::Purpose::Full) return traceCellFull(w, v, t);
+    // A minor collection (and verification): the Values and nothing else.
+    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
 }
 
 // The Value words of a Cell in payload bytes [begin, end): what a minor
@@ -143,10 +147,10 @@ void traceCellRange(uintptr_t payload, size_t payload_bytes, size_t begin, size_
             }
         }
     }
-    for (size_t i = first; i < last; ++i) {
-        if (traceDyn) traceDynamicModuleFromWord(w[i], t);
-        t.visit(w + i);
+    if (traceDyn) {
+        for (size_t i = first; i < last; ++i) traceDynamicModuleFromWord(w[i], t);
     }
+    if (first < last) t.visit_run(w + first, last - first);
     if (v.shaped && begin == 0) traceShapePrototype(w, t);
 }
 

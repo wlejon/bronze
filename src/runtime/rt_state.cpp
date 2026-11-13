@@ -72,7 +72,7 @@ static thread_local std::vector<Shape*> g_userPrototypeShapes;
 static void registerThreadRootSources(Heap& heap);
 
 static const std::thread::id g_mainThreadId = std::this_thread::get_id();
-static thread_local Heap* g_threadHeap = nullptr;
+constinit thread_local Heap* rt_detail::t_threadHeap = nullptr;
 static thread_local NonMovingArena* g_threadArena = nullptr;
 
 static void releaseThreadDynamicModules();
@@ -115,19 +115,17 @@ void rtArmThreadTeardown() {
 // brass's runtime (Heap::bind_thread) the moment it exists, so that every
 // brass interpreter on the thread registers its frames with it and allocates
 // on it.
-Heap& rtHeap() {
-    if (!g_threadHeap) {
-        rtArmThreadTeardown();
-        g_threadHeap = new Heap();
-        g_threadHeap->bind_thread();
-        registerThreadRootSources(*g_threadHeap);
-        // The thread's builtins are locked down with its heap, before
-        // anything can run over them (lockdown.h): there is one kind of
-        // thread, and no program or host ever sees a mutable intrinsic. Here
-        // and not at the realm, which a program can run a while without.
-        rtLockdown();
-    }
-    return *g_threadHeap;
+Heap& rt_detail::rtCreateThreadHeap() {
+    rtArmThreadTeardown();
+    rt_detail::t_threadHeap = new Heap();
+    rt_detail::t_threadHeap->bind_thread();
+    registerThreadRootSources(*rt_detail::t_threadHeap);
+    // The thread's builtins are locked down with its heap, before
+    // anything can run over them (lockdown.h): there is one kind of
+    // thread, and no program or host ever sees a mutable intrinsic. Here
+    // and not at the realm, which a program can run a while without.
+    rtLockdown();
+    return *rt_detail::t_threadHeap;
 }
 
 NonMovingArena& rtArena() {
@@ -363,7 +361,7 @@ ThreadModuleState& rtThreadModuleState() { return threadModules(); }
 uint64_t rtStackModuleEpoch() noexcept { return stackModuleEpoch(); }
 
 static ThreadModuleState* moduleStateForGcHeap(const brass::gc::Heap& gcHeap) noexcept {
-    if (g_threadHeap && &g_threadHeap->gc() == &gcHeap && g_threadModules) {
+    if (rt_detail::t_threadHeap && &rt_detail::t_threadHeap->gc() == &gcHeap && g_threadModules) {
         return g_threadModules;
     }
     static thread_local const brass::gc::Heap* t_cachedHeap = nullptr;
@@ -689,7 +687,7 @@ void rtNoteMethodIcEnvWords(uint64_t* icEntry) noexcept {
 }
 
 static void sweepDynamicModules() {
-    if (!g_threadHeap || !g_threadHeap->collecting_full() || !g_threadModules) return;
+    if (!rt_detail::t_threadHeap || !rt_detail::t_threadHeap->collecting_full() || !g_threadModules) return;
     ThreadModuleState& s = *g_threadModules;
     if (s.dynamicModules.empty()) return;
     std::vector<std::shared_ptr<void>> retiredOwners;
@@ -914,9 +912,9 @@ void rtTeardownThreadState() {
         bronze_tls_block_addr()->plain_shapes[n] = 0;
     }
 
-    if (g_threadHeap) {
+    if (rt_detail::t_threadHeap) {
         std::lock_guard<std::mutex> lock(g_heapStateMu);
-        g_heapToModuleState.erase(&g_threadHeap->gc());
+        g_heapToModuleState.erase(&rt_detail::t_threadHeap->gc());
         g_heapStateGeneration.fetch_add(1, std::memory_order_release);
     }
 
@@ -926,9 +924,9 @@ void rtTeardownThreadState() {
         g_threadModules = nullptr;
     }
 
-    if (g_threadHeap) {
-        delete g_threadHeap;
-        g_threadHeap = nullptr;
+    if (rt_detail::t_threadHeap) {
+        delete rt_detail::t_threadHeap;
+        rt_detail::t_threadHeap = nullptr;
     }
     if (g_threadArena) {
         rtForgetShapeKeyLists();

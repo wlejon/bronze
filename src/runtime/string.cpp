@@ -362,17 +362,6 @@ Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     }
 }
 
-uint32_t StringHeader::capacity() const noexcept {
-    // The heap header's `size` is what the collector copies and what the heap
-    // walk steps by, so it is the only honest answer to "where does this
-    // allocation end" — and asking it here is what keeps the appender and the
-    // collector from ever disagreeing about that boundary.
-    const size_t avail = header.size - sizeof(HeapObjectHeader) - 2 * sizeof(uint32_t);
-    const size_t units = isUTF16() ? avail / sizeof(uint16_t) : avail;
-    // One unit is the terminator, which is not capacity.
-    return static_cast<uint32_t>(units - 1);
-}
-
 StringHeader* StringHeader::createBuilder(Heap& heap, bool utf16, uint32_t len, uint32_t cap) {
     if (cap < len) cap = len;
     const size_t unit = utf16 ? sizeof(uint16_t) : 1;

@@ -2,6 +2,7 @@
 
 #include <brass/gc/heap.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -168,7 +169,12 @@ struct BarrierHeaps {
     brass::gc::Heap* heaps[kMax];
     uint32_t count;
 };
-extern thread_local BarrierHeaps t_barrierHeaps;
+extern constinit thread_local BarrierHeaps t_barrierHeaps;
+
+// The collector's layout id of each GcLayout but Auto, by the enum's value
+// (heap.cpp): the process-wide ids of heap_trace.h, stored by the first Heap,
+// where an allocation reads them with one load.
+extern std::atomic<brass::gc::LayoutId> g_layoutIds[5];
 
 // The barriers when the thread has other than exactly one heap: the one heap
 // whose reservation holds the address, if any (heap.cpp).
@@ -333,7 +339,30 @@ public:
 
     // A zeroed object of `bytes` payload bytes after its header, the header's
     // tag set to `tag`, flags 0 and size the total. May collect first.
-    HeapObjectHeader* allocate(size_t bytes, Tag tag, GcLayout layout = GcLayout::Auto);
+    // The young bump is here, in the caller: the size and the tag are
+    // constants at most call sites, and an allocation is then the window
+    // test, the two headers and the zeroing of a size the compiler knows.
+    HeapObjectHeader* allocate(size_t bytes, Tag tag, GcLayout layout = GcLayout::Auto) {
+        if (HeapObjectHeader* header = tryAllocate(bytes, tag, layout)) [[likely]] return header;
+        return allocateWith(bytes, tag, layout, 0);
+    }
+    // allocate() when the young window has the room, else null. It never
+    // collects, so nothing the caller holds moves and it needs no roots to
+    // ask: a fast path takes this and leaves a null to the rooted path.
+    HeapObjectHeader* tryAllocate(size_t bytes, Tag tag, GcLayout layout = GcLayout::Auto) noexcept {
+        const size_t total = (sizeof(HeapObjectHeader) + bytes + 7) & ~static_cast<size_t>(7);
+        const GcLayout known = layout != GcLayout::Auto ? layout
+                               : (tag == Tag::String || tag == Tag::BigInt) ? GcLayout::Leaf : GcLayout::Cell;
+        const brass::gc::LayoutId id =
+            gc_detail::g_layoutIds[static_cast<size_t>(known)].load(std::memory_order_relaxed);
+        const uintptr_t object = gc_->try_allocate_young(total, id);
+        if (object == 0) [[unlikely]] return nullptr;
+        auto* header = reinterpret_cast<HeapObjectHeader*>(object);
+        header->tag = static_cast<uint16_t>(tag);
+        header->flags = 0;  // as allocateWith leaves it
+        header->size = static_cast<uint32_t>(total);
+        return header;
+    }
     // The same, in the OLD generation: an object that never moves, freed only
     // by a full collection. For what a non-moving off-heap table names and a
     // full collection's trace reaches (a dictionary's keys, dictionary.h).

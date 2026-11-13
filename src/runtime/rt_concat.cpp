@@ -98,6 +98,36 @@ static uint64_t concatIntoBuilder(Rooted<Value>& a, Rooted<Value>& b, uint32_t r
     return a.get().rawBits();
 }
 
+// The two helpers' general paths, out of line: they root their operands, and
+// a frame holding roots is one the fast paths above them should not have to
+// set up to copy a few characters.
+[[gnu::noinline]] static uint64_t concatBeginSlow(uint64_t aBits, uint64_t bBits, uint32_t remaining) {
+    Rooted<Value> aRoot{Value(aBits)};
+    Rooted<Value> bRoot{Value(bBits)};
+    if (aRoot.get().isString() && bRoot.get().isString()) return concatIntoBuilder(aRoot, bRoot, remaining);
+    if (!rtAddToPrimitives(aRoot, bRoot)) return Value::fromUndefined().rawBits();
+    if (aRoot.get().isString() || bRoot.get().isString()) {
+        return concatIntoBuilder(aRoot, bRoot, remaining);
+    }
+    return rtAddNonStringTail(aRoot, bRoot);
+}
+
+[[gnu::noinline]] static uint64_t concatAppendSlow(uint64_t accBits, uint64_t xBits) {
+    Rooted<Value> accRoot{Value(accBits)};
+    Rooted<Value> xRoot{Value(xBits)};
+    // ToPrimitive of the accumulator runs first and does nothing, then
+    // ToPrimitive of the operand runs whatever the program put on it — which
+    // is the order this `+` would have had on its own.
+    if (!rtAddToPrimitives(accRoot, xRoot)) return Value::fromUndefined().rawBits();
+    if (accRoot.get().isString() || xRoot.get().isString()) {
+        // No hint left to give: a chain that only became a String here (`1 + 2
+        // + 'x' + …`) has no count of what follows, and pays for it in the
+        // growth policy rather than in an answer.
+        return concatIntoBuilder(accRoot, xRoot, 0);
+    }
+    return rtAddNonStringTail(accRoot, xRoot);
+}
+
 extern "C" {
 
 uint64_t bronze_concat_begin(uint64_t aBits, uint64_t bBits, uint32_t remaining) {
@@ -111,17 +141,31 @@ uint64_t bronze_concat_begin(uint64_t aBits, uint64_t bBits, uint32_t remaining)
         return Value::fromDouble(aVal.asNumber() + bVal.asNumber()).rawBits();
     }
     if (aVal.isString() && bVal.isString()) {
-        Rooted<Value> aRoot{aVal};
-        Rooted<Value> bRoot{bVal};
-        return concatIntoBuilder(aRoot, bRoot, remaining);
+        // Two Latin-1 strings, the chain's usual start: the builder is taken
+        // from the young window when it has the room, which collects nothing,
+        // so neither operand needs a root and the two texts are copied
+        // straight in. Anything else (a builder on the left, UTF-16, a full
+        // window, a length past 32 bits) is the general path's.
+        const StringHeader* a = aVal.asString<StringHeader>();
+        const StringHeader* b = bVal.asString<StringHeader>();
+        const uint64_t seed = static_cast<uint64_t>(a->length) + b->length;
+        if (a->isLatin1() && b->isLatin1() && !a->isBuilder() && seed < (uint64_t{1} << 31)) {
+            const uint32_t cap = builderCapacityFor(static_cast<uint32_t>(seed), remaining);
+            if (HeapObjectHeader* h = rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(cap) + 1,
+                                                           Tag::String)) {
+                auto* s = reinterpret_cast<StringHeader*>(h);
+                s->header.flags = StringHeader::kBuilderFlag;
+                s->length = static_cast<uint32_t>(seed);
+                s->flags = 0;
+                char* text = s->latin1Data();
+                std::memcpy(text, a->latin1Data(), a->length);
+                std::memcpy(text + a->length, b->latin1Data(), b->length);
+                text[seed] = '\0';
+                return Value::fromString(s).rawBits();
+            }
+        }
     }
-    Rooted<Value> aRoot{aVal};
-    Rooted<Value> bRoot{bVal};
-    if (!rtAddToPrimitives(aRoot, bRoot)) return Value::fromUndefined().rawBits();
-    if (aRoot.get().isString() || bRoot.get().isString()) {
-        return concatIntoBuilder(aRoot, bRoot, remaining);
-    }
-    return rtAddNonStringTail(aRoot, bRoot);
+    return concatBeginSlow(aBits, bBits, remaining);
 }
 
 uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
@@ -160,19 +204,7 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
             }
         }
     }
-    Rooted<Value> accRoot{accVal};
-    Rooted<Value> xRoot{xVal};
-    // ToPrimitive of the accumulator runs first and does nothing, then
-    // ToPrimitive of the operand runs whatever the program put on it — which
-    // is the order this `+` would have had on its own.
-    if (!rtAddToPrimitives(accRoot, xRoot)) return Value::fromUndefined().rawBits();
-    if (accRoot.get().isString() || xRoot.get().isString()) {
-        // No hint left to give: a chain that only became a String here (`1 + 2
-        // + 'x' + …`) has no count of what follows, and pays for it in the
-        // growth policy rather than in an answer.
-        return concatIntoBuilder(accRoot, xRoot, 0);
-    }
-    return rtAddNonStringTail(accRoot, xRoot);
+    return concatAppendSlow(accBits, xBits);
 }
 
 uint64_t bronze_concat_end(uint64_t vBits) {

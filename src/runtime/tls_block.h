@@ -19,13 +19,14 @@
 // still the only thing generated code and hosts may use: what changed is that
 // code compiled INTO the runtime image no longer goes through it.
 //
-// The initializer is a constant aggregate, so the variable is
-// constant-initialized and neither route pays an init guard.
+// The initializer is a constant aggregate and the declaration says so
+// (constinit), so no reader, in this file or any other, tests for a dynamic
+// initializer before it takes the address.
 
 namespace bronze::runtime {
 
 // The block with the constants below it (bronze_abi_tls.h, bronze_tls_area).
-extern thread_local bronze_tls_area g_tls_area;
+extern constinit thread_local bronze_tls_area g_tls_area;
 
 inline bronze_tls_block* rtTls() noexcept {
     return &g_tls_area.block;

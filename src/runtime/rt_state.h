@@ -27,7 +27,18 @@ struct FunctionHeader;
 
 namespace bronze::runtime {
 
-Heap& rtHeap();
+namespace rt_detail {
+// The thread's heap, null until its first use (rt_state.cpp). constinit: a
+// read is one load off the thread pointer, with no initialization wrapper.
+extern constinit thread_local Heap* t_threadHeap;
+Heap& rtCreateThreadHeap();
+}  // namespace rt_detail
+
+// The calling thread's heap, created at its first use.
+inline Heap& rtHeap() {
+    if (Heap* heap = rt_detail::t_threadHeap) [[likely]] return *heap;
+    return rt_detail::rtCreateThreadHeap();
+}
 NonMovingArena& rtArena();
 
 // A root shape registered with the collector, for a builtin that needs its
