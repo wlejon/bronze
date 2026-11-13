@@ -39,6 +39,7 @@
 //    an ABSENT word additionally needs its fill epoch to be the thread's
 //    (describesAbsent).
 
+#include "il/il_pin.h"
 #include "il_abi.h"
 #include "il_direct_common.h"
 #include "il_elem_stub.h"
@@ -289,6 +290,64 @@ void build_elem_set_stub(PropertyLoweringHelper& pl, Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
+// The constant-index stubs. `this._components[0] = r` and `m[12]` on a
+// Float32Array are constant-index accesses, which lower as a dense Array's
+// element with a call for any other receiver; the keyed stub's first question
+// is whether the receiver is a plain object, and a typed array then went to
+// the runtime's helper for every element (pixi's Color normalizes into a
+// Float32Array four stores at a time, a few thousand a frame). Here a word
+// view (Int32Array, Uint32Array, Float32Array, Float64Array) is asked first
+// and answered as a site proven on one answers it (il_elem_word_view.cpp);
+// the key is a Number by construction, and a store's value must be one.
+// Everything else is the keyed stub, with the same operands.
+void build_index_get_stub(PropertyLoweringHelper& pl, Function* fn) {
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* cur = b.append_block("entry");
+    Value* obj = b.add_block_param(cur, Type::i64());
+    Value* key = b.add_block_param(cur, Type::i64());
+    BasicBlock* view = b.append_block("iget_view");
+    BasicBlock* other = b.append_block("iget_other");
+
+    b.position_at_end(cur);
+    b.build_br_if(pl.lower_is_typed_array(b, obj, bronze::il::kTypedArrayWordView), view, other);
+
+    b.position_at_end(view);
+    b.build_ret(pl.lower_elem_get_word_view(b, obj, b.build_bitcast_f64_i64(key), 0));
+
+    b.position_at_end(other);
+    b.build_ret(b.build_call(kElemGetStub, Type::i64(), {obj, key}));
+    fn->rebuild_cfg_predecessors();
+}
+
+void build_index_set_stub(PropertyLoweringHelper& pl, Function* fn) {
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* cur = b.append_block("entry");
+    Value* obj = b.add_block_param(cur, Type::i64());
+    Value* key = b.add_block_param(cur, Type::i64());
+    Value* val = b.add_block_param(cur, Type::i64());
+    Value* strict = b.add_block_param(cur, Type::i32());
+    BasicBlock* view = b.append_block("iset_view");
+    BasicBlock* other = b.append_block("iset_other");
+
+    b.position_at_end(cur);
+    Value* is_view = pl.lower_is_typed_array(b, obj, bronze::il::kTypedArrayWordView);
+    b.build_br_if(b.build_and(is_view, b.build_ule(val, iconst(b, kBronzeNumberMaxBits))), view, other);
+
+    // Key and value both Numbers, so the store has no helper arm and
+    // `strict` no use.
+    b.position_at_end(view);
+    pl.lower_elem_set_word_view(b, obj, b.build_bitcast_f64_i64(key), pl.box_number(b, b.build_bitcast_f64_i64(val)), 0,
+                                0);
+    b.build_ret_void();
+
+    b.position_at_end(other);
+    b.build_call(kElemSetStub, Type::void_type(), {obj, key, val, strict});
+    b.build_ret_void();
+    fn->rebuild_cfg_predecessors();
+}
+
 }  // namespace
 
 // The get stub's own-slot hit, at the site: the same probe, and on a hit the
@@ -346,6 +405,15 @@ const char* PropertyLoweringHelper::elem_set_helper() const noexcept {
     return elem_stubs_ ? kElemSetStub : "bronze_elem_set";
 }
 
+// What a constant-index access calls when its receiver is no dense Array.
+const char* PropertyLoweringHelper::index_get_helper() const noexcept {
+    return elem_stubs_ ? kIndexGetStub : "bronze_elem_get";
+}
+
+const char* PropertyLoweringHelper::index_set_helper() const noexcept {
+    return elem_stubs_ ? kIndexSetStub : "bronze_elem_set";
+}
+
 void emit_elem_stubs(IlLowering* lowering, Module& mod) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     // A census counts every computed read in the helper (shape_census.h), so
@@ -356,10 +424,15 @@ void emit_elem_stubs(IlLowering* lowering, Module& mod) {
     build_elem_get_stub(pl, mod.create_function(kElemGetStub, Type::i64(), {Type::i64(), Type::i64()}));
     build_elem_set_stub(pl, mod.create_function(kElemSetStub, Type::void_type(),
                                                 {Type::i64(), Type::i64(), Type::i64(), Type::i32()}));
+    build_index_get_stub(pl, mod.create_function(kIndexGetStub, Type::i64(), {Type::i64(), Type::i64()}));
+    build_index_set_stub(pl, mod.create_function(kIndexSetStub, Type::void_type(),
+                                                 {Type::i64(), Type::i64(), Type::i64(), Type::i32()}));
     // They answer what the helpers answer, operand for operand, so the passes
     // that read the helpers' contracts read theirs.
     mod.add_symbol_role(kElemGetStub, SymbolRole::ArrayGet);
     mod.add_symbol_role(kElemSetStub, SymbolRole::ArraySet);
+    mod.add_symbol_role(kIndexGetStub, SymbolRole::ArrayGet);
+    mod.add_symbol_role(kIndexSetStub, SymbolRole::ArraySet);
 }
 
 }  // namespace il2mir

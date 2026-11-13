@@ -222,7 +222,7 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
 }
 
 const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key) {
-    if (!objVal.isObject() || !key.isNumber()) return nullptr;
+    if (!objVal.isObject() || !(key.isNumber() || key.isString())) return nullptr;
     const auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain) return nullptr;
     const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
@@ -230,6 +230,11 @@ const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key) {
     if (sh == nullptr || sh->dict == nullptr || sh->used_as_prototype || !obj->isBarePlain() ||
         rtMaybeGlobalObjectShape(sh)) {
         return nullptr;
+    }
+    // A string key is the entry's name as it stands (`cache[textKey]`).
+    if (key.isString()) {
+        const DictEntry* e = sh->dict->find(PropertyKey::forString(key.asString<StringHeader>()));
+        return e != nullptr && !e->accessor ? e : nullptr;
     }
     const double d = key.asNumber();
     if (!(d >= 0.0 && d < 4294967296.0)) return nullptr;

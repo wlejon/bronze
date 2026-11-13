@@ -83,7 +83,9 @@ bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 // `map[id]` on a map keyed by ids: the own DATA entry a small non-negative
 // integer key names on a bare plain object in dictionary mode (which is where
 // such a map lives, Shape::kIndexKeyedMapAfter), or null for any other
-// receiver, key or answer. Nothing is allocated on the GC heap, so a caller
+// receiver, key or answer. A string key names its entry the same way (a
+// cache keyed by computed strings is in dictionary mode by the transition
+// bound, shape.h). Nothing is allocated on the GC heap, so a caller
 // may hold a raw receiver across it; the slot is read or written by the
 // caller, who also owns the questions a write asks (`writable`).
 const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key);

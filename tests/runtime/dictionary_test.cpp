@@ -330,12 +330,18 @@ TEST_CASE("an object keyed by ids past a few dozen properties is a dictionary a 
     const DictEntry* first = runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(100.0));
     REQUIRE(first != nullptr);
     CHECK(self.get().asObject<ObjectHeader>()->getSlot(first->slot).asNumber() == 0.0);
-    // -0 is the key "0"; a fraction, a negative, an absent id and a string
-    // key are not this path's to answer.
+    // -0 is the key "0"; a fraction, a negative and an absent id are not this
+    // path's to answer. A string key is its own entry, an absent one none.
     add("0", 4.0);
     CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(-0.0)) != nullptr);
     CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(7.5)) == nullptr);
     CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(-7.0)) == nullptr);
     CHECK(runtime::rtIdKeyedOwnEntry(self.get(), Value::fromDouble(8.0)) == nullptr);
+    CHECK(runtime::rtIdKeyedOwnEntry(self.get(), key.get()) != nullptr);  // "0"
+    key.set(Value::fromString(StringHeader::createFromUTF8(heap, "name")));
+    const DictEntry* named = runtime::rtIdKeyedOwnEntry(self.get(), key.get());
+    REQUIRE(named != nullptr);
+    CHECK(self.get().asObject<ObjectHeader>()->getSlot(named->slot).asNumber() == 1.0);
+    key.set(Value::fromString(StringHeader::createFromUTF8(heap, "absent")));
     CHECK(runtime::rtIdKeyedOwnEntry(self.get(), key.get()) == nullptr);
 }

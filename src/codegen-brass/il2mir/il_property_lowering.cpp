@@ -476,16 +476,18 @@ uint64_t number_bits(uint32_t index) { return std::bit_cast<uint64_t>(static_cas
 }  // namespace
 
 // What a constant-index access calls once its receiver has proven no dense
-// Array: the computed access with the index as its key, which answers a typed
-// array's element and a string's unit at the helper's door. The named access
+// Array: the computed access with the index as its key, behind the module's
+// constant-index stub (il_elem_stub.cpp), which answers a word view's element
+// itself and leaves the rest (another typed array's element, a string's unit)
+// at the keyed stub's door. The named access
 // went through the site's cache to learn that an index is no shape's slot.
 Value* PropertyLoweringHelper::lower_index_get_helper(Builder& b, Value* obj, uint32_t elem_index) {
-    return b.build_call(elem_get_helper(), Type::i64(), {obj, iconst64(b, number_bits(elem_index))});
+    return b.build_call(index_get_helper(), Type::i64(), {obj, iconst64(b, number_bits(elem_index))});
 }
 
 void PropertyLoweringHelper::lower_index_set_helper(Builder& b, Value* obj, uint32_t elem_index, Value* val,
                                                     uint32_t strict) {
-    b.build_call(elem_set_helper(), Type::void_type(),
+    b.build_call(index_set_helper(), Type::void_type(),
                  {obj, iconst64(b, number_bits(elem_index)), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
 }
 

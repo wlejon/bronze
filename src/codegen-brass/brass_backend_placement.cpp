@@ -9,11 +9,12 @@ namespace {
 
 // The stubs nearly every cached site of a module calls (il2mir: kPropGetStub,
 // kPropGetFrontStub, kPropSetStub, il_method_site.cpp's kMethodCallStub,
-// kElemGetStub, kElemSetStub). With a profile they lead the text: they are
+// kElemGetStub, kElemSetStub, kIndexGetStub, kIndexSetStub). With a profile they lead the text: they are
 // the module's hottest code whatever the program.
 constexpr const char* kLeadingStubs[] = {
     "__bronze_prop_get_ic",  "__bronze_prop_get_ic_front", "__bronze_prop_set_ic",
     "__bronze_method_call_ic", "__bronze_elem_get_keyed",  "__bronze_elem_set_keyed",
+    "__bronze_index_get",    "__bronze_index_set",
 };
 // The stubs a module calls on slower paths (kPropGetSlowStub: a getter or a
 // receiver no way names; kPropSetSlowStub: a write past its site's way 0;

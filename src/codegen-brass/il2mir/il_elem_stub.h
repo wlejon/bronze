@@ -13,6 +13,11 @@ class IlLowering;
 
 inline constexpr const char* kElemGetStub = "__bronze_elem_get_keyed";
 inline constexpr const char* kElemSetStub = "__bronze_elem_set_keyed";
+// What a constant-index access (`c[0]`, lowered as a dense Array's element,
+// il_property_lowering.cpp) calls when its receiver is no dense Array: a word
+// view's element answered here, the keyed stub for everything else.
+inline constexpr const char* kIndexGetStub = "__bronze_index_get";
+inline constexpr const char* kIndexSetStub = "__bronze_index_set";
 
 // Builds the stubs (once, before any body) unless the build counts every
 // computed access in the helpers, and tells the property lowering which.

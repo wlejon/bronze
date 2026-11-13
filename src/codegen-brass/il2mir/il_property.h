@@ -381,6 +381,8 @@ public:
     void set_elem_stubs(bool on) noexcept { elem_stubs_ = on; }
     [[nodiscard]] const char* elem_get_helper() const noexcept;
     [[nodiscard]] const char* elem_set_helper() const noexcept;
+    [[nodiscard]] const char* index_get_helper() const noexcept;
+    [[nodiscard]] const char* index_set_helper() const noexcept;
     // The module's key constants, which name a property site in a profile.
     void set_key_names(const std::vector<std::string>* names) noexcept { key_names_ = names; }
     [[nodiscard]] std::string_view key_tag(uint32_t key_index) const noexcept {
