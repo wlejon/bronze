@@ -193,6 +193,15 @@ section 7). An image built with `--feedback-in` for x64 uses it
   fast copy leaves for its slow copy (`BronzeInstruction::guard_edge`). A site
   with a layout fact stays a branch: a fact lapses whenever a layout moves.
   A test that is an `and` of conditions is one guard per condition.
+- **Shape tests that leave.** An `is.shape` read only by the fast copy's
+  guard branch behind it is lowered at that branch (`defer_shape_test`,
+  `il_lowering.h`): the receiver's object test, its plain-header test and the
+  cell or family compare are three sites, with no keyed shape joined from a
+  not-plain arm; the shape word read there is the memo's on the staying edge
+  only. An `accessor.ic.is` is lowered the same way where its branch leaves a
+  fast copy, or where its miss is its own site and the profile saw one shape
+  at that site (`il::Module::mixedIcs` lists the sites whose harvested cache
+  held more than one shape or callee).
 - **How.** `make_resume_twins` runs on the module as lowered, before any
   pass: `build_resume_twin`, `arm_image_sites`, `speculate_against_twin` per
   function; a function no twin can be built for keeps its branches. The twin
@@ -212,7 +221,36 @@ guard tested is known where read again (25.28M), a guard's compare selected
 as a branch's is (24.42M), one guard per conjunct (24.31M).
 `tests/oracle/cases/twin_exit_*.js` leave through real exits (every call, in a
 loop, in recursion, with GC between, inside `try`/`finally`, after side
-effects).
+effects). Shape tests that leave and accessor guards: 24.27M. A hot
+function's twin is placed with the cold functions.
+
+**Open, and why twins are not a gain yet.** Twins on / off on one tree:
+pixi_sprites 24.27M / 24.29M, three_skinned 42.55M / 42.51M, three_meshes
+59.15M / 59.13M, pixi_text 38.30M / 36.35M.
+
+- *Nothing stops trusting a function whose guards keep failing.* 14.3% of
+  pixi_text's samples are in resume twins (`removeListener` 6.1%,
+  `CanvasTextMetrics.measureText` 1.8%, `_renderTextToCanvas` 1.7%): each
+  call runs the speculated prefix, the exit and the generic code. brass's
+  `ResumeTwinOptions::on_exit` and `build_twin_entry` (section 7.3.7 there)
+  are not wired.
+- *The guards that repeat a fact compare one shape word against different
+  cells.* After brass's passes no load or guard of the four hot functions
+  repeats a dominating one with nothing between. What repeats is the
+  identity-cell compare, one per site: `Container.updateLocalTransform` asks
+  ten cells of one receiver (28 of its 40 executed guards), and the cells hold
+  the same shape only at run time. Merging such tests in the IL
+  (`foldGuardedLoads`) into one test of a cell published for a whole key list
+  was built and removed (24.27M to 24.34M): the fold's facts end at every
+  claimed site the region pass did not make shape-guarded, since that site's
+  miss is in line in the IL, and 20 family sites on `this` lie between the
+  ten tests there, none of them a missed claim.
+- *The other conditional jumps are diamonds that are not sites*: layout-fact
+  sites, keyed gets with a string or number key, `unbox.bool`, `to.int32`,
+  method guards, typed-array stores (24 a sprite in `packQuadAttributes`,
+  each with its own kind and bounds merge).
+- *Build time*: a three.js image builds in about 120 s with twins against
+  40 s.
 
 ### Measured
 

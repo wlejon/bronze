@@ -206,6 +206,10 @@ struct TranslatorOptions {
     // (il_speculation.h, "IMAGE SITES"). Off, every site is a branch.
     bool twin_exits = false;
     std::unordered_set<uint32_t> missed_claim_ics;
+    // The sites whose harvested cache held several shapes or callees
+    // (il::Module::mixedIcs): an inlined accessor's guard on one of them
+    // keeps its miss in line.
+    std::unordered_set<uint32_t> mixed_ics;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

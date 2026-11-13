@@ -798,6 +798,12 @@ struct Module {
     // function on its miss (il2mir/il_speculation.h, "IMAGE SITES"). Not
     // serialized: it is read by the build that made it.
     std::unordered_set<uint32_t> missedClaimIcs;
+    // With `feedbackApplied`: the inline-cache indices of the property and
+    // method sites whose harvested cache held more than one receiver shape or
+    // callee. A guard that asks one cell about such a site (an inlined
+    // accessor's or method's) keeps its miss in line in an image; any other
+    // may leave the function. Not serialized either.
+    std::unordered_set<uint32_t> mixedIcs;
     // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
     // `functions` the backend lays out first in its text, in this order, and
     // last. Only where code sits, never what it is.

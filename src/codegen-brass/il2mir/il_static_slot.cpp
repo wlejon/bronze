@@ -562,8 +562,14 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
             res = b.build_iconst_i32(0);
             return true;
         }
-        res = prop_lowering.lower_is_shape(b, obj, lowering->memo_keyed(b, inst_ast.operands[0], obj),
-                                           StaticSlotSite::of(inst_ast));
+        // Left to the guard branch behind it (il_lowering.h, "A SHAPE TEST
+        // THAT LEAVES"), which reads no value of this one.
+        if (lowering->defer_shape_test(inst_ast, obj)) {
+            res = b.build_iconst_i32(1);
+        } else {
+            res = prop_lowering.lower_is_shape(b, obj, lowering->memo_keyed(b, inst_ast.operands[0], obj),
+                                               StaticSlotSite::of(inst_ast));
+        }
         lowering->memo_keep();
         return true;
     }
