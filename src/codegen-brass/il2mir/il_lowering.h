@@ -60,6 +60,13 @@ public:
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
     SpecSiteEmitter& spec() { return spec_; }
+    // Whether a claimed property site's miss leaves the function for its
+    // resume twin (il_speculation.h, "IMAGE SITES"): an image built on a
+    // profile that did not see the claim miss.
+    bool claim_exits(const BronzeInstruction& inst) const {
+        return options_.twin_exits && inst.static_slot != BronzeInstruction::kNoStaticSlot &&
+               inst.ic_index != BronzeInstruction::kNoIcIndex && options_.missed_claim_ics.count(inst.ic_index) == 0;
+    }
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
     const BronzeFunction* current_fn_ast() const {
@@ -279,7 +286,7 @@ private:
     void memo_end_block(const BronzeBlock& blk, BasicBlock* bb, Function* fn, size_t first_new);
     // The memo at a join: what every predecessor's end holds, one value or
     // a join parameter fed along each predecessor's edges.
-    void memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb);
+    void memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb, uint32_t bb_id);
     // Per-function values computed once at the function's entry and shared
     // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
     enum class Hoist : uint8_t { IcTable, Count };
@@ -490,6 +497,35 @@ private:
     std::unordered_map<uint32_t, std::vector<BasicBlock*>> memo_spans_;
     std::unordered_set<uint32_t> memo_handler_blocks_;
     bool shape_memo_off_ = false;
+    // Per lowered IL block whose end memo holds only on one of its edges (a
+    // shape test that leaves, below): the IL block the other edge goes to,
+    // and the memo that edge carries.
+    std::unordered_map<uint32_t, std::pair<uint32_t, std::vector<std::pair<uint32_t, Value*>>>> memo_leave_end_;
+    // The memo block `pred` ends with on its edge into `succ`, or null.
+    const std::vector<std::pair<uint32_t, Value*>>* memo_end_for(uint32_t pred, uint32_t succ) const;
+    // A SHAPE TEST THAT LEAVES (il_speculation.h, "IMAGE SITES"). In a
+    // function that takes guards, a test of a receiver's shape read only by
+    // the branch right behind it is lowered at that branch: the receiver's
+    // object test, its plain-header test and the compare are image sites,
+    // each leaving where the branch's false edge goes, with no keyed shape
+    // joined from a not-plain arm. The tests: an `is.shape` whose branch
+    // leaves its fast copy, and an `accessor.ic.is` whose branch does, or
+    // whose miss is its own site (find_guard_misses) and the profile saw
+    // that site's cache hold one shape (TranslatorOptions::mixed_ics).
+    // `next_inst_` is the instruction behind the one the block loop is
+    // lowering.
+    const BronzeInstruction* next_inst_ = nullptr;
+    const BronzeInstruction* pending_shape_test_ = nullptr;
+    Value* pending_shape_obj_ = nullptr;
+    // Per guard with a miss site of its own: that site's inline-cache index.
+    std::unordered_map<const BronzeInstruction*, uint32_t> guard_miss_ic_;
+
+public:
+    // Whether `test` (being lowered, receiver bits `obj`) is left to the
+    // branch behind it; the caller then gives it any i32.
+    bool defer_shape_test(const BronzeInstruction& test, Value* obj);
+
+private:
     void memo_begin_function(const BronzeFunction& fn_ast);
     // A direct site that is the miss of an inlined body's guard: the first
     // instruction of the block only that guard's false edge enters, on the

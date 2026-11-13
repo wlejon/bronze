@@ -175,6 +175,140 @@ on `childrenToUpdate` that the run saw miss.
 a store through an alias between two reads, a guard that fails on every
 pass, `break`/`continue`/`throw` out of the slow copy, nested loops).
 
+### 5. Guards that leave for a resume twin (x64 images built on a profile)
+
+brass can compile a function twice into one image: the speculated function,
+whose guards have exits only, and its resume twin, the generic code with every
+guard's slow block as an entry (brass `docs/speculation_and_deopt.md`,
+section 7). An image built with `--feedback-in` for x64 uses it
+(`TranslatorOptions::twin_exits`, `il2mir/il_speculation.h` "IMAGE SITES"):
+
+- **Which functions.** The ones the profile's samples call hot
+  (`il::Module::hotFunctions`), less coroutine bodies and the top level. Every
+  other function is lowered as before, each site a branch.
+- **Which sites.** A claimed property site (read, store, or a static-slot
+  stretch) whose claim the profile did not see miss
+  (`il::Module::missedClaimIcs`, from `applyFeedbackClaimsAndHints`), with its
+  plain-object and header tests, and every branch by which a guarded region's
+  fast copy leaves for its slow copy (`BronzeInstruction::guard_edge`). A site
+  with a layout fact stays a branch: a fact lapses whenever a layout moves.
+  A test that is an `and` of conditions is one guard per condition.
+- **Shape tests that leave.** An `is.shape` read only by the fast copy's
+  guard branch behind it is lowered at that branch (`defer_shape_test`,
+  `il_lowering.h`): the receiver's object test, its plain-header test and the
+  cell or family compare are three sites, with no keyed shape joined from a
+  not-plain arm; the shape word read there is the memo's on the staying edge
+  only. An `accessor.ic.is` is lowered the same way where its branch leaves a
+  fast copy, or where its miss is its own site and the profile saw one shape
+  at that site (`il::Module::mixedIcs` lists the sites whose harvested cache
+  held more than one shape or callee).
+- **How.** `make_resume_twins` runs on the module as lowered, before any
+  pass: `build_resume_twin`, `arm_image_sites`, `speculate_against_twin` per
+  function; a function no twin can be built for keeps its branches. The twin
+  is named `<function>__twin`, shares the function's descriptor in the code
+  ranges (`BRONZE_CODE_RANGE_TWIN`), and a stack walk reports the twin's
+  position for the activation and passes over the speculated frame under it.
+- **AArch64** and every build without a profile keep the branch form.
+
+pixi_sprites n=10000 (instructions a frame, node 15.7M; 24.42M before this
+section, 24.29M with brass's fixes and no twins): twins for every function
+with a site 25.22M (1587 twins, 30840 guards, image 91.5 MB against 62.2 MB);
+hot functions only, region guards included, 26.61M (140 twins, 7190 guards,
+66.9 MB, build 66.7 s against 50.8 s). What made the exits-only code slower
+was in brass, fixed there in four steps: gcref values no longer whole-life in
+one register unless live across a GC point (25.98M), a condition a dominating
+guard tested is known where read again (25.28M), a guard's compare selected
+as a branch's is (24.42M), one guard per conjunct (24.31M).
+`tests/oracle/cases/twin_exit_*.js` leave through real exits (every call, in a
+loop, in recursion, with GC between, inside `try`/`finally`, after side
+effects). Shape tests that leave and accessor guards: 24.27M. A hot
+function's twin is placed with the cold functions.
+
+**The failure policy** (`il2mir/il_speculation.h`, "FAILURE POLICY"). Without
+one, pixi_text ran 38.30M instructions a frame with twins against 36.35M
+without: `removeListener`, `CanvasTextMetrics.measureText`,
+`_renderTextToCanvas` and `TextureStyle` left on every call. Each twinned
+function `f` now has an entry cell in the image's shared data, the word its
+direct calls go through (brass's `call @f via @cell`, `call [rip + cell]`: one
+instruction, as the direct call was, and nothing in `f`). The twin's guard
+entries count exits there. After 256 the cell holds `f__probe`, which counts
+calls and calls `f`: 256 more exits within 2048 calls and the cell holds
+`f__generic` for good, else `f` again with the counts at zero. So a function
+is given up when more than one call in eight leaves, and one that leaves now
+and then stays speculated. `f__generic` is a third copy of the function, as
+lowered with every site a branch. The twin entered at the function's own entry
+(brass `build_twin_entry`) would have saved that copy and was measured first:
+38.96M, because every resume block of a twin is also reached from its
+dispatch, so nothing the function established before a site is known behind
+it. With the copy pixi_text is at 36.28M and pixi_sprites unchanged at 24.27M.
+`tests/oracle/cases/twin_exit_failure_policy.js` passes through every state
+(built on a one-way harvest: samples in `total__probe`, `total__generic` and
+`total__twin`). A function given up is never tried again.
+
+**One cell per shape** (`opt/spec/feedback_plan.h`
+`applyFeedbackLayoutCells`, `il::Module::layoutCells`). An identity claim had
+one cell per site, so `Container.updateLocalTransform` compared one receiver's
+shape word against ten cells that hold the same shape only at run time, and no
+pass could know it. In a hot function, the claimed sites and `is.shape` tests
+on one receiver that the harvest saw with one shape only, the same at every
+one of them, now ask that shape's LAYOUT CELL: one cell per shape name for the
+whole module, with the list of (key, slot, written) pairs its sites rely on.
+The runtime publishes it (`bronze_static_layout_publish`,
+`runtime/static_shape.cpp`) from the first object that has all of them: a
+plain non-dictionary object with the shape's key count, every listed key an
+own data property at its slot, writable and not a prototype's where a site
+stores. So the cell stands for every pair whatever the run's shapes are, and a
+run whose objects differ from the harvest's only misses (an exit, counted by
+the failure policy). A receiver the harvest saw with two shapes (108 sites in
+pixi_sprites see `Container` and `Sprite`) keeps its family claims.
+`tests/oracle/cases/layout_cell_shapes.js` sends ten other layouts through
+such sites, first and in between. pixi_sprites 24.27M to 23.50M, pixi_text
+36.28M to 36.08M, three_skinned 42.48M to 42.33M, three_meshes 59.21M to
+58.85M.
+
+**Alias classes on a guard's loads** (`il2mir/il_abi.h`): the receiver's kind
+word, shape word and overflow pointer (`kShapeWordAliasClass`), the words only
+the runtime writes (a shape's stamp and double map, the family base, a cell,
+the layout epoch: `kRuntimeWordAliasClass`) and slot loads
+(`kObjectSlotAliasClass`). Before, a store into any slot made brass read all
+of them again, so the second guard of one claim on one receiver was a new
+condition. pixi_sprites 23.50M to 23.02M, three_skinned 42.33M to 42.04M,
+three_meshes 58.85M to 58.62M, pixi_text 36.07M (a pixi_text run moves by 2%
+with the machine's load: 37.02M with a test suite running beside it).
+
+What the executed guards of the four hot functions of pixi_sprites are after
+both (per sprite, `updateTransformAndChildren` / `updateLocalTransform` /
+`step` / `packQuadAttributes`): 71 / 31 / 82 / 15, 199 in all against 208.
+By what they test in `updateLocalTransform`'s MIR: 10 of 37 are Number tests
+of a value just loaded from a slot, 6 header and 6 tag tests (one each per
+receiver), 11 shape compares, the rest store representation tests.
+
+**Open.**
+
+- *A receiver is a new value after every merge behind a call.* A diamond
+  whose slow arm calls (an `ic_set` miss, `to.int32`, `unbox`, a keyed get)
+  reloads every live object from its root slot in that arm, so behind the
+  join the receiver is a parameter of the join and its tag test, header test
+  and shape compare are all asked again (`updateTransformAndChildren`: 39
+  tag and 39 header tests on join parameters in the MIR). Either those
+  diamonds become exits where the profile saw the slow arm never taken
+  (which removes the join), or the receiver needs no test at all (next
+  point). Carrying a layout fact across them was measured and dropped
+  ("Tried and dropped": the repeats are fewer than the receivers).
+- *What a slot holds.* The guards that remain are asked of values just
+  loaded from a slot of an object already guarded: a Number test per number
+  (10 of 37 in `updateLocalTransform`), and a tag, header and shape test per
+  object (`this.localTransform`, `this.position`, ...: 23 of 37). A slot the
+  shape calls a double (`runtime/slot_repr.h`) needs no Number test, but a
+  key is eligible only through `--pins`; the harvest could name the keys and
+  a layout cell require the representation at publish. The same discipline
+  for "this slot holds a plain object of shape S" (a store of anything else
+  moves the object to a shape without the claim, as `withSlotBoxed` does)
+  would make the object a receiver with no test.
+- *Build time*: a three.js image builds in about 130 s with twins against
+  40 s; each twinned function is compiled four times (itself, twin, generic,
+  probe).
+
 ### Measured
 
 These are windowed `bro-aot` runs. Each "before" figure is the same tree with both
@@ -201,6 +335,31 @@ by a single typed loop. Neither change touches it.
 - **Inlining own-slot callees into `setProgram`-sized callers.** This was already
   measured +2.2% (worse) before this work, because brass spills across the
   enlarged body. Guarded inlining's 800-IL caller cap stays.
+- **Layout facts that leave** (S2's facts in the functions with resume twins;
+  kept as `build/scratch/leaving_facts_wip.patch` in the worktree that
+  measured it). Sites and fast-copy `is.shape` tests grouped by receiver and
+  claim; a `layout.fact` in front of each anchor lowered as the anchor's own
+  guard with exits; every member outside the anchor's memo stretch one exit
+  on `epoch == fact` and its bare access, so that a receiver handed back as a
+  new value by a call or a call-bearing join is not asked again whether it is
+  an object, plain, and of the claimed shape. Two forms of the fact's value,
+  each sound by S1's contract and a monotonic epoch: the epoch read at the
+  function's entry (one compare for every member of the function, folded by
+  brass per stretch between calls), and the epoch read at the anchor. Against
+  the tree without it, on one harvest each: entry epoch pixi_sprites 23.02M
+  to 22.95M, three_skinned 42.05M to 42.41M, image build 115 s to 143 s;
+  anchor epoch 23.15M and 42.14M; entry epoch with members left alone where
+  no call can lie between anchor and member 23.08M. Executed guards a sprite
+  in the four hot functions stayed at 199 to 201. Why: per sprite those
+  functions run 2, 0, 1 and 0 calls, so few members sit behind one, while a
+  fact costs a read of the epoch per activation or per anchor and a value
+  kept across the calls; and what the guards are is one tag, header and shape
+  test per receiver (about 16 receivers a sprite in
+  `updateTransformAndChildren`) and a Number test per loaded number, which no
+  fact about an earlier guard of the same receiver removes. The layout epoch
+  does not move in a steady frame of any of the four scenes (3591 to 4432
+  bumps before the timed frames, none inside), so the facts never lapsed; it
+  is not what failed.
 
 ## What remains, in payoff order
 

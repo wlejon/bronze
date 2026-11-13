@@ -359,6 +359,24 @@ private:
 
 }  // namespace
 
+namespace {
+// brass::resume_twin_name's names (il_speculation.cpp make_resume_twins).
+constexpr std::string_view kTwinSuffix = "__twin";
+bool isResumeTwinName(std::string_view name) {
+    return name.size() > kTwinSuffix.size() && name.substr(name.size() - kTwinSuffix.size()) == kTwinSuffix;
+}
+std::string twinFunctionName(std::string_view name) {
+    return std::string(name.substr(0, name.size() - kTwinSuffix.size()));
+}
+// A twinned function's generic entry (il_speculation.h, "FAILURE POLICY").
+bool isTwinGenericName(std::string_view name) {
+    return name.size() > il2mir::kTwinGenericSuffix.size() && name.ends_with(il2mir::kTwinGenericSuffix);
+}
+std::string twinGenericFunctionName(std::string_view name) {
+    return std::string(name.substr(0, name.size() - il2mir::kTwinGenericSuffix.size()));
+}
+}  // namespace
+
 void emitPcTablesAndCodeRanges(
     ObjectFile& obj, Section& roSec, int32_t roIdx,
     const std::string& entrySymbol, const std::vector<std::string>& sourceFiles,
@@ -471,7 +489,12 @@ void emitPcTablesAndCodeRanges(
         roSec.emit32(static_cast<uint32_t>(cfi.text_size));
         auto itDt = debugTableMap.find(cfi.name);
         roSec.emit32(itDt != debugTableMap.end() ? static_cast<uint32_t>(itDt->second->line_entries().size()) : 0);
-        auto itDesc = fnToDesc.find(cfi.name);
+        // A resume twin is the function it finishes, and so is the generic
+        // entry under it: the frame a stack walk passes over at the twin's
+        // caller, as it does the speculated function's.
+        const bool twin = isResumeTwinName(cfi.name);
+        auto itDesc = fnToDesc.find(twin ? twinFunctionName(cfi.name)
+                                    : isTwinGenericName(cfi.name) ? twinGenericFunctionName(cfi.name) : cfi.name);
         emitPointer(roSec, itDesc != fnToDesc.end() ? itDesc->second : "");
         auto itPc = fnToPcTable.find(cfi.name);
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
@@ -483,7 +506,7 @@ void emitPcTablesAndCodeRanges(
         auto itInl = fnToInlineFrames.find(cfi.name);
         emitPointer(roSec, itInl != fnToInlineFrames.end() ? itInl->second.first : "");
         roSec.emit32(itInl != fnToInlineFrames.end() ? itInl->second.second : 0);
-        roSec.emit32(0);  // bronze_code_range's tail padding
+        roSec.emit32(twin ? BRONZE_CODE_RANGE_TWIN : 0);
     }
     defineSymbol(obj, codeRangesSymbol, roIdx, rangesOff,
                  obj.functions.size() * sizeof(bronze_code_range), SymbolBinding::Global);
@@ -509,6 +532,20 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     dataSec.emit64(0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_slot"), dataIdx, slotOffset, 8,
                  SymbolBinding::Local);
+
+    // Entry cells of the functions with a resume twin (il_speculation.h,
+    // "FAILURE POLICY").
+    for (const auto& cfi : obj.functions) {
+        if (!isTwinGenericName(cfi.name)) continue;
+        const std::string fn = twinGenericFunctionName(cfi.name);
+        dataSec.align_to(8);
+        const size_t cellOffset = dataSec.data.size();
+        emitPointer(dataSec, fn);
+        dataSec.emit64(0);
+        dataSec.emit64(0);
+        defineSymbol(obj, std::string(il2mir::kTwinEntryCellPrefix) + fn, dataIdx, cellOffset,
+                     il2mir::kTwinCellBytes, SymbolBinding::Local);
+    }
 
     dataSec.align_to(4);
     const size_t keyMapOffset = dataSec.data.size();

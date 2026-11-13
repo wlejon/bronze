@@ -149,9 +149,14 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     // instead of its claim: one compare per distinct fact against one read of
     // the epoch. Its value, a store's included, is a Number box.
     std::vector<uint32_t> facts;
+    // The stretch leaves the function on a miss (il_speculation.h, "IMAGE
+    // SITES") when every claim its guard asks is one the profile did not see
+    // miss. A fact is not such a claim: it lapses whenever a layout moves.
+    bool exits = true;
     for (size_t j = inst_idx; j < end; ++j) {
         const BronzeInstruction& inst = insts[j];
         if (!is_site(inst)) continue;
+        exits = exits && !has_layout_fact(inst) && claim_exits(inst);
         if (has_layout_fact(inst)) {
             const uint32_t fact = inst.operands.back();
             if (std::find(facts.begin(), facts.end(), fact) == facts.end()) facts.push_back(fact);
@@ -188,7 +193,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         if (Value* keyed = memo_lookup(recv_id)) {
             ok = prop_lowering_.static_guard(b, obj, keyed, terms, ptr, &family);
         } else {
-            Value* shape = prop_lowering_.plain_shape_or_miss(b, obj, bb_slow);
+            Value* shape = prop_lowering_.plain_shape_or_miss(b, obj, bb_slow, exits);
             memo_add(recv_id, shape);
             ok = prop_lowering_.static_guard(b, obj, shape, terms, ptr, &family);
         }
@@ -208,7 +213,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     // in the fast copy moves a shape.
     const auto memo_fast = memo_snapshot();
 
-    b.build_br_if(ok, bb_fast, bb_slow);
+    spec_.site_branch(b, ok, bb_fast, bb_slow, exits);
 
     std::unordered_map<uint32_t, Value*> fast_map = val_map;
     std::unordered_map<uint32_t, Value*> slow_map = val_map;
@@ -226,7 +231,8 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         int32_t off = 0;
         Value* base = prop_lowering_.static_slot_base(b, ptr, inst.static_slot, off);
         if (inst.op == BronzeOp::PropGet) {
-            set_inst_result(inst.result_id, b.build_load(Type::i64(), base, off), b, fast_map);
+            set_inst_result(inst.result_id, with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass), b,
+                            fast_map);
             continue;
         }
         const uint32_t val_id = inst.operands[1];

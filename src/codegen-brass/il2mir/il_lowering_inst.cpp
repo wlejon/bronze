@@ -1,10 +1,12 @@
 #include "il_lowering_dynamic.h"
 #include "il_lowering.h"
+#include "il_accessor_direct.h"
 #include "il_lowering_calls.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_ops.h"
 #include "il_property_lowering.h"
 #include "il_abi.h"
+#include <utility>
 #include <brass/mir/verifier.hpp>
 #include <algorithm>
 #include <iostream>
@@ -848,13 +850,62 @@ bool IlLowering::lower_instruction(
                 }
                 return args;
             };
-            if (swap) {
-                b.build_br_if(cond, false_bb, get_args(inst_ast.else_target, false_bb), true_bb,
-                              get_args(inst_ast.target, true_bb));
-            } else {
-                b.build_br_if(cond, true_bb, get_args(inst_ast.target, true_bb), false_bb,
-                              get_args(inst_ast.else_target, false_bb));
+            // The targets `cond` true and false go to, and which is the IL's
+            // then-edge.
+            BasicBlock* on_true = swap ? false_bb : true_bb;
+            BasicBlock* on_false = swap ? true_bb : false_bb;
+            std::vector<Value*> true_args = swap ? get_args(inst_ast.else_target, false_bb)
+                                                 : get_args(inst_ast.target, true_bb);
+            std::vector<Value*> false_args = swap ? get_args(inst_ast.target, true_bb)
+                                                  : get_args(inst_ast.else_target, false_bb);
+            // A fast copy's guard (il_ast.h `guard_edge`) is an image site
+            // where the function has a resume twin: the failing edge is the
+            // twin's, entered at the block that edge goes to. A shape test
+            // left to this branch (defer_shape_test) is lowered here.
+            const BronzeInstruction* test = std::exchange(pending_shape_test_, nullptr);
+            if ((inst_ast.guard_edge != BronzeInstruction::GuardEdge::None || test != nullptr) &&
+                spec_.image_sites_here()) {
+                const bool then_leaves = inst_ast.guard_edge == BronzeInstruction::GuardEdge::Then;
+                const bool true_leaves = then_leaves != swap;
+                Value* hit = true_leaves ? b.build_eq(cond, b.build_iconst_i32(0)) : cond;
+                BasicBlock* stays = true_leaves ? on_false : on_true;
+                BasicBlock* leaves = true_leaves ? on_true : on_false;
+                const std::vector<Value*>& stay_args = true_leaves ? false_args : true_args;
+                const std::vector<Value*>& leave_args = true_leaves ? true_args : false_args;
+                {
+                    // A resume block takes no parameters, and an IL block's
+                    // may still gain some after this branch is lowered (the
+                    // shape memo's, given to every edge into it): the edge
+                    // goes through a block of its own.
+                    BasicBlock* cur = b.current_block();
+                    BasicBlock* edge = b.append_block("guard_edge_" + std::to_string(fn->next_block_id()));
+                    edge->set_cold();
+                    b.position_at_end(edge);
+                    b.build_br(leaves, leave_args);
+                    b.position_at_end(cur);
+                    leaves = edge;
+                }
+                if (test != nullptr) {
+                    // Its tests leave one by one. A shape word read on the
+                    // plain-only path is the receiver's keyed shape where
+                    // the tests held, so the memo has it on the staying edge
+                    // only.
+                    Value* obj = pending_shape_obj_;
+                    const uint32_t recv = test->operands[0];
+                    Value* keyed = memo_lookup(recv);
+                    if (keyed == nullptr) {
+                        memo_leave_end_[block_id] = {inst_ast.else_target.block_id, memo_snapshot()};
+                        keyed = prop_lowering_.plain_shape_or_miss(b, obj, leaves, /*exits=*/true);
+                        memo_add(recv, keyed);
+                    }
+                    hit = test->op == BronzeOp::IsShape
+                              ? prop_lowering_.lower_is_shape(b, obj, keyed, StaticSlotSite::of(*test))
+                              : accessor_cell_hit(this, b, obj, test->static_cell, keyed);
+                }
+                spec_.site_branch(b, hit, stays, leaves, /*exits=*/true, stay_args);
+                break;
             }
+            b.build_br_if(cond, on_true, true_args, on_false, false_args);
             break;
         }
 

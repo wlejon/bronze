@@ -116,6 +116,7 @@ bool moves_no_shape(const BronzeInstruction& inst) {
 }  // namespace
 
 void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
+    guard_miss_ic_.clear();
     guard_missed_.clear();
     method_cell_guards_.clear();
     method_cells_filled_.clear();
@@ -154,6 +155,7 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
                               (site.op == BronzeOp::PropGet || site.op == BronzeOp::PropSet) &&
                               site.static_cell == guard.static_cell;
         if (method || accessor) guard_missed_.insert(&site);
+        if (accessor && site.ic_index != BronzeInstruction::kNoIcIndex) guard_miss_ic_.emplace(&guard, site.ic_index);
         if (method && guard.static_cell != 0) {
             method_cell_guards_.emplace(&site, &guard);
             method_cells_filled_.insert(&guard);
@@ -179,6 +181,8 @@ void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
     shape_memo_.clear();
     shape_memo_kept_ = false;
     shape_memo_at_end_.clear();
+    memo_leave_end_.clear();
+    pending_shape_test_ = nullptr;
     memo_preds_.clear();
     memo_spans_.clear();
     memo_handler_blocks_.clear();
@@ -209,24 +213,23 @@ void IlLowering::memo_begin_block(Builder& b, const BronzeBlock& blk, BasicBlock
     const auto pit = memo_preds_.find(blk.id);
     if (pit == memo_preds_.end()) return;
     if (pit->second.first == 1) {
-        const auto eit = shape_memo_at_end_.find(pit->second.second.front());
-        if (eit != shape_memo_at_end_.end()) shape_memo_ = eit->second;
+        if (const auto* end = memo_end_for(pit->second.second.front(), blk.id)) shape_memo_ = *end;
         return;
     }
-    memo_join(b, pit->second.second, bb);
+    memo_join(b, pit->second.second, bb, blk.id);
 }
 
-void IlLowering::memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb) {
+void IlLowering::memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb, uint32_t bb_id) {
     // Every predecessor lowered, with its MIR edges into the join found in
     // the blocks its own lowering made: a predecessor not lowered yet (a back
     // edge) or one whose edges are not all there to patch keeps the memo out.
     std::vector<const std::vector<std::pair<uint32_t, Value*>>*> ends;
     std::vector<std::vector<BranchTarget*>> edges;
     for (uint32_t pred : preds) {
-        const auto eit = shape_memo_at_end_.find(pred);
+        const auto* end = memo_end_for(pred, bb_id);
         const auto sit = memo_spans_.find(pred);
-        if (eit == shape_memo_at_end_.end() || sit == memo_spans_.end() || eit->second.empty()) return;
-        ends.push_back(&eit->second);
+        if (end == nullptr || sit == memo_spans_.end() || end->empty()) return;
+        ends.push_back(end);
         std::vector<BranchTarget*> into;
         for (BasicBlock* blk : sit->second) {
             Instruction* term = blk->terminator();
@@ -265,6 +268,35 @@ void IlLowering::memo_join(Builder& b, const std::vector<uint32_t>& preds, Basic
         }
         shape_memo_.emplace_back(id, param);
     }
+}
+
+const std::vector<std::pair<uint32_t, Value*>>* IlLowering::memo_end_for(uint32_t pred, uint32_t succ) const {
+    const auto lit = memo_leave_end_.find(pred);
+    if (lit != memo_leave_end_.end() && lit->second.first == succ) return &lit->second.second;
+    const auto eit = shape_memo_at_end_.find(pred);
+    return eit == shape_memo_at_end_.end() ? nullptr : &eit->second;
+}
+
+bool IlLowering::defer_shape_test(const BronzeInstruction& test, Value* obj) {
+    const BronzeInstruction* br = next_inst_;
+    if (!spec_.image_sites_here() || br == nullptr || br->op != BronzeOp::Branch || br->operands.empty() ||
+        br->operands[0] != test.result_id || br->target.block_id == br->else_target.block_id ||
+        br->guard_edge == BronzeInstruction::GuardEdge::Then) {
+        return false;
+    }
+    if (br->guard_edge != BronzeInstruction::GuardEdge::Else) {
+        // Not a fast copy's way out: only a guard whose miss is its own
+        // site, steady in the profile.
+        const auto site = guard_miss_ic_.find(&test);
+        if (site == guard_miss_ic_.end() || options_.mixed_ics.count(site->second) != 0) {
+            return false;
+        }
+    }
+    const auto uses = value_use_counts_.find(test.result_id);
+    if (uses == value_use_counts_.end() || uses->second != 1) return false;
+    pending_shape_test_ = &test;
+    pending_shape_obj_ = obj;
+    return true;
 }
 
 void IlLowering::memo_after_instruction(const BronzeInstruction& inst) {

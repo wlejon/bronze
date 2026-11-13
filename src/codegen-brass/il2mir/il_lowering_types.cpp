@@ -56,6 +56,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
       alloc_lowering_(options.enable_tlab) {
     spec_.set_feedback(options.spec_feedback.get());
+    spec_.set_image_sites(options.twin_exits);
     // An AOT lowering with a profile lays its sites out as the tiered
     // lowering does (every keyed site inline), minus what only an in-process
     // module can hold (a host address in the code).
@@ -65,6 +66,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr || spec_.has_profile());
     prop_lowering_.set_in_process(options.spec_feedback != nullptr);
     prop_lowering_.set_key_names(&options_.key_constants);
+    prop_lowering_.set_layout_cells(&options_.layout_cells);
     // The table addresses are shared, computed once at entry: the IC table,
     // and the static-slot sites' cell table and family-range table (each
     // site otherwise computed its realm-relative address afresh). A shared

@@ -387,6 +387,11 @@ bool lower_call_instruction(
             Value* recv = ensure_type(get_opd(0), Type::i64());
             if (!accessor_direct_here(lowering, inst_ast)) {
                 res_val = b.build_iconst_i32(0);
+            } else if (lowering->defer_shape_test(inst_ast, recv)) {
+                // Left to the branch behind it (il_lowering.h, "A SHAPE TEST
+                // THAT LEAVES").
+                res_val = b.build_iconst_i32(1);
+                lowering->memo_keep();
             } else {
                 res_val = accessor_cell_hit(lowering, b, recv, inst_ast.static_cell,
                                             lowering->memo_keyed(b, inst_ast.operands[0], recv));

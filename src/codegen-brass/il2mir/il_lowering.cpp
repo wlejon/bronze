@@ -28,15 +28,24 @@ bool verifyEachPassEnv() {
     return on;
 }
 
-// BRONZE_MIR_DUMP=<substr>: the MIR of every function whose name contains it,
-// as lowered ("before") and as the pass pipeline left it ("after"), on stderr.
-// A diagnostic, the backend's counterpart of BRONZE_FINAL_IL_DUMP.
+// BRONZE_MIR_DUMP=<substr>[,...]: the MIR of every function whose name
+// contains one of them, as lowered ("before") and as the pass pipeline left
+// it ("after"), on stderr. A diagnostic, the backend's counterpart of
+// BRONZE_FINAL_IL_DUMP.
 void dumpMir(const brass::Module& mod, const char* when) {
     static const char* const want = std::getenv("BRONZE_MIR_DUMP");
     if (want == nullptr || *want == 0) return;
+    const std::string_view all = want;
     for (const brass::Function* fn : mod.functions()) {
-        if (fn == nullptr || fn->name().find(want) == std::string_view::npos) continue;
-        std::fprintf(stderr, "; MIR %s the passes\n%s\n", when, brass::to_string(*fn).c_str());
+        if (fn == nullptr) continue;
+        bool hit = false;
+        for (size_t at = 0; at <= all.size() && !hit;) {
+            const size_t comma = std::min(all.find(',', at), all.size());
+            const std::string_view part = all.substr(at, comma - at);
+            hit = !part.empty() && fn->name().find(part) != std::string_view::npos;
+            at = comma + 1;
+        }
+        if (hit) std::fprintf(stderr, "; MIR %s the passes\n%s\n", when, brass::to_string(*fn).c_str());
     }
 }
 }  // namespace
@@ -620,7 +629,14 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     brass::lower_coroutines(*mod);
     ltimer.mark("coroutines");
 
-    // 5. Optionally optimize module
+    // 5. An image's guards exit into resume twins, built from the functions
+    // as lowered (il_speculation.h, "IMAGE SITES").
+    if (options_.twin_exits) {
+        make_resume_twins(*mod);
+        ltimer.mark("twins");
+    }
+
+    // 6. Optionally optimize module
     if (options_.enable_optimizations) {
         // A hook only when it verifies: with one, brass takes each run of
         // function-local passes a step at a time (all functions through one
@@ -687,7 +703,16 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // The entry's symbol differs between a JIT run and an AOT build; a
     // profile names it kSpecEntryName (il_spec_profile.h).
     const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
-    spec_.begin_function(true, is_entry ? std::string(kSpecEntryName) : fn_name);
+    // In an image a guard exits into the function's resume twin, a second
+    // copy of the function: only for the functions the profile calls hot,
+    // and never a coroutine body, which cannot have one.
+    bool takes_guards = true;
+    if (options_.twin_exits) {
+        const auto meta = options_.function_meta.find(fn_ast.name);
+        takes_guards = meta != options_.function_meta.end() && meta->second.hot && !fn_ast.is_coroutine_body() &&
+                       !fn_ast.is_toplevel;
+    }
+    spec_.begin_function(takes_guards, is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;
@@ -919,9 +944,11 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             }
             const auto& inst_ast = blk_ast.instructions[inst_idx];
             apply_inst_loc(b, inst_ast);
-            if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter)) {
-                return false;
-            }
+            next_inst_ = inst_idx + 1 < blk_ast.instructions.size() ? &blk_ast.instructions[inst_idx + 1] : nullptr;
+            const bool lowered =
+                lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter);
+            next_inst_ = nullptr;
+            if (!lowered) return false;
             settle_ta_cursors(mark, *fn);
             after_instruction_proofs(inst_ast);
             memo_after_instruction(inst_ast);

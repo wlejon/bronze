@@ -354,7 +354,16 @@ typedef struct bronze_code_range {
     /* The inline frames the pc table's entries name; null and 0 when none. */
     const bronze_inline_frame* inline_frames;
     uint32_t inline_frame_count;
+    uint32_t flags; /* BRONZE_CODE_RANGE_* */
 } bronze_code_range;
+
+/* The range is a function's resume twin (brass docs/speculation_and_deopt.md,
+ * section 7): its generic code, entered where a guard of the function's
+ * speculated code failed and finishing that activation. `desc` is the
+ * function's, and the frame under a twin's is the one the guard left: a stack
+ * walk reports the twin's position for the activation and, at its caller's,
+ * passes over that function and the calls compiled into it. */
+#define BRONZE_CODE_RANGE_TWIN 1u
 
 /*
  * The per-thread ABI data block: every mutable word generated code shares

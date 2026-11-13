@@ -652,6 +652,7 @@ bool lower_property_instruction(
                     StaticMiss miss;
                     miss.get = [&](Builder& b2) { return lower_prop_get_cached(lowering, inst_ast, b2, obj_val, site); };
                     miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                    miss.exits = lowering->claim_exits(inst_ast);
                     lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
                     return prop_lowering.lower_prop_get_static(bb, obj_val, inst_ast.index,
                                                                StaticSlotSite::of(inst_ast), miss);
@@ -744,6 +745,7 @@ bool lower_property_instruction(
                     StaticMiss miss;
                     miss.set = [&](Builder& b2) { lower_prop_set_cached(lowering, inst_ast, b2, obj_val, val, site); };
                     miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                    miss.exits = lowering->claim_exits(inst_ast);
                     lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
                     const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
                     const bool need_barrier = !val_prim && !prop_lowering.is_known_non_ref(val);

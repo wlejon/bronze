@@ -1,13 +1,19 @@
 #include "il_speculation.h"
+#include "il_abi.h"
 #include "il_ic_stub.h"
 #include "il_spec_profile.h"
 
 #include "abi/bronze_abi.h"
 
 #include <brass/mir/function.hpp>
+#include <brass/mir/loop_opt.hpp>
 #include <brass/mir/module.hpp>
+#include <brass/mir/resume_twin.hpp>
 
+#include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
+#include <unordered_map>
 
 namespace il2mir {
 
@@ -129,6 +135,122 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
                                   std::string_view tag, Value** counter_out) {
     if (profile_ && !sites_.has_feedback()) apply_profile(b, hit, slow, kind, tag);
     sites_.emit_branch(b, hit, fast, slow, static_cast<uint8_t>(kind), tag, counter_out);
+}
+
+void SpecSiteEmitter::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                                  const std::vector<Value*>& fast_args) {
+    const brass::Span<Value* const> args(fast_args.data(), fast_args.size());
+    if (exits && image_sites_here()) {
+        sites_.emit_image_site(b, hit, fast, slow, args);
+    } else {
+        b.build_br_if(hit, fast, args, slow, brass::Span<Value* const>());
+    }
+}
+
+namespace {
+
+// `probe`: fn's signature; counts the call in fn's entry cell and calls fn.
+// The kTwinProbeCalls'th call of a probe that is still the entry (fewer than
+// kTwinExitLimit exits since it began) makes fn the entry again.
+void make_probe_entry(Module& mod, const Function& fn, const std::string& probe, const std::string& cell) {
+    Function* out = mod.create_function(probe, fn.return_type(), fn.param_types());
+    Builder b(mod);
+    b.set_function(out);
+    BasicBlock* entry = b.append_block("entry");
+    std::vector<Value*> args;
+    for (Type t : fn.param_types()) args.push_back(b.add_block_param(entry, t));
+    b.position_at_end(entry);
+    Value* addr = b.build_func_addr(cell);
+    Value* zero = b.build_iconst_i64(0);
+    Value* n = b.build_add(b.build_load(Type::i64(), addr, kTwinCellCalls), b.build_iconst_i64(1));
+    Value* done = b.build_sge(n, b.build_iconst_i64(kTwinProbeCalls));
+    Value* cur = b.build_load(Type::ptr(), addr, kTwinCellEntry);
+    Value* trusted = b.build_and(done, b.build_eq(cur, b.build_func_addr(probe)));
+    b.build_store(Type::ptr(), addr, kTwinCellEntry, b.build_select(trusted, b.build_func_addr(fn.name()), cur));
+    b.build_store(Type::i64(), addr, kTwinCellCalls, b.build_select(done, zero, n));
+    b.build_store(Type::i64(), addr, kTwinCellExits,
+                  b.build_select(done, zero, b.build_load(Type::i64(), addr, kTwinCellExits)));
+    Value* r = b.build_call(fn.name(), fn.return_type(), brass::Span<Value* const>(args.data(), args.size()));
+    if (fn.return_type().is_void()) {
+        b.build_ret_void();
+    } else {
+        b.build_ret(r);
+    }
+    out->rebuild_cfg_predecessors();
+}
+
+} // namespace
+
+void make_resume_twins(Module& mod) {
+    // BRONZE_TWIN_TRACE=1: one line per function, its armed guards or why it
+    // has no twin.
+    static const bool trace = [] {
+        const char* v = std::getenv("BRONZE_TWIN_TRACE");
+        return v && v[0] == '1';
+    }();
+    std::vector<Function*> sited;
+    for (Function* fn : mod.functions()) {
+        // A coroutine body's resume points are its suspends; it has no sites.
+        if (fn && !fn->resume_points().empty() && !fn->has_coro_frame_layout()) sited.push_back(fn);
+    }
+    // Function -> its entry cell, for the calls below.
+    std::unordered_map<std::string_view, std::string_view> cells;
+    for (Function* fn : sited) {
+        std::string why;
+        const std::string name = brass::resume_twin_name(fn->name());
+        const std::string generic = std::string(fn->name()) + std::string(kTwinGenericSuffix);
+        const std::string cell = std::string(kTwinEntryCellPrefix) + std::string(fn->name());
+        const std::string probe = std::string(fn->name()) + std::string(kTwinProbeSuffix);
+        brass::ResumeTwinOptions options;
+        // An exit counts; the kTwinExitLimit'th moves the entry on (trusted
+        // to probing, probing to generic) and starts both counts again.
+        options.on_exit = [&](Builder& b, uint32_t) {
+            Value* addr = b.build_func_addr(cell);
+            Value* zero = b.build_iconst_i64(0);
+            Value* n = b.build_add(b.build_load(Type::i64(), addr, kTwinCellExits), b.build_iconst_i64(1));
+            Value* hit = b.build_sge(n, b.build_iconst_i64(kTwinExitLimit));
+            Value* entry = b.build_load(Type::ptr(), addr, kTwinCellEntry);
+            Value* next = b.build_select(b.build_eq(entry, b.build_func_addr(fn->name())), b.build_func_addr(probe),
+                                         b.build_func_addr(generic));
+            b.build_store(Type::ptr(), addr, kTwinCellEntry, b.build_select(hit, next, entry));
+            b.build_store(Type::i64(), addr, kTwinCellExits, b.build_select(hit, zero, n));
+            b.build_store(Type::i64(), addr, kTwinCellCalls,
+                          b.build_select(hit, zero, b.build_load(Type::i64(), addr, kTwinCellCalls)));
+        };
+        const Function* twin = brass::build_resume_twin(*fn, mod, name, options, &why);
+        if (!twin) {
+            brass::drop_image_sites(*fn);
+            if (trace) std::fprintf(stderr, "twin: %s none: %s\n", std::string(fn->name()).c_str(), why.c_str());
+            continue;
+        }
+        // The generic entry is the function as lowered, each site a branch.
+        // The twin entered at the function's entry (brass build_twin_entry)
+        // would save this copy, but every resume block there is also reached
+        // from the twin's dispatch, so nothing the function established
+        // before a site is known behind it: pixi_text ran 38.96M
+        // instructions a frame that way against 36.35M with no twins.
+        brass::drop_image_sites(*brass::clone_function(*fn, mod, generic));
+        make_probe_entry(mod, *fn, probe, cell);
+        mod.add_symbol_role(cell, brass::SymbolRole::Data);
+        cells.emplace(fn->name(), mod.string_pool().intern(cell));
+        const uint32_t armed = brass::arm_image_sites(*fn);
+        if (!brass::speculate_against_twin(*fn, *twin, &why)) {
+            throw std::logic_error("il2mir: " + std::string(fn->name()) + " against its resume twin: " + why);
+        }
+        if (trace) std::fprintf(stderr, "twin: %s armed %u\n", std::string(fn->name()).c_str(), armed);
+    }
+    if (cells.empty()) return;
+    for (Function* fn : mod.functions()) {
+        // A probe calls its function itself.
+        if (!fn || fn->name().ends_with(kTwinProbeSuffix)) continue;
+        for (BasicBlock* bb : fn->blocks()) {
+            if (!bb) continue;
+            for (Instruction* inst : *bb) {
+                if (!inst || (inst->opcode() != Opcode::call && inst->opcode() != Opcode::invoke)) continue;
+                if (const auto it = cells.find(inst->symbol()); it != cells.end()) inst->set_extra_symbol(it->second);
+            }
+        }
+    }
 }
 
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {

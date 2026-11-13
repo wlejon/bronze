@@ -374,6 +374,18 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.spec_feedback = specFeedback_;
     options.spec_profile = specProfile_;
     options.direct_js_calls = directJsCalls_;
+    // Guards that exit into resume twins: x64's backend only, in an image, and
+    // only on a profile, whose missed claims say which sites not to trust.
+    options.twin_exits = directJsCalls_ && optimize && target_.is_x64() && module.feedbackApplied;
+    for (const auto& lc : module.layoutCells) {
+        il2mir::LayoutCell& cell = options.layout_cells[lc.cell];
+        cell.key_count = lc.keyCount;
+        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write});
+    }
+    if (options.twin_exits) {
+        options.missed_claim_ics = module.missedClaimIcs;
+        options.mixed_ics = module.mixedIcs;
+    }
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
     // (brass_backend_sections.cpp) is laid out to exactly this count, so brass
@@ -383,9 +395,14 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();
     options.method_ic_sites = methodIcSites;
 
+    std::vector<bool> hot(module.functions.size(), false);
+    for (uint32_t f : module.hotFunctions) {
+        if (f < hot.size()) hot[f] = true;
+    }
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
         il2mir::FunctionMeta meta;
+        meta.hot = hot[i];
         meta.needs_env = fn.needsEnv;
         meta.needs_this = fn.needsThis;
         meta.needs_arguments = fn.needsArguments;

@@ -115,6 +115,9 @@ struct StaticMiss {
     // that read it hands it to the memo (before any memo hook is read).
     Value* family = nullptr;
     std::function<void(Value*)> memo_family;
+    // The site's miss leaves the function (il_speculation.h, "IMAGE SITES"):
+    // its claim is one the profile did not see miss.
+    bool exits = false;
 };
 
 // The shape memo (il_shape_memo.cpp) carried across an inline-cache read
@@ -172,6 +175,9 @@ public:
         family_base_sym_ = std::move(family_sym);
         family_count_ = family_count;
     }
+    // The layout cells (TranslatorOptions::layout_cells): a site whose cell
+    // is one publishes through emit_static_fill's layout form.
+    void set_layout_cells(const std::unordered_map<uint32_t, LayoutCell>* cells) { layout_cells_ = cells; }
     // Whether this module has the table `site`'s guard reads. A site it has
     // none for is a lowering bug the caller diagnoses, never a quiet skip.
     [[nodiscard]] bool static_site_backed(const StaticSlotSite& site) const noexcept {
@@ -206,8 +212,11 @@ public:
     // A receiver's shape word, reached only when it is a plain object: the
     // object test and the plain-header test as two branches to `miss`, the
     // builder left in the block where both held. What a guard with no keyed
-    // shape in hand (no memo entry) asks instead of keyed_shape.
-    Value* plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss);
+    // shape in hand (no memo entry) asks instead of keyed_shape. With
+    // `exits` the two tests are image sites whose generic code is `miss`.
+    Value* plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss, bool exits = false);
+    // SpecSiteEmitter::site_branch, for the sites lowered here.
+    void site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits);
     // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
     // else the stand-in shape (not_plain_shape). One i64 that answers
     // "plain, and of shape S" with one compare against S, for every S a guard
@@ -612,6 +621,7 @@ private:
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
     std::unordered_map<uint32_t, uint32_t> method_rank_;
+    const std::unordered_map<uint32_t, LayoutCell>* layout_cells_ = nullptr;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
     std::string family_base_sym_;

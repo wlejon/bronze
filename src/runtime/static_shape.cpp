@@ -163,6 +163,51 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
     Shape::watch(shape);
 }
 
+// A LAYOUT CELL (il.h `Module::layoutCells`): one cell for the claims of
+// every site a profile saw at one shape, `triples` holding each as (runtime
+// key, slot, stored-to). The shape is published only when every claim holds
+// of it, each under exactly the conditions above, so one compare against the
+// cell admits every member's bare access; and only when it has `keyCount`
+// keys, the count of the shape the build named, so that an object still
+// being built, whose shape holds the listed keys and not yet the rest, is not
+// the one the cell keeps. A receiver the list does not describe is not
+// refused until kLayoutRetries have come: an object of the named shape may
+// still.
+void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uint32_t n, uint32_t keyCount,
+                                  uint64_t* cell) {
+    recordHelperCall("bronze_static_layout_publish");
+    if (censusFillsSuppressed()) return;
+    if (cell == nullptr || *cell != 0 || triples == nullptr) return;
+    constexpr uint32_t kLayoutRetries = 4096;
+    const auto refuse = [&] {
+        thread_local std::unordered_map<const uint64_t*, uint32_t> tries;
+        if (++tries[cell] >= kLayoutRetries) *cell = kRefused;
+    };
+    Value objVal(objBits);
+    if (!objVal.isObject()) return refuse();
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Plain) return refuse();
+    auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+    Shape* shape = obj->shape;
+    if (shape == nullptr || shape->isDictionary()) return refuse();
+    // One node a key, as the recorder names a shape (type_feedback.cpp).
+    uint32_t keys = 0;
+    for (const Shape* node = shape; node != nullptr && node->parent != nullptr; node = node->parent) ++keys;
+    if (keys != keyCount) return refuse();
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t keyIndex = triples[3 * i], slot = triples[3 * i + 1];
+        const bool forWrite = triples[3 * i + 2] != 0;
+        StringHeader* key = rtKeyHeader(keyIndex);
+        PropertyInfo info;
+        const bool found = key != nullptr && shape->lookupProperty(PropertyKey::forString(key), info);
+        if (!found || info.accessor || info.slot != slot || (forWrite && (!info.writable || shape->used_as_prototype))) {
+            return refuse();
+        }
+    }
+    *cell = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
+    Shape::watch(shape);
+}
+
 }  // extern "C"
 
 }  // namespace bronze::runtime

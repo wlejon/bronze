@@ -51,6 +51,16 @@ brass::object::FunctionPlacement functionPlacement(const il::Module& module,
         out.cold.push_back(symbolOf(f));
         out.cold.push_back("__wrapper_" + uniqueNames[f]);
     }
+    // A hot function's resume twin (il2mir make_resume_twins), where it has
+    // one: entered only when a guard of the function failed, so it goes
+    // behind everything, out of the hot text's pages, with the generic entry
+    // and the probe that stand in for a function whose guards fail.
+    for (uint32_t f : module.hotFunctions) {
+        if (f >= uniqueNames.size()) continue;
+        out.cold.push_back(symbolOf(f) + "__twin");
+        out.cold.push_back(symbolOf(f) + "__generic");
+        out.cold.push_back(symbolOf(f) + "__probe");
+    }
     return out;
 }
 

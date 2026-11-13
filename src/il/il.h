@@ -5,6 +5,7 @@
 #include <deque>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -748,6 +749,27 @@ struct Module {
         std::vector<ClassFamilyField> fields;
     };
     std::vector<ClassFamilyEntry> classFamilies;
+    // LAYOUT CELLS (opt/spec/feedback_plan.h, `applyFeedbackLayoutCells`): a
+    // static cell that stands for one whole shape the recorded run saw, by
+    // name (prototype and key list), and that every claimed site of a hot
+    // function which met only that shape asks instead of a cell or a family
+    // range of its own. Two sites on one receiver then make the same compare,
+    // and the backend's passes drop the second. The runtime publishes a
+    // shape into the cell only when it has `keyCount` keys and carries every
+    // listed key as an own data property at its slot (writable, and no
+    // prototype's shape, where a member stores): what each member's own
+    // publish checked for its one key (runtime/static_shape.cpp).
+    struct LayoutCellEntry {
+        struct Pair {
+            uint32_t keyIndex = 0;  // into `keyConstants`
+            uint32_t slot = 0;
+            bool write = false;
+        };
+        uint32_t cell = 0;  // a `staticCellIndex`
+        uint32_t keyCount = 0;
+        std::vector<Pair> pairs;
+    };
+    std::vector<LayoutCellEntry> layoutCells;
     // THE SLOT-REPRESENTATION ELIGIBILITY LIST (stage R1,
     // src/runtime/slot_repr.h): indices into `keyConstants` naming the property
     // names a `--pins` manifest declared `number` on some class this
@@ -791,6 +813,18 @@ struct Module {
     uint64_t icLayoutDigest = 0;
     bool feedbackApplied = false;
     std::string harvestOutPath;
+    // With `feedbackApplied`: the inline-cache indices of the claimed
+    // property sites the profile saw miss (spec::applyFeedbackClaimsAndHints).
+    // An image's lowering trusts every other claim enough to leave the
+    // function on its miss (il2mir/il_speculation.h, "IMAGE SITES"). Not
+    // serialized: it is read by the build that made it.
+    std::unordered_set<uint32_t> missedClaimIcs;
+    // With `feedbackApplied`: the inline-cache indices of the property and
+    // method sites whose harvested cache held more than one receiver shape or
+    // callee. A guard that asks one cell about such a site (an inlined
+    // accessor's or method's) keeps its miss in line in an image; any other
+    // may leave the function. Not serialized either.
+    std::unordered_set<uint32_t> mixedIcs;
     // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
     // `functions` the backend lays out first in its text, in this order, and
     // last. Only where code sits, never what it is.

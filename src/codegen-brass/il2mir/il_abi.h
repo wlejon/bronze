@@ -10,6 +10,7 @@
 #include <brass/mir/instruction.hpp>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace brass {
 class Module;
@@ -44,8 +45,18 @@ constexpr uint8_t kTypedElementAliasClass = 3;
 // An object's property slot, inline or in its overflow block, and a static
 // slot cell.
 constexpr uint8_t kObjectSlotAliasClass = 4;
-// An object's header words: its shape and its overflow-block pointer.
+// An object's header words: its kind word, its shape and its overflow-block
+// pointer. Compiled code writes the last two in a transition (stores of this
+// class) and the first only into an object it has just allocated (class 0).
 constexpr uint8_t kShapeWordAliasClass = 5;
+// A word only the runtime writes, so only a call changes it and only loads
+// carry the class: a shape's family stamp and double-slot map, a module's
+// family base and static cells, the thread's layout epoch. With these and the
+// two classes above on a static guard's loads, a store into a slot (or a
+// typed-array element) between two sites does not make brass read the
+// receiver's shape, the cell and the stamp again, and the second guard of a
+// claim on one receiver is the first one's condition.
+constexpr uint8_t kRuntimeWordAliasClass = 6;
 
 // Marks the access `v` (a load's result) or `inst` (a store) with `cls`.
 inline brass::Value* with_alias_class(brass::Value* v, uint8_t cls) {
@@ -129,5 +140,17 @@ void register_all_module_external_symbols(brass::Module* mod, const std::string&
 // bronze_code_range), as the object emitter names them for `entry_symbol`.
 std::string code_ranges_symbol(const std::string& entry_symbol);
 std::string code_range_count_symbol(const std::string& entry_symbol);
+
+// A twinned function `f`'s generic entry `f__generic`, its probe `f__probe`
+// and its entry cell `__bronze_twin_entry_f` (il_speculation.h, "FAILURE
+// POLICY"), which the backend defines in the image's shared data: the
+// address f's direct calls call, f's exits and a probe's calls.
+inline constexpr std::string_view kTwinGenericSuffix = "__generic";
+inline constexpr std::string_view kTwinProbeSuffix = "__probe";
+inline constexpr std::string_view kTwinEntryCellPrefix = "__bronze_twin_entry_";
+inline constexpr int32_t kTwinCellEntry = 0;
+inline constexpr int32_t kTwinCellExits = 8;
+inline constexpr int32_t kTwinCellCalls = 16;
+inline constexpr size_t kTwinCellBytes = 24;
 
 } // namespace il2mir
