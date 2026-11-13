@@ -175,6 +175,9 @@ public:
         family_base_sym_ = std::move(family_sym);
         family_count_ = family_count;
     }
+    // The layout cells (TranslatorOptions::layout_cells): a site whose cell
+    // is one publishes through emit_static_fill's layout form.
+    void set_layout_cells(const std::unordered_map<uint32_t, LayoutCell>* cells) { layout_cells_ = cells; }
     // Whether this module has the table `site`'s guard reads. A site it has
     // none for is a lowering bug the caller diagnoses, never a quiet skip.
     [[nodiscard]] bool static_site_backed(const StaticSlotSite& site) const noexcept {
@@ -618,6 +621,7 @@ private:
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
     std::unordered_map<uint32_t, uint32_t> method_rank_;
+    const std::unordered_map<uint32_t, LayoutCell>* layout_cells_ = nullptr;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
     std::string family_base_sym_;

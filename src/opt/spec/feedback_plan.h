@@ -214,6 +214,18 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats,
                                  std::unordered_set<uint32_t>* missedClaims = nullptr);
 
+// LAYOUT CELLS (il.h `Module::layoutCells`), for the functions `hot` marks
+// (by function index): after the guarded regions, every claim on a receiver
+// whose property sites all met one and the same shape in the run, and none of
+// which the run saw miss, asks that shape's layout cell: the property sites,
+// bare or not, and the `is.shape` tests in front of them. The claims they had
+// (an identity cell a site, or a family range) said the same of the receiver
+// with as many different compares. A receiver some site of which met a second
+// shape keeps its claims: a family range admits the subclasses a layout cell
+// would refuse. Returns the number of sites and tests rewritten.
+uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, const std::vector<uint8_t>& hot,
+                                  const std::unordered_set<uint32_t>& missedClaims);
+
 // Layout families read off the profile, for the classes whose construction
 // the compiler could not model (a constructor that copies an options object,
 // mixins): where a property site met several shapes that all begin with the

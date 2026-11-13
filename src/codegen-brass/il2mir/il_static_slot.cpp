@@ -69,6 +69,18 @@ void merge_memo(Builder& b, BasicBlock* merge, size_t n, const StaticMiss& miss)
     miss.memo_merged(params);
 }
 
+// A static guard's loads, each under the alias class of the word it reads
+// (il_abi.h), so that a slot store between two sites clobbers none of them.
+Value* header_word(Builder& b, Value* ptr) {
+    return with_alias_class(b.build_load(Type::i32(), ptr, 0), kShapeWordAliasClass);
+}
+Value* shape_word_of(Builder& b, Value* ptr) {
+    return with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), kShapeWordAliasClass);
+}
+Value* runtime_word(Builder& b, Value* base, int32_t off) {
+    return with_alias_class(b.build_load(Type::i64(), base, off), kRuntimeWordAliasClass);
+}
+
 Value* iconst(Builder& b, uint64_t v) {
     return b.build_iconst_i64(static_cast<int64_t>(v));
 }
@@ -137,8 +149,8 @@ Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
     b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, bb_other);
     b.position_at_end(bb_obj);
     constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-    Value* plain = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader));
-    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    Value* plain = b.build_eq(header_word(b, ptr), b.build_iconst_i32(kPlainHeader));
+    Value* shape = shape_word_of(b, ptr);
     b.build_br_if(plain, bb_join, {shape}, bb_other, {});
     b.position_at_end(bb_other);
     b.build_br(bb_join, {not_plain_shape(b)});
@@ -174,15 +186,15 @@ Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, Basic
     site_branch(b, b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, miss, exits);
     b.position_at_end(bb_obj);
     constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-    site_branch(b, b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), bb_plain, miss,
+    site_branch(b, b.build_eq(header_word(b, ptr), b.build_iconst_i32(kPlainHeader)), bb_plain, miss,
                 exits);
     b.position_at_end(bb_plain);
-    return b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    return shape_word_of(b, ptr);
 }
 
 Value* PropertyLoweringHelper::family_id(Builder& b, Value* keyed) {
     Value* family_base = data_addr(b, family_base_sym_);
-    return b.build_sub(b.build_load(Type::i64(), keyed, kFamilyOffset), b.build_load(Type::i64(), family_base, 0));
+    return b.build_sub(runtime_word(b, keyed, kFamilyOffset), runtime_word(b, family_base, 0));
 }
 
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
@@ -201,7 +213,7 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
     // (not_plain_shape), whose stamp no family range admits and whose every
     // slot is boxed. So no term needs plainness ANDed in, and every term is
     // one more `and` before the guard's single branch.
-    auto shape_word = [&](int32_t off) { return b.build_load(Type::i64(), keyed, off); };
+    auto shape_word = [&](int32_t off) { return runtime_word(b, keyed, off); };
     Value* fid = family_id_io ? *family_id_io : nullptr;
     Value* doubles = nullptr;
     std::vector<std::pair<uint32_t, uint32_t>> ranges;
@@ -230,7 +242,7 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
         } else if (std::find(cells_asked.begin(), cells_asked.end(), site.cell) == cells_asked.end()) {
             cells_asked.push_back(site.cell);
             if (!cells) cells = data_addr(b, static_cells_sym_);
-            Value* want = b.build_load(Type::i64(), cells, static_cast<int32_t>(site.cell * sizeof(uint64_t)));
+            Value* want = runtime_word(b, cells, static_cast<int32_t>(site.cell * sizeof(uint64_t)));
             all(b.build_eq(keyed, want));
         }
         // A store asks what the shape says the slot's eight bytes ARE. A slot
@@ -262,7 +274,8 @@ Value* PropertyLoweringHelper::static_slot_base(Builder& b, Value* ptr, uint32_t
         return ptr;
     }
     off = static_cast<int32_t>(kBronzeHdrBytes + (slot - kBronzeObjOverflowSlot) * 8);
-    return b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset), iconst(b, kPayloadMask));
+    return b.build_and(with_alias_class(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset), kShapeWordAliasClass),
+                       iconst(b, kPayloadMask));
 }
 
 void PropertyLoweringHelper::store_with_barrier(Builder& b, Value* base, int32_t off, Value* val, bool need_barrier,
@@ -373,9 +386,29 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
             b.build_br_if(b.build_eq(cell, iconst(b, 0)), bb_call, bb_cont);
         }
         b.position_at_end(bb_call);
-        b.build_call("bronze_static_shape_publish", Type::void_type(),
-                     {obj, runtime_key(b, key_index), b.build_add(cells, b.build_iconst_i64(off)),
-                      b.build_iconst_i32(static_cast<int32_t>(site.slot)), b.build_iconst_i32(for_write ? 1 : 0)});
+        const auto layout = layout_cells_ ? layout_cells_->find(site.cell) : decltype(layout_cells_->end()){};
+        if (layout_cells_ && layout != layout_cells_->end()) {
+            // A LAYOUT CELL (il.h `Module::layoutCells`) stands for every
+            // member's claim: the whole list goes, three u32 a member (its
+            // key as the runtime knows it, its slot, stored-to), on the
+            // stack.
+            const std::vector<LayoutCell::Pair>& pairs = layout->second.pairs;
+            Value* list = b.build_alloca(static_cast<uint32_t>(pairs.size() * 12), 4);
+            for (size_t i = 0; i < pairs.size(); ++i) {
+                const int32_t at = static_cast<int32_t>(i * 12);
+                b.build_store(Type::i32(), list, at, runtime_key(b, pairs[i].key));
+                b.build_store(Type::i32(), list, at + 4, b.build_iconst_i32(static_cast<int32_t>(pairs[i].slot)));
+                b.build_store(Type::i32(), list, at + 8, b.build_iconst_i32(pairs[i].write ? 1 : 0));
+            }
+            b.build_call("bronze_static_layout_publish", Type::void_type(),
+                         {obj, list, b.build_iconst_i32(static_cast<int32_t>(pairs.size())),
+                          b.build_iconst_i32(static_cast<int32_t>(layout->second.key_count)),
+                          b.build_add(cells, b.build_iconst_i64(off))});
+        } else {
+            b.build_call("bronze_static_shape_publish", Type::void_type(),
+                         {obj, runtime_key(b, key_index), b.build_add(cells, b.build_iconst_i64(off)),
+                          b.build_iconst_i32(static_cast<int32_t>(site.slot)), b.build_iconst_i32(for_write ? 1 : 0)});
+        }
     }
     b.build_br(bb_cont);
     bb_call->set_cold();
@@ -422,7 +455,7 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     // being an own data property of this shape at exactly this slot, so the
     // eight bytes are what [[Get]] answers. A double slot's word is the
     // number's box.
-    std::vector<Value*> hit_args{b.build_load(Type::i64(), base, off)};
+    std::vector<Value*> hit_args{with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass)};
     append_memo(hit_args, miss.memo_hit, b);
     b.build_br(bb_merge, hit_args);
 
@@ -480,7 +513,7 @@ Value* PropertyLoweringHelper::lower_prop_get_guarded(Builder& b, Value* obj, co
     Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
     int32_t off = 0;
     Value* base = static_slot_base(b, ptr, site.slot, off);
-    return b.build_load(Type::i64(), base, off);
+    return with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass);
 }
 
 void PropertyLoweringHelper::lower_prop_set_guarded(Builder& b, Value* obj, Value* val, const StaticSlotSite& site) {
@@ -511,7 +544,7 @@ Value* load_layout_epoch(Builder& b) {
     Module* mod = b.current_block()->parent()->parent();
     Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
                                                      : b.build_call("bronze_tls_block_addr", Type::i64(), {});
-    return b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+    return runtime_word(b, tls, BRONZE_TLS_PROTO_EPOCH_OFF);
 }
 
 bool has_layout_fact(const BronzeInstruction& inst_ast) {

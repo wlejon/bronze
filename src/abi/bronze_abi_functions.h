@@ -222,6 +222,10 @@
     X(bronze_prop_get_counted,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_MU32)) \
     X(bronze_prop_set_counted,    BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64, BRONZE_ABI_BOOL, BRONZE_ABI_MU32)) \
     X(bronze_static_shape_publish,BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
+    /* A LAYOUT CELL's publish (runtime/static_shape.cpp): the receiver, `n`\
+     * triples of u32 (runtime key, slot, stored-to), the shape's key count\
+     * and the cell. */\
+    X(bronze_static_layout_publish,BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     /* A TRANSITION RUN's publish (runtime/transition_run.cpp): after the\
      * run's slow copy, the receiver, the shape it had when the run began,\
      * the run's BRONZE_ABI_TRANSITION_RUN_CELLS cells, its runtime key ids\

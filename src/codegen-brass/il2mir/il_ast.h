@@ -305,6 +305,18 @@ struct BronzeInstruction {
     uint32_t inline_frame = 0;
 };
 
+// A layout cell (il::Module::LayoutCellEntry): the shape's key count and the
+// (key, slot, stored-to) list its publish checks.
+struct LayoutCell {
+    struct Pair {
+        uint32_t key = 0;
+        uint32_t slot = 0;
+        bool write = false;
+    };
+    uint32_t key_count = 0;
+    std::vector<Pair> pairs;
+};
+
 struct BronzeBlock {
     uint32_t id = 0;
     std::vector<std::pair<uint32_t, BronzeType>> params;

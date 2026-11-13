@@ -231,7 +231,8 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         int32_t off = 0;
         Value* base = prop_lowering_.static_slot_base(b, ptr, inst.static_slot, off);
         if (inst.op == BronzeOp::PropGet) {
-            set_inst_result(inst.result_id, b.build_load(Type::i64(), base, off), b, fast_map);
+            set_inst_result(inst.result_id, with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass), b,
+                            fast_map);
             continue;
         }
         const uint32_t val_id = inst.operands[1];

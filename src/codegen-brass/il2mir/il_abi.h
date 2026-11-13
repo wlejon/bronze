@@ -45,8 +45,18 @@ constexpr uint8_t kTypedElementAliasClass = 3;
 // An object's property slot, inline or in its overflow block, and a static
 // slot cell.
 constexpr uint8_t kObjectSlotAliasClass = 4;
-// An object's header words: its shape and its overflow-block pointer.
+// An object's header words: its kind word, its shape and its overflow-block
+// pointer. Compiled code writes the last two in a transition (stores of this
+// class) and the first only into an object it has just allocated (class 0).
 constexpr uint8_t kShapeWordAliasClass = 5;
+// A word only the runtime writes, so only a call changes it and only loads
+// carry the class: a shape's family stamp and double-slot map, a module's
+// family base and static cells, the thread's layout epoch. With these and the
+// two classes above on a static guard's loads, a store into a slot (or a
+// typed-array element) between two sites does not make brass read the
+// receiver's shape, the cell and the stamp again, and the second guard of a
+// claim on one receiver is the first one's condition.
+constexpr uint8_t kRuntimeWordAliasClass = 6;
 
 // Marks the access `v` (a load's result) or `inst` (a store) with `cls`.
 inline brass::Value* with_alias_class(brass::Value* v, uint8_t cls) {

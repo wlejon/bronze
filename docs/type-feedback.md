@@ -237,6 +237,15 @@ the plan where each claim has to be made:
   claimed family range. The region pass gives every other claimed site of a
   re-entered loop a shape test that leaves the fast copy
   (`src/lower/guard_region.h`, "SHAPE GUARDS"), and leaves these in line.
+- **A2, layout cells** (in `finalPasses`, after the regions and before
+  `foldGuardedLoads`; `applyFeedbackLayoutCells`): in a function the samples
+  call hot, the claimed sites and `is.shape` tests on one receiver under one
+  claim whose profiles all hold the same single shape, with its whole key
+  list, move to that shape's layout cell (`il::Module::layoutCells`, one per
+  shape name), which the runtime publishes for the listed (key, slot, written)
+  pairs together. A site that is a missed claim, a shape variant, a direct
+  target, a define or a regrow keeps its claim, and so does a group one of
+  whose sites does. Report line `feedback-layout`.
 - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
   `bronze il`). The backend then lays the Number test first and moves the

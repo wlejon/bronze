@@ -377,6 +377,11 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // Guards that exit into resume twins: x64's backend only, in an image, and
     // only on a profile, whose missed claims say which sites not to trust.
     options.twin_exits = directJsCalls_ && optimize && target_.is_x64() && module.feedbackApplied;
+    for (const auto& lc : module.layoutCells) {
+        il2mir::LayoutCell& cell = options.layout_cells[lc.cell];
+        cell.key_count = lc.keyCount;
+        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write});
+    }
     if (options.twin_exits) {
         options.missed_claim_ics = module.missedClaimIcs;
         options.mixed_ics = module.mixedIcs;

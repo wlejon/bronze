@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <map>
 #include <set>
+#include <tuple>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -796,6 +798,108 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
             }
         }
     }
+}
+
+uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, const std::vector<uint8_t>& hot,
+                                  const std::unordered_set<uint32_t>& missedClaims) {
+    // By shape name: its entry in `mod.layoutCells`.
+    std::unordered_map<std::string, size_t> cellOf;
+    // The one shape a claimed site met, with the site's key at its slot; null
+    // for a site that met none, several, or one its claim does not describe.
+    const auto soleShape = [&](const il::Instruction& inst) -> const std::string* {
+        if (inst.keyIndex >= mod.keyConstants.size() || missedClaims.count(inst.icIndex) != 0 ||
+            plan.shapeVariantIcs.count(inst.icIndex) != 0) {
+            return nullptr;
+        }
+        const auto it = plan.shapesByIc.find(inst.icIndex);
+        if (it == plan.shapesByIc.end()) return nullptr;
+        const std::string* sole = nullptr;
+        for (const auto& [name, count] : it->second.counts) {
+            if (count == 0) continue;
+            if (sole != nullptr || name == "*other*") return nullptr;
+            sole = &name;
+        }
+        if (sole == nullptr) return nullptr;
+        std::vector<std::string_view> keys;
+        bool complete = false;
+        uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+        if (!shapeKeys(*sole, keys, complete, &inlineSlots) || !complete) return nullptr;
+        const std::string& key = mod.keyConstants[inst.keyIndex];
+        for (uint32_t i = 0; i < keys.size(); ++i) {
+            if (keys[i] != key) continue;
+            const uint32_t slot = i >= inlineSlots ? BRONZE_ABI_OBJ_OVERFLOW_SLOT + (i - inlineSlots) : i;
+            return slot == inst.staticSlot ? sole : nullptr;
+        }
+        return nullptr;
+    };
+    uint32_t rewritten = 0;
+    for (size_t f = 0; f < mod.functions.size(); ++f) {
+        il::Function& fn = mod.functions[f];
+        if (f >= hot.size() || hot[f] == 0 || fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
+        // One group per (receiver, claim): its sites, its tests, and the
+        // shape they agree on (null once two disagree or one names none).
+        struct Group {
+            std::vector<il::Instruction*> sites;
+            std::vector<il::Instruction*> tests;
+            const std::string* shape = nullptr;
+            bool refused = false;
+        };
+        std::map<std::tuple<il::ValueId, uint32_t, uint32_t, uint32_t>, Group> groups;
+        for (il::Block& block : fn.blocks) {
+            for (il::Instruction& inst : block.instructions) {
+                const bool site = (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                                  inst.staticSlot != il::Instruction::kNoStaticSlot;
+                if ((!site && inst.op != il::Op::IsShape) || inst.operands.empty()) continue;
+                const bool family = inst.familyLo != il::Instruction::kNoFamily;
+                Group& g = groups[{inst.operands[0], family ? 0 : inst.staticCellIndex, inst.familyLo,
+                                   family ? inst.familySpan : 0}];
+                if (!site) {
+                    g.tests.push_back(&inst);
+                    continue;
+                }
+                g.sites.push_back(&inst);
+                const std::string* shape = inst.directTarget == il::Instruction::kNoDirectTarget &&
+                                                   !il::isDefineWrite(inst) && !inst.staticRegrow
+                                               ? soleShape(inst)
+                                               : nullptr;
+                if (shape == nullptr || (g.shape != nullptr && *g.shape != *shape)) g.refused = true;
+                if (g.shape == nullptr) g.shape = shape;
+            }
+        }
+        for (auto& [key, g] : groups) {
+            if (g.refused || g.shape == nullptr || g.sites.empty()) continue;
+            auto [it, fresh] = cellOf.try_emplace(*g.shape, mod.layoutCells.size());
+            if (fresh) {
+                std::vector<std::string_view> keys;
+                bool complete = false;
+                shapeKeys(*g.shape, keys, complete);
+                il::Module::LayoutCellEntry entry;
+                entry.cell = mod.staticSiteCount++;
+                entry.keyCount = static_cast<uint32_t>(keys.size());
+                mod.layoutCells.push_back(std::move(entry));
+            }
+            il::Module::LayoutCellEntry& entry = mod.layoutCells[it->second];
+            for (il::Instruction* inst : g.sites) {
+                const bool write = inst->op == il::Op::PropSet;
+                auto pair = std::find_if(entry.pairs.begin(), entry.pairs.end(),
+                                         [&](const auto& p) { return p.keyIndex == inst->keyIndex; });
+                if (pair == entry.pairs.end()) {
+                    entry.pairs.push_back({inst->keyIndex, inst->staticSlot, write});
+                } else {
+                    pair->write = pair->write || write;
+                }
+            }
+            for (std::vector<il::Instruction*>* list : {&g.sites, &g.tests}) {
+                for (il::Instruction* inst : *list) {
+                    inst->staticCellIndex = entry.cell;
+                    inst->familyLo = il::Instruction::kNoFamily;
+                    inst->familySpan = 0;
+                    ++rewritten;
+                }
+            }
+        }
+    }
+    return rewritten;
 }
 
 }  // namespace bronze::spec

@@ -245,27 +245,61 @@ it. With the copy pixi_text is at 36.28M and pixi_sprites unchanged at 24.27M.
 (built on a one-way harvest: samples in `total__probe`, `total__generic` and
 `total__twin`). A function given up is never tried again.
 
-**Open, and why twins are not a gain yet.** Twins on / off on one tree:
-pixi_sprites 24.27M / 24.29M, three_skinned 42.55M / 42.51M, three_meshes
-59.15M / 59.13M, pixi_text 36.28M / 36.35M.
+**One cell per shape** (`opt/spec/feedback_plan.h`
+`applyFeedbackLayoutCells`, `il::Module::layoutCells`). An identity claim had
+one cell per site, so `Container.updateLocalTransform` compared one receiver's
+shape word against ten cells that hold the same shape only at run time, and no
+pass could know it. In a hot function, the claimed sites and `is.shape` tests
+on one receiver that the harvest saw with one shape only, the same at every
+one of them, now ask that shape's LAYOUT CELL: one cell per shape name for the
+whole module, with the list of (key, slot, written) pairs its sites rely on.
+The runtime publishes it (`bronze_static_layout_publish`,
+`runtime/static_shape.cpp`) from the first object that has all of them: a
+plain non-dictionary object with the shape's key count, every listed key an
+own data property at its slot, writable and not a prototype's where a site
+stores. So the cell stands for every pair whatever the run's shapes are, and a
+run whose objects differ from the harvest's only misses (an exit, counted by
+the failure policy). A receiver the harvest saw with two shapes (108 sites in
+pixi_sprites see `Container` and `Sprite`) keeps its family claims.
+`tests/oracle/cases/layout_cell_shapes.js` sends ten other layouts through
+such sites, first and in between. pixi_sprites 24.27M to 23.50M, pixi_text
+36.28M to 36.08M, three_skinned 42.48M to 42.33M, three_meshes 59.21M to
+58.85M.
 
-- *The guards that repeat a fact compare one shape word against different
-  cells.* After brass's passes no load or guard of the four hot functions
-  repeats a dominating one with nothing between. What repeats is the
-  identity-cell compare, one per site: `Container.updateLocalTransform` asks
-  ten cells of one receiver (28 of its 40 executed guards), and the cells hold
-  the same shape only at run time. Merging such tests in the IL
-  (`foldGuardedLoads`) into one test of a cell published for a whole key list
-  was built and removed (24.27M to 24.34M): the fold's facts end at every
-  claimed site the region pass did not make shape-guarded, since that site's
-  miss is in line in the IL, and 20 family sites on `this` lie between the
-  ten tests there, none of them a missed claim.
-- *The other conditional jumps are diamonds that are not sites*: layout-fact
-  sites, keyed gets with a string or number key, `unbox.bool`, `to.int32`,
-  method guards, typed-array stores (24 a sprite in `packQuadAttributes`,
-  each with its own kind and bounds merge).
-- *Build time*: a three.js image builds in about 120 s with twins against
-  40 s.
+**Alias classes on a guard's loads** (`il2mir/il_abi.h`): the receiver's kind
+word, shape word and overflow pointer (`kShapeWordAliasClass`), the words only
+the runtime writes (a shape's stamp and double map, the family base, a cell,
+the layout epoch: `kRuntimeWordAliasClass`) and slot loads
+(`kObjectSlotAliasClass`). Before, a store into any slot made brass read all
+of them again, so the second guard of one claim on one receiver was a new
+condition. pixi_sprites 23.50M to 23.02M, three_skinned 42.33M to 42.04M,
+three_meshes 58.85M to 58.62M, pixi_text 36.07M (a pixi_text run moves by 2%
+with the machine's load: 37.02M with a test suite running beside it).
+
+What the executed guards of the four hot functions of pixi_sprites are after
+both (per sprite, `updateTransformAndChildren` / `updateLocalTransform` /
+`step` / `packQuadAttributes`): 71 / 31 / 82 / 15, 199 in all against 208.
+By what they test in `updateLocalTransform`'s MIR: 10 of 37 are Number tests
+of a value just loaded from a slot, 6 header and 6 tag tests (one each per
+receiver), 11 shape compares, the rest store representation tests.
+
+**Open.**
+
+- *A receiver is a new value after every merge behind a call.* A diamond
+  whose slow arm calls (an `ic_set` miss, `to.int32`, `unbox`, a keyed get)
+  reloads every live object from its root slot in that arm, so behind the
+  join the receiver is a parameter of the join and its tag test, header test
+  and shape compare are all asked again (`updateTransformAndChildren`: 39
+  tag and 39 header tests on join parameters in the MIR). Either those
+  diamonds become exits where the profile saw the slow arm never taken, or
+  the IL's knowledge of the receiver crosses them (layout facts that leave).
+- *Number tests of loaded slots.* A slot the shape calls a double
+  (`runtime/slot_repr.h`) needs none, but a key is eligible only through
+  `--pins`. A layout cell could require the representation at publish, with
+  the harvest naming the keys.
+- *Build time*: a three.js image builds in about 130 s with twins against
+  40 s; each twinned function is compiled four times (itself, twin, generic,
+  probe).
 
 ### Measured
 

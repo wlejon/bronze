@@ -133,6 +133,7 @@ struct ModuleMirror {
     uint32_t templateSiteCount;
     uint32_t staticSiteCount;
     std::vector<Module::ClassFamilyEntry> classFamilies;
+    std::vector<Module::LayoutCellEntry> layoutCells;
     std::vector<uint32_t> slotReprFields;
     std::vector<Module::CensusSiteEntry> censusSites;
     std::string censusOutPath;
@@ -667,6 +668,17 @@ std::string serializeModule(const Module& module) {
             w.u8(f.writable ? 1 : 0);
         }
     }
+    w.var(module.layoutCells.size());
+    for (const auto& lc : module.layoutCells) {
+        w.var(lc.cell);
+        w.var(lc.keyCount);
+        w.var(lc.pairs.size());
+        for (const auto& p : lc.pairs) {
+            w.var(p.keyIndex);
+            w.var(p.slot);
+            w.u8(p.write ? 1 : 0);
+        }
+    }
     w.var(module.slotReprFields.size());
     for (uint32_t k : module.slotReprFields) w.var(k);
     w.var(module.censusSites.size());
@@ -720,6 +732,17 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         for (auto& f : fam.fields) {
             f.keyIndex = r.u32();
             f.writable = r.u8() != 0;
+        }
+    }
+    out.layoutCells.resize(r.count());
+    for (auto& lc : out.layoutCells) {
+        lc.cell = r.u32();
+        lc.keyCount = r.u32();
+        lc.pairs.resize(r.count());
+        for (auto& p : lc.pairs) {
+            p.keyIndex = r.u32();
+            p.slot = r.u32();
+            p.write = r.u8() != 0;
         }
     }
     out.slotReprFields.resize(r.count());

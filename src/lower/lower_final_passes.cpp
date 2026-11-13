@@ -279,6 +279,22 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto, plan != nullptr ? &missedClaims : nullptr);
         if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
     }
+    // One cell per shape in the functions that will have resume twins
+    // (feedback_plan.h, `applyFeedbackLayoutCells`): the hot ones, as the
+    // placement at the end of this function finds them again. Before the
+    // fold and the layout facts, which join tests that ask one thing.
+    if (plan != nullptr && !probe) {
+        planFunctionPlacement(mod, plan);
+        std::vector<uint8_t> hot(mod.functions.size(), 0);
+        for (uint32_t f : mod.hotFunctions) {
+            if (f < hot.size()) hot[f] = 1;
+        }
+        const uint32_t layoutSites = spec::applyFeedbackLayoutCells(mod, *plan, hot, missedClaims);
+        if (wholeProgram && build.stats) {
+            report += "feedback-layout: sites and tests on a layout cell " + std::to_string(layoutSites) + " (" +
+                      std::to_string(mod.layoutCells.size()) + " cells)\n";
+        }
+    }
     // The loads the regions left bare (guarded_load_fold.h).
     foldGuardedLoads(mod);
     // After every pass that copies instructions: a copied run would share
