@@ -101,7 +101,7 @@ static uint64_t concatIntoBuilder(Rooted<Value>& a, Rooted<Value>& b, uint32_t r
 // The two helpers' general paths, out of line: they root their operands, and
 // a frame holding roots is one the fast paths above them should not have to
 // set up to copy a few characters.
-[[gnu::noinline]] static uint64_t concatBeginSlow(uint64_t aBits, uint64_t bBits, uint32_t remaining) {
+BRONZE_NOINLINE static uint64_t concatBeginSlow(uint64_t aBits, uint64_t bBits, uint32_t remaining) {
     Rooted<Value> aRoot{Value(aBits)};
     Rooted<Value> bRoot{Value(bBits)};
     if (aRoot.get().isString() && bRoot.get().isString()) return concatIntoBuilder(aRoot, bRoot, remaining);
@@ -112,7 +112,7 @@ static uint64_t concatIntoBuilder(Rooted<Value>& a, Rooted<Value>& b, uint32_t r
     return rtAddNonStringTail(aRoot, bRoot);
 }
 
-[[gnu::noinline]] static uint64_t concatAppendSlow(uint64_t accBits, uint64_t xBits) {
+BRONZE_NOINLINE static uint64_t concatAppendSlow(uint64_t accBits, uint64_t xBits) {
     Rooted<Value> accRoot{Value(accBits)};
     Rooted<Value> xRoot{Value(xBits)};
     // ToPrimitive of the accumulator runs first and does nothing, then

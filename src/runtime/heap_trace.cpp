@@ -17,6 +17,7 @@
 
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
@@ -102,7 +103,7 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
 
 // A full collection's trace of a Cell: its Values, and what only a full
 // collection follows (a dynamic module's token, the shape's prototype).
-[[gnu::noinline]] void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
+BRONZE_NOINLINE void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
     if (runtime::rtHasDynamicModules()) {
         const auto* h = reinterpret_cast<const HeapObjectHeader*>(w);
         if (h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Function) {

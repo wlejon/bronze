@@ -12,6 +12,14 @@
 #define BRONZE_LIKELY(x) (x)
 #endif
 
+#if defined(_MSC_VER)
+#define BRONZE_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define BRONZE_NOINLINE __attribute__((noinline))
+#else
+#define BRONZE_NOINLINE
+#endif
+
 namespace bronze::runtime {
 
 // Global fast-path flag, read once at startup from BRONZE_PROFILE=1.

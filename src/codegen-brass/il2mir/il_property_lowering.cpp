@@ -7,6 +7,7 @@
 #include "il/key.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <bit>
 #include <cstdlib>
 #include <optional>
 #include <unordered_set>
