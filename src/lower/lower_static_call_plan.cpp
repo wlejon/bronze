@@ -143,6 +143,9 @@ void Lowerer::recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_
     if (slot >= info.slotIsStableFn.size()) return;
     if (!info.slotIsStableFn[slot]) return;
     info.slotFnIndex[slot] = fnIndex;
+    for (const auto& [calledSlot, span] : info.callsBeforeStableFn) {
+        if (calledSlot == slot) stableClosureCalls_[{span.file, span.begin, span.end}] = fnIndex;
+    }
 }
 
 // The resolution a CALL of `name` performs, asked of the plan rather than of
@@ -150,10 +153,7 @@ void Lowerer::recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_
 // same identifier — a local binding first, then the environment chain
 // innermost-out — because a different answer here is a call to a different
 // function.
-bool Lowerer::findStableFunctionCallee(const std::string& name, uint32_t& envHops,
-                                       uint32_t& fnIndex) const {
-    size_t scopeIndex = 0;
-    uint32_t slot = 0;
+bool Lowerer::findStableFunctionSlot(const std::string& name, size_t& scopeIndex, uint32_t& slot) const {
     auto local = activeVarMap_.find(name);
     if (local != activeVarMap_.end()) {
         const VarBinding& b = varBindings_[local->second];
@@ -176,12 +176,37 @@ bool Lowerer::findStableFunctionCallee(const std::string& name, uint32_t& envHop
     }
     if (scopeIndex >= envScopes_.size()) return false;
     const EnvScopeInfo& info = envScopes_[scopeIndex];
-    if (slot >= info.slotFnIndex.size() || slot >= info.slotIsStableFn.size()) return false;
-    if (!info.slotIsStableFn[slot]) return false;
+    return slot < info.slotFnIndex.size() && slot < info.slotIsStableFn.size() && info.slotIsStableFn[slot];
+}
+
+bool Lowerer::findStableFunctionCallee(const std::string& name, uint32_t& envHops,
+                                       uint32_t& fnIndex) const {
+    size_t scopeIndex = 0;
+    uint32_t slot = 0;
+    if (!findStableFunctionSlot(name, scopeIndex, slot)) return false;
+    const EnvScopeInfo& info = envScopes_[scopeIndex];
     if (info.slotFnIndex[slot] == kNoStableFn) return false;
     envHops = envDepthOf(scopeIndex);
     fnIndex = info.slotFnIndex[slot];
     return true;
+}
+
+// A call of a stable slot's name lowered BEFORE the slot's function is known:
+// the function's own recursive call (its body is being lowered) and a call
+// from a sibling declared above it. The call is emitted as a dynamic one, on
+// the closure it reads from the slot; what the plan knows is filed under the
+// call's span, and `recordStableFunctionSlot` names the function when the
+// declaration has been lowered. The final passes split such a call on the
+// closure's code (own_callee_calls.h, `applyClosureCalls`): a guard and the
+// direct entry, with the dynamic call behind the guard, so the edge is no
+// part of the acyclic graph above and nothing rests on it.
+void Lowerer::noteCallBeforeStableFunction(const std::string& name, const Span& span) {
+    size_t scopeIndex = 0;
+    uint32_t slot = 0;
+    if (!findStableFunctionSlot(name, scopeIndex, slot)) return;
+    EnvScopeInfo& info = envScopes_[scopeIndex];
+    if (info.slotFnIndex[slot] != kNoStableFn) return;
+    info.callsBeforeStableFn.emplace_back(slot, span);
 }
 
 }  // namespace bronze::lower

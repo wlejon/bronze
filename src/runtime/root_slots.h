@@ -39,12 +39,14 @@ inline constexpr uint32_t kRootSlotsInline = 16;
 
 // How many root SLOTS an argument block holds inline.
 //
-// Eight, because that is where JavaScript's own call sites sit: the widest
-// builtin bronze runs takes six, and a JS callback receives at most three from
-// the array iteration methods. Past it the block mallocs once — never twice,
-// and never a growth sequence, because an argument block's size is known
-// before its first store.
-inline constexpr uint32_t kRootBlockInline = 8;
+// Twelve. JavaScript's own call sites sit lower: the widest builtin bronze
+// runs takes six, and a JS callback receives at most three from the array
+// iteration methods. The wide ones are a host's: WebGL's texSubImage2D takes
+// nine and texSubImage3D eleven, and a renderer forwards them once per
+// texture per frame (`gl.texSubImage2D.apply(gl, arguments)`). Past it the
+// block mallocs once — never twice, and never a growth sequence, because an
+// argument block's size is known before its first store.
+inline constexpr uint32_t kRootBlockInline = 12;
 
 // Counted, not asserted: a spill is legal and rare, and the only way to know
 // whether kRootSlotsInline / kRootBlockInline were chosen well is to see how

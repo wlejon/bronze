@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "runtime/ic_log.h"
@@ -34,6 +35,7 @@ static_assert(offsetof(ElemCacheEntry, ic) == BRONZE_ABI_ELEM_IC_OFFSET);
 static_assert(offsetof(ElemCacheEntry, witness) == BRONZE_ABI_ELEM_WITNESS_OFFSET);
 static_assert(offsetof(ElemCacheEntry, key) == BRONZE_ABI_ELEM_KEY_OFFSET);
 static_assert(offsetof(ElemCacheEntry, kind) == BRONZE_ABI_ELEM_KIND_OFFSET);
+static_assert(offsetof(ElemCacheEntry, beside_hits) == BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET);
 static_assert(offsetof(ElemCacheEntry, key_ident) == BRONZE_ABI_ELEM_IDENT_OFFSET);
 static_assert(kElemCacheEntries == BRONZE_ABI_ELEM_ENTRIES);
 static_assert(sizeof(ElemSetCacheEntry) == BRONZE_ABI_ELEM_ENTRY_SIZE);
@@ -234,17 +236,43 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
         return probe;
     }
 
-    ElemCacheEntry& e = g_elemCache[bucketOf(shape, witness, kElemCacheEntries)];
-    probe.entry = &e;
+    // Two ways: the pair's bucket and the entry beside it (`bucket ^ 1`). Two
+    // pairs of one bucket otherwise evict one another on every read, and which
+    // pairs share a bucket is decided by where the shapes were allocated:
+    // three.js's `geometryAttributes[name]` and `programAttributes[name]`
+    // (needsUpdate, two reads a mesh a frame) did in most runs of one binary
+    // and in none of the next one's, 0.8M instructions a frame apart.
+    const uint32_t bucket = bucketOf(shape, witness, kElemCacheEntries);
+    ElemCacheEntry* found = nullptr;
+    for (ElemCacheEntry* way : {&g_elemCache[bucket], &g_elemCache[bucket ^ 1]}) {
+        if (way->ic.cached_shape == shape && keyMatches(*way, kind, witness, key)) {
+            found = way;
+            break;
+        }
+    }
     probe.witness = witness;
     probe.kind = kind;
-
-    if (!keyMatches(e, kind, witness, key)) {
-        recordElemIcMiss(e.kind == ElemKeyKind::Empty      ? "entry_empty"
-                         : e.ic.cached_shape == shape ? "entry_same_shape_other_key"
-                                                      : "entry_other_pair_collision", objVal.rawBits(), key.rawBits());
+    if (found == nullptr) {
+        // A fill goes to the bucket, the way generated code tests at the site
+        // (elemCacheFill keeps what it displaces, where it can).
+        ElemCacheEntry& first = g_elemCache[bucket];
+        probe.entry = &first;
+        recordElemIcMiss(first.kind == ElemKeyKind::Empty    ? "entry_empty"
+                         : first.ic.cached_shape == shape ? "entry_same_shape_other_key"
+                                                          : "entry_other_pair_collision",
+                         objVal.rawBits(), key.rawBits());
         return probe;
     }
+    // A pair the stub has answered from beside its bucket often enough takes
+    // the bucket, and the pair that held it goes beside.
+    if (found != &g_elemCache[bucket] && found->beside_hits >= BRONZE_ABI_ELEM_BESIDE_PROMOTE) {
+        std::swap(g_elemCache[bucket], *found);
+        found->beside_hits = 0;
+        found = &g_elemCache[bucket];
+        found->beside_hits = 0;
+    }
+    ElemCacheEntry& e = *found;
+    probe.entry = found;
 
     // The identity latch. `keyMatches` just proved the LIVE key content-equal
     // to this entry's arena key — by `equals`, the loop the inline arm must
@@ -329,6 +357,24 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     if (!internedKey) {
         recordElemIcMiss("key_budget_spent", 0, 0);
         return;
+    }
+    // The pair this fill displaces from its own bucket moves to the way
+    // beside it, whatever is there: two pairs of one bucket then both answer
+    // (the newer at the site, the older in the stub). A pair at home beside
+    // them is put out for it, since a pair nothing reads any more would
+    // otherwise hold the way for good and leave the two to displace each
+    // other on every read; one that is read fills its bucket again, and what
+    // it displaces then is not at home, so nothing moves twice.
+    const size_t index = static_cast<size_t>(probe.entry - g_elemCache);
+    const auto home = [](const ElemCacheEntry& e) {
+        return bucketOf(e.ic.cached_shape, e.witness, kElemCacheEntries);
+    };
+    const bool same_pair = probe.entry->kind == probe.kind && probe.entry->witness == probe.witness &&
+                           probe.entry->ic.cached_shape == filled.cached_shape &&
+                           (probe.kind != ElemKeyKind::String || probe.entry->key == internedKey);
+    if (probe.entry->kind != ElemKeyKind::Empty && !same_pair && home(*probe.entry) == index) {
+        g_elemCache[index ^ 1] = *probe.entry;
+        g_elemCache[index ^ 1].beside_hits = 0;
     }
     probe.entry->ic = filled;
     probe.entry->witness = probe.witness;

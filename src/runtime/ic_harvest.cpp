@@ -331,7 +331,11 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
                           words[BRONZE_ABI_METHOD_IC_ARITY_WORD]);
             foldMethodWay(s, site, words[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD],
                           words[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD], words[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD]);
-            if (words[BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD] != 0) site.mega = true;
+            // Both ways missed a relatch period's worth of calls: fewer is a
+            // site of two receivers that met a third while starting up (or
+            // whose entries a prototype change made stale once), which still
+            // reads as the two it holds.
+            if (words[BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD] >= BRONZE_ABI_METHOD_IC_MEGA_RELATCH) site.mega = true;
         } else {
             foldProperty(s, site, words);
         }

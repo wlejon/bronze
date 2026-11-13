@@ -448,7 +448,9 @@
  * stub, in others none did. Every BRONZE_ABI_METHOD_IC_MEGA_RELATCH-th answer
  * goes to the helper instead, whose latch puts the receiver in way 0 and the
  * resident in way 1, so a site's ways follow its frequent shapes whatever
- * filled them first. An integer, never a Value. */
+ * filled them first. The count is never reset (the relatch is the answer whose
+ * low bits wrap), so a harvest reads from it how often both ways missed: a
+ * site under one period is not megamorphic. An integer, never a Value. */
 #define BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD 11
 #define BRONZE_ABI_METHOD_IC_MEGA_RELATCH    64
 /* Bit 31 of a DIRECT entry's arity word (either way): the latched callee may
@@ -510,6 +512,10 @@
 #define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */
 #define BRONZE_ABI_ELEM_KEY_OFFSET      32 /* ElemCacheEntry::key (StringHeader*) */
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
+#define BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET 44 /* ElemCacheEntry::beside_hits (uint32) */
+/* Reads a pair answers from the way beside its bucket before the stub hands
+ * one to the runtime, which then gives the pair its bucket. A power of two. */
+#define BRONZE_ABI_ELEM_BESIDE_PROMOTE  64
 #define BRONZE_ABI_ELEM_IDENT_OFFSET    48 /* ElemCacheEntry::key_ident (uint64) */
 #define BRONZE_ABI_ELEM_ENTRIES       4096 /* kElemCacheEntries, a power of two */
 #define BRONZE_ABI_ELEM_SET_ENTRIES   4096 /* kElemSetCacheEntries, a power of two */

@@ -149,6 +149,10 @@ struct EnvScopeInfo {
     // which every caller can reach by counting parent links.
     std::vector<bool> slotIsStableFn;
     std::vector<uint32_t> slotFnIndex;
+    // The calls of a stable slot's name lowered while its `slotFnIndex` was
+    // still unknown, by slot (lower_static_call_plan.cpp,
+    // `noteCallBeforeStableFunction`).
+    std::vector<std::pair<uint32_t, Span>> callsBeforeStableFn;
     // Every name anything in this scope's WHOLE lexical reach can rebind
     // (`getDeeplyReboundNames` over the scope's statements) — the question a
     // reader in a nested function has to ask before it hoists a load of one

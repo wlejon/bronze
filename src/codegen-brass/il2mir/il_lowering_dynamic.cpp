@@ -280,8 +280,8 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // false and an Object is true (bronze has no [[IsHTMLDDA]] object). Strings,
 // BigInts and the hole read memory or are the helper's.
 //
-// Without a hint the tests are a ladder, each its own branch: a Boolean,
-// then an Object, then undefined and null, then the Numbers and Int32s, then
+// Without a hint the tests are a ladder, each its own branch: a Boolean, null
+// or undefined (one test), then an Object, then the Numbers and Int32s, then
 // the helper. A hint from a type-feedback profile (`number_hint`, or the
 // kTruth* `kinds` it saw) puts tests for those values first, on the
 // fall-through, and the whole ladder after them in cold blocks; any value
@@ -295,8 +295,6 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
     Value* result = b.add_block_param(merge, Type::i32());
     BasicBlock* classify = b.append_block(prefix + "_classify");
     BasicBlock* not_obj = b.append_block(prefix + "_notobj");
-    BasicBlock* not_undef = b.append_block(prefix + "_notundef");
-    BasicBlock* not_nullish = b.append_block(prefix + "_notnullish");
     if (number_hint) kinds = 0;
     BasicBlock* ladder = number_hint || kinds != 0 ? b.append_block(prefix + "_ladder") : nullptr;
     // One block per hinted kind after the first, each the previous test's
@@ -343,20 +341,22 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
     }
     if (ladder) {
         b.position_at_end(ladder);
-        for (BasicBlock* bb : {ladder, slow, classify, not_obj, not_undef, not_nullish}) bb->set_cold();
+        for (BasicBlock* bb : {ladder, slow, classify, not_obj}) bb->set_cold();
     }
-    // A Boolean first: most dynamic conditions are a flag field
-    // (`if (this.matrixAutoUpdate)`) that only ever holds true or false.
-    b.build_br_if(is_bool(), merge, {bool_answer()}, not_obj, {});
-    // Then an Object and the two nullish values, each on a branch of its own:
-    // the next most common conditions are presence tests (`if (material.map)`,
-    // `object.parent !== null && ...` written as `if (object.parent)`).
+    // The Booleans and the two nullish values in one test: most dynamic
+    // conditions are a flag field (`if (this.matrixAutoUpdate)`) or a presence
+    // test of a field that is unset (`if (material.map)`, `a && b`). Their
+    // tags are consecutive and their payloads 0 or 1, so `v - kBoolTag` is at
+    // most undefined's distance for exactly false, true, null and undefined,
+    // and only `true` among them is truthy.
+    static_assert(BRONZE_ABI_TAG_NULL == BRONZE_ABI_TAG_BOOL + 1 && BRONZE_ABI_TAG_UNDEFINED == BRONZE_ABI_TAG_BOOL + 2 &&
+                      kUndefinedTag == uint64_t{BRONZE_ABI_TAG_UNDEFINED} << BRONZE_ABI_VALUE_TAG_SHIFT,
+                  "Boolean, null and undefined are one range of bits");
+    b.build_br_if(b.build_ule(b.build_sub(v, bits(kBoolTag)), bits(kUndefinedTag - kBoolTag)), merge,
+                  {b.build_eq(v, bits(kBoolTag | 1))}, not_obj, {});
+    // Then an Object: a presence test of a field that is set.
     b.position_at_end(not_obj);
-    b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, not_undef, {});
-    b.position_at_end(not_undef);
-    b.build_br_if(b.build_eq(v, bits(kUndefinedTag)), merge, {b.build_iconst_i32(0)}, not_nullish, {});
-    b.position_at_end(not_nullish);
-    b.build_br_if(b.build_eq(v, bits(kNullTag)), merge, {b.build_iconst_i32(0)}, classify, {});
+    b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, classify, {});
     // What is left of the inline answers: a Number or an Int32 (no Boolean,
     // Object or nullish value comes this far).
     b.position_at_end(classify);

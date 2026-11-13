@@ -50,6 +50,34 @@ size_t closureEdges(const std::string& il) {
     return n;
 }
 
+// Whether some call of `fn` is split on its closure's code: the guard the
+// final passes put in front of a call lowered before its function was
+// (lower_static_call_plan.cpp, `noteCallBeforeStableFunction`). Such a call
+// reads the closure and takes its environment from it; it is no part of the
+// proof above.
+bool hasGuardedEdge(const std::string& il, const std::string& fn) {
+    size_t at = il.find("closure.is ");
+    while (at != std::string::npos) {
+        const size_t eol = il.find('\n', at);
+        const std::string line = il.substr(at, eol - at);
+        if (line.size() > fn.size() + 3 && line.compare(line.size() - fn.size() - 3, fn.size() + 3, ", @" + fn) == 0) {
+            return true;
+        }
+        at = il.find("closure.is ", at + 1);
+    }
+    return false;
+}
+
+size_t guardedEdges(const std::string& il) {
+    size_t n = 0;
+    size_t at = il.find("closure.is ");
+    while (at != std::string::npos) {
+        ++n;
+        at = il.find("closure.is ", at + 1);
+    }
+    return n;
+}
+
 }  // namespace
 
 TEST_CASE("a sibling closure call names its target and derives the environment") {
@@ -119,11 +147,12 @@ TEST_CASE("the reassignment may be anywhere in the scope's lexical reach") {
     CHECK_FALSE(hasClosureEdge(il, "greet"));
 }
 
-TEST_CASE("a declaration lowered after the call site gets no edge") {
+TEST_CASE("a declaration lowered after the call site gets a guarded edge") {
     // `isEven` is lowered first, so `isOdd` does not exist yet when its body
     // is; the reverse edge is available and is taken. It is also what keeps
-    // the always-inline ask acyclic: an edge can only point at a function
-    // whose lowering already finished.
+    // the always-inline ask acyclic: an unguarded edge can only point at a
+    // function whose lowering already finished. The call of `isOdd` stays a
+    // dynamic call, split on the closure's code once the function is known.
     const auto il = lowerToText(
         "function parity(n) {\n"
         "  function isEven(k) { return k === 0 ? true : isOdd(k - 1); }\n"
@@ -131,14 +160,16 @@ TEST_CASE("a declaration lowered after the call site gets no edge") {
         "  return isEven(n);\n"
         "}\n"
         "console.log(parity(4));\n");
-    CHECK_FALSE(hasClosureEdge(il, "isOdd"));
+    CHECK(hasGuardedEdge(il, "isOdd"));
+    CHECK_FALSE(hasGuardedEdge(il, "isEven"));
     CHECK(hasClosureEdge(il, "isEven"));
+    CHECK(il.find("call.dynamic") != std::string::npos);
 }
 
-TEST_CASE("a self-call gets no edge, and the sibling call beside it does") {
+TEST_CASE("a self-call gets a guarded edge, and the sibling call beside it a proven one") {
     // The slot is still empty while `fact`'s own body is being lowered, so the
-    // recursive call takes the dynamic path; `go`, lowered afterwards, gets the
-    // edge. One edge in the module, and it is not the recursive one.
+    // recursive call takes the dynamic path, split on the closure's code;
+    // `go`, lowered afterwards, gets the edge with no guard.
     const auto il = lowerToText(
         "function outer() {\n"
         "  function fact(n) { return n < 2 ? 1 : n * fact(n - 1); }\n"
@@ -149,7 +180,9 @@ TEST_CASE("a self-call gets no edge, and the sibling call beside it does") {
     // One edge: `go` -> `fact`. `outer` -> `go` is not one, because nothing
     // captures `go`, so it never gets an environment slot at all and its value
     // stays in SSA — a binding this plan says nothing about.
-    CHECK_EQ(closureEdges(il), 1u);
+    CHECK_EQ(guardedEdges(il), 1u);
+    CHECK(hasGuardedEdge(il, "fact"));
+    CHECK_EQ(closureEdges(il), 2u);
     CHECK(il.find("call @fact(env+0") != std::string::npos);
 }
 

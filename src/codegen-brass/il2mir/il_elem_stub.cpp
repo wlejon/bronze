@@ -82,7 +82,22 @@ struct KeyedEntry {
     Value* entry = nullptr;
     Value* shape = nullptr;
     Value* match = nullptr;
+    // What `entry_matches` asks of another entry of the table.
+    Value* tbl = nullptr;
+    Value* bucket = nullptr;
+    Value* kind = nullptr;
+    Value* match_off = nullptr;
 };
+
+// Whether `entry` speaks for the access `k` was probed for: its kind, its key
+// word and its shape.
+Value* entry_matches(Builder& b, const KeyedEntry& k, Value* key, Value* entry) {
+    Value* kind_ok = b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), entry, BRONZE_ABI_ELEM_KIND_OFFSET)), k.kind);
+    Value* key_ok = b.build_eq(b.build_load(Type::i64(), b.build_add(entry, k.match_off), 0), key);
+    Value* shape_ok = b.build_eq(
+        b.build_load(Type::i64(), entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), k.shape);
+    return b.build_and(b.build_and(kind_ok, key_ok), shape_ok);
+}
 
 KeyedEntry keyed_entry(Builder& b, Value* obj, Value* key, int32_t tbl_off, int64_t shift, BasicBlock* slow,
                        const std::string& prefix) {
@@ -143,13 +158,12 @@ KeyedEntry keyed_entry(Builder& b, Value* obj, Value* key, int32_t tbl_off, int6
                            b.build_mul(witness, iconst(b, BRONZE_ABI_ELEM_HASH_MUL_WITNESS)));
     Value* bucket = b.build_lshr(h, b.build_iconst_i64(shift));
     k.entry = b.build_add(tbl, b.build_mul(bucket, iconst(b, BRONZE_ABI_ELEM_ENTRY_SIZE)));
-    Value* kind_ok =
-        b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), k.entry, BRONZE_ABI_ELEM_KIND_OFFSET)), kind);
-    Value* key_ok = b.build_eq(b.build_load(Type::i64(), b.build_add(k.entry, match_off), 0), key);
-    Value* shape_ok = b.build_eq(
-        b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), shape);
-    k.match = b.build_and(b.build_and(kind_ok, key_ok), shape_ok);
     k.shape = shape;
+    k.tbl = tbl;
+    k.bucket = bucket;
+    k.kind = kind;
+    k.match_off = match_off;
+    k.match = entry_matches(b, k, key, k.entry);
     return k;
 }
 
@@ -167,13 +181,33 @@ void build_elem_get_stub(PropertyLoweringHelper& pl, Function* fn) {
     BasicBlock* chain = b.append_block("eget_chain");
     BasicBlock* slow = b.append_block("eget_slow");
 
+    BasicBlock* second = b.append_block("eget_second");
+    BasicBlock* beside_hit = b.append_block("eget_beside_hit");
+    Value* entry = b.add_block_param(matched, Type::i64());
+
     b.position_at_end(cur);
     const KeyedEntry k = keyed_entry(b, obj, key, BRONZE_TLS_ELEM_CACHE_TBL_OFF, BRONZE_ABI_ELEM_BUCKET_SHIFT, slow,
                                      "eget");
-    b.build_br_if(k.match, matched, slow);
+    b.build_br_if(k.match, matched, {k.entry}, second, {});
+
+    // The read table's second way (runtime/elem_ic.cpp, elemCacheProbe): the
+    // entry beside the bucket, where a pair sits whose bucket another took.
+    b.position_at_end(second);
+    Value* beside = b.build_add(
+        k.tbl, b.build_mul(b.build_xor(k.bucket, iconst(b, 1)), iconst(b, BRONZE_ABI_ELEM_ENTRY_SIZE)));
+    b.build_br_if(entry_matches(b, k, key, beside), beside_hit, {}, slow, {});
+
+    // Counted: a pair read this often from beside its bucket is handed to the
+    // runtime once, whose probe gives it the bucket (elemCacheProbe), so the
+    // site's own arm answers it from then on.
+    b.position_at_end(beside_hit);
+    Value* hits = b.build_add(b.build_load(Type::i32(), beside, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET),
+                              b.build_iconst_i32(1));
+    b.build_store(Type::i32(), beside, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET, hits);
+    b.build_br_if(b.build_ult(hits, b.build_iconst_i32(BRONZE_ABI_ELEM_BESIDE_PROMOTE)), matched, {beside}, slow, {});
 
     b.position_at_end(matched);
-    Value* slot_word = b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET);
+    Value* slot_word = b.build_load(Type::i64(), entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET);
     b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit)), own, not_own);
 
     b.position_at_end(own);
@@ -183,7 +217,7 @@ void build_elem_get_stub(PropertyLoweringHelper& pl, Function* fn) {
     Value* depth = b.build_lshr(slot_word, iconst(b, 32));
     Value* is_absent = b.build_ne(b.build_and(depth, iconst(b, BRONZE_ABI_IC_DEPTH_ABSENT_FLAG)), iconst(b, 0));
     Value* epoch_ok =
-        b.build_eq(b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET),
+        b.build_eq(b.build_load(Type::i64(), entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET),
                    b.build_load(Type::i64(), k.tls, BRONZE_TLS_PROTO_EPOCH_OFF));
     b.build_br_if(b.build_and(is_absent, epoch_ok), absent, not_absent);
 

@@ -415,6 +415,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 recordCall(call->span.file, true, "");
                 return lowerDirectCall(call, stableFn, currentEnv(ilFn), envHops, ilFn);
             }
+            noteCallBeforeStableFunction(calleeIdent->name, call->callee->span);
         }
     }
 

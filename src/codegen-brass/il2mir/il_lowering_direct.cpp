@@ -226,9 +226,13 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         b.position_at_end(count);
         Value* n = b.build_add(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord),
                                b.build_iconst_i64(1));
-        Value* relatch = b.build_uge(n, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_MEGA_RELATCH));
-        b.build_store(Type::i64(), site, BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord,
-                      b.build_select(relatch, zero, n));
+        // The count is never reset (a harvest reads how often both ways
+        // missed): every RELATCH-th answer is the one whose low bits wrap.
+        static_assert((BRONZE_ABI_METHOD_IC_MEGA_RELATCH & (BRONZE_ABI_METHOD_IC_MEGA_RELATCH - 1)) == 0,
+                      "the relatch period is a power of two");
+        Value* relatch =
+            b.build_eq(b.build_and(n, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_MEGA_RELATCH - 1)), zero);
+        b.build_store(Type::i64(), site, BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD * kWord, n);
         b.build_br_if(relatch, slow, {}, probe, {});
         b.position_at_end(probe);
         build_mega_probe_if(b, tls, e, full, b.build_zext_i64(key_id), mega_hit, exotic);

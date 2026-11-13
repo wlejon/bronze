@@ -111,13 +111,35 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     if (wholeProgram) report += wpo::predictDirectTargets(mod, build, &ownCallees, &predictedAccessors);
     if (plan != nullptr) {
         spec::applyFeedbackDirectMethods(mod, *plan, ownCallees, &feedbackStats, &polyMethods, &polyOwnCallees);
+    }
+    // The closure calls split on their callee's code: the ones a profile saw
+    // one callee at (B), and the ones the static call plan names
+    // (`stableClosureCalls_`: a recursive call, a call of a function declared
+    // further down its scope).
+    {
         std::set<spec::SpanKey> offered;
-        feedbackStats.closureCalls = applyClosureCalls(mod, [&](const il::Instruction& call) {
-            const uint32_t target = spec::profiledClosureTarget(mod, *plan, call);
-            if (target != UINT32_MAX) offered.insert(spec::spanKey(call.span));
-            return target;
+        const uint32_t split = applyClosureCalls(mod, [&](const il::Instruction& call) -> uint32_t {
+            if (plan != nullptr) {
+                const uint32_t target = spec::profiledClosureTarget(mod, *plan, call);
+                if (target != UINT32_MAX) {
+                    offered.insert(spec::spanKey(call.span));
+                    return target;
+                }
+            }
+            const auto it = stableClosureCalls_.find({call.span.file, call.span.begin, call.span.end});
+            if (it == stableClosureCalls_.end() || it->second >= mod.functions.size()) return UINT32_MAX;
+            // A sloppy function's `this` is the global object when the call
+            // passes undefined, which its generic entry supplies and the
+            // direct one does not.
+            const il::Function& callee = mod.functions[it->second];
+            return callee.needsThis && !callee.isStrict ? UINT32_MAX : it->second;
         });
-        for (const spec::SpanKey& k : offered) feedbackStats.closureExecutions += plan->dynamicCallees.at(k).total;
+        if (plan != nullptr) {
+            feedbackStats.closureCalls = split;
+            for (const spec::SpanKey& k : offered) {
+                feedbackStats.closureExecutions += plan->dynamicCallees.at(k).total;
+            }
+        }
     }
     inlineSmallFunctions(mod, &directMethods_);
     sanitizeLoopInBoundsProofs(mod);

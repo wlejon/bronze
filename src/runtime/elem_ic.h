@@ -87,6 +87,12 @@ struct ElemCacheEntry {
     // no second interning happens per read.
     StringHeader* key = nullptr;
     ElemKeyKind kind = ElemKeyKind::Empty;
+    // How many reads the module's stub has answered from this entry while it
+    // sat beside its bucket (the second way). At BRONZE_ABI_ELEM_BESIDE_PROMOTE
+    // the stub leaves the read to the runtime, whose probe exchanges the two
+    // ways: a pair read that often belongs in its bucket, where the site's
+    // own arm answers it, rather than behind a pair that came once.
+    uint32_t beside_hits = 0;
     // The IDENTITY latch the inline string arm guards on: the raw Value bits
     // of the last LIVE string key `equals` proved content-equal to `key`, or
     // 0. Generated code compares its key bits against this ONE word and, on
@@ -106,7 +112,9 @@ struct ElemCacheEntry {
 
 // Enough entries that the fifteen (shape, key) pairs three.js touches in its
 // inner loop do not evict one another, and small enough to stay inside L1.
-// Direct-mapped: a collision costs a fill, never a wrong answer.
+// Two ways, a pair's bucket and the entry beside it: generated code tests the
+// bucket at the site and both in the module's stub, and a third pair of one
+// bucket costs a fill, never a wrong answer.
 inline constexpr uint32_t kElemCacheEntries = 4096;
 
 // The probe's answer. `Hit` means `value` is the read's result and nothing

@@ -350,7 +350,12 @@ A method site's two ways give `<form> <receiver> <callee>`:
 Two flags record that a site met more receivers than its cache holds:
 
 - `full` marks a read whose four ways are all in use;
-- `mega` marks a write or call whose stub's mega table answered.
+- `mega` marks a write whose stub's mega table answered, or a call both of
+  whose ways missed at least `BRONZE_ABI_METHOD_IC_MEGA_RELATCH` (64) times:
+  a call site that met a third receiver a few times while starting up, or
+  whose entries a prototype change made stale once, is still the two
+  receivers it holds (three.js's `resolvedProperty.fromArray(...)`, a
+  Quaternion or a Vector3).
 
 Receivers are named as the recorder names them, with every key. Writing at
 exit reads only what was already folded and never walks the heap.

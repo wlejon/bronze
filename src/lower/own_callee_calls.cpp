@@ -45,10 +45,25 @@ bool enterable(const il::Function& fn) {
     if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
     if (fn.needsArguments || fn.hasRestParam) return false;
     if (!il::functionEntersDirectly(fn)) return false;
-    for (const auto& p : fn.params) {
-        if (p.type != il::Type::Dynamic) return false;
+    // A parameter the lowering proved a Number (lower_closure_param_proof.cpp)
+    // is an f64 one: the direct entry is handed ToNumber of the argument, as a
+    // direct call's lowering hands it (lower_call.cpp, `lowerDirectCall`).
+    for (size_t p = 0; p < fn.params.size(); ++p) {
+        if (fn.params[p].type == il::Type::Dynamic) continue;
+        if (fn.params[p].type != il::Type::F64 || p < fn.firstSourceParam() || fn.params[p].pinned) return false;
     }
     return fn.returnType == il::Type::Dynamic || fn.returnType == il::Type::Void;
+}
+
+// Whether the call passes an argument for every f64 parameter of `fn`, whose
+// source arguments start at operand `firstArg`: a missing one would be
+// `undefined`, which no proof of a Number parameter admits.
+bool passesTypedParams(const il::Function& fn, const il::Instruction& call, size_t firstArg) {
+    const size_t firstSource = fn.firstSourceParam();
+    for (size_t p = firstSource; p < fn.params.size(); ++p) {
+        if (fn.params[p].type != il::Type::Dynamic && firstArg + (p - firstSource) >= call.operands.size()) return false;
+    }
+    return true;
 }
 
 class Rewriter {
@@ -103,7 +118,9 @@ private:
             for (il::ValueId v : inst.operands) {
                 if (v >= types_.size() || types_[v] != il::Type::Dynamic) return kNone;
             }
-            return enterable(module_.functions[target]) ? target : kNone;
+            return enterable(module_.functions[target]) && passesTypedParams(module_.functions[target], inst, 2)
+                       ? target
+                       : kNone;
         }
         if (callees_ == nullptr || inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
         if (inst.directTarget != il::Instruction::kNoDirectTarget) return kNone;
@@ -115,7 +132,9 @@ private:
             if (v >= types_.size() || types_[v] != il::Type::Dynamic) return kNone;
         }
         if (&module_.functions[it->second] == &fn) return kNone;
-        return enterable(module_.functions[it->second]) ? it->second : kNone;
+        return enterable(module_.functions[it->second]) && passesTypedParams(module_.functions[it->second], inst, 1)
+                   ? it->second
+                   : kNone;
     }
 
     il::ValueId fresh(il::Function& fn, il::Type t) {
@@ -197,6 +216,14 @@ private:
         for (size_t p = firstSource; p < callee.params.size(); ++p) {
             const size_t arg = firstArg + (p - firstSource);
             if (arg < call.operands.size()) {
+                if (callee.params[p].type == il::Type::F64) {
+                    il::Instruction num = at(il::Op::Unbox, il::Type::F64);
+                    num.result = fresh(fn, il::Type::F64);
+                    num.operands = {call.operands[arg]};
+                    operands.push_back(num.result);
+                    e.instructions.push_back(std::move(num));
+                    continue;
+                }
                 operands.push_back(call.operands[arg]);
                 continue;
             }

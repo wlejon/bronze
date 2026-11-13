@@ -143,6 +143,11 @@ private:
     // `is.plain_array` into a direct call of it and the original call.
     bool mergeSelfHostLibrary();
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
+    // Dynamic calls whose callee the static call plan names though the call
+    // was lowered before the function was (a recursive call, a call of a
+    // sibling declared further down), by the call's span (file, begin, end):
+    // the function the closure is. Spent by the final passes.
+    std::map<std::tuple<uint16_t, uint32_t, uint32_t>, uint32_t> stableClosureCalls_;
     // The class name inference gives `receiver`'s object type, or empty.
     std::unordered_map<std::string, std::string> fieldClassGuesses() const;
     std::string receiverClassName(const ast::Expr& receiver);
@@ -479,8 +484,10 @@ private:
                                  const std::vector<ast::StmtPtr>& stmts);
     void applyProvenClosureParams(const ast::Node& site, const std::vector<ast::Param>& params,
                                   il::Function& fn) const;
+    bool findStableFunctionSlot(const std::string& name, size_t& scopeIndex, uint32_t& slot) const;
     bool findStableFunctionCallee(const std::string& name, uint32_t& envHops,
                                   uint32_t& fnIndex) const;
+    void noteCallBeforeStableFunction(const std::string& name, const Span& span);
     std::optional<Value> lowerDirectCall(const ast::Call* call, uint32_t calleeIdx,
                                          il::ValueId envBase, uint32_t envHops,
                                          il::Function& ilFn);

@@ -85,12 +85,12 @@ TEST_CASE("an argument block holds its slots inline until it cannot") {
 
     // The widths, asked of the storage rather than of the block, because the
     // block deliberately does not expose where it lives to anything but this.
-    for (uint32_t n : {0u, 1u, 7u, 8u}) {
+    for (uint32_t n : {0u, 1u, 9u, kRootBlockInline}) {
         RootValueBlock block(n);
         CAPTURE(n);
         CHECK(block.usesInlineStorage());
     }
-    for (uint32_t n : {9u, 16u, 64u}) {
+    for (uint32_t n : {kRootBlockInline + 1, 16u, 64u}) {
         RootValueBlock block(n);
         CAPTURE(n);
         CHECK_FALSE(block.usesInlineStorage());

@@ -635,6 +635,13 @@ void Inliner::markEnteredFromLoops() {
                         }
                         continue;
                     }
+                    // A call of a known closure (`projectObject(children[i], ...)`
+                    // behind a `closure.is` of the slot that holds it): its body
+                    // is never copied in, so it is entered once per iteration.
+                    if (inst.op == il::Op::Call && inst.calleeIndex < module_.functions.size()) {
+                        mark(originOf(inst.calleeIndex), fn);
+                        continue;
+                    }
                     if (inst.op != il::Op::MethodCall) continue;
                     if (fn.needsThis && inst.keyIndex == fn.nameKeyIndex) mark(callerOrigin, fn);
                     const auto markUninlined = [&](const ClosureGuesses* map, const std::vector<uint8_t>& ok) {

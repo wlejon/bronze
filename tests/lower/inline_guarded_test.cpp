@@ -430,3 +430,60 @@ TEST_CASE("inline guarded: hot-loop caller above 800 IL instructions still inlin
     DiagnosticSink verifyDiags;
     CHECK(il::verify(*mod, verifyDiags));
 }
+
+TEST_CASE("inline guarded: a closure its own loop calls takes bodies outside the loop") {
+    // `walk` calls itself per child from its own loop, so its one `layers.test`
+    // ahead of the loop runs per iteration and is copied in. `visit` has no
+    // loop and is called from no loop (only from `walk`, ahead of `walk`'s):
+    // it keeps its call of `box.grow` (docs/aot-inlining.md says what marking
+    // it by the call graph cost).
+    const std::string src =
+        "class Layers {\n"
+        "  mask: any;\n"
+        "  constructor() { this.mask = 1; }\n"
+        "  test(other: any) { return (this.mask & other.mask) !== 0; }\n"
+        "}\n"
+        "class Box {\n"
+        "  size: any;\n"
+        "  constructor() { this.size = 0; }\n"
+        "  grow() { this.size = this.size + 1; }\n"
+        "}\n"
+        "function makeWalker(camera: any) {\n"
+        "  let seen: any = 0;\n"
+        "  function visit(node: any) { node.box.grow(); seen = seen + 1; }\n"
+        "  function walk(node: any) {\n"
+        "    if (node.layers.test(camera)) visit(node);\n"
+        "    const ch = node.children;\n"
+        "    for (let i = 0; i < ch.length; i++) walk(ch[i]);\n"
+        "  }\n"
+        "  return function run(root: any) { walk(root); return seen; };\n"
+        "}\n"
+        "const leaf: any = { layers: new Layers(), box: new Box(), children: [] };\n"
+        "const root: any = { layers: new Layers(), box: new Box(), children: [leaf] };\n"
+        "makeWalker(new Layers())(root);\n";
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lowerAot(src, diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod.has_value());
+
+    const uint32_t testIdx = findFnIndexEndingIn(*mod, "Layers.test");
+    const uint32_t growIdx = findFnIndexEndingIn(*mod, "Box.grow");
+    REQUIRE(testIdx != UINT32_MAX);
+    REQUIRE(growIdx != UINT32_MAX);
+    const auto took = [](const il::Function* fn, uint32_t callee) {
+        for (const auto& frame : fn->inlineFrames) {
+            if (frame.callee == callee) return true;
+        }
+        return false;
+    };
+    const il::Function* walk = findFnEndingIn(*mod, "walk");
+    const il::Function* visit = findFnEndingIn(*mod, "visit");
+    REQUIRE(walk != nullptr);
+    REQUIRE(visit != nullptr);
+    CHECK(took(walk, testIdx));
+    CHECK_FALSE(took(visit, growIdx));
+
+    DiagnosticSink verifyDiags;
+    CHECK(il::verify(*mod, verifyDiags));
+}
