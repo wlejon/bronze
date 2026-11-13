@@ -31,12 +31,23 @@ Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<in
 // element paths range-check it against an unsigned length, so a negative one
 // misses there). The boxed Value for the slow-path helper is materialized only
 // in `bb_slow`.
+//
+// `bounded`, when not null, is `i64` when `ok`, and otherwise INT64_MIN plus
+// the constant offset taken from a base: as an unsigned number at least
+// 2^63 - 2^31, above every view's length, so `bounded < length` alone answers
+// "an index, and in bounds". It is made for `view[base + k]` when asked for
+// (`want_bounded`): the select is on the base, once for every offset from it
+// (GVN), where ANDing `ok` into each access's range check is a second branch
+// at each. Any other index has none, and keeps `ok` beside its own range
+// check.
 struct ElemIndex {
     Value* i64 = nullptr;
     Value* ok = nullptr;
+    Value* bounded = nullptr;
 };
 
-ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
+ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false, bool want_bounded = false,
+                     bool offset_base = false) {
     ElemIndex r;
     if (index->type() == Type::i32()) {
         r.i64 = b.build_sext_i64(index);
@@ -60,7 +71,7 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
             if (fdef->opcode() == Opcode::sitofp_f64_i32 && fdef->operand_count() == 1) {
                 r.i64 = b.build_sext_i64(fdef->operand(0));
                 r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                return r;
+                        return r;
             }
             if (fdef->opcode() == Opcode::sitofp_f64_i64 && fdef->operand_count() == 1) {
                 Value* z = fdef->operand(0);
@@ -70,7 +81,7 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
                         zdef->operand(0)->type() == Type::i32()) {
                         r.i64 = z;
                         r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                        return r;
+                                        return r;
                     }
                 }
             }
@@ -79,7 +90,7 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
                 std::fabs(fdef->imm_f64()) <= 2147483647.0) {
                 r.i64 = iconst(b, static_cast<uint64_t>(static_cast<int64_t>(fdef->imm_f64())));
                 r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                return r;
+                        return r;
             }
             // `base + k` / `base - k` with an integral constant |k| <= 2^31
             // (`view[index + 3]`): the index of the base, tested once and
@@ -105,9 +116,11 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
                     continue;
                 }
                 const int64_t step = static_cast<int64_t>(kdef->imm_f64());
-                const ElemIndex at = elem_index(b, base);
-                r.i64 = b.build_add(at.i64, iconst(b, static_cast<uint64_t>(fdef->opcode() == Opcode::sub ? -step : step)));
+                const ElemIndex at = elem_index(b, base, false, false, /*offset_base=*/want_bounded);
+                Value* k_i64 = iconst(b, static_cast<uint64_t>(fdef->opcode() == Opcode::sub ? -step : step));
+                r.i64 = b.build_add(at.i64, k_i64);
                 r.ok = at.ok;
+                if (at.bounded) r.bounded = b.build_add(at.bounded, k_i64);
                 return r;
             }
         }
@@ -121,6 +134,7 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
     }
     Value* exact = b.build_eq(b.build_sitofp_f64_i64(r.i64), f);
     r.ok = is_number ? b.build_and(is_number, exact) : exact;
+    if (offset_base) r.bounded = b.build_select(r.ok, r.i64, iconst(b, uint64_t{1} << 63));
     return r;
 }
 
@@ -438,7 +452,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
 
     const bool known_num_idx =
         index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
-    const ElemIndex idx = elem_index(b, index, proven_integral);
+    const ElemIndex idx = elem_index(b, index, proven_integral, /*want_bounded=*/true);
     if (proven_in_bounds && proven_integral && known_num_idx) {
         Value* data = preloaded_data ? preloaded_data
                                      : typed_array_data(b, object_address(b, obj));
@@ -457,8 +471,13 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     Value* ta_len = preloaded_length
                         ? preloaded_length
                         : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    Value* in_bounds = b.build_ult(idx.i64, ta_len);
-    Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    Value* ok = nullptr;
+    if (idx.bounded) {
+        ok = b.build_ult(idx.bounded, ta_len);
+    } else {
+        Value* in_bounds = b.build_ult(idx.i64, ta_len);
+        ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    }
     Value* nan_f64 = b.build_bitcast_f64_i64(iconst(b, BRONZE_ABI_CANONICAL_NAN_BITS));
     // The window's first byte before the bounds test, as the length is: the
     // receiver is a view either way, and in the block that dominates the
@@ -776,7 +795,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
 
     const bool known_num_idx =
         index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
-    const ElemIndex idx = elem_index(b, index, proven_integral);
+    const ElemIndex idx = elem_index(b, index, proven_integral, /*want_bounded=*/true);
     if (proven_in_bounds && proven_integral && known_num_idx) {
         Value* data = preloaded_data ? preloaded_data
                                      : typed_array_data(b, object_address(b, obj));
@@ -795,8 +814,13 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     Value* ta_len = preloaded_length
                         ? preloaded_length
                         : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    Value* in_bounds = b.build_ult(idx.i64, ta_len);
-    Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    Value* ok = nullptr;
+    if (idx.bounded) {
+        ok = b.build_ult(idx.bounded, ta_len);
+    } else {
+        Value* in_bounds = b.build_ult(idx.i64, ta_len);
+        ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    }
     // Before the bounds test, as lower_elem_get_typed computes it.
     Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
     b.build_br_if(ok, bb_store, bb_merge);

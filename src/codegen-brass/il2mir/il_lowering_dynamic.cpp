@@ -284,12 +284,13 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // ToBoolean of a dynamic value, bronze_truthy without the call for every
 // operand whose answer is in its bits: a Number is true unless it is +-0 or
 // NaN, an Int32 or Boolean unless its payload is 0, undefined and null are
-// false and an Object is true (bronze has no [[IsHTMLDDA]] object). Strings,
-// BigInts and the hole read memory or are the helper's.
+// false and an Object is true (bronze has no [[IsHTMLDDA]] object), and a
+// String is true unless its header's length is 0. BigInts and the hole are
+// the helper's.
 //
 // Without a hint the tests are a ladder, each its own branch: a Boolean, null
 // or undefined (one test), then an Object, then the Numbers and Int32s, then
-// the helper. A hint from a type-feedback profile (`number_hint`, or the
+// a String, then the helper. A hint from a type-feedback profile (`number_hint`, or the
 // kTruth* `kinds` it saw) puts tests for those values first, on the
 // fall-through, and the whole ladder after them in cold blocks; any value
 // still gets its answer there.
@@ -375,7 +376,22 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
                                 bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT));
     Value* int_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
     Value* answer = b.build_select(is_num, num_true, int_true);
-    b.build_br_if(b.build_or(is_num, is_int), merge, {answer}, slow, {});
+    BasicBlock* not_num = b.append_block(prefix + "_notnum");
+    BasicBlock* str = b.append_block(prefix + "_str");
+    if (ladder) {
+        not_num->set_cold();
+        str->set_cold();
+    }
+    b.position_at_end(classify);
+    b.build_br_if(b.build_or(is_num, is_int), merge, {answer}, not_num, {});
+    // Then a String (`if (renderable.renderPipeId)`, `if (name)`): true
+    // unless it is empty, and every string's header holds its length, a
+    // `+`-chain builder's included (string.h).
+    b.position_at_end(not_num);
+    b.build_br_if(b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_STRING)), str, slow);
+    b.position_at_end(str);
+    Value* chars = b.build_load(Type::i32(), b.build_and(v, bits(0x0000FFFFFFFFFFFFULL)), BRONZE_ABI_STRING_LENGTH_OFFSET);
+    b.build_br(merge, {b.build_ne(chars, b.build_iconst_i32(0))});
 
     b.position_at_end(slow);
     b.build_br(merge, {b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1))});

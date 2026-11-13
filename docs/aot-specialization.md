@@ -77,6 +77,11 @@ Both are presence tests (`if (material.map)`, `if (object.parent)`), the next mo
 common dynamic conditions in three.js. The answer for every value is unchanged:
 bronze has no `[[IsHTMLDDA]]` object.
 
+After the classifier a String answers from its header's length, where it called
+`bronze_unbox_bool` (pixi's `if (renderable.renderPipeId)`, once per sprite:
+pixi_sprites n=10000 25.48M to 25.07M instructions a frame).
+`tests/oracle/cases/truthy_string_inline.js`.
+
 ### 3. `Array.prototype.sort` merged in compiled code
 
 A site `arr.sort(f)` in an image build tests that the receiver is an Array
