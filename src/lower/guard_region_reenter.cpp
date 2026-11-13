@@ -45,10 +45,16 @@ uint32_t emitReentry(std::vector<il::Block>& out, const ReentryBlocks& blocks, c
         received.push_back(newValue());
         pre.params.push_back(il::BlockParam{received.back(), promoted[k] != 0 ? il::Type::F64 : header.params[k].type});
     }
+    // The doubles of the values tested on the entry edge are the preheader's
+    // parameters, behind the header's: each way in unboxes them behind its own
+    // tests (a raw unbox wants a test that dominates it), and the preheader's
+    // names for them dominate the fast copy.
+    for (il::ValueId v : entryUnboxed) {
+        args.push_back(newValue());
+        conv.instructions.push_back(makeRawUnbox(args.back(), v));
+        pre.params.push_back(il::BlockParam{rawOf[v], il::Type::F64});
+    }
     conv.instructions.push_back(makeJump(blocks.pre, std::move(args)));
-    // The preheader: the doubles of the values tested on the entry edge, made
-    // where both ways in pass, so they dominate the fast copy.
-    for (il::ValueId v : entryUnboxed) pre.instructions.push_back(makeRawUnbox(rawOf[v], v));
     pre.instructions.push_back(makeJump(fastHeader, std::move(received)));
     return static_cast<uint32_t>(tested.size());
 }

@@ -577,6 +577,14 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                     args.push_back(rawOf[arg]);
                 }
             }
+            if (plan.reenter) {
+                // The preheader takes the entry values' doubles as parameters
+                // (guard_region_reenter.cpp).
+                for (il::ValueId v : entryUnboxed) {
+                    args.push_back(newValue());
+                    conv.instructions.push_back(makeRawUnbox(args.back(), v));
+                }
+            }
             conv.instructions.push_back(makeJump(fastEntry, std::move(args)));
         }
         if (plan.reenter) {
