@@ -455,19 +455,20 @@ Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* b
 
 void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
                                                            Value* val) {
+    const Type ty = val->type() == Type::f64() ? Type::f64() : Type::i64();
     if (!head) {
         if (index <= kMaxInlineDispIndex) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            with_alias_class(b.build_store(Type::i64(), block, disp, val), kBoxedElementAliasClass);
+            with_alias_class(b.build_store(ty, block, disp, val), kBoxedElementAliasClass);
         } else {
-            with_alias_class(b.build_store_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
+            with_alias_class(b.build_store_indexed(ty, block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
         }
     } else if (index <= kMaxInlineDispIndex) {
         const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        with_alias_class(b.build_store_indexed(Type::i64(), block, head, 8, disp, val), kBoxedElementAliasClass);
+        with_alias_class(b.build_store_indexed(ty, block, head, 8, disp, val), kBoxedElementAliasClass);
     } else {
         Value* slot = b.build_add(head, iconst64(b, index));
-        with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
+        with_alias_class(b.build_store_indexed(ty, block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
     }
 }
 

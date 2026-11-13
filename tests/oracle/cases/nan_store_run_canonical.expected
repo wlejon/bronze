@@ -1,0 +1,7 @@
+A number:NaN:true:false | number:NaN:true:false | number:NaN:true:false | number:0:false:true=1 | number:NaN:true:false | number:1:false:true=2 | number:0:false:true=1 | number:Infinity:false:true=Infinity | n number:NaN:true:false | sum number:NaN:true:false
+B number:Infinity:false:true=Infinity | number:-Infinity:false:true=-Infinity | number:Infinity:false:true=Infinity | number:0:false:true=1 | number:NaN:true:false | number:1:false:true=2 | number:Infinity:false:true=Infinity | number:-Infinity:false:true=-Infinity | n number:-Infinity:false:true | sum number:NaN:true:false
+C number:NaN:true:false | number:NaN:true:false | number:NaN:true:false | number:0:false:true=1 | number:NaN:true:false | number:1:false:true=2 | number:NaN:true:false | number:NaN:true:false | n number:NaN:true:false | sum number:NaN:true:false
+D number:4:false:true=5 | number:-2:false:true=-1 | number:3:false:true=4 | number:0:false:true=1 | number:2:false:true=3 | number:1:false:true=2 | number:1:false:true=2 | number:2:false:true=3 | n number:-2:false:true | sum number:11:false:true
+warm 150012500
+cmp false false false NaN true -1 1
+field number:NaN:true:false number:NaN:true:false {"v":null}

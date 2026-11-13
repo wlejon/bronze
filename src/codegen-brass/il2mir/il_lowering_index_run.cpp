@@ -8,6 +8,7 @@
 #include "il_property_lowering.h"
 #include "il/key.h"
 #include "il_abi.h"
+#include "il_lowering_ops.h"
 #include <algorithm>
 #include <cstdlib>
 #include <unordered_map>
@@ -519,6 +520,19 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     // card the slot is on rather than its first.
     std::vector<Value*> non_prim_vals;
     std::vector<uint32_t> non_prim_idx;
+    // ONE NaN TEST FOR THE RUN. A run that reads no element of any array
+    // (its reads are static slots of a plain object, which is not the
+    // Array stored into) may make its stores last, in program order: until
+    // then it only computes. So a Number computed as a double is stored as
+    // its eight bytes when no stored double is a NaN, which one compare of
+    // their sum answers (a NaN term makes the sum NaN; a sum that is NaN
+    // with no NaN term, inf + -inf, takes the canonical stores too). Each
+    // stored double otherwise pays its own NaN select (box_f64_bits). The
+    // test precedes every store, so no other NaN reaches the array.
+    struct RunStore { uint32_t elem_idx; Value* boxed; Value* f64; };
+    std::vector<RunStore> run_stores;
+    const bool defer_stores = committed_get_recv_id == UINT32_MAX && !numbers_src;
+    std::unordered_set<Value*> slot_numbers;
     for (size_t j = inst_idx; j < committed_end; ++j) {
         const BronzeInstruction& inst = blk_ast.instructions[j];
         uint32_t elem_idx = 0;
@@ -526,7 +540,11 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             apply_loc(inst);
             int32_t off = 0;
             Value* base = prop_lowering_.static_slot_base(b, sget_ptr, inst.static_slot, off);
-            fast_get_vals[inst.result_id] = b.build_load(Type::i64(), base, off);
+            Value* v = b.build_load(Type::i64(), base, off);
+            fast_get_vals[inst.result_id] = v;
+            // A layout cell's `number` member is a double slot on every shape
+            // the run's static guard admits: its word is a Number.
+            if (prop_lowering_.layout_number(StaticSlotSite::of(inst))) slot_numbers.insert(v);
         } else if (inst.op == BronzeOp::PropGet) {
             parse_prop_index(inst, elem_idx);
             apply_loc(inst);
@@ -543,11 +561,20 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             } else {
                 val = ensure_type(get_val_by_id(val_id, b, val_map), Type::i64(), b);
             }
-            prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx, val);
-            if (!is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val)) {
+            if (defer_stores) {
+                // A constant needs no NaN test (its box is folded canonical).
+                Value* f = boxed_f64_source(val);
+                const Instruction* fdef = f ? f->defining_instruction() : nullptr;
+                if (fdef && fdef->opcode() == Opcode::fconst_f64) f = nullptr;
+                run_stores.push_back(RunStore{elem_idx, val, f});
+            } else {
+                prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx, val);
+            }
+            const bool slot_number = slot_numbers.count(val) != 0;
+            if (!slot_number && !is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val)) {
                 non_prim_vals.push_back(val);
                 non_prim_idx.push_back(elem_idx);
-            } else if (!prop_lowering_.is_known_number(val)) {
+            } else if (!slot_number && !prop_lowering_.is_known_number(val)) {
                 // il_number_array.cpp, the rule for a store.
                 prop_lowering_.forget_numbers_unless_number(b, set_obj, val);
             }
@@ -556,6 +583,44 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             if (!lower_instruction(inst, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
                 return false;
             }
+        }
+    }
+    // Where the fast path's straight line ends (a scalar may have opened blocks).
+    bb_fast = b.current_block();
+    if (!run_stores.empty()) {
+        std::vector<Value*> terms;
+        for (const RunStore& s : run_stores) {
+            if (s.f64) terms.push_back(s.f64);
+        }
+        if (terms.size() < 2) {
+            for (const RunStore& s : run_stores) {
+                prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, s.elem_idx, s.boxed);
+            }
+        } else {
+            // A balanced sum: its depth, not its length, is on the path to
+            // the branch.
+            while (terms.size() > 1) {
+                std::vector<Value*> next;
+                for (size_t k = 0; k + 1 < terms.size(); k += 2) next.push_back(b.build_fadd(terms[k], terms[k + 1]));
+                if (terms.size() % 2) next.push_back(terms.back());
+                terms.swap(next);
+            }
+            BasicBlock* bb_raw = b.append_block(prefix + "_numbers_raw");
+            BasicBlock* bb_canon = b.append_block(prefix + "_nan_cold");
+            BasicBlock* bb_stored = b.append_block(prefix + "_stored");
+            bb_canon->set_cold();
+            b.position_at_end(bb_fast);
+            b.build_br_if(b.build_ne(terms[0], terms[0]), bb_canon, bb_raw);
+            for (const bool raw : {true, false}) {
+                b.position_at_end(raw ? bb_raw : bb_canon);
+                for (const RunStore& s : run_stores) {
+                    prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, s.elem_idx,
+                                                                 raw && s.f64 ? s.f64 : s.boxed);
+                }
+                b.build_br(bb_stored);
+            }
+            b.position_at_end(bb_stored);
+            bb_fast = bb_stored;
         }
     }
     if (non_prim_vals.empty()) {

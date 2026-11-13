@@ -574,6 +574,8 @@ public:
     // f64 (the same eight bytes as a double, hole and all: il.h `numberBits`).
     Value* load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, bool check_hole,
                                         Type as = Type::i64());
+    // `val` an i64 Value, or an f64 the caller has proven no NaN (its eight
+    // bytes are then the Number's Value as they stand).
     void store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, Value* val);
     bool is_known_non_ref(Value* val) const;
 

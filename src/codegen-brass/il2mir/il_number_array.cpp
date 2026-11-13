@@ -299,10 +299,11 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
             // first) once nothing else is ANDed in front of it.
             ok = with_array(b.build_and(has_elems, in_bounds));
         } else {
+            // In bounds of `length` is in the block: the runtime keeps
+            // head_offset + length <= capacity (ArrayHeader::setLength grows
+            // the block first), as the read above relies on too.
             Value* len = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-            Value* cap = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-            Value* max_slot = max_index == 0 ? raw_head : b.build_add(raw_head, iconst(b, max_index));
-            Value* in_bounds = b.build_and(b.build_ult(iconst(b, max_index), len), b.build_ult(max_slot, cap));
+            Value* in_bounds = b.build_ult(iconst(b, max_index), len);
             Value* props = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
             Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
             ok = b.build_and(with_array(no_props), b.build_and(in_bounds, has_elems));
