@@ -104,10 +104,11 @@ bool isValidTypedElemKind(int32_t kind) {
     return (raw >= 0 && raw <= 11) || raw == kElemKindPlainArrayF64;
 }
 
-std::vector<BlockId> computeDominators(const Function& fn, std::vector<uint32_t>& rpoIndexOut) {
+std::vector<BlockId> computeDominators(const Function& fn, std::vector<uint32_t>& rpoIndexOut,
+                                       std::vector<std::vector<BlockId>>& preds) {
     const size_t numBlocks = fn.blocks.size();
     std::vector<std::vector<BlockId>> succs(numBlocks);
-    std::vector<std::vector<BlockId>> preds(numBlocks);
+    preds.assign(numBlocks, {});
 
     auto addEdge = [&](BlockId from, BlockId to) {
         if (to == kNoBlock || to >= numBlocks) return;
@@ -264,7 +265,8 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
     }
 
     std::vector<uint32_t> rpoIndex;
-    const std::vector<BlockId> idom = computeDominators(fn, rpoIndex);
+    std::vector<std::vector<BlockId>> preds;
+    const std::vector<BlockId> idom = computeDominators(fn, rpoIndex, preds);
 
     // 3. Collect `IsNumber` branch guards and `PinGuard` barriers across the function.
     struct IsNumberBranch {
@@ -347,9 +349,14 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
     auto isDominatedByIsNumberTrue = [&](ValueId v, BlockId blockId) -> bool {
         for (const IsNumberBranch& br : isNumberBranches) {
             if (br.operand != v) continue;
-            if (br.thenBlock != kNoBlock &&
-                dominatesBlock(idom, rpoIndex, br.thenBlock, blockId) &&
-                !dominatesBlock(idom, rpoIndex, br.elseBlock, blockId)) {
+            if (br.thenBlock == kNoBlock || !dominatesBlock(idom, rpoIndex, br.thenBlock, blockId)) continue;
+            if (!dominatesBlock(idom, rpoIndex, br.elseBlock, blockId)) return true;
+            // The failing side dominating as well is a test inside the code
+            // its failure leads to (a region's re-test chain, in the slow copy
+            // the failed entry test enters). The passing edge still certifies
+            // when it is the only way into its block.
+            if (br.thenBlock != br.elseBlock && preds[br.thenBlock].size() == 1 &&
+                preds[br.thenBlock][0] == br.branchBlock) {
                 return true;
             }
         }
@@ -474,7 +481,7 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
                                         std::string(opName(srcDef.inst->op)) +
                                         ", which never produces a Number");
                         }
-                        if (isDominatedByIsNumberFalse(src, blockId)) {
+                        if (isDominatedByIsNumberFalse(src, blockId) && !isDominatedByIsNumberTrue(src, blockId)) {
                             return fail("raw unbox %" + std::to_string(inst.result) +
                                         " of %" + std::to_string(src) + " in b" +
                                         std::to_string(bIdx) +
