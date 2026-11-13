@@ -344,8 +344,10 @@ typedef struct bronze_code_range {
     const char* const* files;
     uint32_t file_count;
     /* The function's brass stack map, encoded (brass encode_stack_maps, one
-     * function whose code starts at `code_start`): the frames of this code
-     * the collector walks, and where each holds a Value. Emitted into every
+     * function whose code starts at `code_start`; format version 2, whose
+     * slot area a runtime reading only version 1 would drop the map for, so
+     * this text is part of the fingerprint): the frames of this code the
+     * collector walks, and where each holds a Value. Emitted into every
      * compiled object; a loaded image's registration hands it to brass's code
      * registry (bronze_register_code_ranges) unless the code's maps are
      * registered already, as a JIT's are. Null when the function has none. */

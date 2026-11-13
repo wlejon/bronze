@@ -293,10 +293,12 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     mod->set_allow_fp_reassociation(options_.allow_fp_reassociation);
     mod->set_pinned_tls_register(options_.pin_tls_register);
     // A JS frame's roots are found through its stack maps. brass's collector
-    // also reads every stack conservatively and pins what a word names, so a
-    // dead register or slot that still names an object keeps it for that
-    // collection; bronze takes that over the allocator's zeroing of the dead
-    // ones at every call (brass Module::precise_stack_roots).
+    // also reads the stacks conservatively and pins what a word names, except
+    // a JS frame's spill slots and locals, which its map describes; so a dead
+    // callee-saved register that still names an object keeps it for that
+    // collection, and bronze takes that over the allocator's zeroing of the
+    // dead registers and slots at every call (brass
+    // Module::precise_stack_roots).
     mod->set_precise_stack_roots(true);
     // Every loop backedge compares the stack pointer with the block's
     // stack_limit, the word every prologue checks too, so arming one
