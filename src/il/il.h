@@ -743,6 +743,12 @@ struct Module {
     struct ClassFamilyField {
         uint32_t keyIndex = 0;   // into `keyConstants`
         bool writable = true;    // as the construction sequence installs it
+        // A harvest saw the key hold only plain objects (feedback_plan.h
+        // `harvestObjects`): the runtime stamps the class only on a shape that
+        // calls the field's slot an object one, and only a field so marked
+        // may be one (runtime/class_family.cpp), so a family site's read of
+        // it is a receiver with no tag or header test.
+        bool object = false;
     };
     struct ClassFamilyEntry {
         std::string name;  // the class's binding, for the IL dump only
@@ -763,13 +769,18 @@ struct Module {
     // (opt/spec/feedback_plan.h `harvestDoubles`): the runtime publishes the
     // cell only for a shape that calls the slot a double, whose objects hold
     // a Number there for as long as they keep the shape (runtime/slot_repr.h),
-    // so a read behind the cell's guard is a Number with no test.
+    // so a read behind the cell's guard is a Number with no test. A member
+    // marked `object` is one the harvest saw hold only plain objects: the
+    // cell is published only for a shape that calls the slot an object one,
+    // so a read behind its guard is a plain object, and a written member not
+    // so marked is never an object slot (runtime/static_shape.cpp).
     struct LayoutCellEntry {
         struct Pair {
             uint32_t keyIndex = 0;  // into `keyConstants`
             uint32_t slot = 0;
             bool write = false;
             bool number = false;
+            bool object = false;
         };
         uint32_t cell = 0;  // a `staticCellIndex`
         uint32_t keyCount = 0;
@@ -792,6 +803,11 @@ struct Module {
     // a name shared with an unpinned class costs a shape split at worst.
     // Empty without a manifest or a harvest.
     std::vector<uint32_t> slotReprFields;
+    // The same list for the OBJECT representation (runtime/slot_repr.h): the
+    // keys of the layout cells' and class families' `object` members, which
+    // a slot first installed with a plain object in hand is born an object
+    // slot under. Empty without a harvest.
+    std::vector<uint32_t> slotReprObjectFields;
     // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
     // entry per site lowering created, handed to the runtime at module init so
     // that a site the run never reaches is still known — "never observed" and

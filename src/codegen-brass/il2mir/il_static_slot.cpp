@@ -85,6 +85,29 @@ Value* iconst(Builder& b, uint64_t v) {
     return b.build_iconst_i64(static_cast<int64_t>(v));
 }
 
+// An object flag that is the constant 1: the value is a plain object on every
+// path here, and a receiver test of it asks nothing.
+bool const_one(const Value* v) {
+    const Instruction* d = v != nullptr ? v->defining_instruction() : nullptr;
+    return d != nullptr && d->opcode() == Opcode::iconst_i32 && d->imm_i32() == 1;
+}
+
+// A value flag (il_property.h, NUMBER FLAGS / OBJECT FLAGS) of `v`, found
+// through the bitcasts between `i64` and `tagged` a result is stored as.
+Value* find_flag(const std::unordered_map<Value*, Value*>& flags, Value* v) {
+    for (int hops = 0; v != nullptr && hops < 3; ++hops) {
+        const auto it = flags.find(v);
+        if (it != flags.end()) return it->second;
+        const Instruction* def = v->defining_instruction();
+        if (def == nullptr || def->operand_count() != 1 ||
+            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
+            return nullptr;
+        }
+        v = def->operand(0);
+    }
+    return nullptr;
+}
+
 // The stand-in shape's address, and the receiver's shape word read as an
 // address too, for the select between them: a data address is a `ptr`, and a
 // select takes two values of one type.
@@ -133,6 +156,10 @@ Value* PropertyLoweringHelper::not_plain_shape(Builder& b) {
 }
 
 Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
+    // A value known a plain object (OBJECT FLAGS): its shape word, or the
+    // flag's one branch in place of the two tests.
+    Value* known = object_flag(obj);
+    if (const_one(known)) return shape_word_of(b, b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)));
     // Two predicted branches, not selects: a plain object's path is the
     // object test, the header test and the shape load, with no select in the
     // address the header and shape are read through, and anything else takes
@@ -146,12 +173,18 @@ Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
     bb_other->set_cold();
     b.position_at_end(bb_cur);
     Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
-    b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, bb_other);
-    b.position_at_end(bb_obj);
-    constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-    Value* plain = b.build_eq(header_word(b, ptr), b.build_iconst_i32(kPlainHeader));
-    Value* shape = shape_word_of(b, ptr);
-    b.build_br_if(plain, bb_join, {shape}, bb_other, {});
+    if (known) {
+        b.build_br_if(known, bb_obj, bb_other);
+        b.position_at_end(bb_obj);
+        b.build_br(bb_join, {shape_word_of(b, ptr)});
+    } else {
+        b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, bb_other);
+        b.position_at_end(bb_obj);
+        constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+        Value* plain = b.build_eq(header_word(b, ptr), b.build_iconst_i32(kPlainHeader));
+        Value* shape = shape_word_of(b, ptr);
+        b.build_br_if(plain, bb_join, {shape}, bb_other, {});
+    }
     b.position_at_end(bb_other);
     b.build_br(bb_join, {not_plain_shape(b)});
     b.position_at_end(bb_join);
@@ -175,6 +208,20 @@ void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fas
 }
 
 Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss, bool exits) {
+    // A value known a plain object (OBJECT FLAGS) asks nothing, or its flag
+    // once in place of the two tests.
+    if (Value* known = object_flag(obj)) {
+        Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+        if (!const_one(known)) {
+            BasicBlock* bb_at = b.current_block();
+            BasicBlock* bb_plain =
+                b.append_block("recv_" + std::to_string(bb_at->parent()->next_block_id()) + "_known");
+            b.position_at_end(bb_at);
+            site_branch(b, known, bb_plain, miss, exits);
+            b.position_at_end(bb_plain);
+        }
+        return shape_word_of(b, ptr);
+    }
     // The payload is the Value with its object tag XORed away, below 2^48
     // exactly when the tag was the object tag; only then is the header read.
     BasicBlock* bb_cur = b.current_block();
@@ -207,18 +254,35 @@ bool PropertyLoweringHelper::layout_number(const StaticSlotSite& site) const {
     return false;
 }
 
-Value* PropertyLoweringHelper::number_flag(Value* v) const {
-    for (int hops = 0; v != nullptr && hops < 3; ++hops) {
-        const auto it = number_flags_.find(v);
-        if (it != number_flags_.end()) return it->second;
-        const Instruction* def = v->defining_instruction();
-        if (def == nullptr || def->operand_count() != 1 ||
-            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
-            return nullptr;
+Value* PropertyLoweringHelper::number_flag(Value* v) const { return find_flag(number_flags_, v); }
+
+Value* PropertyLoweringHelper::object_flag(Value* v) const { return find_flag(object_flags_, v); }
+
+bool PropertyLoweringHelper::object_member(const StaticSlotSite& site) const {
+    if (site.none() || site.slot >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) return false;
+    if (site.family()) {
+        if (family_objects_ == nullptr || site.family_lo >= family_objects_->size()) return false;
+        const uint64_t bit = uint64_t{1} << site.slot;
+        for (uint64_t c = site.family_lo; c <= uint64_t{site.family_lo} + site.family_span; ++c) {
+            if (c >= family_objects_->size() || ((*family_objects_)[c] & bit) == 0) return false;
         }
-        v = def->operand(0);
+        return true;
     }
-    return nullptr;
+    if (layout_cells_ == nullptr) return false;
+    const auto layout = layout_cells_->find(site.cell);
+    if (layout == layout_cells_->end()) return false;
+    for (const LayoutCell::Pair& p : layout->second.pairs) {
+        if (p.slot == site.slot) return p.object;
+    }
+    return false;
+}
+
+Value* PropertyLoweringHelper::plain_object_test(Builder& b, Value* v) {
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, v, plain, ptr, shape);
+    return plain;
 }
 
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
@@ -275,6 +339,14 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
         // pointer there would be read as a double and never traced. A value
         // lowering knows is a Number needs no test, nor does a slot past the
         // map's width, which is never a double one.
+        // An OBJECT member (object_member) is an object slot on every shape
+        // the claim admits, and no other member is one (the publish and the
+        // stamp see to both): a store there takes a plain object and nothing
+        // else, so a Number never stores bare and anything else is asked.
+        if ((t.stores || t.store) && object_member(site)) {
+            all(t.store_is_number || !t.store ? b.build_iconst_i32(0) : plain_object_test(b, t.store));
+            continue;
+        }
         if (t.store && !t.store_is_number && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
             // A layout cell's `number` member is a double slot on every shape
             // the cell admits: the value alone is the question.
@@ -421,7 +493,7 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
             // A LAYOUT CELL (il.h `Module::layoutCells`) stands for every
             // member's claim: the whole list goes, three u32 a member (its
             // key as the runtime knows it, its slot, its flags: stored-to,
-            // a double), on the stack.
+            // a double, an object), on the stack.
             const std::vector<LayoutCell::Pair>& pairs = layout->second.pairs;
             Value* list = b.build_alloca(static_cast<uint32_t>(pairs.size() * 12), 4);
             for (size_t i = 0; i < pairs.size(); ++i) {
@@ -429,7 +501,8 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
                 b.build_store(Type::i32(), list, at, runtime_key(b, pairs[i].key));
                 b.build_store(Type::i32(), list, at + 4, b.build_iconst_i32(static_cast<int32_t>(pairs[i].slot)));
                 const uint32_t flags = (pairs[i].write ? BRONZE_ABI_LAYOUT_PAIR_WRITE : 0u) |
-                                       (pairs[i].number ? BRONZE_ABI_LAYOUT_PAIR_DOUBLE : 0u);
+                                       (pairs[i].number ? BRONZE_ABI_LAYOUT_PAIR_DOUBLE : 0u) |
+                                       (pairs[i].object ? BRONZE_ABI_LAYOUT_PAIR_OBJECT : 0u);
                 b.build_store(Type::i32(), list, at + 8, b.build_iconst_i32(static_cast<int32_t>(flags)));
             }
             b.build_call("bronze_static_layout_publish", Type::void_type(),
@@ -474,10 +547,12 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     BasicBlock* bb_miss = b.append_block(prefix + kMissName);
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
-    // The read's NUMBER FLAG (il_property.h), the join's second parameter.
+    // The read's NUMBER FLAG or OBJECT FLAG (il_property.h), the join's
+    // second parameter.
     const bool number = layout_number(site);
-    Value* merge_flag = number ? b.add_block_param(bb_merge, Type::i32()) : nullptr;
-    const size_t values = number ? 2 : 1;
+    const bool object = !number && object_member(site);
+    Value* merge_flag = number || object ? b.add_block_param(bb_merge, Type::i32()) : nullptr;
+    const size_t values = number || object ? 2 : 1;
 
     b.position_at_end(bb_cur);
     Value* ptr = nullptr;
@@ -492,7 +567,7 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     // eight bytes are what [[Get]] answers. A double slot's word is the
     // number's box.
     std::vector<Value*> hit_args{with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass)};
-    if (number) hit_args.push_back(b.build_iconst_i32(1));
+    if (number || object) hit_args.push_back(b.build_iconst_i32(1));
     append_memo(hit_args, miss.memo_hit, b);
     b.build_br(bb_merge, hit_args);
 
@@ -502,12 +577,14 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     emit_static_fill(b, miss.receiver(b), key_index, site, /*for_write=*/false);
     std::vector<Value*> miss_args{slow_val};
     if (number) miss_args.push_back(b.build_ule(slow_val, iconst(b, kBronzeNumberMaxBits)));
+    if (object) miss_args.push_back(plain_object_test(b, slow_val));
     append_memo(miss_args, miss.memo_miss, b);
     b.build_br(bb_merge, miss_args);
 
     b.position_at_end(bb_merge);
     merge_memo(b, bb_merge, hit_args.size() - values, miss);
     if (number) set_number_flag(merge_val, merge_flag);
+    if (object) set_object_flag(merge_val, merge_flag);
     return merge_val;
 }
 
@@ -525,6 +602,7 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
     StaticGuardTerm term{site};
     term.store = val;
     term.store_is_number = val_is_number;
+    term.stores = true;
     site_branch(b, guard_or_miss(b, *this, obj, {term}, miss, bb_miss, ptr), bb_hit, bb_miss, miss.exits);
 
     // A hit stores into a slot the shape already has, which moves no shape;
@@ -651,11 +729,20 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
     if (inst_ast.op == BronzeOp::PropGet) {
         res = prop_lowering.lower_prop_get_guarded(b, obj, StaticSlotSite::of(inst_ast));
         // Behind the `is.shape` that admitted this layout cell: a `number`
-        // member is a Number.
+        // member is a Number, an `object` member (or family field) a plain
+        // object.
         if (prop_lowering.layout_number(StaticSlotSite::of(inst_ast))) {
             prop_lowering.set_number_flag(res, b.build_iconst_i32(1));
+        } else if (prop_lowering.object_member(StaticSlotSite::of(inst_ast))) {
+            prop_lowering.set_object_flag(res, b.build_iconst_i32(1));
         }
     } else {
+        // A covered store is a Number's, never under a key whose slot may be
+        // an object one (guard_region_shapes.cpp), and an object member's key
+        // is one.
+        if (prop_lowering.object_member(StaticSlotSite::of(inst_ast))) {
+            throw std::logic_error("il2mir: a shape-guarded store into an object slot");
+        }
         prop_lowering.lower_prop_set_guarded(b, obj, val, StaticSlotSite::of(inst_ast));
     }
     lowering->memo_keep();
@@ -715,11 +802,15 @@ void IlLowering::register_class_families(Builder& b, Value* map_addr) {
                   module_data_addr(b, "__bronze_family_base")});
 }
 
-// The names whose slots may be born doubles (il.h `slotReprFields`; runtime
-// slot_repr.h), as module key indices on the stack: the runtime maps each
-// through the key map and keeps the names.
+// The names whose slots may be born doubles or object ones (il.h
+// `slotReprFields`, `slotReprObjectFields`; runtime slot_repr.h), as module
+// key indices on the stack: the runtime maps each through the key map and
+// keeps the names.
 void IlLowering::register_slot_repr(Builder& b, Value* map_addr) {
-    const std::vector<uint32_t>& fields = options_.slot_repr_fields;
+    // The object representation's keys go in the same list, marked
+    // (BRONZE_ABI_SLOT_REPR_FIELD_OBJECT).
+    std::vector<uint32_t> fields = options_.slot_repr_fields;
+    for (uint32_t k : options_.slot_repr_object_fields) fields.push_back(k | BRONZE_ABI_SLOT_REPR_FIELD_OBJECT);
     if (fields.empty()) return;
     Value* list = b.build_alloca(static_cast<uint32_t>(fields.size() * 4), 4);
     for (size_t i = 0; i < fields.size(); ++i) {

@@ -46,10 +46,24 @@
 // were born and kept Numbers under; docs/slot-representation.md "From a
 // harvest"). Any other key is never eligible: a key that alternates would cost
 // a shape split each time it turned over.
+//
+// THE OBJECT REPRESENTATION. The same discipline for one more fact: a slot a
+// shape calls an OBJECT one holds an Object-tagged pointer to a plain object
+// (HeapKind::Plain), so a value read from it can be used as a receiver with
+// neither the tag test nor the header test. The eight bytes are an ordinary
+// boxed Value (the collector traces them as any other); what the shape adds is
+// that every store keeps the claim or moves the object off the shape
+// (`setSlot`, `Shape::withSlotBoxed`), and that generated code's store arms
+// test the value before they take an entry or a cell naming such a slot. The
+// held object's own shape is no part of the claim: it may change with no
+// store to the holder. Born only from an eligible key whose first store is a
+// plain object; eligibility comes from a harvest (keys the harvested run's
+// objects were born and kept plain objects under).
 
 #include <cstdint>
 
 #include "abi/bronze_abi.h"
+#include "runtime/heap.h"
 #include "runtime/property_key.h"
 #include "runtime/value.h"
 
@@ -58,10 +72,11 @@ namespace bronze {
 class Shape;
 struct StringHeader;
 
-// How the eight bytes of one slot are to be read.
+// How the eight bytes of one slot are to be read, and what a store must bring.
 enum class SlotRepr : uint8_t {
     Boxed = BRONZE_ABI_SLOT_REPR_BOXED,
     Double = BRONZE_ABI_SLOT_REPR_DOUBLE,
+    Object = BRONZE_ABI_SLOT_REPR_OBJECT,
 };
 
 // Slots at or above this index are never given a representation: the shape's
@@ -75,6 +90,27 @@ constexpr uint32_t kSlotReprLimit = BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT;
 // 6.1.6.1), and refusing it would generalize a slot for `x = y | 0`.
 inline bool slotReprAcceptsValue(Value v) noexcept {
     return v.isNumber() || v.tag() == static_cast<uint16_t>(Tag::Int32);
+}
+
+// Is this value one an object slot may hold? Exactly what generated code's
+// receiver tests ask: an Object-tagged Value whose header says a plain object.
+// The header's kind never changes over an object's life, so a value that was
+// one when stored is one when read.
+inline bool slotReprAcceptsObject(Value v) noexcept {
+    if (!v.isObject()) return false;
+    const auto* hdr = v.asObject<HeapObjectHeader>();
+    return hdr->tag == static_cast<uint16_t>(Tag::Object) && hdr->flags == HeapKind::Plain;
+}
+
+// Whether a slot of representation `repr` takes `v` as it is (a double slot
+// canonicalizes it, setSlot).
+inline bool slotReprFits(SlotRepr repr, Value v) noexcept {
+    switch (repr) {
+        case SlotRepr::Double: return slotReprAcceptsValue(v);
+        case SlotRepr::Object: return slotReprAcceptsObject(v);
+        case SlotRepr::Boxed: break;
+    }
+    return true;
 }
 
 // The double a double slot stores for `v`, which `slotReprAcceptsValue` has
@@ -92,14 +128,16 @@ namespace bronze::runtime {
 // For tests: forgets every registered eligible key and zeroes the counters.
 void slotReprResetForTesting();
 
-// May a slot first installed under `key` be born double? The pinned-name list
-// `bronze_register_slot_repr` handed over. Asked once per shape NODE CREATION — a cold path — so a linear scan
-// over the (few dozen) registered names is the whole implementation.
-bool slotReprEligible(PropertyKey key) noexcept;
+// May a slot first installed under `key` be born `repr` (Double or Object)?
+// The name list `bronze_register_slot_repr` handed over, each name with the
+// representations it is eligible for. Asked once per shape NODE CREATION — a
+// cold path — so a linear scan over the (few dozen) registered names is the
+// whole implementation.
+bool slotReprEligible(PropertyKey key, SlotRepr repr = SlotRepr::Double) noexcept;
 
-// Adds one already-arena-interned name to the eligible list. Idempotent by
-// content. Called by `bronze_register_slot_repr` and by tests.
-void slotReprRegisterName(StringHeader* name);
+// Makes one name eligible for `repr`. Idempotent by content. Called by
+// `bronze_register_slot_repr` and by tests.
+void slotReprRegisterName(StringHeader* name, SlotRepr repr = SlotRepr::Double);
 uint32_t slotReprEligibleCount() noexcept;
 
 // --- diagnostics ------------------------------------------------------------
@@ -122,10 +160,11 @@ uint32_t slotReprEligibleCount() noexcept;
 //                              run is counts and never times.
 struct SlotReprCounters {
     uint64_t double_nodes = 0;      // shape nodes created with SlotRepr::Double
+    uint64_t object_nodes = 0;      // shape nodes created with SlotRepr::Object
     uint64_t boxed_nodes = 0;       // shape nodes created boxed
     uint64_t refused_ineligible = 0;  // a number store whose key was not eligible
-    uint64_t generalizations = 0;   // double slots taken back by a non-number store
-    uint64_t generalized_nodes = 0;  // distinct double nodes marked sticky-boxed
+    uint64_t generalizations = 0;   // double or object slots taken back by a store
+    uint64_t generalized_nodes = 0;  // distinct double or object nodes marked sticky-boxed
     // Stores that landed in a double slot THROUGH `setSlot` — the runtime's
     // paths and generated code's misses. Generated code's inline arms test the
     // value and store it themselves, so they are not counted here and a hot

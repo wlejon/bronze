@@ -46,7 +46,13 @@ std::mutex& eligibleNamesMutex() {
     return *m;
 }
 
-using EligibleNames = std::vector<StringHeader*>;
+// A name and the representations it may be born in, as a mask of
+// `1 << SlotRepr`.
+struct EligibleName {
+    StringHeader* name;
+    uint8_t reprs;
+};
+using EligibleNames = std::vector<EligibleName>;
 std::atomic<const EligibleNames*> g_eligibleNames{nullptr};
 
 // Per-(shape, slot) representation stability, for BRONZE_SLOT_REPR_CENSUS.
@@ -133,18 +139,24 @@ NonMovingArena& slotReprArena() {
     return *a;
 }
 
-void slotReprRegisterName(StringHeader* name) {
-    if (name == nullptr) return;
+void slotReprRegisterName(StringHeader* name, SlotRepr repr) {
+    if (name == nullptr || repr == SlotRepr::Boxed) return;
+    const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(repr));
     const PropertyKey incoming = PropertyKey::forString(name);
     std::lock_guard<std::mutex> lock(eligibleNamesMutex());
     const EligibleNames* current = g_eligibleNames.load(std::memory_order_acquire);
-    if (current != nullptr) {
-        for (StringHeader* existing : *current) {
-            if (PropertyKey::forString(existing).matches(incoming)) return;
-        }
-    }
     auto* next = current != nullptr ? new EligibleNames(*current) : new EligibleNames();
-    next->push_back(StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name)));
+    for (EligibleName& existing : *next) {
+        if (!PropertyKey::forString(existing.name).matches(incoming)) continue;
+        if ((existing.reprs & bit) != 0) {
+            delete next;
+            return;
+        }
+        existing.reprs |= bit;
+        g_eligibleNames.store(next, std::memory_order_release);
+        return;
+    }
+    next->push_back({StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name)), bit});
     g_eligibleNames.store(next, std::memory_order_release);
 }
 
@@ -153,11 +165,12 @@ uint32_t slotReprEligibleCount() noexcept {
     return names != nullptr ? static_cast<uint32_t>(names->size()) : 0;
 }
 
-bool slotReprEligible(PropertyKey key) noexcept {
+bool slotReprEligible(PropertyKey key, SlotRepr repr) noexcept {
     const EligibleNames* names = g_eligibleNames.load(std::memory_order_acquire);
     if (names == nullptr || !key.valid() || key.isSymbol()) return false;
-    for (StringHeader* name : *names) {
-        if (PropertyKey::forString(name).matches(key)) return true;
+    const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(repr));
+    for (const EligibleName& e : *names) {
+        if (PropertyKey::forString(e.name).matches(key)) return (e.reprs & bit) != 0;
     }
     return false;
 }
@@ -190,12 +203,13 @@ void slotReprReport() {
     std::fprintf(stderr,
                  "\n=== slot representation ===\n"
                  "  eligible names  : %u\n"
-                 "  shape nodes     : %llu double, %llu boxed\n"
+                 "  shape nodes     : %llu double, %llu object, %llu boxed\n"
                  "  refused         : %llu (number store, name not eligible)\n"
                  "  generalizations : %llu store%s over %llu node%s\n"
                  "  helper stores   : %llu into a double slot\n",
                  slotReprEligibleCount(),
                  static_cast<unsigned long long>(c.double_nodes),
+                 static_cast<unsigned long long>(c.object_nodes),
                  static_cast<unsigned long long>(c.boxed_nodes),
                  static_cast<unsigned long long>(c.refused_ineligible),
                  static_cast<unsigned long long>(c.generalizations),
@@ -266,11 +280,15 @@ void slotReprReport() {
 
 extern "C" {
 
+// Each entry is a module key index; BRONZE_ABI_SLOT_REPR_FIELD_OBJECT set in
+// it makes the name eligible for an object slot rather than a double one.
 void bronze_register_slot_repr(const uint32_t* fields, uint32_t count, const uint32_t* keyMap) {
     recordHelperCall("bronze_register_slot_repr");
     if (fields == nullptr || keyMap == nullptr || count == 0) return;
     for (uint32_t i = 0; i < count; ++i) {
-        slotReprRegisterName(rtKeyHeader(keyMap[fields[i]]));
+        const bool object = (fields[i] & BRONZE_ABI_SLOT_REPR_FIELD_OBJECT) != 0;
+        slotReprRegisterName(rtKeyHeader(keyMap[fields[i] & ~BRONZE_ABI_SLOT_REPR_FIELD_OBJECT]),
+                             object ? SlotRepr::Object : SlotRepr::Double);
     }
 }
 

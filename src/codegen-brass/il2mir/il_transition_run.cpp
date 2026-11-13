@@ -287,12 +287,24 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     }
     Value* end_shape = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_END * kCell);
     Value* doubles = nullptr;
+    Value* objects = nullptr;
     for (size_t k = 0; k < sites.size(); ++k) {
         const uint32_t slot = first.run_slot + static_cast<uint32_t>(k);
         const uint32_t val_id = insts[sites[k]].operands[1];
-        if (slot >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT || is_number_value(val_id)) continue;
+        if (slot >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) continue;
+        Value* bit = iconst(b, uint64_t{1} << slot);
+        // An object slot (shape.h `object_slots`) takes a plain object only:
+        // a value from before the run is asked, any other refuses it.
+        if (!objects) objects = b.build_load(Type::i64(), end_shape, BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET);
+        Value* not_object = b.build_eq(b.build_and(objects, bit), iconst(b, 0));
+        if (!is_number_value(val_id) && !defined.count(val_id)) {
+            Value* bits = ensure_type(get_val_by_id(val_id, b, val_map), Type::i64(), b);
+            not_object = b.build_or(not_object, prop_lowering_.plain_object_test(b, bits));
+        }
+        ok = b.build_and(ok, not_object);
+        if (is_number_value(val_id)) continue;
         if (!doubles) doubles = b.build_load(Type::i64(), end_shape, BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
-        Value* boxed = b.build_eq(b.build_and(doubles, iconst(b, uint64_t{1} << slot)), iconst(b, 0));
+        Value* boxed = b.build_eq(b.build_and(doubles, bit), iconst(b, 0));
         // A value from before the run can be asked now; one made inside it
         // and not a Number's box (a literal, a constant) never fits a double.
         if (!defined.count(val_id)) {

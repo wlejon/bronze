@@ -145,7 +145,17 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
         *cell = kRefused;
         return;
     }
-    // Nothing is asked here about the slot's REPRESENTATION, and that is
+    // A write site at a slot the shape calls an OBJECT one (slot_repr.h) is
+    // refused: generated code stores a Number into a write site's slot behind
+    // the cell with no test of the slot (a shape-guarded store), which an
+    // object slot does not take. A read site at one is published like any
+    // other; its value is a plain object, which nothing behind an identity
+    // cell relies on.
+    if (forWrite && shape->slotIsObject(slot)) {
+        *cell = kRefused;
+        return;
+    }
+    // Nothing more is asked here about the slot's REPRESENTATION, and that is
     // deliberate. A write site at a slot the shape calls an f64 (slot_repr.h)
     // is published like any other, because the site's own guard tests the
     // value for Number before its bare store — the shape word it already
@@ -165,13 +175,17 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
 
 // A LAYOUT CELL (il.h `Module::layoutCells`): one cell for the claims of
 // every site a profile saw at one shape, `triples` holding each as (runtime
-// key, slot, flags: bit 0 stored-to, bit 1 a double). The shape is published
-// only when every claim holds of it, each under exactly the conditions above,
-// and every member marked a double is a slot the shape calls an f64
+// key, slot, flags: bit 0 stored-to, bit 1 a double, bit 2 an object). The
+// shape is published only when every claim holds of it, each under exactly
+// the conditions above, every member marked a double is a slot the shape
+// calls an f64 and every member marked an object one it calls an object slot
 // (slot_repr.h), so one compare against the cell admits every member's bare
-// access and a read of a double member is a Number with no test: the shape
-// is immutable, and an object whose store breaks the claim leaves it
-// (`Shape::withSlotBoxed`); and only when it has `keyCount`
+// access, a read of a double member is a Number with no test and a read of an
+// object member a plain object with no tag or header test: the shape is
+// immutable, and an object whose store breaks the claim leaves it
+// (`Shape::withSlotBoxed`). A stored-to member not marked an object is no
+// object slot, since a shape-guarded store puts a Number there bare. And only
+// when it has `keyCount`
 // keys, the count of the shape the build named, so that an object still
 // being built, whose shape holds the listed keys and not yet the rest, is not
 // the one the cell keeps. A receiver the list does not describe is not
@@ -202,11 +216,12 @@ void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uin
         const uint32_t keyIndex = triples[3 * i], slot = triples[3 * i + 1];
         const bool forWrite = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_WRITE) != 0;
         const bool isDouble = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_DOUBLE) != 0;
+        const bool isObject = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_OBJECT) != 0;
         StringHeader* key = rtKeyHeader(keyIndex);
         PropertyInfo info;
         const bool found = key != nullptr && shape->lookupProperty(PropertyKey::forString(key), info);
         if (!found || info.accessor || info.slot != slot || (forWrite && (!info.writable || shape->used_as_prototype)) ||
-            (isDouble && !shape->slotIsDouble(slot))) {
+            (isDouble && !shape->slotIsDouble(slot)) || (isObject != shape->slotIsObject(slot) && (isObject || forWrite))) {
             return refuse();
         }
     }

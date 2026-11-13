@@ -388,6 +388,21 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     // The payload is the Value with its object tag XORed away, which is below
     // 2^48 exactly when the tag was the object tag.
     ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    // A value with an OBJECT FLAG (il_property.h): the flag is the plain
+    // test, and the header is read only to refuse the rest.
+    if (Value* known = object_flag(obj)) {
+        const Instruction* d = known->defining_instruction();
+        const bool always = d != nullptr && d->opcode() == Opcode::iconst_i32 && d->imm_i32() == 1;
+        Value* base = always ? ptr
+                             : b.build_select(known, ptr,
+                                              in_process_ ? b.build_iconst_i64(static_cast<int64_t>(
+                                                                reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
+                                                          : b.build_pinned_tls_read());
+        plain = known;
+        shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        if (base_out) *base_out = base;
+        return;
+    }
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
     // A non-object reads through a mapped block whose header word is no
     // object's, so the header compare alone refuses it and `is_obj` has the
@@ -543,6 +558,12 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     Value* dbl = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
                             b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
     no_flag = b.build_or(no_flag, b.build_and(dbl, number));
+    // A transition to an object slot's node is taken by a plain object.
+    if (!is_known_number(val)) {
+        Value* objs = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
+                                 b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_OBJECT_FLAG));
+        no_flag = b.build_or(no_flag, b.build_and(objs, plain_object_test(b, val)));
+    }
     slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
     b.build_br_if(b.build_and(plain, b.build_and(real, no_flag)), bb_node, bb_helper);
 

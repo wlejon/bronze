@@ -504,6 +504,8 @@ way     <index>  <form>  <receiver>[  <callee>]
 sample  <8 hex name hash>  <count>
 doubles <receiver>  <key positions, ascending, comma-separated>
 mixed   <key>
+objects <receiver>  <key positions, ascending, comma-separated>
+nonobject <key>
 ```
 
 **Slot representation.** The harvest also says which slots held only
@@ -519,8 +521,13 @@ holding anything else under. A build on the harvest makes a layout cell's
 member a `number` one when its key is at such a position of the cell's shape
 and is not mixed
 (`applyFeedbackLayoutCells`), and makes those keys eligible
-(`bronze_register_slot_repr` at module init). See docs/slot-representation.md,
-"From a harvest".
+(`bronze_register_slot_repr` at module init). `objects` and `nonobject` rows
+say the same of plain objects (not arrays, functions or null): the positions
+born holding one and found holding one in every object, and the keys found
+holding anything else; such a key becomes eligible for an object slot, and a
+layout cell member or family field at it an `object` one
+(`applyFeedbackObjectKeys`). See docs/slot-representation.md, "From a
+harvest".
 
 **Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
 case three ways and requires the pinned bytes and exit code from each run:

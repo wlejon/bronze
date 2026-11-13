@@ -67,6 +67,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     prop_lowering_.set_in_process(options.spec_feedback != nullptr);
     prop_lowering_.set_key_names(&options_.key_constants);
     prop_lowering_.set_layout_cells(&options_.layout_cells);
+    prop_lowering_.set_class_family_objects(&options_.class_family_object_slots);
     // The table addresses are shared, computed once at entry: the IC table,
     // and the static-slot sites' cell table and family-range table (each
     // site otherwise computed its realm-relative address afresh). A shared

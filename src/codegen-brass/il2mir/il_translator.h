@@ -171,8 +171,14 @@ struct TranslatorOptions {
     uint32_t static_site_count = 0;
     uint32_t class_family_count = 0;
     // il.h `slotReprFields`: the module key indices the entry hands
-    // `bronze_register_slot_repr`, the names whose slots may be born doubles.
+    // `bronze_register_slot_repr`, the names whose slots may be born doubles;
+    // and `slotReprObjectFields`, those whose slots may be born object ones.
     std::vector<uint32_t> slot_repr_fields;
+    std::vector<uint32_t> slot_repr_object_fields;
+    // Per class family (il.h `classFamilies`, preorder), bit N set when field
+    // N is an `object` one: the runtime stamps the class only on a shape
+    // whose slot N is an object slot (runtime/class_family.cpp).
+    std::vector<uint64_t> class_family_object_slots;
     // Address the module's WRITABLE tables — `__bronze_module_env`,
     // `__bronze_template_cells`, `__bronze_ic_table`, and the embedder's own
     // (global cache, native imports) — per THREAD rather than per image, so

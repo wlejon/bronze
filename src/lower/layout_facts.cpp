@@ -153,10 +153,11 @@ struct Site {
 };
 
 // A static site the backend may cover: a read, or an assignment of a Number
-// box (every slot representation takes one with no barrier), with a claim of
-// its own and nothing else answering it first.
+// box (no barrier, and every slot representation but an object one takes it,
+// so not under a key whose slot may be one), with a claim of its own and
+// nothing else answering it first.
 bool candidate(const il::Instruction& inst, const std::vector<il::Type>& types,
-               const std::vector<const il::Instruction*>& defOf) {
+               const std::vector<const il::Instruction*>& defOf, const std::vector<uint32_t>& objectKeys) {
     if (inst.op != il::Op::PropGet && inst.op != il::Op::PropSet) return false;
     if (inst.staticSlot == il::Instruction::kNoStaticSlot || inst.shapeGuarded) return false;
     if (inst.directTarget != il::Instruction::kNoDirectTarget || inst.operands.empty()) return false;
@@ -165,6 +166,8 @@ bool candidate(const il::Instruction& inst, const std::vector<il::Type>& types,
     if (inst.op == il::Op::PropGet) return inst.operands.size() == 1 && inst.result != il::kNoValue;
     if (il::isDefineWrite(inst) || inst.operands.size() != 2) return false;
     if (inst.transitionRunCell != il::Instruction::kNoTransitionRun) return false;
+    // An object slot takes no Number (il.h `slotReprObjectFields`).
+    if (std::find(objectKeys.begin(), objectKeys.end(), inst.keyIndex) != objectKeys.end()) return false;
     const il::ValueId val = inst.operands[1];
     const il::Instruction* def = val < defOf.size() ? defOf[val] : nullptr;
     return def != nullptr && def->op == il::Op::Box && def->boxType == il::Type::F64;
@@ -318,7 +321,7 @@ struct FunctionCounts {
 };
 
 // Rewrites one function in place. False when nothing changed.
-bool rewriteFunction(il::Function& fn, FunctionCounts& counts) {
+bool rewriteFunction(il::Function& fn, FunctionCounts& counts, const std::vector<uint32_t>& objectKeys) {
     std::vector<il::Type> types(fn.valueCount, il::Type::Void);
     std::vector<const il::Instruction*> defOf(fn.valueCount, nullptr);
     for (size_t p = 0; p < fn.params.size() && p < types.size(); ++p) types[p] = fn.params[p].type;
@@ -347,7 +350,7 @@ bool rewriteFunction(il::Function& fn, FunctionCounts& counts) {
             for (uint32_t k = i; k < insts.size() && k < i + insts[i].transitionRunLength; ++k) inRun[k] = 1;
         }
         for (uint32_t i = 0; i < insts.size(); ++i) {
-            if (inRun[i] || !candidate(insts[i], types, defOf)) continue;
+            if (inRun[i] || !candidate(insts[i], types, defOf, objectKeys)) continue;
             const uint32_t stretch = i < stretchAt[b].size() ? stretchAt[b][i] : UINT32_MAX;
             byRecv[insts[i].operands[0]].push_back(
                 Site{static_cast<il::BlockId>(b), i, insts[i].operands[0], claimOf(insts[i]), stretch});
@@ -487,7 +490,7 @@ bool applyLayoutFacts(il::Module& module, LayoutFactStats* stats, const std::str
             }
         }
         if (n < 2) continue;
-        const bool did = rewriteFunction(fn, counts);
+        const bool did = rewriteFunction(fn, counts, module.slotReprObjectFields);
         if (counts.sites > 0) ++s.functions;
         s.sites += counts.sites;
         if (did) {

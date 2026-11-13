@@ -109,6 +109,13 @@
 #define BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG 0x80000000u
 #define BRONZE_ABI_IC_DEPTH_ABSENT_FLAG   0x40000000u
 #define BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG   0x20000000u
+/* The OBJECT-SLOT entry (set sites only), the double flag's sibling: the slot
+ * is one the shape says holds a plain object (Shape::object_slots,
+ * runtime/slot_repr.h). A store arm may take it only after testing that the
+ * value is an Object-tagged pointer to a HeapKind::Plain object; anything
+ * else misses to `bronze_prop_set`, whose `setSlot` generalizes the slot. An
+ * arm that has not learned the flag refuses the entry (a nonzero depth). */
+#define BRONZE_ABI_IC_DEPTH_OBJECT_FLAG   0x08000000u
 /* A chain entry filled for a FUNCTION receiver (rt_prop_function.cpp): the
  * shape is the receiver's statics box's, and the holder `depth` links up is a
  * base class's statics box reached through `extends`, never %Object.prototype%
@@ -776,6 +783,14 @@
  * representation, so a clear bit is always a truthful "boxed". */
 #define BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET 64
 #define BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT  64
+/* Shape::object_slots — the same bitmap for the OBJECT representation: bit N
+ * set when slot N of every object at this shape holds an Object-tagged
+ * pointer to a plain object (HeapKind::Plain), so a value read from it needs
+ * neither the tag test nor the header test before it is used as a receiver.
+ * The slot's eight bytes are an ordinary boxed Value, traced like any other;
+ * what the bit adds is a store discipline (runtime/slot_repr.h). Covers the
+ * same slots as the double map, and no slot is in both. */
+#define BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET 88
 
 /* A LAYOUT CELL's member (bronze_static_layout_publish): the third u32 of its
  * (key, slot, flags) triple. WRITE: a site stores to it, so the shape must
@@ -784,6 +799,11 @@
  * with no test. */
 #define BRONZE_ABI_LAYOUT_PAIR_WRITE        1u
 #define BRONZE_ABI_LAYOUT_PAIR_DOUBLE       2u
+/* OBJECT: the shape must call the slot an object one (Shape::object_slots), so
+ * a value read behind the cell is a plain object with no tag or header test.
+ * A WRITE member without it must NOT be an object slot: generated code stores
+ * a Number into such a member bare. */
+#define BRONZE_ABI_LAYOUT_PAIR_OBJECT       4u
 
 /* A TRANSITION RUN's static cells (il.h `transitionRunCell`), five i64s from
  * the run's first: the start shape (0 until published, which no shape is),
@@ -812,13 +832,17 @@
 #define BRONZE_ABI_DEFINE_ADD_END   0
 #define BRONZE_ABI_DEFINE_ADD_EPOCH 1
 /* Shape::repr — the representation of the ONE slot this node owns, as the
- * SlotRepr enum spells it (0 boxed, 1 double). Redundant with the bitmap
+ * SlotRepr enum spells it (0 boxed, 1 double, 2 object). Redundant with the bitmap
  * above and kept anyway: the bitmap is a summary of the whole chain and
  * cannot say which node introduced a bit, which is what the generalization
  * rebuild and the census both need. */
 #define BRONZE_ABI_SHAPE_REPR_OFFSET        72
 #define BRONZE_ABI_SLOT_REPR_BOXED           0
 #define BRONZE_ABI_SLOT_REPR_DOUBLE          1
+#define BRONZE_ABI_SLOT_REPR_OBJECT          2
+/* An entry of the list `bronze_register_slot_repr` takes with this bit set
+ * names a key eligible for an OBJECT slot; without it, for a double one. */
+#define BRONZE_ABI_SLOT_REPR_FIELD_OBJECT    0x80000000u
 /* Shape::bare_header — the whole HeapObjectHeader word of a plain object with
  * no internal slots at this shape: the plain kind word, and in the high half
  * the size its inline slots give it. What the inline add paths compare a

@@ -264,7 +264,7 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
         if (trans.repr != desired) return;
         next_shape = trans.next_shape;
     });
-    if (next_shape != nullptr && desired == SlotRepr::Double && next_shape->repr_generalized) {
+    if (next_shape != nullptr && desired != SlotRepr::Boxed && next_shape->repr_generalized) {
         desired = SlotRepr::Boxed;
         next_shape = boxed_edge;
     }
@@ -302,6 +302,8 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
         next_shape->watched = watched;
         if (desired == SlotRepr::Double) {
             ++runtime::slotReprMutableCounters().double_nodes;
+        } else if (desired == SlotRepr::Object) {
+            ++runtime::slotReprMutableCounters().object_nodes;
         } else {
             ++runtime::slotReprMutableCounters().boxed_nodes;
         }
@@ -353,7 +355,7 @@ void Shape::watch(Shape* shape) {
 }
 
 Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index) {
-    if (shape == nullptr || shape->isDictionary() || !shape->slotIsDouble(index)) return shape;
+    if (shape == nullptr || shape->isDictionary() || !shape->slotIsClaimed(index)) return shape;
 
     // Root-first order, because a transition tree is only walkable downward
     // from its root and the chain links the other way.
@@ -368,7 +370,7 @@ Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index)
     // nodes other objects reach, marked in place.
     if (shape->used_as_prototype) {
         for (Shape* node : chain) {
-            if (node->slot_index == index && node->repr == SlotRepr::Double && !node->repr_generalized) {
+            if (node->slot_index == index && node->repr != SlotRepr::Boxed && !node->repr_generalized) {
                 node->repr_generalized = true;
                 ++runtime::slotReprMutableCounters().generalized_nodes;
             }
@@ -380,7 +382,7 @@ Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index)
     Shape* rebuilt = shape->root;
     for (Shape* node : chain) {
         SlotRepr repr = node->repr;
-        if (node->slot_index == index && repr == SlotRepr::Double) {
+        if (node->slot_index == index && repr != SlotRepr::Boxed) {
             // The demotion, and the sticky mark that keeps the next object to
             // install this key from taking the same edge back.
             if (!node->repr_generalized) {
@@ -396,7 +398,7 @@ Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index)
             // The rebuild walked the same names with the same widths in the
             // same order, so it must have handed out the same numbers. If it
             // did not, an object is about to be told its properties moved.
-            fatal("internal: slot renumbered while generalizing a double slot");
+            fatal("internal: slot renumbered while generalizing a claimed slot");
         }
     }
     if (shape->used_as_prototype) rebuilt->used_as_prototype = true;

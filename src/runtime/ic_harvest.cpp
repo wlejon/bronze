@@ -77,15 +77,20 @@ struct State {
     // nodes, which live as long as the arena, so the heap walk at the write
     // may follow them (a dictionary shape goes with its object).
     std::unordered_set<const Shape*> plainNamed;
-    // rtIcHarvestNoteBirth: per node, whether every add through the runtime
-    // that made it held a Number.
-    std::unordered_map<const Shape*, bool> births;
-    // Made by `measureRepresentation` at the write: by receiver name, the key
-    // positions (root first) that were born Numbers and that every object of
-    // every shape of that name held a Number in; and every key some named
-    // shape was born or found holding anything else under.
-    std::map<std::string, std::vector<uint32_t>> doubles;
-    std::set<std::string> mixed;
+    // rtIcHarvestNoteBirth: per node, the kinds (kHarvestBirth*) every add
+    // through the runtime that made it held.
+    std::unordered_map<const Shape*, uint8_t> births;
+    // Made by `measureRepresentation` at the write, once per representation
+    // (Numbers, plain objects): by receiver name, the key positions (root
+    // first) that were born of the kind and that every object of every shape
+    // of that name held one of the kind in; and every key some named shape
+    // was born or found holding anything else under.
+    struct Kept {
+        std::map<std::string, std::vector<uint32_t>> held;
+        std::set<std::string> other;
+    };
+    Kept doubles;
+    Kept objects;
     bool atexitArmed = false;
     bool dirty = false;
 };
@@ -143,17 +148,19 @@ std::vector<const Shape*> keyNodes(const Shape* shape) {
     return chain;
 }
 
-// The representation the run's objects kept, into `s.doubles` / `s.mixed`.
-// A position is a double when the runtime saw its node born holding a Number
-// (rtIcHarvestNoteBirth: what a build that makes the key eligible gives a
-// double node) and no object of the shape the heap holds now — live, or dead
-// and not yet collected — has anything else there. Both are samples: nothing
-// rests on them but the build's choice of keys, since the runtime keeps a
-// double slot's discipline whatever a store brings (slot_repr.h).
+// The representation the run's objects kept, into `s.doubles` and
+// `s.objects`. A position is a double (an object) one when the runtime saw its
+// node born holding a Number (a plain object) — rtIcHarvestNoteBirth, what a
+// build that makes the key eligible gives a claimed node — and no object of the
+// shape the heap holds now, live or dead and not yet collected, has anything
+// else there. Both are samples: nothing rests on them but the build's choice
+// of keys, since the runtime keeps a claimed slot's discipline whatever a
+// store brings (slot_repr.h).
 void measureRepresentation(State& s) {
-    s.doubles.clear();
-    s.mixed.clear();
-    // Per named shape, a position's mark: set when an object held a non-Number.
+    s.doubles = {};
+    s.objects = {};
+    // Per named shape, a position's marks: bit 0 set when an object held a
+    // non-Number there, bit 1 when one held anything but a plain object.
     std::unordered_map<const Shape*, std::vector<uint8_t>> held;
     std::unordered_map<const Shape*, std::vector<const Shape*>> nodes;
     for (const Shape* shape : s.plainNamed) nodes.emplace(shape, keyNodes(shape));
@@ -166,34 +173,40 @@ void measureRepresentation(State& s) {
         marks.resize(found->second.size(), 0);
         for (size_t i = 0; i < found->second.size(); ++i) {
             const Shape* node = found->second[i];
-            if (node->accessor || marks[i] != 0) continue;
-            if (!slotReprAcceptsValue(obj->getSlot(node->slot_index))) marks[i] = 1;
+            if (node->accessor || marks[i] == 3) continue;
+            const Value v = obj->getSlot(node->slot_index);
+            if (!slotReprAcceptsValue(v)) marks[i] |= 1;
+            if (!slotReprAcceptsObject(v)) marks[i] |= 2;
         }
     });
     for (const auto& [shape, chain] : nodes) {
         const auto marks = held.find(shape);
-        std::vector<uint32_t> mine;
-        for (size_t i = 0; i < chain.size(); ++i) {
-            const Shape* node = chain[i];
-            const auto birth = s.births.find(node);
-            const bool other = marks != held.end() && marks->second[i] != 0;
-            if ((birth != s.births.end() && !birth->second) || other) {
-                if (StringHeader* key = node->key.valid() && !node->key.isSymbol() ? node->key.string() : nullptr) {
-                    s.mixed.insert(rtUtf8Chars(key));
+        for (const uint8_t kind : {kHarvestBirthNumber, kHarvestBirthObject}) {
+            State::Kept& kept = kind == kHarvestBirthNumber ? s.doubles : s.objects;
+            std::vector<uint32_t> mine;
+            for (size_t i = 0; i < chain.size(); ++i) {
+                const Shape* node = chain[i];
+                const auto birth = s.births.find(node);
+                const bool other = marks != held.end() && (marks->second[i] & kind) != 0;
+                const bool bornOther = birth != s.births.end() && (birth->second & kind) == 0;
+                if (bornOther || other) {
+                    if (StringHeader* key = node->key.valid() && !node->key.isSymbol() ? node->key.string() : nullptr) {
+                        kept.other.insert(rtUtf8Chars(key));
+                    }
                 }
+                if (birth == s.births.end() || bornOther || other || node->accessor ||
+                    node->slot_index >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
+                    continue;
+                }
+                mine.push_back(static_cast<uint32_t>(i));
             }
-            if (birth == s.births.end() || !birth->second || other || node->accessor ||
-                node->slot_index >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
-                continue;
+            auto [d, fresh] = kept.held.try_emplace(s.shapeNames.at(shape), mine);
+            if (!fresh) {
+                std::vector<uint32_t> both;
+                std::set_intersection(d->second.begin(), d->second.end(), mine.begin(), mine.end(),
+                                      std::back_inserter(both));
+                d->second = std::move(both);
             }
-            mine.push_back(static_cast<uint32_t>(i));
-        }
-        auto [d, fresh] = s.doubles.try_emplace(s.shapeNames.at(shape), mine);
-        if (!fresh) {
-            std::vector<uint32_t> both;
-            std::set_intersection(d->second.begin(), d->second.end(), mine.begin(), mine.end(),
-                                  std::back_inserter(both));
-            d->second = std::move(both);
         }
     }
 }
@@ -305,31 +318,37 @@ std::string textOf(const State& s, const Module& m) {
         out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
     }
     // The representation the run kept (docs/type-feedback.md, "Harvest"):
-    // per receiver its caches held, the key positions that stayed Numbers,
-    // then every key something else was found under (measureRepresentation).
+    // per receiver its caches held, the key positions that stayed Numbers
+    // (then plain objects), then every key something else was found under
+    // (measureRepresentation).
     std::set<std::string> receivers;
     for (const auto& [index, site] : m.ics) {
         for (const Fact& f : site.facts) receivers.insert(f.receiver);
     }
-    for (const std::string& receiver : receivers) {
-        const auto it = s.doubles.find(receiver);
-        if (it == s.doubles.end() || it->second.empty()) continue;
-        out += "doubles\t";
-        appendEscaped(out, receiver);
-        out += '\t';
-        for (size_t i = 0; i < it->second.size(); ++i) {
-            if (i != 0) out += ',';
-            out += std::to_string(it->second[i]);
+    const auto rows = [&](const State::Kept& kept, const char* heldRow, const char* otherRow) {
+        for (const std::string& receiver : receivers) {
+            const auto it = kept.held.find(receiver);
+            if (it == kept.held.end() || it->second.empty()) continue;
+            out += heldRow;
+            out += '\t';
+            appendEscaped(out, receiver);
+            out += '\t';
+            for (size_t i = 0; i < it->second.size(); ++i) {
+                if (i != 0) out += ',';
+                out += std::to_string(it->second[i]);
+            }
+            out += '\n';
         }
-        out += '\n';
-    }
-    if (!receivers.empty()) {
-        for (const std::string& key : s.mixed) {
-            out += "mixed\t";
+        if (receivers.empty()) return;
+        for (const std::string& key : kept.other) {
+            out += otherRow;
+            out += '\t';
             appendEscaped(out, key);
             out += '\n';
         }
-    }
+    };
+    rows(s.doubles, "doubles", "mixed");
+    rows(s.objects, "objects", "nonobject");
     return out;
 }
 
@@ -371,12 +390,12 @@ void writeAtExit() {
 
 bool rtIcHarvestArmed() noexcept { return g_armed.load(std::memory_order_relaxed); }
 
-void rtIcHarvestNoteBirth(const Shape* node, bool number) {
+void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds) {
     if (node == nullptr) return;
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return;
-    auto [it, fresh] = g_state->births.emplace(node, number);
-    if (!fresh) it->second = it->second && number;
+    auto [it, fresh] = g_state->births.emplace(node, kinds);
+    if (!fresh) it->second &= kinds;
 }
 
 bool rtIcHarvestConfigure(const void* identity, const std::string& path) {

@@ -103,6 +103,13 @@ struct Harvest {
     // truth, so a wrong harvest costs time.
     std::map<std::string, std::vector<uint32_t>> doubles;
     std::set<std::string> mixed;
+    // The same for plain objects (slot_repr.h, the OBJECT representation):
+    // by receiver name the positions born and kept holding a plain object,
+    // and every key anything else was found under. What a build reads off
+    // them is which keys to make eligible for an object slot and which layout
+    // cell members and class family fields to require as ones.
+    std::map<std::string, std::vector<uint32_t>> objects;
+    std::set<std::string> nonObject;
 };
 
 class TypeProfile {

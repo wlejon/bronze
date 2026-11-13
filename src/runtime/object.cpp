@@ -41,13 +41,14 @@ namespace bronze {
 // The rebuild allocates in the arena and never on the heap, so `this` cannot
 // move under it and the caller's raw pointer stays good.
 void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
-    if (!shape->slotIsDouble(index)) {
+    if (shape->slotIsDouble(index)) {
+        if (BRONZE_LIKELY(slotReprAcceptsValue(val))) {
+            ++runtime::slotReprMutableCounters().double_stores;
+            rawSetSlot(index, slotReprCanonicalize(val));
+            return;
+        }
+    } else if (!shape->slotIsObject(index) || BRONZE_LIKELY(slotReprAcceptsObject(val))) {
         rawSetSlot(index, val);
-        return;
-    }
-    if (BRONZE_LIKELY(slotReprAcceptsValue(val))) {
-        ++runtime::slotReprMutableCounters().double_stores;
-        rawSetSlot(index, slotReprCanonicalize(val));
         return;
     }
     Shape* const from = shape;
@@ -71,6 +72,11 @@ void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
 static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, bool accessor,
                                 bool writable, bool configurable) {
     if (accessor || !enumerable || !writable || !configurable) return SlotRepr::Boxed;
+    // The object representation: a plain object in hand under a key a
+    // harvest made eligible for one (slot_repr.h).
+    if (slotReprAcceptsObject(val)) {
+        return runtime::slotReprEligible(key, SlotRepr::Object) ? SlotRepr::Object : SlotRepr::Boxed;
+    }
     if (!slotReprAcceptsValue(val)) return SlotRepr::Boxed;
     if (!runtime::slotReprEligible(key)) {
         ++runtime::slotReprMutableCounters().refused_ineligible;
@@ -84,7 +90,11 @@ static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, boo
 // not seen; what they stored is, by the harvest's heap walk.
 static void noteHarvestBirth(const Shape* node, Value val, bool plainData) {
     if (BRONZE_UNLIKELY(runtime::rtIcHarvestArmed())) {
-        runtime::rtIcHarvestNoteBirth(node, plainData && slotReprAcceptsValue(val));
+        const uint8_t kinds = !plainData                     ? 0
+                              : slotReprAcceptsValue(val)    ? runtime::kHarvestBirthNumber
+                              : slotReprAcceptsObject(val)   ? runtime::kHarvestBirthObject
+                                                             : 0;
+        runtime::rtIcHarvestNoteBirth(node, kinds);
     }
 }
 
@@ -543,7 +553,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (trIc && trIc->isRealShape() && !trIc->isAccessor() && !trIc->isAbsent() &&
         trIc->realDepth() == 0 && shape && !shape->isDictionary() &&
         !trIc->cached_shape->repr_generalized &&
-        (!trIc->isDoubleSlot() || val.get().isNumber()) &&
+        slotReprFits(trIc->cached_shape->repr, val.get()) &&
         trIc->cached_shape->parent == shape &&
         trIc->cached_shape->slot_index == trIc->cached_slot &&
         trIc->cached_shape->enumerable && !trIc->cached_shape->accessor &&
@@ -565,7 +575,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // entry outlived) would otherwise expire an entry that has just
         // proven itself.
         if (!runtime::censusFillsSuppressed() && !next->used_as_prototype) {
-            trIc->fillForSet(next, slot, next->slotIsDouble(slot));
+            trIc->fillForSet(next, slot);
         }
         live->setSlot(slot, val.get());
         return live;
@@ -611,7 +621,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         if ((setSite || ic) && !shape->isDictionary() && !shape->used_as_prototype &&
             !runtime::censusFillsSuppressed()) {
             InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
-            dst->fillForStore(shape, own.slot, shape->slotIsDouble(own.slot));
+            dst->fillForStore(shape, own.slot);
         }
         notePrototypeSlotOverwrite(own.slot);
         setSlot(own.slot, val.get());
@@ -751,7 +761,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // and the next fill hands back an ordinary entry.
         if ((setSite || ic) && !next_shape->used_as_prototype && !runtime::censusFillsSuppressed()) {
             InlineCache* dst = setSite ? setSite->slotForSetTransition(next_shape) : ic;
-            dst->fillForSet(next_shape, new_slot, next_shape->slotIsDouble(new_slot));
+            dst->fillForSet(next_shape, new_slot);
         }
     }
     live->setSlot(new_slot, val.get());

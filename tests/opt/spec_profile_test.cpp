@@ -56,7 +56,9 @@ const char* const kHarvest =
     "doubles\tMesh{uuid,name}\t1\n"
     "doubles\tVector3{x,y,z}\t0,1,2\n"
     "mixed\tname\n"
-    "mixed\tw\n";
+    "mixed\tw\n"
+    "objects\tSprite{position,scale}\t0,1\n"
+    "nonobject\tparent\n";
 
 // The keys of the module's functions whose IL name ends with `suffix`.
 std::vector<std::string> keysEndingIn(const il::Module& mod, const std::string& suffix) {
@@ -116,6 +118,8 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
     REQUIRE(h->doubles.size() == 2);
     CHECK(h->doubles.at("Vector3{x,y,z}") == std::vector<uint32_t>{0, 1, 2});
     CHECK(h->mixed == std::set<std::string>{"name", "w"});
+    CHECK(h->objects.at("Sprite{position,scale}") == std::vector<uint32_t>{0, 1});
+    CHECK(h->nonObject == std::set<std::string>{"parent"});
 }
 
 TEST_CASE("profile: a malformed harvest is refused") {
@@ -148,7 +152,10 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t0,\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x}\t0\ndoubles\tA{x}\t0\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(h + "mixed\tx\nmixed\tx\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "objects\tA{x,y}\t1,0\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "nonobject\tx\nnonobject\tx\n", &err));
     CHECK(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t0,1\nmixed\tz\n", &err));
+    CHECK(spec::TypeProfile::parse(h + "objects\tA{x,y}\t0\nnonobject\ty\n", &err));
 }
 
 TEST_CASE("profile: queries by function key and ordinal") {

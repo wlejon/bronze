@@ -365,6 +365,14 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.static_site_count = module.staticSiteCount;
     options.class_family_count = static_cast<uint32_t>(module.classFamilies.size());
     options.slot_repr_fields = module.slotReprFields;
+    options.slot_repr_object_fields = module.slotReprObjectFields;
+    for (const auto& cls : module.classFamilies) {
+        uint64_t objects = 0;
+        for (size_t i = 0; i < cls.fields.size() && i < 64; ++i) {
+            if (cls.fields[i].object) objects |= uint64_t{1} << i;
+        }
+        options.class_family_object_slots.push_back(objects);
+    }
     // One image, any number of threads: every writable table is addressed
     // through the calling thread's delta (bronze_abi.h,
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
@@ -381,7 +389,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     for (const auto& lc : module.layoutCells) {
         il2mir::LayoutCell& cell = options.layout_cells[lc.cell];
         cell.key_count = lc.keyCount;
-        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write, p.number});
+        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write, p.number, p.object});
     }
     if (options.twin_exits) {
         options.missed_claim_ics = module.missedClaimIcs;

@@ -21,7 +21,8 @@ using ShapeTest = RegionPlan::ShapeTest;
 
 // A site a point can cover: a static-slot read, or a static-slot write whose
 // value the fast copy holds as a `box.f64` (a promoted value or a box), which
-// every slot representation takes and which owes no write barrier. An accessor
+// owes no write barrier and which every slot representation but an object
+// slot's takes (so never under a key one may be). An accessor
 // site or a transition run's member is no slot access at all. `numberBox` marks
 // the values a `box.f64` defines, which are Number boxes in both copies whether
 // or not the region carries them as doubles.
@@ -38,6 +39,12 @@ bool coverableSite(const il::Instruction& inst, const std::vector<il::Type>& typ
     if (inst.op == il::Op::PropGet) return inst.result != il::kNoValue;
     if (inst.op != il::Op::PropSet || il::isDefineWrite(inst) || inst.operands.size() < 2) return false;
     if (inst.transitionRunCell != il::Instruction::kNoTransitionRun) return false;
+    // A key whose slot may be an object one (il.h `slotReprObjectFields`)
+    // takes no Number.
+    if (plan.objectKeys != nullptr &&
+        std::find(plan.objectKeys->begin(), plan.objectKeys->end(), inst.keyIndex) != plan.objectKeys->end()) {
+        return false;
+    }
     const il::ValueId val = inst.operands[1];
     if (val < numberBox.size() && numberBox[val] != 0) return true;
     const Candidate* c = val < candidateOf.size() ? candidateOf[val] : nullptr;

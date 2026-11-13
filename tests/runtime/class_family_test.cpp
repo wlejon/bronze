@@ -59,7 +59,7 @@ struct FakeModule {
         classes.push_back(static_cast<uint32_t>(fields.size()));
         classes.push_back(static_cast<uint32_t>(layout.size()));
         for (const auto& f : layout) {
-            fields.push_back((key(f.first) << 1) | (f.second ? 1u : 0u));
+            fields.push_back((key(f.first) << 2) | (f.second ? 1u : 0u));
         }
     }
 

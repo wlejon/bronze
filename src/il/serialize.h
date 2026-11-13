@@ -41,7 +41,8 @@ namespace bronze::il {
 // 28: Module::hotFunctions, coldFunctions (lower/function_placement.h).
 // 30: Module::layoutCells (opt/spec/feedback_plan.h).
 // 31: a layout cell's member carries `number` (il.h).
-inline constexpr uint32_t kFormatVersion = 31;
+// 32: object members and family fields, Module::slotReprObjectFields.
+inline constexpr uint32_t kFormatVersion = 32;
 
 std::string serializeModule(const Module& module);
 

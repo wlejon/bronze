@@ -138,6 +138,9 @@ struct FeedbackPlan {
     // something else was found under. `applyFeedbackLayoutCells` reads them.
     std::map<std::string, std::vector<uint32_t>> harvestDoubles;
     std::set<std::string> mixedKeys;
+    // The same for plain objects (profile.h `Harvest::objects`, `nonObject`).
+    std::map<std::string, std::vector<uint32_t>> harvestObjects;
+    std::set<std::string> nonObjectKeys;
     FeedbackPlanStats stats;
 };
 
@@ -218,6 +221,16 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 // keeps its miss in line, where one that is not may leave its fast copy.
 void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats,
                                  std::unordered_set<uint32_t>* missedClaims = nullptr);
+
+// THE OBJECT KEYS (runtime/slot_repr.h, the OBJECT representation): the
+// module keys the harvest saw hold nothing but plain objects, on every
+// receiver its caches held that has them, into `mod.slotReprObjectFields`.
+// Before any pass that covers a store with a shape guard: a covered store is
+// a Number's, which an object slot does not take, so no store under one of
+// these keys is covered (guard_region_shapes.cpp, layout_facts.cpp). A layout
+// cell member and a class family field under one are object ones
+// (`applyFeedbackLayoutCells`).
+void applyFeedbackObjectKeys(il::Module& mod, const FeedbackPlan& plan);
 
 // LAYOUT CELLS (il.h `Module::layoutCells`), for the functions `hot` marks
 // (by function index): after the guarded regions, every claim on a receiver

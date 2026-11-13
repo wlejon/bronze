@@ -98,13 +98,23 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
     Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), cells, BRONZE_ABI_DEFINE_ADD_EPOCH * kCell),
                                  b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
     Value* ok = b.build_and(b.build_and(b.build_and(is_child, bare), not_dict), b.build_and(not_proto, epoch_ok));
-    if (!val_is_number) {
-        // END's own node says whether it made the slot a double; the bits of
-        // a boxed Number are the double's, so only a non-Number is refused.
-        Value* boxed = b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), end, BRONZE_ABI_SHAPE_REPR_OFFSET)),
-                                  b.build_iconst_i64(0));
-        Value* number = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-        ok = b.build_and(ok, b.build_or(boxed, number));
+    {
+        // END's own node says what it made the slot: boxed takes anything; a
+        // double a Number, whose bits are the double's; an object slot a
+        // plain object only.
+        Value* repr = b.build_zext_i64(b.build_load(Type::i8(), end, BRONZE_ABI_SHAPE_REPR_OFFSET));
+        Value* boxed = b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_BOXED));
+        Value* number = val_is_number
+            ? b.build_iconst_i32(1)
+            : b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        Value* fits = b.build_or(boxed, b.build_and(b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_DOUBLE)),
+                                                    number));
+        if (!val_is_number) {
+            Value* plain = plain_object_test(b, val);
+            fits = b.build_or(fits,
+                              b.build_and(b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_OBJECT)), plain));
+        }
+        ok = b.build_and(ok, fits);
     }
     b.build_br_if(ok, bb_room, bb_helper);
 

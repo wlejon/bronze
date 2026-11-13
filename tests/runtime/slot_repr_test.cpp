@@ -10,6 +10,7 @@
 
 #include <string>
 
+#include "runtime/array.h"
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -36,11 +37,11 @@ struct ReprScope {
 // allocates from the process arena, so the shapes these cases build have to
 // come from there too — a chain half in a local arena and half in the process
 // one would be two lifetimes for one layout.
-void pin(const char* name) {
+void pin(const char* name, SlotRepr repr = SlotRepr::Double) {
     Heap& heap = runtime::rtHeap();
     StringHeader* interned = StringHeader::internToArena(
         runtime::rtArena(), StringHeader::createFromUTF8(heap, name));
-    runtime::slotReprRegisterName(interned);
+    runtime::slotReprRegisterName(interned, repr);
 }
 
 Rooted<Value> keyOf(Heap& heap, const char* name) {
@@ -465,4 +466,91 @@ TEST_CASE("a set-site cache filled with a double slot says so") {
     obj.set(Value::fromObject(live));
     CHECK(getProp(heap, obj, "x").asNumber() == 7.5);
     CHECK(!icX.isDoubleSlot());
+}
+
+// The object representation (slot_repr.h, SlotRepr::Object): a slot that holds
+// a plain object on every object of its shape, so compiled code reads it with
+// no tag or header test. The same contradictions as a double's: any other
+// store moves the one object to a boxed slot, and stickily.
+TEST_CASE("an object-eligible name is born an object slot, and any other store generalizes it") {
+    ReprScope scope;
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    pin("pos", SlotRepr::Object);
+    Shape* root = freshRoot();
+
+    Rooted<Value> a{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), root))};
+    Rooted<Value> b{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), root))};
+    Rooted<Value> pa{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    Rooted<Value> pb{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    setProp(heap, a, "pos", pa.get());
+    setProp(heap, b, "pos", pb.get());
+    Shape* shared = a.get().asObject<ObjectHeader>()->shape;
+    REQUIRE(shared == b.get().asObject<ObjectHeader>()->shape);
+    CHECK(shared->slotIsObject(0));
+    CHECK_FALSE(shared->slotIsDouble(0));
+    CHECK(shared->object_slots == 1u);
+    CHECK(shared->repr == SlotRepr::Object);
+
+    // Another plain object stays in the slot.
+    Rooted<Value> pc{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    setProp(heap, a, "pos", pc.get());
+    CHECK(a.get().asObject<ObjectHeader>()->shape == shared);
+
+    // A Number is no object: `a` moves, `b` stays.
+    setProp(heap, a, "pos", Value::fromDouble(1.0));
+    Shape* moved = a.get().asObject<ObjectHeader>()->shape;
+    CHECK(moved != shared);
+    CHECK_FALSE(moved->slotIsObject(0));
+    CHECK(moved->object_slots == 0u);
+    CHECK(getProp(heap, a, "pos").asNumber() == 1.0);
+    CHECK(b.get().asObject<ObjectHeader>()->shape == shared);
+
+    // Sticky: the next add of `pos` on this root is boxed.
+    Rooted<Value> c{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), root))};
+    setProp(heap, c, "pos", pb.get());
+    CHECK_FALSE(c.get().asObject<ObjectHeader>()->shape->slotIsObject(0));
+}
+
+TEST_CASE("an array, null or a Number is not a plain object for an object slot") {
+    ReprScope scope;
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    pin("o", SlotRepr::Object);
+
+    Rooted<Value> arr{Value::fromObject(ArrayHeader::create(heap, 2))};
+    CHECK_FALSE(slotReprAcceptsObject(arr.get()));
+    CHECK_FALSE(slotReprAcceptsObject(Value::fromNull()));
+    CHECK_FALSE(slotReprAcceptsObject(Value::fromDouble(2.0)));
+
+    Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    setProp(heap, obj, "o", arr.get());
+    CHECK_FALSE(obj.get().asObject<ObjectHeader>()->shape->slotIsObject(0));
+
+    // A name eligible for doubles only never makes an object slot.
+    pin("d");
+    Rooted<Value> held{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    Rooted<Value> other{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    setProp(heap, other, "d", held.get());
+    CHECK(other.get().asObject<ObjectHeader>()->shape->object_slots == 0u);
+    CHECK(other.get().asObject<ObjectHeader>()->shape->double_slots == 0u);
+}
+
+TEST_CASE("an object slot survives a collection holding its object") {
+    ReprScope scope;
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    pin("child", SlotRepr::Object);
+
+    Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+    {
+        Rooted<Value> held{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), freshRoot()))};
+        setProp(heap, held, "v", Value::fromDouble(42.0));
+        setProp(heap, obj, "child", held.get());
+    }
+    REQUIRE(obj.get().asObject<ObjectHeader>()->shape->slotIsObject(0));
+    heap.collect();
+    Rooted<Value> child{getProp(heap, obj, "child")};
+    REQUIRE(child.get().isObject());
+    CHECK(getProp(heap, child, "v").asNumber() == 42.0);
 }

@@ -77,6 +77,33 @@ and with the test itself on the path that missed the cell (`number_flag`,
 raw read as it always did. Nothing rests on the harvest being right: a key the
 run misjudged costs a shape split or a refused cell.
 
+## Object slots
+
+A shape can also say a slot **holds a plain object** (`SlotRepr::Object`,
+`Shape::object_slots`): a `HeapKind::Plain` object, never an array, function,
+null or primitive. Its word is the ordinary boxed `Value`, so the reader and
+the collector are as for a boxed slot; what the claim buys is that compiled
+code behind a guard on the holder reads the slot and uses the result as a
+receiver with no tag test and no header test (a heap object's kind never
+changes), leaving only the shape compare the held object's own claim asks.
+
+It is kept exactly as a double is: born only for a key on the eligibility list
+(`slotReprRegisterName(name, SlotRepr::Object)`, the harvest's `objects` rows)
+when the add stores a plain object; any other store moves the one object to a
+shape with the slot boxed, stickily (`setSlot`, `withSlotBoxed`). A set-site
+entry naming an object slot carries `BRONZE_ABI_IC_DEPTH_OBJECT_FLAG`, which
+the inline own-slot arm misses on; the module's set stub and the transition,
+define-add and transition-run arms take it only for a plain object
+(`plain_object_test`). A layout cell's `object` member
+(`BRONZE_ABI_LAYOUT_PAIR_OBJECT`) publishes only for a shape whose slot is an
+object one, and a write member without the flag never for one; a class
+family's `object` field stamps only nodes born `Object`, and every other field
+only nodes that are not. The static guard asks a store into an object member
+for a plain object, and a covered store (guard regions, layout facts) is never
+under a key that may be an object slot. Behind the guard the backend gives the
+loaded value an OBJECT FLAG (`il_property.h`) of 1, and the receiver tests of
+its own reads become nothing; on the miss path the flag is the test.
+
 ## Why reads need nothing
 
 bronze NaN-boxes *directly*: a Number's `Value` bits are the double's bits. A
@@ -116,7 +143,7 @@ object is a named fatal, not a fault somewhere else.
 
 | var | effect |
 |---|---|
-| `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double vs boxed, number stores refused for an ineligible name, generalizations, and the stores that reached a double slot through the helper. Costs a normal run nothing — every counter is incremented on a cold path. |
+| `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double, object or boxed, number stores refused for an ineligible name, generalizations, and the stores that reached a double slot through the helper. Costs a normal run nothing — every counter is incremented on a cold path. |
 | `BRONZE_SLOT_REPR_CENSUS=1` | adds **per-(shape, slot) representation stability**: for every slot of every shape the run touched, how many stores were Numbers, how many were not, and how many reads. Turns on the shape census's latch suppression (`docs/shape-census.md`) so that inline-cache hit traffic is visible, so a census run is **counts, never times**. |
 
 `BRONZE_SLOT_REPR_STATS=1` on `bench/three_math.js`, compiled with
@@ -125,7 +152,7 @@ object is a named fatal, not a fault somewhere else.
 ```
 === slot representation ===
   eligible names  : 7
-  shape nodes     : 10 double, 328 boxed
+  shape nodes     : 10 double, 0 object, 328 boxed
   refused         : 20 (number store, name not eligible)
   generalizations : 0 stores over 0 nodes
   helper stores   : 40 into a double slot

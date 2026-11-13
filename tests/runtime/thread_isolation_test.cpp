@@ -124,7 +124,7 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
     uint32_t keyZ = bronze_register_key_string("thread_z");
     uint32_t keyMap[] = {keyX, keyY, keyZ};
     uint32_t classTable[] = {0, 2};
-    uint32_t fieldTable[] = {(0u << 1) | 1u, (1u << 1) | 1u};
+    uint32_t fieldTable[] = {(0u << 2) | 1u, (1u << 2) | 1u};
     uint64_t base = 0;
     bronze_register_class_family(classTable, 1, fieldTable, keyMap, &base);
 
@@ -154,7 +154,7 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
         while (!start.load(std::memory_order_acquire)) {}
         for (int i = 0; i < 50; ++i) {
             uint32_t ct[] = {0, 2};
-            uint32_t ft[] = {(0u << 1) | 1u, (1u << 1) | 1u};
+            uint32_t ft[] = {(0u << 2) | 1u, (1u << 2) | 1u};
             uint64_t b = 0;
             bronze_register_class_family(ct, 1, ft, keyMap, &b);
             std::this_thread::yield();

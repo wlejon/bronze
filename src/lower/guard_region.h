@@ -518,6 +518,9 @@ struct RegionPlan {
     // saw miss, by inline-cache index (opt/spec/feedback_plan.h). Every other
     // static site may have a shape point of its own (see "SHAPE GUARDS").
     const std::unordered_set<uint32_t>* missedClaims = nullptr;
+    // The keys whose slots may be object ones (il.h `slotReprObjectFields`):
+    // a store under one is never covered, since it would be a Number's.
+    const std::vector<uint32_t>* objectKeys = nullptr;
     il::BlockId header = il::kNoBlock;
     // The region's blocks, ascending. `inRegion` is the same set by block id.
     std::vector<il::BlockId> blocks;
@@ -864,6 +867,7 @@ bool selectEntryRegion(const il::Function& prepped, const std::vector<std::strin
 // `icExits` false plans no IC exits: the second look at a region whose
 // rewrite with them was refused.
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
+                                      const std::vector<uint32_t>& objectKeys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
                                       const RegionFeedback* feedback = nullptr, bool afterInlining = false,

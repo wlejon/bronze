@@ -132,6 +132,8 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
     }
     plan.harvestDoubles = harvest.doubles;
     plan.mixedKeys = harvest.mixed;
+    plan.harvestObjects = harvest.objects;
+    plan.nonObjectKeys = harvest.nonObject;
     struct Named {
         il::Op op;
         uint32_t key;

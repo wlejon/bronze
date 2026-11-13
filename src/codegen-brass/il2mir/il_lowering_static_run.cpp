@@ -164,6 +164,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         }
         StaticGuardTerm t{StaticSlotSite::of(inst)};
         if (inst.op == BronzeOp::PropSet) {
+            t.stores = true;
             t.store_is_number = is_number_value(inst.operands[1]);
             // A value from inside the stretch is a Number (the scan stopped
             // short of any other), and asks nothing.
@@ -234,8 +235,12 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
             Value* loaded = with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass);
             // Under the guard that asked this site's cell: a layout cell's
             // `number` member is a Number (il_property.h, NUMBER FLAGS).
+            // An `object` member or family field is a plain object (OBJECT
+            // FLAGS).
             if (!has_layout_fact(inst) && prop_lowering_.layout_number(StaticSlotSite::of(inst))) {
                 prop_lowering_.set_number_flag(loaded, b.build_iconst_i32(1));
+            } else if (!has_layout_fact(inst) && prop_lowering_.object_member(StaticSlotSite::of(inst))) {
+                prop_lowering_.set_object_flag(loaded, b.build_iconst_i32(1));
             }
             set_inst_result(inst.result_id, loaded, b, fast_map);
             continue;
@@ -275,18 +280,28 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     // A read the fast copy knows a Number (a layout cell's `number` member)
     // keeps its NUMBER FLAG past the join (il_property.h): the fast copy's,
     // and the slow copy's own or its test.
+    // An OBJECT FLAG the same way, the slow copy's test the plain-object one.
     std::vector<size_t> flagged;
+    std::vector<size_t> object_flagged;
     for (size_t k = 0; k < live_out.size(); ++k) {
-        Value* fast_flag = prop_lowering_.number_flag(fast_args[k]);
-        if (fast_flag == nullptr) continue;
-        Value* slow_flag = prop_lowering_.number_flag(slow_args[k]);
-        if (slow_flag == nullptr) {
-            slow_flag = b.build_ule(ensure_type(slow_args[k], Type::i64(), b),
-                                    b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        if (Value* fast_flag = prop_lowering_.number_flag(fast_args[k])) {
+            Value* slow_flag = prop_lowering_.number_flag(slow_args[k]);
+            if (slow_flag == nullptr) {
+                slow_flag = b.build_ule(ensure_type(slow_args[k], Type::i64(), b),
+                                        b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+            }
+            flagged.push_back(k);
+            fast_args.push_back(fast_flag);
+            slow_args.push_back(slow_flag);
+        } else if (Value* fast_obj = prop_lowering_.object_flag(fast_args[k])) {
+            Value* slow_flag = prop_lowering_.object_flag(slow_args[k]);
+            if (slow_flag == nullptr) {
+                slow_flag = prop_lowering_.plain_object_test(b, ensure_type(slow_args[k], Type::i64(), b));
+            }
+            object_flagged.push_back(k);
+            fast_args.push_back(fast_obj);
+            slow_args.push_back(slow_flag);
         }
-        flagged.push_back(k);
-        fast_args.push_back(fast_flag);
-        slow_args.push_back(slow_flag);
     }
     BasicBlock* slow_end = b.current_block();
 
@@ -313,7 +328,14 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     for (size_t k = 0; k < live_out.size(); ++k) {
         val_map[live_out[k]] = b.add_block_param(bb_merge, fast_args[k]->type());
     }
-    for (size_t k : flagged) prop_lowering_.set_number_flag(val_map[live_out[k]], b.add_block_param(bb_merge, Type::i32()));
+    // In the order the flags were appended: every flag in live-out order.
+    for (size_t k = 0; k < live_out.size(); ++k) {
+        if (std::find(flagged.begin(), flagged.end(), k) != flagged.end()) {
+            prop_lowering_.set_number_flag(val_map[live_out[k]], b.add_block_param(bb_merge, Type::i32()));
+        } else if (std::find(object_flagged.begin(), object_flagged.end(), k) != object_flagged.end()) {
+            prop_lowering_.set_object_flag(val_map[live_out[k]], b.add_block_param(bb_merge, Type::i32()));
+        }
+    }
     for (size_t idx : memo_params) memo_join[idx].second = b.add_block_param(bb_merge, Type::i64());
     memo_restore(std::move(memo_join));
     b.position_at_end(slow_end);

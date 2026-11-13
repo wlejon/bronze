@@ -73,9 +73,16 @@ namespace {
 // and not a "must be writable": a class that declares `id` non-writable expects
 // a non-writable node there, and a shape carrying a writable one is a different
 // layout wearing the same names.
+//
+// And the field's representation (slot_repr.h): `object` when a harvest saw the
+// key hold only plain objects, so a family site's read of it is a receiver
+// with no tag or header test. The shape must agree both ways: an object field
+// must be an object slot, and any other field must not be one, since a family
+// site stores a Number into a field it does not call an object one bare.
 struct FamilyField {
     uint32_t keyId = 0;
     bool writable = true;
+    bool object = false;
 };
 
 struct FamilyClass {
@@ -146,6 +153,8 @@ void ownNodesBySlot(const Shape* shape, uint32_t want, std::vector<const Shape*>
 //   - the node is a DATA property. An accessor's slot holds a getter.
 //   - the node's writability is the one the class declared, so a write site's
 //     bare store cannot fall into 10.4.5's refusal.
+//   - the node is an OBJECT slot exactly when the class's field says so
+//     (FamilyField above).
 //   - the names match, in order. Content equality, because a shape's key is an
 //     arena COPY and two equal names are two pointers.
 bool prefixMatches(const FamilyClass& cls, const std::vector<const Shape*>& nodes) {
@@ -156,6 +165,7 @@ bool prefixMatches(const FamilyClass& cls, const std::vector<const Shape*>& node
         if (node == nullptr || node->accessor) return false;
         const FamilyField& f = all[cls.fieldStart + i];
         if (node->writable != f.writable) return false;
+        if ((node->repr == SlotRepr::Object) != f.object) return false;
         StringHeader* name = rtKeyHeader(f.keyId);
         if (name == nullptr) return false;
         if (!node->key.matches(PropertyKey::forString(name))) return false;
@@ -259,11 +269,12 @@ void bronze_register_class_family(const uint32_t* classTable, uint32_t classCoun
     }
     for (uint32_t i = 0; i < total; ++i) {
         FamilyField f;
-        // Bit 0 is the writable flag; the rest is the module's own key index,
-        // which `keyMap` turns into the process-wide id every other part of the
-        // runtime speaks.
+        // Bit 0 is the writable flag, bit 1 the object one; the rest is the
+        // module's own key index, which `keyMap` turns into the process-wide
+        // id every other part of the runtime speaks.
         f.writable = (fieldTable[i] & 1u) != 0;
-        f.keyId = keyMap[fieldTable[i] >> 1];
+        f.object = (fieldTable[i] & 2u) != 0;
+        f.keyId = keyMap[fieldTable[i] >> 2];
         fields().push_back(f);
     }
     for (uint32_t c = 0; c < classCount; ++c) {

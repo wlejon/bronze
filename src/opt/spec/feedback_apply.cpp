@@ -800,10 +800,65 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
     }
 }
 
+namespace {
+
+// The keys the harvest saw hold nothing but plain objects (feedback_plan.h
+// `harvestObjects`, `nonObjectKeys`): a key at an `objects` position of some
+// receiver, never found or born holding anything else, and at such a position
+// of EVERY receiver the caches held that has it. The last is what keeps a
+// claim on one from refusing a layout the run used: a receiver whose node for
+// the key the runtime did not see born (an object literal's) may be built
+// boxed in the next run, and a cell or a family that requires an object slot
+// would not admit it.
+std::set<std::string> objectKeysOf(const FeedbackPlan& plan) {
+    std::set<std::string> keys;
+    std::vector<std::string_view> names;
+    bool complete = false;
+    for (const auto& [receiver, positions] : plan.harvestObjects) {
+        if (!shapeKeys(receiver, names, complete)) continue;
+        for (uint32_t i : positions) {
+            if (i < names.size() && plan.nonObjectKeys.count(std::string(names[i])) == 0) keys.emplace(names[i]);
+        }
+    }
+    std::set<std::string> receivers;
+    for (const auto& [ic, counts] : plan.shapesByIc) {
+        for (const auto& [name, count] : counts.counts) receivers.insert(name);
+    }
+    for (const std::string& receiver : receivers) {
+        if (!shapeKeys(receiver, names, complete)) continue;
+        const auto held = plan.harvestObjects.find(receiver);
+        for (uint32_t i = 0; i < names.size(); ++i) {
+            const auto it = keys.find(std::string(names[i]));
+            if (it == keys.end()) continue;
+            const bool kept = held != plan.harvestObjects.end() &&
+                              std::binary_search(held->second.begin(), held->second.end(), i);
+            if (!kept) keys.erase(it);
+        }
+    }
+    return keys;
+}
+
+}  // namespace
+
+void applyFeedbackObjectKeys(il::Module& mod, const FeedbackPlan& plan) {
+    const std::set<std::string> keys = objectKeysOf(plan);
+    mod.slotReprObjectFields.clear();
+    for (uint32_t k = 0; k < mod.keyConstants.size(); ++k) {
+        if (keys.count(mod.keyConstants[k]) != 0) mod.slotReprObjectFields.push_back(k);
+    }
+}
+
 uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, const std::vector<uint8_t>& hot,
                                   const std::unordered_set<uint32_t>& missedClaims) {
     // By shape name: its entry in `mod.layoutCells`.
     std::unordered_map<std::string, size_t> cellOf;
+    // A member or a family field under a key the harvest saw hold only plain
+    // objects (`applyFeedbackObjectKeys`) is an object one.
+    const auto heldObjects = [&](uint32_t keyIndex, uint32_t slot) {
+        return slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
+               std::find(mod.slotReprObjectFields.begin(), mod.slotReprObjectFields.end(), keyIndex) !=
+                   mod.slotReprObjectFields.end();
+    };
     // The one shape a claimed site met, with the site's key at its slot; null
     // for a site that met none, several, or one its claim does not describe.
     const auto soleShape = [&](const il::Instruction& inst) -> const std::string* {
@@ -907,7 +962,8 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
                                          [&](const auto& p) { return p.keyIndex == inst->keyIndex; });
                 if (pair == entry.pairs.end()) {
                     entry.pairs.push_back({inst->keyIndex, inst->staticSlot, write,
-                                           heldDoubles(*g.shape, inst->keyIndex, inst->staticSlot)});
+                                           heldDoubles(*g.shape, inst->keyIndex, inst->staticSlot),
+                                           heldObjects(inst->keyIndex, inst->staticSlot)});
                 } else {
                     pair->write = pair->write || write;
                 }
@@ -922,8 +978,18 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
             }
         }
     }
+    // A class family's field under an object key is an object one: the
+    // runtime stamps a class only on a shape that agrees, field by field
+    // (runtime/class_family.cpp), so every family claims one representation
+    // for the key whatever site asks.
+    for (il::Module::ClassFamilyEntry& family : mod.classFamilies) {
+        for (size_t i = 0; i < family.fields.size(); ++i) {
+            family.fields[i].object = heldObjects(family.fields[i].keyIndex, static_cast<uint32_t>(i));
+        }
+    }
     // The `number` members' keys are eligible for a double slot (slot_repr.h),
-    // or no object of the run would have one.
+    // or no object of the run would have one. (The object keys are, all of
+    // them, since `applyFeedbackObjectKeys`.)
     for (const il::Module::LayoutCellEntry& entry : mod.layoutCells) {
         for (const auto& p : entry.pairs) {
             if (p.number && std::find(mod.slotReprFields.begin(), mod.slotReprFields.end(), p.keyIndex) ==

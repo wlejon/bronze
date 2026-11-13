@@ -125,7 +125,8 @@ struct InlineCache {
     uint32_t realDepth() const noexcept {
         return cached_depth & ~(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG |
                                 BRONZE_ABI_IC_DEPTH_ABSENT_FLAG |
-                                BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG);
+                                BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG |
+                                BRONZE_ABI_IC_DEPTH_OBJECT_FLAG);
     }
 
     // Does this entry name a slot the shape calls an f64 (slot_repr.h)? Only a
@@ -136,6 +137,12 @@ struct InlineCache {
     // ignore the flag entirely.
     bool isDoubleSlot() const noexcept {
         return (cached_depth & BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG) != 0;
+    }
+    // The same for a slot the shape says holds a plain object (slot_repr.h,
+    // the OBJECT representation): a store arm tests the value for a plain
+    // object before it takes the entry.
+    bool isObjectSlot() const noexcept {
+        return (cached_depth & BRONZE_ABI_IC_DEPTH_OBJECT_FLAG) != 0;
     }
 
     // Is this entry still about the chain it was filled against? Both runtime
@@ -210,14 +217,15 @@ struct InlineCache {
         cached_epoch = protoMutationEpoch();
     }
 
-    // The same fill for a SET site, which additionally has to say whether the
-    // slot is an f64 one. Separate from `fill` rather than a defaulted
-    // parameter on it, so that every caller that can name a double slot is a
-    // caller that named one on purpose.
-    void fillForSet(Shape* receiverShape, uint32_t slot, bool doubleSlot) noexcept {
+    // The same fill for a SET site, which additionally says what the slot's
+    // representation asks of a store (Shape::setEntryFlags): the f64 flag or
+    // the object flag. Separate from `fill`, and the flags read off the shape
+    // here rather than passed in, so no set-site entry can name a claimed slot
+    // without saying so.
+    void fillForSet(Shape* receiverShape, uint32_t slot) noexcept {
         cached_shape = receiverShape;
         cached_slot = slot;
-        cached_depth = doubleSlot ? BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG : 0u;
+        cached_depth = receiverShape->setEntryFlags(slot);
         cached_epoch = protoMutationEpoch();
         rtIcHotNoteWrite(this);
     }
@@ -229,10 +237,10 @@ struct InlineCache {
     // that follows refills it, and a harvest (ic_harvest.cpp) can say the
     // site stored to the key rather than added it.
     static constexpr uint64_t kStoreFilledEpoch = ~uint64_t{0};
-    void fillForStore(Shape* receiverShape, uint32_t slot, bool doubleSlot) noexcept {
+    void fillForStore(Shape* receiverShape, uint32_t slot) noexcept {
         cached_shape = receiverShape;
         cached_slot = slot;
-        cached_depth = doubleSlot ? BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG : 0u;
+        cached_depth = receiverShape->setEntryFlags(slot);
         cached_epoch = kStoreFilledEpoch;
         rtIcHotNoteWrite(this);
     }
@@ -605,16 +613,17 @@ struct ObjectHeader {
     //
     // THE CHOKE POINT. Every way a property can be written ends here — the
     // runtime's own paths by calling it, and generated code's bare stores by
-    // testing the value for Number before they write and missing to here when
-    // it is not one (llvm_prop_set.cpp's DOUBLE-flag arm, llvm_static_slot.cpp's
-    // `double_slots` test). That is what makes the representation a fact about
-    // the slot rather than a hope about the writer, and it is why the check is
-    // HERE and not repeated at seventeen call sites.
+    // testing the value before they write (a Number for a double slot, a plain
+    // object for an object one) and missing to here when it does not fit (the
+    // set stub's DOUBLE and OBJECT arms, il_static_slot.cpp's static guard).
+    // That is what makes the representation a fact about the slot rather than
+    // a hope about the writer, and it is why the check is HERE and not
+    // repeated at seventeen call sites.
     //
-    // Costs a shape with no double slot one load of a word the caller has
+    // Costs a shape with no claimed slot one load of a word the caller has
     // usually already touched and one not-taken branch.
     inline void setSlot(uint32_t index, Value val) {
-        if (BRONZE_UNLIKELY(shape != nullptr && shape->double_slots != 0)) {
+        if (BRONZE_UNLIKELY(shape != nullptr && (shape->double_slots | shape->object_slots) != 0)) {
             setSlotWithRepr(index, val);
             return;
         }
@@ -649,8 +658,8 @@ struct ObjectHeader {
     }
 
     // Out of line, and reached only from a receiver whose shape has at least
-    // one double slot: unbox into the slot, or GENERALIZE it and store the
-    // value as it came. Allocates in the ARENA only (a shape rebuild), never on
+    // one claimed slot: store a value that fits (a double canonicalized), or
+    // GENERALIZE the slot and store the value as it came. Allocates in the ARENA only (a shape rebuild), never on
     // the heap — so nothing here can move `this`, which is what lets the
     // choke point sit inside a raw-pointer store.
     void setSlotWithRepr(uint32_t index, Value val);

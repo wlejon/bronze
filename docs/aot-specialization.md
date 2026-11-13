@@ -308,10 +308,17 @@ receiver), 11 shape compares, the rest store representation tests.
   not layout cells. Instructions per frame, before / after: pixi_sprites
   23.03M / 21.88M, three_meshes 58.58M / 58.13M, three_lights 3.08M /
   3.05M, pixi_text 36.04M / 36.11M, three_skinned 42.30M / 42.32M,
-  three_instanced 65.80M / 64.86M. The same discipline for "this slot holds
-  a plain object of shape S" (a store of anything else moves the object to a
-  shape without the claim, as `withSlotBoxed` does) would make the object a
-  receiver with no test.
+  three_instanced 65.80M / 64.86M. Plain objects are done the same way
+  (docs/slot-representation.md "Object slots"): the harvest's `objects` rows
+  make a key eligible for an object slot, a layout member or family field at
+  it is an `object` one, and behind the guard the value read is a plain
+  object, so its own reads ask only its shape. `updateLocalTransform` keeps
+  13 guards of 23 and 7 header tests of 12; pixi_sprites 21.88M / 21.22M
+  instructions a frame, three_meshes 58.28M / 58.54M (within its run to run
+  spread). What is left is the held object's shape compare: a claim on the
+  held object's shape ("this slot holds a plain object of shape S") would
+  remove it too, but the held object's shape moves under it, so the claim
+  would have to travel with every store to the held object.
 - *Build time*: a three.js image builds in about 130 s with twins against
   40 s; each twinned function is compiled four times (itself, twin, generic,
   probe).

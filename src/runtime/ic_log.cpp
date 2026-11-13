@@ -218,6 +218,7 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
         // the two are opposite facts — one is a site that will never hit, the
         // other a site that just stopped being able to.
         if (ic->isDoubleSlot()) return "double_slot_non_number_set";
+        if (ic->isObjectSlot()) return "object_slot_set";
         if (ic->realDepth() > 0) return "inherited_prop_set";
         if (obj->shape && obj->shape->dict) return "receiver_dict_mode";
         if (keyHdr) {

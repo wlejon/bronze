@@ -135,6 +135,7 @@ struct ModuleMirror {
     std::vector<Module::ClassFamilyEntry> classFamilies;
     std::vector<Module::LayoutCellEntry> layoutCells;
     std::vector<uint32_t> slotReprFields;
+    std::vector<uint32_t> slotReprObjectFields;
     std::vector<Module::CensusSiteEntry> censusSites;
     std::string censusOutPath;
     uint64_t icLayoutDigest;
@@ -665,7 +666,7 @@ std::string serializeModule(const Module& module) {
         w.var(fam.fields.size());
         for (const auto& f : fam.fields) {
             w.var(f.keyIndex);
-            w.u8(f.writable ? 1 : 0);
+            w.u8((f.writable ? 1 : 0) | (f.object ? 2 : 0));
         }
     }
     w.var(module.layoutCells.size());
@@ -676,11 +677,13 @@ std::string serializeModule(const Module& module) {
         for (const auto& p : lc.pairs) {
             w.var(p.keyIndex);
             w.var(p.slot);
-            w.u8((p.write ? 1 : 0) | (p.number ? 2 : 0));
+            w.u8((p.write ? 1 : 0) | (p.number ? 2 : 0) | (p.object ? 4 : 0));
         }
     }
     w.var(module.slotReprFields.size());
     for (uint32_t k : module.slotReprFields) w.var(k);
+    w.var(module.slotReprObjectFields.size());
+    for (uint32_t k : module.slotReprObjectFields) w.var(k);
     w.var(module.censusSites.size());
     for (const auto& c : module.censusSites) {
         w.var(c.keyIndex);
@@ -731,7 +734,9 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         fam.fields.resize(r.count());
         for (auto& f : fam.fields) {
             f.keyIndex = r.u32();
-            f.writable = r.u8() != 0;
+            const uint8_t flags = r.u8();
+            f.writable = (flags & 1) != 0;
+            f.object = (flags & 2) != 0;
         }
     }
     out.layoutCells.resize(r.count());
@@ -745,10 +750,13 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
             const uint8_t flags = r.u8();
             p.write = (flags & 1) != 0;
             p.number = (flags & 2) != 0;
+            p.object = (flags & 4) != 0;
         }
     }
     out.slotReprFields.resize(r.count());
     for (auto& k : out.slotReprFields) k = r.u32();
+    out.slotReprObjectFields.resize(r.count());
+    for (auto& k : out.slotReprObjectFields) k = r.u32();
     out.censusSites.resize(r.count());
     for (auto& c : out.censusSites) {
         c.keyIndex = r.u32();

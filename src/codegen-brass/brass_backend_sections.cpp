@@ -121,8 +121,8 @@ void emitCensusData(ObjectFile& obj, Section& roSec, int32_t roIdx,
 
 // The proven class layouts `bronze_register_class_family` takes (bronze_abi.h):
 // per class a (field start, field count) pair of u32, then every class's
-// fields as one u32 each, the module key index shifted left one with bit 0 the
-// writable flag. Preorder, as the IL lists them, because that order is what
+// fields as one u32 each, the module key index shifted left two with bit 0 the
+// writable flag and bit 1 the object one. Preorder, as the IL lists them, because that order is what
 // the family ids number.
 void emitClassFamilies(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
                        const il::Module& module) {
@@ -139,7 +139,9 @@ void emitClassFamilies(ObjectFile& obj, Section& roSec, int32_t roIdx, const std
                  roSec.data.size() - classesOffset, SymbolBinding::Local);
     const size_t fieldsOffset = roSec.data.size();
     for (const auto& cls : module.classFamilies) {
-        for (const auto& f : cls.fields) roSec.emit32((f.keyIndex << 1) | (f.writable ? 1u : 0u));
+        for (const auto& f : cls.fields) {
+            roSec.emit32((f.keyIndex << 2) | (f.object ? 2u : 0u) | (f.writable ? 1u : 0u));
+        }
     }
     // A table of classes that declare no field at all is still an address.
     if (start == 0) roSec.emit32(0);

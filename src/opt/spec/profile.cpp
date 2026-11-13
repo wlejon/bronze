@@ -84,6 +84,8 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   sample  <8 hex digits: the function's name hash> <count>
 //   doubles <receiver> <ascending key positions, comma-separated>
 //   mixed   <key>
+//   objects <receiver> <ascending key positions, comma-separated>
+//   nonobject <key>
 bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harvest>& harvest, std::string& why) {
     if (f[0] == "harvest") {
         Harvest h;
@@ -119,7 +121,7 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
         }
         return true;
     }
-    if (f[0] == "doubles") {
+    if (f[0] == "doubles" || f[0] == "objects") {
         std::string receiver;
         std::vector<uint32_t> positions;
         bool ok = f.size() == 3 && unescapeName(f[1], receiver) && !receiver.empty() && !f[2].empty();
@@ -131,16 +133,18 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
             positions.push_back(static_cast<uint32_t>(n));
             at = comma + 1;
         }
-        if (!ok || !harvest->doubles.emplace(std::move(receiver), std::move(positions)).second) {
-            why = "malformed doubles row";
+        auto& rows = f[0] == "doubles" ? harvest->doubles : harvest->objects;
+        if (!ok || !rows.emplace(std::move(receiver), std::move(positions)).second) {
+            why = "malformed " + std::string(f[0]) + " row";
             return false;
         }
         return true;
     }
-    if (f[0] == "mixed") {
+    if (f[0] == "mixed" || f[0] == "nonobject") {
         std::string key;
-        if (f.size() != 2 || !unescapeName(f[1], key) || key.empty() || !harvest->mixed.insert(key).second) {
-            why = "malformed mixed row";
+        auto& keys = f[0] == "mixed" ? harvest->mixed : harvest->nonObject;
+        if (f.size() != 2 || !unescapeName(f[1], key) || key.empty() || !keys.insert(key).second) {
+            why = "malformed " + std::string(f[0]) + " row";
             return false;
         }
         return true;
@@ -255,7 +259,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         }
         const std::vector<std::string_view> f = splitTabs(line);
         if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "sample" || f[0] == "doubles" ||
-            f[0] == "mixed") {
+            f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
         }
@@ -382,15 +386,20 @@ std::string TypeProfile::serialize() const {
             std::snprintf(h, sizeof h, "%08x", hash);
             out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
         }
-        for (const auto& [receiver, positions] : harvest_->doubles) {
-            out += "doubles\t" + escapeName(receiver) + "\t";
-            for (size_t i = 0; i < positions.size(); ++i) {
-                if (i != 0) out += ",";
-                out += std::to_string(positions[i]);
+        const auto rows = [&](const std::map<std::string, std::vector<uint32_t>>& held, const char* heldRow,
+                              const std::set<std::string>& other, const char* otherRow) {
+            for (const auto& [receiver, positions] : held) {
+                out += std::string(heldRow) + "\t" + escapeName(receiver) + "\t";
+                for (size_t i = 0; i < positions.size(); ++i) {
+                    if (i != 0) out += ",";
+                    out += std::to_string(positions[i]);
+                }
+                out += "\n";
             }
-            out += "\n";
-        }
-        for (const std::string& key : harvest_->mixed) out += "mixed\t" + escapeName(key) + "\n";
+            for (const std::string& key : other) out += std::string(otherRow) + "\t" + escapeName(key) + "\n";
+        };
+        rows(harvest_->doubles, "doubles", harvest_->mixed, "mixed");
+        rows(harvest_->objects, "objects", harvest_->nonObject, "nonobject");
     }
     return out;
 }

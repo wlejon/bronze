@@ -62,7 +62,7 @@ TEST_CASE("a fill of a registered site's way 0 lands in its row, and only that")
     CHECK((t.rows[1] >> 32) == (1u | BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG));
     t.sites[1].ways[0].fillAbsent(shapeAt(0xa000));
     CHECK(t.rowIsWay0(1));
-    t.sites[4].ways[0].fillForSet(shapeAt(0xb000), 6, true);
+    t.sites[4].ways[0].fill(shapeAt(0xb000), 6, BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG);
     CHECK(t.rowIsWay0(4));
     t.sites[4].ways[0].fillArrayMethod(7);
     CHECK(t.rows[8] == BRONZE_ABI_IC_SHAPE_ARRAY_METHOD);

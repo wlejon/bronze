@@ -101,6 +101,10 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // After the lowering's own families (lowering is over, and their ids are
     // in its claims) and before any claim of this run.
     if (plan != nullptr) spec::addProfiledFamilies(mod, *plan);
+    // The keys whose slots may hold plain objects only (feedback_plan.h), before
+    // the guarded regions and the layout facts, which leave their stores
+    // uncovered.
+    if (plan != nullptr && !probe) spec::applyFeedbackObjectKeys(mod, *plan);
 
     // The predicted direct targets first, so that every pass below that
     // copies or specializes a callee reads them as it reads lowering's. A

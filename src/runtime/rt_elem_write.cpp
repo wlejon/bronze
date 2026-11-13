@@ -74,7 +74,7 @@ bool tryCachedPlainElemSet(Value objVal, uint64_t idxBits, uint64_t valBits, boo
         const uint32_t slot = ic.cached_slot;
         const Value val(valBits);
         if (next->parent == sh && next->slot_index == slot && !next->repr_generalized &&
-            (!ic.isDoubleSlot() || val.isNumber()) && next->enumerable && !next->accessor &&
+            slotReprFits(next->repr, val) && next->enumerable && !next->accessor &&
             next->writable && next->configurable && ic.cached_epoch == protoMutationEpoch() &&
             (next->key.string() == matchedArenaKey ||
              (next->key.isString() && next->key.string()->equals(*matchedArenaKey)))) {
@@ -277,7 +277,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                         if (!censusFillsSuppressed() && postSh && !postSh->isDictionary() &&
                             !postSh->used_as_prototype) {
                             InlineCache filled{};
-                            filled.fillForSet(postSh, own.slot, postSh->slotIsDouble(own.slot));
+                            filled.fillForSet(postSh, own.slot);
                             if (setEntry) setEntry->ic = filled;
                             const StringHeader* ak =
                                 (setEntry && setEntry->key)

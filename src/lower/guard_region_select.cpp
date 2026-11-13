@@ -830,6 +830,7 @@ bool overlapsBuilt(const il::Function& fn, const RegionPlan& plan, const std::ve
 }  // namespace
 
 std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
+                                      const std::vector<uint32_t>& objectKeys,
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
                                       const RegionFeedback* feedback, bool afterInlining, bool icExits,
@@ -885,6 +886,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
         plan.repairLoopNames = afterInlining;
         plan.reenter = afterInlining;
         plan.missedClaims = afterInlining ? missedClaims : nullptr;
+        plan.objectKeys = &objectKeys;
         plan.blocks = loopBlocks[li];
         plan.inRegion.assign(fn.blocks.size(), false);
         for (il::BlockId b : plan.blocks) plan.inRegion[b] = true;

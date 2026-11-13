@@ -146,14 +146,15 @@ public:
     // answer "which of your slots must I not trace" with one load instead of a
     // walk. Always zero on a dictionary shape.
     uint64_t double_slots{0};
-    // The representation of the ONE slot this node owns. `double_slots` cannot
-    // say which node introduced a bit, and both the generalization rebuild and
-    // the census need exactly that.
+    // The representation of the ONE slot this node owns. `double_slots` and
+    // `object_slots` cannot say which node introduced a bit, and both the
+    // generalization rebuild and the census need exactly that.
     SlotRepr repr{SlotRepr::Boxed};
-    // Set on a DOUBLE node whose slot has generalized at least once. It makes
-    // the demotion sticky: the next object to install this key on this parent
-    // takes the boxed edge even with a number in hand, so a field that turns
-    // over splits the shape tree once rather than once per object.
+    // Set on a DOUBLE or OBJECT node whose slot has generalized at least once.
+    // It makes the demotion sticky: the next object to install this key on
+    // this parent takes the boxed edge even with a fitting value in hand, so a
+    // field that turns over splits the shape tree once rather than once per
+    // object.
     //
     // The only mutable word on a shape besides `family_stamp` and
     // `used_as_prototype`, and like those two it is monotone and affects only
@@ -189,6 +190,10 @@ public:
     // inline adds compare a receiver's header with, and the size its inline
     // `new` allocates. Follows `inline_slots`, set with it.
     uint64_t bare_header{bareHeaderFor(kDefaultInlineSlots)};
+    // WHICH SLOTS OF AN OBJECT AT THIS SHAPE HOLD A PLAIN OBJECT (slot_repr.h,
+    // the OBJECT representation): `double_slots`' sibling, computed the same
+    // way and as immutable. Always zero on a dictionary shape.
+    uint64_t object_slots{0};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build
@@ -262,6 +267,12 @@ public:
           repr(slot_repr),
           bare_header(parent_shape != nullptr ? parent_shape->bare_header
                                               : bareHeaderFor(kDefaultInlineSlots)),
+          object_slots(parent_shape == nullptr
+                           ? 0u
+                           : parent_shape->object_slots |
+                                 ((slot_repr == SlotRepr::Object && slot < kSlotReprLimit)
+                                      ? (uint64_t{1} << slot)
+                                      : 0u)),
           has_symbol_keys((parent_shape != nullptr && parent_shape->has_symbol_keys) ||
                           prop_key.isSymbol()) {}
 
@@ -356,6 +367,22 @@ public:
         return index < kSlotReprLimit && (double_slots & (uint64_t{1} << index)) != 0;
     }
     bool hasDoubleSlots() const noexcept { return double_slots != 0; }
+    // Does slot `index` hold a plain object on every object at this shape?
+    bool slotIsObject(uint32_t index) const noexcept {
+        return index < kSlotReprLimit && (object_slots & (uint64_t{1} << index)) != 0;
+    }
+    // Is slot `index` of either claimed representation (a store must fit it)?
+    bool slotIsClaimed(uint32_t index) const noexcept {
+        return index < kSlotReprLimit && ((double_slots | object_slots) & (uint64_t{1} << index)) != 0;
+    }
+    // The flag a SET-site cache entry naming slot `index` of this shape
+    // carries (bronze_abi_layout.h BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG /
+    // _OBJECT_FLAG): what a store arm must test the value for first.
+    uint32_t setEntryFlags(uint32_t index) const noexcept {
+        if (slotIsDouble(index)) return BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG;
+        if (slotIsObject(index)) return BRONZE_ABI_IC_DEPTH_OBJECT_FLAG;
+        return 0u;
+    }
 
     Shape* addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot,
                        bool is_enumerable = true, bool is_accessor = false,
@@ -373,9 +400,9 @@ public:
                           bool is_configurable, SlotRepr desired);
 
     // The shape this one would have been if slot `index` had been created
-    // BOXED — the generalization step (slot_repr.h). Every other node keeps the
-    // representation it has, so an object that moves here keeps every other
-    // double slot it had.
+    // BOXED — the generalization step (slot_repr.h), for a double slot or an
+    // object one. Every other node keeps the representation it has, so an
+    // object that moves here keeps every other claimed slot it had.
     //
     // It is a REBUILD from the root rather than an edit, because a shape node
     // is shared: editing this chain would silently re-type the slot of every
@@ -386,7 +413,7 @@ public:
     //
     // Arena-only: no heap allocation, so the caller's object cannot move and
     // this is safe to call with a raw `ObjectHeader*` in hand. Returns `this`
-    // unchanged when the slot is not a double one.
+    // unchanged when the slot is neither a double nor an object one.
     static Shape* withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index);
 
     // Existence and location of an own property. The `out_slot` overload is
@@ -510,11 +537,13 @@ static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
 // read — pinning it now is what keeps a later reorder a build break.
 static_assert(offsetof(Shape, double_slots) == BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
 static_assert(offsetof(Shape, repr) == BRONZE_ABI_SHAPE_REPR_OFFSET);
+static_assert(offsetof(Shape, object_slots) == BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET);
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
 static_assert(sizeof(Shape::repr) == 1);
 static_assert(static_cast<uint8_t>(SlotRepr::Boxed) == BRONZE_ABI_SLOT_REPR_BOXED &&
-              static_cast<uint8_t>(SlotRepr::Double) == BRONZE_ABI_SLOT_REPR_DOUBLE);
+              static_cast<uint8_t>(SlotRepr::Double) == BRONZE_ABI_SLOT_REPR_DOUBLE &&
+              static_cast<uint8_t>(SlotRepr::Object) == BRONZE_ABI_SLOT_REPR_OBJECT);
 
 }  // namespace bronze

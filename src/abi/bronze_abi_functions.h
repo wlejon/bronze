@@ -562,8 +562,10 @@
      *
      * `classes` is `classCount` pairs of u32 — a field start and a field count
      * — indexing `fields`, which holds one u32 per field: the module's own key
-     * index shifted left one, with bit 0 set when the construction sequence
-     * installs that field WRITABLE. (`Object.defineProperty(this, 'id', {value:
+     * index shifted left two, with bit 0 set when the construction sequence
+     * installs that field WRITABLE and bit 1 when the field is an OBJECT one
+     * (a shape is stamped only where the slot's representation agrees,
+     * runtime/slot_repr.h). (`Object.defineProperty(this, 'id', {value:
      * n})` installs a non-writable one, and three.js roots four `extends`
      * chains that way, so the bit is not decoration: a write site may only
      * claim a slot the stamp proved writable.) `keyMap` is the module's own
@@ -592,6 +594,10 @@
      * generalization takes it back the moment a store contradicts it. So a
      * name that is pinned on one class and dynamic on another costs at most a
      * shape split, never a wrong read.
+     *
+     * An index with BRONZE_ABI_SLOT_REPR_FIELD_OBJECT set names a key eligible
+     * for the OBJECT representation instead: a first install with a plain
+     * object in hand may make the slot an object one (a harvest's keys).
      *
      * By NAME rather than by (class, slot) deliberately. The runtime meets a
      * transition, not a class: `bronze_family_stamp` recognises a class only

@@ -306,13 +306,14 @@ struct BronzeInstruction {
 };
 
 // A layout cell (il::Module::LayoutCellEntry): the shape's key count and the
-// (key, slot, stored-to, a double) list its publish checks.
+// (key, slot, stored-to, a double, an object) list its publish checks.
 struct LayoutCell {
     struct Pair {
         uint32_t key = 0;
         uint32_t slot = 0;
         bool write = false;
         bool number = false;
+        bool object = false;
     };
     uint32_t key_count = 0;
     std::vector<Pair> pairs;

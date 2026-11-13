@@ -85,6 +85,9 @@ struct StaticGuardTerm {
     StaticSlotSite site;
     Value* store = nullptr;
     bool store_is_number = false;
+    // A write, whether or not `store` is given (a value the caller knows is
+    // a Number may come without it).
+    bool stores = false;
 };
 
 // What a static site does when its guard misses: the ordinary sequence for a
@@ -195,7 +198,31 @@ public:
     // between `i64` and `tagged` a result is stored as. Per function.
     [[nodiscard]] Value* number_flag(Value* v) const;
     void set_number_flag(Value* v, Value* flag) { number_flags_[v] = flag; }
-    void clear_number_flags() { number_flags_.clear(); }
+    void clear_number_flags() {
+        number_flags_.clear();
+        object_flags_.clear();
+    }
+    // Per class family (TranslatorOptions::class_family_object_slots), the
+    // slots of its `object` fields.
+    void set_class_family_objects(const std::vector<uint64_t>* objects) { family_objects_ = objects; }
+    // Whether `site`'s claim makes its slot an OBJECT one (runtime/slot_repr.h):
+    // a layout cell member marked `object`, or a family field every class of
+    // the site's range marks so. The runtime publishes the cell, or stamps
+    // the class, only on a shape whose slot is one, so behind the guard the
+    // slot holds a plain object, and a store there must bring one.
+    [[nodiscard]] bool object_member(const StaticSlotSite& site) const;
+    // OBJECT FLAGS, the NUMBER FLAGS' sibling: an i32 that says whether a
+    // value is a plain object (an Object-tagged pointer whose header names
+    // HeapKind::Plain). A read of an `object` member sets it, 1 on the edge
+    // its guard held and the test itself on the miss; a receiver test of the
+    // value (plain_shape_or_miss, keyed_shape, receiver_shape) asks the flag
+    // instead of the tag and header, and nothing at all where it is the
+    // constant. Per function, cleared with the number flags.
+    [[nodiscard]] Value* object_flag(Value* v) const;
+    void set_object_flag(Value* v, Value* flag) { object_flags_[v] = flag; }
+    // Whether `v` is a plain object, as an i32, with no branch: the header is
+    // read through a mapped block when `v` is no object (receiver_shape).
+    Value* plain_object_test(Builder& b, Value* v);
     // Whether this module has the table `site`'s guard reads. A site it has
     // none for is a lowering bug the caller diagnoses, never a quiet skip.
     [[nodiscard]] bool static_site_backed(const StaticSlotSite& site) const noexcept {
@@ -642,6 +669,8 @@ private:
     std::unordered_map<uint32_t, uint32_t> method_rank_;
     const std::unordered_map<uint32_t, LayoutCell>* layout_cells_ = nullptr;
     std::unordered_map<Value*, Value*> number_flags_;
+    std::unordered_map<Value*, Value*> object_flags_;
+    const std::vector<uint64_t>* family_objects_ = nullptr;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
     std::string family_base_sym_;

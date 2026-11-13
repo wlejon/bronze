@@ -57,15 +57,19 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
                      const std::vector<uint64_t>* methodSites);
 
 // A property was added through the runtime and `node` is the shape it took:
-// `number` when the add was a plain data property holding a Number (or an
-// Int32), the add a double slot would be born from under an eligible key.
-// Remembered per node, a non-Number add sticking. Cold (an add the inline
+// `kinds` says what the add held when it was a plain data property —
+// kHarvestBirthNumber for a Number (or an Int32), the add a double slot would
+// be born from under an eligible key, kHarvestBirthObject for a plain object,
+// the add an object slot would be born from — and is 0 for anything else.
+// Remembered per node as the kinds every add had. Cold (an add the inline
 // transition arm did not answer); called only while armed.
 //
 // With what the live heap holds when the files are written, this is how the
-// harvest says which slots stayed Numbers (the `doubles` and `mixed` rows,
-// docs/type-feedback.md) without changing a shape of the run it measures.
-void rtIcHarvestNoteBirth(const Shape* node, bool number);
+// harvest says which slots stayed Numbers and which stayed plain objects (the
+// `doubles`, `mixed`, `objects` and `nonobject` rows, docs/type-feedback.md)
+// without changing a shape of the run it measures.
+enum : uint8_t { kHarvestBirthNumber = 1, kHarvestBirthObject = 2 };
+void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds);
 
 // Folds this thread's live instances, then writes every harvested module's
 // file. The number of files written.
