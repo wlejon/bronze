@@ -1,0 +1,8 @@
+collect 29700
+restart 98002 100000 100000
+frozen TypeError 0
+sealed TypeError 1
+named 1 named 1
+own own 4 0
+mixed 1 object 6
+grow 0 0 1 0 4 12 5 20 22 462 23 506 1000 999000

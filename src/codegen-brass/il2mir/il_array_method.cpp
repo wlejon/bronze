@@ -37,7 +37,6 @@ namespace il2mir {
 namespace {
 
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
-constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
@@ -69,7 +68,7 @@ ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& i
 }
 
 Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv,
-                                 const std::vector<ArrayPushArg>& args,
+                                 bool recv_is_array, const std::vector<ArrayPushArg>& args,
                                  const std::function<Value*(Builder&)>& slow) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -87,18 +86,24 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     // An Array: the header is read through the TLS block (mapped, and its
     // first word no header: bronze_abi.h, proto_epoch) when the value is no
     // object at all, so the header compare alone refuses it.
+    // A receiver the function made as an Array (is_array_value) is one.
     b.position_at_end(cur);
     Value* ptr = b.build_xor(recv, iconst(b, kObjectTagBits));
-    Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
-    Value* base = b.build_select(is_obj, ptr, tls_block(b));
-    Value* is_arr = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
-    b.build_br_if(is_arr, bb_arr, bb_slow);
+    if (recv_is_array) {
+        b.build_br(bb_arr);
+    } else {
+        Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
+        Value* base = b.build_select(is_obj, ptr, tls_block(b));
+        Value* is_arr = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
+        b.build_br_if(is_arr, bb_arr, bb_slow);
+    }
 
     b.position_at_end(bb_arr);
     Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+    // The word is `undefined` until the array is given its box (array.cpp).
+    Value* no_props = b.build_eq(props, iconst(b, kUndefinedTag));
     if (which == ArrayInline::Sort) {
         // An Array with no properties object finds the intrinsic `sort` (the
         // header says why), and the runtime does everything the builtin does

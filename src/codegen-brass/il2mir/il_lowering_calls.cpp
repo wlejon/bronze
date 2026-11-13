@@ -509,7 +509,8 @@ bool lower_call_instruction(
                     };
                     // A push the inline arm leaves (a full block) enters the
                     // native at the site.
-                    res_val = lower_array_method_inline(lowering, b, arr, recv, push_args, [&](Builder& bb) {
+                    res_val = lower_array_method_inline(
+                        lowering, b, arr, recv, lowering->is_array_value(inst_ast.operands[0]), push_args, [&](Builder& bb) {
                         if (rows.empty()) return ic(bb);
                         return lower_native_fast(lowering, bb, rows, recv, args, site, [&](Builder& sb) {
                             return lower_method_stub_call(lowering, sb, recv, lowering->get_key_id(sb, inst_ast.index),

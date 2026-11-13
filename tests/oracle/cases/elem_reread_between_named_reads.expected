@@ -1,0 +1,17 @@
+keep 19200
+twice a15:b15
+getter before0:afterB0 after0:afterB0
+getter before1:afterB1 after1:afterB1
+getter before2:afterB2 after2:afterB2
+getter before3:afterB3 after3:afterB3
+pushed replaced0 replaced1 replaced2 replaced3
+pushed replaced0 replaced1 replaced2 replaced3
+shape a0:b0
+shape a1:b1
+shape pa:b2
+shape a3:b3
+call x0:y0 x1:x1
+store z3:last
+other last:last last:alias
+branch pq:p r:new newB:new
+holes false:false:true true:true:true true:true:true true:true:true true:true:true

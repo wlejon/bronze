@@ -218,6 +218,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         }
     }
     fresh_objects_.clear();
+    array_value_ids_.clear();
     hole_insensitive_ids_.clear();
     unrooted_hole_insensitive_ids_.clear();
     primitive_value_ids_.clear();
@@ -402,6 +403,53 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
             }
         }
         if (!changed) break;
+    }
+
+    // The Arrays this function made (is_array_value): every `create.array`,
+    // and, to a fixed point from the optimistic side, each boxed block
+    // parameter whose every incoming argument is one. A parameter no edge
+    // supplies is not.
+    {
+        std::unordered_map<uint32_t, uint32_t> supplied;
+        for (const auto& blk : fn_ast.blocks) {
+            for (const auto& p : blk.params) {
+                if (p.second == BronzeType::Dynamic) {
+                    array_value_ids_.insert(p.first);
+                    supplied[p.first] = 0;
+                }
+            }
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == BronzeOp::CreateArray && inst.result_id != UINT32_MAX) {
+                    array_value_ids_.insert(inst.result_id);
+                }
+            }
+        }
+        for (bool changed = !supplied.empty(); changed;) {
+            changed = false;
+            for (const auto& blk : fn_ast.blocks) {
+                if (blk.instructions.empty()) continue;
+                const auto& term = blk.instructions.back();
+                if (term.op != BronzeOp::Jump && term.op != BronzeOp::Branch) continue;
+                for (const BronzeBlockTarget* tgt : {&term.target, &term.else_target}) {
+                    if (tgt == &term.else_target && term.op == BronzeOp::Jump) continue;
+                    const auto bit = block_by_id.find(tgt->block_id);
+                    if (bit == block_by_id.end()) continue;
+                    const auto& params = bit->second->params;
+                    for (size_t i = 0; i < params.size(); ++i) {
+                        const auto sit = supplied.find(params[i].first);
+                        if (sit == supplied.end()) continue;
+                        ++sit->second;
+                        if ((i >= tgt->args.size() || array_value_ids_.count(tgt->args[i]) == 0) &&
+                            array_value_ids_.erase(params[i].first) != 0) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        for (const auto& [pid, count] : supplied) {
+            if (count == 0) array_value_ids_.erase(pid);
+        }
     }
 
     if (!propget_defs.empty()) {

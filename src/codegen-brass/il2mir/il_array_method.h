@@ -43,10 +43,11 @@ struct ArrayPushArg {
 ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& inst);
 
 // The arm in front of `slow` (the site's ordinary call). `args` holds the
-// boxed arguments (1..8 for push, 1 for sort, empty for shift). Returns the
-// call's result as Value bits.
+// boxed arguments (1..8 for push, 1 for sort, empty for shift);
+// `recv_is_array` says the receiver needs no test for being an Array
+// (IlLowering::is_array_value). Returns the call's result as Value bits.
 Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv,
-                                 const std::vector<ArrayPushArg>& args,
+                                 bool recv_is_array, const std::vector<ArrayPushArg>& args,
                                  const std::function<Value*(Builder&)>& slow);
 
 }  // namespace il2mir

@@ -33,4 +33,10 @@ namespace bronze::lower {
 // flowing down the chain (il2mir il_shape_memo.cpp).
 bool threadTruthJoins(il::Module& module);
 
+// Every use reached only through its definition. Not `dominanceHolds`
+// (guard_region_cfg.h), whose index-order rule an inlined body's blocks,
+// appended after their caller's, already break this late: the brass backend
+// lowers in reverse post-order and asks dominance alone.
+bool definitionsDominate(const il::Function& fn);
+
 }  // namespace bronze::lower

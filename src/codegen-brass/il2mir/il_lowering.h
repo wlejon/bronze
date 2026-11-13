@@ -139,6 +139,11 @@ public:
     // Whether IL value `id` is an object this function created
     // (CreateObject): a write to it adds a property.
     bool is_fresh_object(uint32_t id) const { return fresh_objects_.count(id) != 0; }
+    // Whether IL value `id` is an Array on every path: a `create.array`'s
+    // result, or a block parameter each of whose incoming arguments is one
+    // (`events = []` carried round a loop). An Array's heap kind never
+    // changes, so a site that tests its receiver for being one need not.
+    bool is_array_value(uint32_t id) const { return array_value_ids_.count(id) != 0; }
     // Whether every use of `id` in the function is `IsNumber` or a raw `Unbox`.
     bool is_hole_insensitive(uint32_t id) const { return hole_insensitive_ids_.count(id) != 0; }
     // Whether `id` is statically guaranteed to be a primitive value (never a
@@ -337,6 +342,7 @@ private:
     std::unordered_set<uint32_t> loop_blocks_;
     bool in_loop_ = false;
     std::unordered_set<uint32_t> fresh_objects_;
+    std::unordered_set<uint32_t> array_value_ids_;
     std::unordered_set<uint32_t> hole_insensitive_ids_;
     std::unordered_set<uint32_t> unrooted_hole_insensitive_ids_;
     std::unordered_set<uint32_t> primitive_value_ids_;

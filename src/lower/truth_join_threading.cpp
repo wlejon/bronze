@@ -252,10 +252,8 @@ void dropThreadedAway(il::Function& fn, const std::vector<uint8_t>& reachedBefor
     fn.blocks = std::move(kept);
 }
 
-// Every use reached only through its definition. Not `dominanceHolds`,
-// whose index-order rule an inlined body's blocks, appended after their
-// caller's, already break before this pass: the brass backend lowers in
-// reverse post-order and asks dominance alone.
+}  // namespace
+
 bool definitionsDominate(const il::Function& fn) {
     const Cfg cfg = buildCfg(fn);
     const std::vector<DefSite> defs = computeDefSites(fn);
@@ -284,8 +282,6 @@ bool definitionsDominate(const il::Function& fn) {
     }
     return true;
 }
-
-}  // namespace
 
 bool threadTruthJoins(il::Module& module) {
     bool changed = false;

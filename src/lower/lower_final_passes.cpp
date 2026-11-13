@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "lower/elem_reread.h"
 #include "lower/function_placement.h"
 #include "lower/guard_region.h"
 #include "lower/inline_guarded.h"
@@ -288,7 +289,12 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // numbers its sites in the order the final IL has them, and the probe is
     // read against it as the recorded build had it, so both stay unthreaded.
     const bool recording = feedback_ != nullptr && !feedback_->outPath.empty();
-    if (!probe && !recording) threadTruthJoins(mod);
+    if (!probe && !recording) {
+        threadTruthJoins(mod);
+        // The element reads a claimed named read stands between
+        // (elem_reread.h), on the control flow the threading left.
+        eliminateRepeatedElementReads(mod);
+    }
     // Where each function goes in the text (function_placement.h): from the
     // profile when there is one, last of all, as the module now stands.
     if (!probe) {

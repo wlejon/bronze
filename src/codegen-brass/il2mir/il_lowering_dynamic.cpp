@@ -176,12 +176,14 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     BasicBlock* differ = b.append_block(prefix + "_differ");
     BasicBlock* num = b.append_block(prefix + "_num");
     BasicBlock* other = b.append_block(prefix + "_other");
+    BasicBlock* contents = b.append_block(prefix + "_contents");
     BasicBlock* strings = b.append_block(prefix + "_strings");
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
     if (hot) {
         other->set_cold();
+        contents->set_cold();
         strings->set_cold();
         slow->set_cold();
     }
@@ -204,15 +206,20 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     b.build_br(merge, {b.build_eq(b.build_bitcast_f64_i64(op0), b.build_bitcast_f64_i64(op1))});
 
     // Different bits, not two Numbers: false unless two Strings or two
-    // BigInts, whose contents decide.
+    // BigInts, whose contents decide. An object first operand, the tag right
+    // above the Numbers, is one compare; the tags are read only past it, and
+    // the second operand's only for a String or a BigInt first one.
     b.position_at_end(other);
+    b.build_br_if(b.build_ult(op0, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_STRING}
+                                                                           << BRONZE_ABI_VALUE_TAG_SHIFT))),
+                  merge, {b.build_iconst_i32(0)}, contents, {});
+    b.position_at_end(contents);
     Value* shift = b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT);
     Value* tag0 = b.build_lshr(op0, shift);
-    Value* tag1 = b.build_lshr(op1, shift);
     Value* by_contents = b.build_or(b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)),
                                     b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_BIGINT)));
-    Value* needs_helper = b.build_and(by_contents, b.build_eq(tag0, tag1));
-    b.build_br_if(needs_helper, strings, {}, merge, {b.build_iconst_i32(0)});
+    b.build_br_if(b.build_and(by_contents, b.build_eq(tag0, b.build_lshr(op1, shift))), strings, {}, merge,
+                  {b.build_iconst_i32(0)});
 
     // Two Strings with different bits differ when their lengths do, or when
     // both carry a memoized hash and the hashes do (StringHeader::hash is of
