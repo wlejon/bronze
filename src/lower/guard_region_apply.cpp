@@ -153,7 +153,8 @@ bool fallbackOfTypedCopies(const il::Function& fn, const RegionPlan& plan) {
 }
 
 bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
-                     GuardRegionStats& stats, const RegionFeedback* feedback, bool afterInlining) {
+                     GuardRegionStats& stats, const RegionFeedback* feedback, bool afterInlining,
+                     const std::unordered_set<uint32_t>* missedClaims) {
     size_t originalInsts = 0;
     for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
     size_t added = 0;
@@ -180,7 +181,8 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         // counting those again would report one loop as several.
         GuardRegionStats discard;
         std::vector<RegionPlan> plans =
-            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining);
+            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining,
+                          /*icExits=*/true, missedClaims);
         if (plans.empty()) break;
         // The budget below is one for the function. Taken in block order it
         // went to a versioned loop's original, which comes first, and the
@@ -211,7 +213,8 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
             // region is without them, when that region is still worth taking.
             if (plan.icExitCount == 0) break;
             const il::BlockId header = plan.header;
-            plans = selectRegions(fn, keys, discard, alreadyBuilt, feedback, afterInlining, /*icExits=*/false);
+            plans = selectRegions(fn, keys, discard, alreadyBuilt, feedback, afterInlining, /*icExits=*/false,
+                                  missedClaims);
             const auto again = std::find_if(plans.begin(), plans.end(),
                                             [&](const RegionPlan& p) { return p.header == header; });
             if (again == plans.end() || !buildGuardedRegion(fn, *again, stats, alreadyBuilt)) break;
@@ -257,7 +260,7 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
 }  // namespace
 
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const RegionFeedback* feedback,
-                         const std::vector<uint32_t>* only) {
+                         const std::vector<uint32_t>* only, const std::unordered_set<uint32_t>* missedClaims) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
     // A `--census` build is an INSTRUMENT: what it measures is where lowering
@@ -282,7 +285,7 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const R
         if (only != nullptr && threadForwardingBlocks(fn) != 0) changed = true;
         ++stats.functions;
         const GuardRegionStats before = stats;
-        if (examineFunction(fn, module.keyConstants, stats, feedback, only != nullptr)) changed = true;
+        if (examineFunction(fn, module.keyConstants, stats, feedback, only != nullptr, missedClaims)) changed = true;
         if (!guardRegionTraceOn()) continue;
         const std::string delta = traceDelta(before, stats);
         if (!delta.empty()) {

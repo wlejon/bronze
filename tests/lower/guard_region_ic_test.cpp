@@ -252,10 +252,13 @@ TEST_CASE("a guard that misses into another guard is no exit: only the one whose
     REQUIRE(applyGuardedRegions(module, &stats, nullptr, &only));
     CHECK(stats.duplicated == 1);
     CHECK(stats.icExits == 2);
-    // Three guards in each copy, and the first still has both its arms in the
-    // fast copy: its miss is the second guard's block, not a trampoline.
+    // Three guards in the fast copy, and the first still has both its arms
+    // there: its miss is the second guard's block, not a trampoline. The slow
+    // copy keeps the two a trampoline lands in front of; its own first guard
+    // went with its header, which nothing enters once the back edge returns
+    // to the fast copy and no test stands on the way.
     const il::Function& out = module.functions[0];
-    CHECK(countOf(body(module), "accessor.ic.is") == 6);
+    CHECK(countOf(body(module), "accessor.ic.is") == 5);
     CHECK(sitesIn(out, il::CopyClass::Fast) == 0);
     size_t twoWay = 0;
     for (const il::Block& b : out.blocks) {
@@ -265,6 +268,61 @@ TEST_CASE("a guard that misses into another guard is no exit: only the one whose
         if (miss.instructions.size() == 2 && miss.instructions[0].op == il::Op::AccessorIcIs) ++twoWay;
     }
     CHECK(twoWay == 1);
+
+    DiagnosticSink diags;
+    CHECK(il::verify(module, diags));
+}
+
+TEST_CASE("the run after inlining comes back: the slow copy's back edge reaches the fast header") {
+    // guard_region.h, "RE-ENTRY". The first run leaves for the rest of the
+    // loop; the run that names its functions leaves for one iteration.
+    const auto wayBack = [](const il::Function& fn) {
+        // Jumps from a Slow block into a Fast one. A trampoline is Fast and
+        // jumps to Slow, so only the way back counts.
+        size_t n = 0;
+        for (const il::Block& b : fn.blocks) {
+            if (b.copyClass != il::CopyClass::Slow || b.instructions.empty()) continue;
+            const il::Instruction& last = b.instructions.back();
+            if (last.op == il::Op::Jump && fn.blocks[last.target.block].copyClass == il::CopyClass::Fast) ++n;
+        }
+        return n;
+    };
+
+    il::Module first = moduleOf(twoDiamonds());
+    REQUIRE(applyGuardedRegions(first));
+    CHECK(wayBack(first.functions[0]) == 0);
+
+    il::Module module = moduleOf(twoDiamonds());
+    GuardRegionStats stats;
+    const std::vector<uint32_t> only = {0};
+    REQUIRE(applyGuardedRegions(module, &stats, nullptr, &only));
+    CHECK(stats.icExits == 2);
+    const il::Function& fn = module.functions[0];
+    CHECK(wayBack(fn) == 1);
+    // What it enters is the preheader, the fast header's one predecessor
+    // outside the fast loop, and the entry edge enters it too.
+    il::BlockId pre = il::kNoBlock;
+    for (const il::Block& b : fn.blocks) {
+        if (b.copyClass != il::CopyClass::Slow || b.instructions.empty()) continue;
+        const il::Instruction& last = b.instructions.back();
+        if (last.op == il::Op::Jump && fn.blocks[last.target.block].copyClass == il::CopyClass::Fast) {
+            pre = last.target.block;
+        }
+    }
+    REQUIRE(pre != il::kNoBlock);
+    size_t into = 0;
+    for (const il::Block& b : fn.blocks) {
+        if (b.instructions.empty()) continue;
+        const il::Instruction& last = b.instructions.back();
+        if (last.op == il::Op::Jump && last.target.block == pre) ++into;
+        if (last.op == il::Op::Branch && (last.target.block == pre || last.elseTarget.block == pre)) ++into;
+    }
+    CHECK(into == 2);
+    CHECK(fn.blocks[pre].instructions.back().op == il::Op::Jump);
+    CHECK(fn.blocks[fn.blocks[pre].instructions.back().target.block].copyClass == il::CopyClass::Fast);
+    // Both original sites are still only in the slow copy.
+    CHECK(sitesIn(fn, il::CopyClass::Fast) == 0);
+    CHECK(sitesIn(fn, il::CopyClass::Slow) == 2);
 
     DiagnosticSink diags;
     CHECK(il::verify(module, diags));

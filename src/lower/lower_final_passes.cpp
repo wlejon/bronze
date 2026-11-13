@@ -21,6 +21,7 @@
 #include "lower/elem_reread.h"
 #include "lower/function_placement.h"
 #include "lower/guard_region.h"
+#include "lower/guarded_load_fold.h"
 #include "lower/inline_guarded.h"
 #include "lower/inline_small.h"
 #include "lower/layout_facts.h"
@@ -176,8 +177,8 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
             &feedbackStats);
     }
     std::unordered_set<uint32_t> inlinedOwnIcs;
+    std::vector<uint32_t> inlinedInto;
     if (inlineGuarded_) {
-        std::vector<uint32_t> inlinedInto;
         ClosureGuesses guesses = directMethods_.closureGuesses(mod);
         for (const auto& [ic, target] : ownCallees) guesses[ic] = {target};
         for (const auto& [ic, targets] : polyMethods) {
@@ -214,10 +215,6 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
             }
         }
         foldInlinedCallers(mod, inlinedInto);
-        // The loops inlined bodies brought (guard_region.h, `only`).
-        GuardRegionStats inlinedRegions;
-        applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto);
-        if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
     }
     for (uint32_t ic : inlinedOwnIcs) ownCallees.erase(ic);
     // The own-slot calls inlining left: a direct entry behind the slot's
@@ -228,9 +225,8 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     }
     // A profile's guarded regions (D), on what inlining finished: the values
     // the run saw only as Numbers, carried as doubles behind one guard
-    // (guard_region.h, "PROFILE-GUIDED REGIONS"). Before the passes that hand
-    // out per-site cells (transition runs, define-add, the claims), so each
-    // copy gets its own.
+    // (guard_region.h, "PROFILE-GUIDED REGIONS"). Before the claims, whose
+    // sites this run's copies would otherwise share a cell with.
     if (plan != nullptr) {
         RegionFeedback regionFeedback;
         regionFeedback.operand = [plan](const il::Instruction& inst, uint32_t operand) {
@@ -253,17 +249,31 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         applyGuardedRegions(mod, &feedbackRegions, &regionFeedback);
         guardRegionStatsReport(feedbackRegions, "guard-fb");
     }
-    // After every pass that copies instructions: a copied run would share
-    // its cells with the original (transition_runs.h).
-    markTransitionRuns(mod);
-    assignDefineAddCells(mod);
-    // The claims last: they hand out static cells of their own, one per
-    // site, so an inlined copy is claimed in its caller's context.
+    // The claims after inlining: they hand out static cells of their own,
+    // one per site, so an inlined copy is claimed in its caller's context.
     if (wholeProgram) report += wpo::optimizeForBuild(mod, build);
     // A profile's claims (A) on the property sites the prediction left
     // unclaimed, and its number hints (C), before the layout facts spend
     // the claims.
-    if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats);
+    std::unordered_set<uint32_t> missedClaims;
+    if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats, &missedClaims);
+    // The loops inlined bodies brought (guard_region.h, `only`), after the
+    // claims: a copy shares its site's cell with the original, as it shares
+    // the site's cache, and the fast copy's static sites can then be shape
+    // tests that leave it; with a profile, each one the run did not see miss
+    // (guard_region.h, "SHAPE GUARDS"). These loops come back to their fast
+    // copy ("RE-ENTRY").
+    if (inlineGuarded_) {
+        GuardRegionStats inlinedRegions;
+        applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto, plan != nullptr ? &missedClaims : nullptr);
+        if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
+    }
+    // The loads the regions left bare (guarded_load_fold.h).
+    foldGuardedLoads(mod);
+    // After every pass that copies instructions: a copied run would share
+    // its cells with the original (transition_runs.h).
+    markTransitionRuns(mod);
+    assignDefineAddCells(mod);
     // The exits the typed bodies left in front of their reads, now that every
     // read that will have a claim has it.
     resolveReadExits(mod);

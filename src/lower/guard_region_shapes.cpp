@@ -22,19 +22,24 @@ using ShapeTest = RegionPlan::ShapeTest;
 // A site a point can cover: a static-slot read, or a static-slot write whose
 // value the fast copy holds as a `box.f64` (a promoted value or a box), which
 // every slot representation takes and which owes no write barrier. An accessor
-// site or a transition run's member is no slot access at all.
+// site or a transition run's member is no slot access at all. `numberBox` marks
+// the values a `box.f64` defines, which are Number boxes in both copies whether
+// or not the region carries them as doubles.
 bool coverableSite(const il::Instruction& inst, const std::vector<il::Type>& types, const RegionPlan& plan,
-                   const std::vector<const Candidate*>& candidateOf) {
+                   const std::vector<const Candidate*>& candidateOf, const std::vector<uint8_t>& numberBox) {
     if (inst.staticSlot == il::Instruction::kNoStaticSlot) return false;
     if (inst.directTarget != il::Instruction::kNoDirectTarget) return false;
     if (inst.operands.empty()) return false;
     const il::ValueId recv = inst.operands[0];
     if (recv >= types.size() || types[recv] != il::Type::Dynamic) return false;
     if (recv < plan.isCandidate.size() && plan.isCandidate[recv] != 0) return false;
+    // A claim the recorded run saw miss keeps its miss in line.
+    if (plan.missedClaims != nullptr && plan.missedClaims->count(inst.icIndex) != 0) return false;
     if (inst.op == il::Op::PropGet) return inst.result != il::kNoValue;
     if (inst.op != il::Op::PropSet || il::isDefineWrite(inst) || inst.operands.size() < 2) return false;
     if (inst.transitionRunCell != il::Instruction::kNoTransitionRun) return false;
     const il::ValueId val = inst.operands[1];
+    if (val < numberBox.size() && numberBox[val] != 0) return true;
     const Candidate* c = val < candidateOf.size() ? candidateOf[val] : nullptr;
     return c != nullptr && (c->kind == CandidateKind::Promoted || c->kind == CandidateKind::BoxElide);
 }
@@ -81,6 +86,7 @@ struct BlockShapes {
     const std::vector<il::Type>& types;
     const std::vector<DefSite>& defs;
     const std::vector<const Candidate*>& candidateOf;
+    const std::vector<uint8_t>& numberBox;
     RegionPlan& plan;
     il::BlockId b;
 
@@ -138,7 +144,7 @@ struct BlockShapes {
                 continue;
             }
             if (staticSite(inst)) {
-                if (!coverableSite(inst, types, plan, candidateOf) || !availableAt(inst.operands[0], from)) break;
+                if (!coverableSite(inst, types, plan, candidateOf, numberBox) || !availableAt(inst.operands[0], from)) break;
                 ++sites;
                 addTest(tests, testOf(inst));
                 continue;
@@ -180,7 +186,7 @@ struct BlockShapes {
                 }
                 continue;
             }
-            const bool coverable = coverableSite(inst, types, plan, candidateOf);
+            const bool coverable = coverableSite(inst, types, plan, candidateOf, numberBox);
             const il::ValueId recv = inst.operands[0];
             size_t point = SIZE_MAX;
             for (const auto& [r, p] : active) {
@@ -193,7 +199,7 @@ struct BlockShapes {
                     if (points[j] < stretchStart || points[j] > i) continue;
                     if (availableAt(recv, points[j])) point = j;
                 }
-                if (point == SIZE_MAX && !insideRun(i) && savedFrom(i) >= 1) {
+                if (point == SIZE_MAX && !insideRun(i) && savedFrom(i) >= (plan.missedClaims != nullptr ? 0 : 1)) {
                     size_t at = 0;
                     while (at < points.size() && points[at] < i) ++at;
                     if (at == points.size() || points[at] != i) insertPoint(at, i);
@@ -224,12 +230,20 @@ bool planShapeGuards(const il::Function& fn, const std::vector<il::Type>& types,
     for (const Candidate& c : plan.candidates) {
         if (c.value < candidateOf.size()) candidateOf[c.value] = &c;
     }
+    std::vector<uint8_t> numberBox(fn.valueCount, 0);
+    for (const il::Block& block : fn.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            if (inst.op == il::Op::Box && inst.boxType == il::Type::F64 && inst.result < numberBox.size()) {
+                numberBox[inst.result] = 1;
+            }
+        }
+    }
     plan.shapeTestsOf.assign(fn.blocks.size(), {});
     plan.shapeGuardedOf.assign(fn.blocks.size(), {});
     plan.runGuardsOf.resize(fn.blocks.size());
     plan.shapeGuardedCount = 0;
     for (il::BlockId b : plan.blocks) {
-        BlockShapes shapes{fn, types, defs, candidateOf, plan, b};
+        BlockShapes shapes{fn, types, defs, candidateOf, numberBox, plan, b};
         shapes.run();
         // A shape run's reads are loads only behind its point's tests, and its
         // value tests send a failure back in front of them all: one read left

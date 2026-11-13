@@ -34,6 +34,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "il/il.h"
@@ -115,6 +116,10 @@ struct FeedbackPlan {
     std::unordered_map<uint32_t, NameCounts> methodsByIc;  // method.call callees
     std::unordered_map<uint32_t, NameCounts> methodShapesByIc;  // method.call receivers
     std::unordered_map<uint32_t, ReadResults> readResultsByIc;  // prop.get results
+    // Property sites whose harvested cache held two shapes under one name:
+    // the same keys in the same order, laid out differently (a slot's
+    // representation, an attribute), so one identity cell answers one of them.
+    std::unordered_set<uint32_t> shapeVariantIcs;
     std::map<SpanKey, NameCounts> dynamicCallees;          // call.dynamic callees
     std::map<ValueKey, NumberCounts> values;               // operands of numeric ops
     // Function name -> the times its entry site ran (a probe function's
@@ -197,7 +202,17 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 // `numberHint` on each numeric op whose every Dynamic operand was a Number;
 // and E, an inline way chain (`icChain`) on each read that met 1..4 plain
 // shapes.
-void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats);
+//
+// `missedClaims` receives the inline-cache index of every claimed property
+// site the run saw a receiver at that its claim does not answer: a shape with
+// the key elsewhere or nowhere, one outside the claim's family range, a second
+// layout where the claim is one identity cell, a receiver that is no plain
+// object, or more receivers than the cache held. A claim the run never saw
+// miss names no site there, and neither does a site the run never reached. The
+// guarded regions read it (lower/guard_region.h, "SHAPE GUARDS"): a site in it
+// keeps its miss in line, where one that is not may leave its fast copy.
+void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats,
+                                 std::unordered_set<uint32_t>* missedClaims = nullptr);
 
 // Layout families read off the profile, for the classes whose construction
 // the compiler could not model (a constructor that copies an options object,

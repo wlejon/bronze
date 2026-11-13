@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "il/il.h"
@@ -27,7 +28,8 @@ namespace bronze::lower {
 // edge leads to is the IL that would have existed anyway — the original region,
 // split at the point the guard sits at, entered with the values the fast copy
 // had computed so far, re-boxed. Control leaves the fast copy at most once per
-// region entry and never comes back, so the fallback cannot thrash.
+// region entry and does not come back, except in the loops of the run after
+// inlining, which come back once an iteration (see "RE-ENTRY").
 //
 // It is an IL -> IL pass and not a second lowering because lowering hands out
 // module-global identity as it goes — inline-cache indices, static-slot cells,
@@ -405,8 +407,12 @@ inline constexpr uint64_t kFeedbackHotExecutions = 256;
 // first run could not see, and like the profile-guided run it skips the
 // blocks an earlier rewrite made copies of. It is also the first run to see an
 // inlined body's guard, so the first whose regions have IC EXITS (below).
+//
+// `missedClaims`, with `only`: a profile was read, and these are the claimed
+// sites it saw miss (`RegionPlan::missedClaims`).
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr,
-                         const RegionFeedback* feedback = nullptr, const std::vector<uint32_t>* only = nullptr);
+                         const RegionFeedback* feedback = nullptr, const std::vector<uint32_t>* only = nullptr,
+                         const std::unordered_set<uint32_t>* missedClaims = nullptr);
 
 // Prints the counters to stderr under `BRONZE_GUARDED_REGION_STATS=1`, and does
 // nothing otherwise. `label` names the run (`guard`, `guard-fb`).
@@ -505,6 +511,13 @@ struct RegionPlan {
     // (`applyGuardedRegions`' `only`), whose loops come from inlined bodies
     // with guards below a join (a self-hosted `reduce`'s `k in O` arm).
     bool repairLoopNames = false;
+    // A LOOP region whose slow copy's back edges go back to the fast copy
+    // (see "RE-ENTRY"): every loop of the static run after inlining.
+    bool reenter = false;
+    // With `reenter`, and a profile read: the claimed sites the recorded run
+    // saw miss, by inline-cache index (opt/spec/feedback_plan.h). Every other
+    // static site may have a shape point of its own (see "SHAPE GUARDS").
+    const std::unordered_set<uint32_t>* missedClaims = nullptr;
     il::BlockId header = il::kNoBlock;
     // The region's blocks, ascending. `inRegion` is the same set by block id.
     std::vector<il::BlockId> blocks;
@@ -691,6 +704,24 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
 // run's first read, as an index run's do, licensed by the shape tests there,
 // which cover every read of the run and so make each a load that may run again
 // in the slow copy.
+//
+// A POINT FOR ONE SITE. Where the fast copy can be entered again and a profile
+// was read (`RegionPlan::missedClaims`), a stretch whose tests number its sites
+// gets its point too, so that every static site the recorded run did not see
+// miss is a test that leaves and a bare access behind it. What that buys is
+// not the test, which costs what the site's own guard did: it is that the
+// fast copy then holds no miss, and a miss is a call that can store any slot.
+// Between two calls the fast copy is tests and loads, and a field read again
+// (`this._position` by each of two inlined accessors) is the load it was
+// (lower/guarded_load_fold.h); the guards behind it are then guards of one
+// value. A site the run did see miss is not covered at all: an identity cell
+// holds one shape, and a site that meets two layouts of one key list would
+// leave on every other receiver. It keeps its miss in line, and what was read
+// before it is read again after it.
+//
+// Without a profile nothing says which claims hold, and a point for one site
+// that misses every time would send every iteration through the slow copy,
+// which has none of the fast copy's doubles: the rule above stands as it was.
 
 // Fills `plan.shapeTestsOf` and `plan.shapeGuardedOf`, adding shape points to
 // `plan.splitsOf` (and `plan.runGuardsOf`) where a stretch needs one. Run after
@@ -724,6 +755,57 @@ bool planShapeGuards(const il::Function& fn, const std::vector<il::Type>& types,
 // An exit is a split like any other, so it is taken only where the slow
 // copy's names can be served (`served` below) and where a split may stand at
 // all; a guard that fails either stays the diamond it was.
+
+// ---------------------------------------------------------------------------
+// RE-ENTRY
+//
+// A loop region of the static run after inlining (`RegionPlan::reenter`) is
+// left for the rest of ONE ITERATION: every back edge of its slow copy goes to
+// the fast header instead of the slow one. An IC exit, a shape point or a
+// number test that failed for one receiver then costs that receiver's
+// iteration and not the rest of the loop, which is what lets a fast copy leave
+// on a single site's test (see "SHAPE GUARDS").
+//
+// The way back is a chain of its own (guard_region_reenter.cpp). Its first
+// block takes the header's parameters as the slow copy's back edge passes
+// them, boxed. It asks again what the entry edge asked, `is.number` of each
+// entry-guarded value, and then `is.number` of each parameter the fast copy
+// carries as a double; a failure goes on to the slow header with the
+// parameters as they came, so a loop whose entry test fails runs its slow
+// copy as before for one failed test an iteration. Behind the tests the
+// promoted parameters are unboxed and control enters the PREHEADER, the fast
+// header's one predecessor outside the fast copy, which the entry edge
+// reaches too. The doubles of the entry-guarded values are made there, so
+// they dominate the fast copy whichever way it was entered.
+//
+// Nothing else changes. A value of one copy is never read in the other (the
+// IL verifier's rule stands): what crosses does so as a block argument, on a
+// trampoline one way and on the chain the other, and a value the fast copy
+// defined is defined again before any use the way back can reach, because
+// the way back enters at the header. The slow header itself is entered only
+// from a failed test, so with no test on the way (no entry-guarded value, no
+// promoted parameter) nothing enters it and it is pruned with what only it
+// reaches.
+//
+// WHAT A PASS AFTER THIS ONE MAY ASSUME. A fact about a VALUE holds in both
+// copies, since they compute the same values. A fact about the HEAP read on
+// the fast loop's entry edge is read again on every way in, the preheader
+// being that edge's source. What no longer holds is that the fast copy's
+// blocks run from the header to the latch without the slow copy's code
+// between two of its iterations: a pass that proves something about the heap
+// from the fast loop's body alone has to count the slow copy as part of the
+// loop. The loop versions (typed_loop_version.h) run before this run and
+// their regions are the first run's, which does not re-enter.
+//
+// A SITE THAT LEAVES ON EVERY PASS runs the fast copy up to its test, the
+// trampoline, the slow copy from there, and the chain: the slow copy's
+// iteration plus a jump each way and the chain's tests. Nothing counts the
+// exits and nothing pins a loop to its slow copy; a counter would have to be
+// kept in the slow copy's SSA or in memory read on the way back, and what it
+// would save is that margin, while a loop it pinned after a burst of misses
+// would stay slow for the rest of its run, which is what this section removes.
+// What keeps a loop from leaving every time is that a point for one site is
+// placed only where a profile vouches for the claim.
 
 // The guards of the region that could be IC exits, by their shape alone.
 uint32_t countIcExitSites(const il::Function& fn, const RegionPlan& plan);
@@ -785,7 +867,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
                                       GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt,
                                       const RegionFeedback* feedback = nullptr, bool afterInlining = false,
-                                      bool icExits = true);
+                                      bool icExits = true, const std::unordered_set<uint32_t>* missedClaims = nullptr);
 
 // Applies one plan to `fn`. Returns false when the rewrite would not have been
 // dominance-correct, in which case `fn` is untouched. `alreadyBuilt` is

@@ -207,10 +207,11 @@ the plan where each claim has to be made:
   parameter, the direct edge drops the extra arguments (three.js's empty
   `onBeforeRender(renderer, scene, camera, ...)`), and a short call pads
   with `undefined`. A callee that never reads `this` is called without it.
-- **A, static-slot claims** (after `wpo::optimizeForBuild`, before the layout
-  facts spend claims): a `prop.get`/`prop.set` the whole-program pass left
-  unclaimed, whose receivers had one dominant shape, claims the key's slot in
-  that shape: a family claim when the shape's key list matches class families
+- **A, static-slot claims** (after `wpo::optimizeForBuild`, before the
+  regions of inlined loops and the layout facts, which both spend claims): a
+  `prop.get`/`prop.set` the whole-program pass left unclaimed (a site it
+  predicted absent included), whose receivers had one dominant shape, claims
+  the key's slot in that shape: a family claim when the shape's key list matches class families
   that all have the key at that slot, else an identity claim with a static
   cell of its own. Both are guarded as wpo's are: the runtime publishes a cell
   only after checking an own data slot there, and refuses a store's cell on a
@@ -227,7 +228,15 @@ the plan where each claim has to be made:
   also saw a shape the claimed one grew from by one or two keys (same
   prototype, its key list a prefix), and wpo's identity claims on one
   allocation site whose shape it could not fix; every other cell's miss
-  tests only for an empty cell.
+  tests only for an empty cell. The pass also hands back the claimed sites
+  the run saw miss (`missedClaims`): a claim, its own or wpo's, whose profile
+  has an `*other*` row or a shape it cannot read, a second receiver name
+  under an identity claim, more cached ways than receiver names
+  (`FeedbackPlan::shapeVariantIcs`: two layouts of one key list, of which an
+  identity cell holds one), the key at another slot, or a shape outside the
+  claimed family range. The region pass gives every other claimed site of a
+  re-entered loop a shape test that leaves the fast copy
+  (`src/lower/guard_region.h`, "SHAPE GUARDS"), and leaves these in line.
 - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
   `bronze il`). The backend then lays the Number test first and moves the

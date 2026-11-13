@@ -4,98 +4,9 @@
 
 #include "lower/guard_region.h"
 #include "lower/guard_region_cfg.h"
+#include "lower/guard_region_emit.h"
 
 namespace bronze::lower {
-
-namespace {
-
-il::Instruction makeIsNumber(il::ValueId result, il::ValueId operand) {
-    il::Instruction inst;
-    inst.op = il::Op::IsNumber;
-    inst.type = il::Type::Bool;
-    inst.result = result;
-    inst.operands = {operand};
-    return inst;
-}
-
-il::Instruction makeIsDenseArray(il::ValueId result, il::ValueId operand, uint32_t maxIndex) {
-    il::Instruction inst;
-    inst.op = il::Op::IsDenseArray;
-    inst.type = il::Type::Bool;
-    inst.result = result;
-    inst.operands = {operand};
-    inst.immI32 = static_cast<int32_t>(maxIndex);
-    return inst;
-}
-
-il::Instruction makeIsNumberArray(il::ValueId result, il::ValueId operand, uint32_t maxIndex) {
-    il::Instruction inst = makeIsDenseArray(result, operand, maxIndex);
-    inst.op = il::Op::IsNumberArray;
-    return inst;
-}
-
-il::Instruction makeIsShape(il::ValueId result, il::ValueId operand, const RegionPlan::ShapeTest& test) {
-    il::Instruction inst;
-    inst.op = il::Op::IsShape;
-    inst.type = il::Type::Bool;
-    inst.result = result;
-    inst.operands = {operand};
-    inst.staticSlot = test.slot;
-    inst.staticCellIndex = test.cell;
-    inst.familyLo = test.familyLo;
-    inst.familySpan = test.familySpan;
-    return inst;
-}
-
-il::Instruction makeRawUnbox(il::ValueId result, il::ValueId operand) {
-    il::Instruction inst;
-    inst.op = il::Op::Unbox;
-    inst.type = il::Type::F64;
-    inst.result = result;
-    inst.operands = {operand};
-    inst.rawUnbox = true;
-    return inst;
-}
-
-il::Instruction makeBoxF64(il::ValueId result, il::ValueId operand) {
-    il::Instruction inst;
-    inst.op = il::Op::Box;
-    inst.type = il::Type::Dynamic;
-    inst.boxType = il::Type::F64;
-    inst.result = result;
-    inst.operands = {operand};
-    return inst;
-}
-
-// The boxed form of a tested Number, rebuilt from its double (il.h `rawBox`).
-il::Instruction makeRawBoxF64(il::ValueId result, il::ValueId operand) {
-    il::Instruction inst = makeBoxF64(result, operand);
-    inst.rawBox = true;
-    return inst;
-}
-
-il::Instruction makeJump(il::BlockId target, std::vector<il::ValueId> args = {}) {
-    il::Instruction inst;
-    inst.op = il::Op::Jump;
-    inst.type = il::Type::Void;
-    inst.target.block = target;
-    inst.target.args = std::move(args);
-    return inst;
-}
-
-il::Instruction makeBranch(il::ValueId cond, il::BlockId thenBlock, il::BlockId elseBlock,
-                           std::vector<il::ValueId> elseArgs = {}) {
-    il::Instruction inst;
-    inst.op = il::Op::Branch;
-    inst.type = il::Type::Void;
-    inst.operands = {cond};
-    inst.target.block = thenBlock;
-    inst.elseTarget.block = elseBlock;
-    inst.elseTarget.args = std::move(elseArgs);
-    return inst;
-}
-
-}  // namespace
 
 bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionStats& stats,
                         std::vector<uint8_t>& alreadyBuilt) {
@@ -397,6 +308,21 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         entryConvId = nextBlock++;
     }
 
+    // RE-ENTRY (guard_region.h): the chain a back edge of the slow copy takes
+    // to the fast header, and the preheader both ways into the fast copy pass.
+    ReentryBlocks reentry;
+    std::vector<uint8_t> promotedParam;
+    if (plan.reenter) {
+        size_t tests = entryGuarded.size();
+        for (const il::BlockParam& p : src.blocks[plan.header].params) {
+            promotedParam.push_back(candidateOf[p.id] != nullptr ? 1 : 0);
+            tests += promotedParam.back();
+        }
+        for (size_t t = 0; t < tests; ++t) reentry.tests.push_back(nextBlock++);
+        reentry.conv = nextBlock++;
+        reentry.pre = nextBlock++;
+    }
+
     // The fast copy: one block per part of each region block, plus a block per
     // extra test at a shared split point.
     std::vector<std::vector<il::BlockId>> fastPartId(blockCount);
@@ -502,6 +428,13 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
     }
     if (entryConvId != il::kNoBlock) classify(entryConvId, il::CopyClass::Fast);
+    // The re-entry chain reads what the slow copy's back edge hands it; the
+    // preheader is the fast copy's.
+    for (il::BlockId id : reentry.tests) classify(id, il::CopyClass::Slow);
+    if (plan.reenter) {
+        classify(reentry.conv, il::CopyClass::Slow);
+        classify(reentry.pre, il::CopyClass::Fast);
+    }
     for (il::BlockId b : plan.blocks) {
         for (il::BlockId id : fastPartId[b]) {
             classify(id, il::CopyClass::Fast);
@@ -543,9 +476,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 il::Instruction inst = source.instructions[i];
                 rewriteUses(inst, [&](il::ValueId v) { return renamed(names, v); });
                 for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
-                    if (t->block != il::kNoBlock && t->block < blockCount) {
-                        t->block = slowHeadId[t->block];
-                    }
+                    if (t->block == il::kNoBlock || t->block >= blockCount) continue;
+                    // A back edge of the slow copy tries the fast copy again.
+                    const bool back = plan.reenter && plan.inRegion[b] && t->block == plan.header;
+                    t->block = back ? reentry.first() : slowHeadId[t->block];
                 }
                 into.instructions.push_back(std::move(inst));
             }
@@ -586,6 +520,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         il::Block& pred = out[slowHeadId[plan.entryPred]];
         il::Instruction& term = pred.instructions.back();
         const il::BlockId fastHeader = fastPartId[plan.header][0];
+        // With re-entry the entry edge ends at the preheader, which makes the
+        // entry values' doubles for both ways in.
+        const il::BlockId fastEntry = plan.reenter ? reentry.pre : fastHeader;
         std::vector<il::ValueId> headerArgs;
         for (il::BlockTarget* t : {&term.target, &term.elseTarget}) {
             if (t->block != slowHeadId[plan.header]) continue;
@@ -594,7 +531,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 t->block = entryGuarded.empty() ? entryConvId : entryTestId[0];
                 t->args.clear();
             } else {
-                t->block = fastHeader;
+                t->block = fastEntry;
                 for (size_t i = 0; i < t->args.size(); ++i) {
                     const il::ValueId arg = t->args[i];
                     if (candidateOf[arg] == nullptr) continue;
@@ -618,8 +555,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 ++emittedGuards;
             }
             il::Block& conv = out[entryConvId];
-            for (il::ValueId v : entryUnboxed) {
-                conv.instructions.push_back(makeRawUnbox(rawOf[v], v));
+            if (!plan.reenter) {
+                for (il::ValueId v : entryUnboxed) {
+                    conv.instructions.push_back(makeRawUnbox(rawOf[v], v));
+                }
             }
             std::vector<il::ValueId> args;
             for (size_t i = 0; i < headerArgs.size(); ++i) {
@@ -629,11 +568,20 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                     args.push_back(arg);
                 } else if (c->kind == CandidateKind::BoxElide) {
                     args.push_back(c->boxSource);
+                } else if (plan.reenter) {
+                    // Its double as the fast copy names it is the
+                    // preheader's; the edge passes one of its own.
+                    args.push_back(newValue());
+                    conv.instructions.push_back(makeRawUnbox(args.back(), arg));
                 } else {
                     args.push_back(rawOf[arg]);
                 }
             }
-            conv.instructions.push_back(makeJump(fastHeader, std::move(args)));
+            conv.instructions.push_back(makeJump(fastEntry, std::move(args)));
+        }
+        if (plan.reenter) {
+            emittedGuards += emitReentry(out, reentry, src.blocks[plan.header], promotedParam, entryGuarded,
+                                         entryUnboxed, rawOf, slowHeadId[plan.header], fastHeader, newValue);
         }
     }
 

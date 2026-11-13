@@ -482,8 +482,10 @@ inline ValueId layoutFactOperand(const Instruction& inst) {
 // (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
 // whose numbers are carried as `f64` and leaves the original blocks as the SLOW
 // copy, entered only through one-way trampolines. The two are MUTUALLY
-// EXCLUSIVE: control enters the fast copy at most once per region entry and,
-// once it has left through a trampoline, never returns.
+// EXCLUSIVE in their values: control that has left the fast copy through a
+// trampoline runs the slow copy, and where a loop region comes back to its
+// fast copy (guard_region.h, "RE-ENTRY") it does so at the fast header, with
+// everything it carries passed as block arguments.
 //
 // It is a fact about the block and not about the function, so it lives here: it
 // travels with the block through every copy, move and renumbering the pass and

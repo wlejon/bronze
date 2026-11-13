@@ -86,7 +86,7 @@ public:
     // A: one property site.
     void claim(il::Instruction& inst, const std::vector<uint8_t>& observable) {
         if (inst.staticSlot != il::Instruction::kNoStaticSlot || inst.directTarget != il::Instruction::kNoDirectTarget ||
-            il::isDefineWrite(inst) || inst.icAbsent || inst.operands.empty() ||
+            il::isDefineWrite(inst) || inst.operands.empty() ||
             inst.operands[0] >= observable.size() || observable[inst.operands[0]] == 0 ||
             inst.keyIndex >= mod_.keyConstants.size() || il::parseIndexKey(mod_.keyConstants[inst.keyIndex])) {
             return;
@@ -285,6 +285,44 @@ public:
         inst.numberHint = true;
         ++stats_.numberHints;
         stats_.hintExecutions += executions;
+    }
+
+    // Whether the run saw a receiver at this claimed site that its claim does
+    // not answer (feedback_plan.h, `missedClaims`).
+    bool missed(const il::Instruction& inst) const {
+        if (inst.staticSlot == il::Instruction::kNoStaticSlot || inst.keyIndex >= mod_.keyConstants.size()) {
+            return false;
+        }
+        const auto it = plan_.shapesByIc.find(inst.icIndex);
+        if (it == plan_.shapesByIc.end()) return false;
+        const bool family = inst.familyLo != il::Instruction::kNoFamily;
+        if (!family && plan_.shapeVariantIcs.count(inst.icIndex) != 0) return true;
+        const std::string& key = mod_.keyConstants[inst.keyIndex];
+        const bool write = inst.op == il::Op::PropSet;
+        uint32_t seen = 0;
+        std::vector<std::string_view> keys;
+        for (const auto& [name, count] : it->second.counts) {
+            if (count == 0) continue;
+            bool complete = false;
+            uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+            if (name == "*other*" || !shapeKeys(name, keys, complete, &inlineSlots) || !complete) return true;
+            if (!family && ++seen > 1) return true;
+            uint32_t index = kNone;
+            for (uint32_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) index = index == kNone ? i : kNone - 1;
+            }
+            if (index >= kNone - 1) return true;
+            const uint32_t slot =
+                index >= inlineSlots ? BRONZE_ABI_OBJ_OVERFLOW_SLOT + (index - inlineSlots) : index;
+            if (slot != inst.staticSlot) return true;
+            if (!family) continue;
+            uint32_t lo = 0, span = 0;
+            if (!familyOf(keys, inlineSlots, slot, inst.keyIndex, write, &lo, &span) || lo < inst.familyLo ||
+                lo + span > inst.familyLo + inst.familySpan) {
+                return true;
+            }
+        }
+        return false;
     }
 
 private:
@@ -736,7 +774,8 @@ uint32_t addProfiledFamilies(il::Module& mod, const FeedbackPlan& plan) {
     return added;
 }
 
-void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats) {
+void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, FeedbackApplyStats* stats,
+                                 std::unordered_set<uint32_t>* missedClaims) {
     FeedbackApplyStats local;
     ClaimWriter writer(mod, plan, stats ? *stats : local);
     for (il::Function& fn : mod.functions) {
@@ -749,6 +788,7 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
                 if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) && interior[i] == 0) {
                     writer.claim(inst, observable);
                     writer.chain(inst);
+                    if (missedClaims != nullptr && writer.missed(inst)) missedClaims->insert(inst.icIndex);
                 } else {
                     writer.hint(inst, observable);
                     writer.truth(inst, observable);

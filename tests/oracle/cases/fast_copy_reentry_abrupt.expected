@@ -1,0 +1,28 @@
+warm 3912:40 done 1356 4920.75 caught 0
+continue 0 309:40 426:40
+break 0 0:0 0:0
+return 0 stopped 0 0 stopped 0 0
+throw 0 2479.75 caught 3
+throw-set 0 60.75 caught 6
+continue 1 307:40 424:40
+break 1 3:1 6:1
+return 1 stopped 1 0.5 stopped 1 1
+throw 1 2482.75 caught 3
+throw-set 1 66.75 caught 6
+continue 19 307:40 424:40
+break 19 147:19 204:19
+return 19 stopped 19 54.5 stopped 19 64
+throw 19 3049.75 caught 3
+throw-set 19 1206.75 caught 6
+continue 38 305:40 422:40
+break 38 296:38 410:38
+return 38 stopped 38 110 stopped 38 129
+throw 38 4702.75 caught 3
+throw-set 38 4512.75 caught 6
+continue 39 303:40 420:40
+break 39 303:39 420:39
+return 39 stopped 39 112.5 stopped 39 132
+throw 39 4819.75 caught 3
+throw-set 39 4746.75 caught 6
+labelled 3338.75 3352.5
+again 4552:40 done 1656 4920.75 caught 0

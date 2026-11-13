@@ -117,6 +117,64 @@ the site's ordinary method call.
   not functions, receivers that are not plain Arrays, the three.js comparators,
   and the stub's comparison order against the builtin's.
 
+### 4. A fast copy entered again, and a test per static site
+
+The guarded regions of the run after inlining (`src/lower/guard_region.h`,
+"RE-ENTRY" and "SHAPE GUARDS") covered pixi's per-sprite loop with a fast
+copy that held one miss path per property site, and each miss is a call:
+whatever the loop had read of `this._position` or a matrix was read again
+behind it, with its header test, its shape test and its unbox. Three things
+change that.
+
+- **The claims are stamped before that run.** `finishModule`
+  (`lower/lower_final_passes.cpp`) now runs inlining, the profile's regions
+  (`guard-fb`), the whole-program and profile claims, and only then the
+  regions of the inlined loops (`guard-inl`), followed by the fold below,
+  transition runs and define-add cells. The region pass used to see no claimed
+  site at all (`shapeTests=0`). A copy shares its site's cell, as it shares
+  the site's cache. Claims now also precede transition-run marking, so a run
+  may form over stores that are claimed.
+- **A loop's slow copy comes back.** Every back edge of the slow copy goes
+  through a chain that tests again what the entry tested and enters the fast
+  header through a preheader (`lower/guard_region_reenter.cpp`). A receiver
+  whose guard fails costs its own iteration. Before, the first failure ran
+  the rest of the loop in the slow copy, which is why a single site's test
+  could not be allowed to leave. Nothing counts exits: a site that leaves on
+  every pass costs the slow copy's iteration plus the chain.
+- **With a profile, one site is enough for a shape point.** A claimed site
+  the recorded run never saw miss becomes a test that leaves and a bare slot
+  access. `applyFeedbackClaimsAndHints` reports the claimed sites the run did
+  see miss (`missedClaims`: an `*other*` row, a second name under an identity
+  claim, two layouts of one key list (`FeedbackPlan::shapeVariantIcs`), the
+  key at another slot); those stay as they were, miss in line. Stores of any
+  `box.f64` are covered, not only of promoted values, and a site the
+  prediction called absent but the run saw on one shape is claimed.
+
+With no miss between them, the bare accesses are plain loads and stores, and
+`foldGuardedLoads` (`lower/guarded_load_fold.h`) removes the repeats in a
+forward pass over each function: a slot read again is the value read or
+stored before (same receiver, same slot, nothing that can collect or store
+between), an `is.shape` that already held for the receiver is true and its
+branch a jump, an `is.number` of a known number is true, and a raw unbox of
+the same value is the first one. Its result is dropped where dominance would
+not hold.
+
+pixi_sprites n=10000, `rw.py js --harvest`, instructions a frame, node
+15.6M: 25.07M before, 24.73M with re-entry and single-site points, 24.57M
+with the fold, 24.41M with Number-box stores and absent-site claims. Others
+on the final tree (before in brackets): pixi_text 36.52M (36.62M),
+three_meshes 59.28M (59.61M), three_skinned 42.72M (42.45M, runs of one tree
+span 42.41M to 42.86M), pixi_graphics 332.7M to 335.6M over three runs
+(333.6M on the tree before, one run). The sprite loop itself (`step`) is
+6.17M against node's 1.29M, so most of it is still there: stretches are cut
+by a relational compare with one unpromoted operand (`b.x > W`), stores of
+values that are not Numbers (`didChange = true`), `elem.set`, and the claim
+on `childrenToUpdate` that the run saw miss.
+
+`tests/oracle/cases/fast_copy_reentry_*.js` (a shape that changes mid-loop,
+a store through an alias between two reads, a guard that fails on every
+pass, `break`/`continue`/`throw` out of the slow copy, nested loops).
+
 ### Measured
 
 These are windowed `bro-aot` runs. Each "before" figure is the same tree with both

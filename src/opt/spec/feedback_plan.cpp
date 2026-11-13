@@ -193,6 +193,7 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
         }
         const bool more = site.full || (write && site.mega);
         const uint64_t n = receivers.size();
+        if (site.ways.size() > n) plan.shapeVariantIcs.insert(ic);
         const uint64_t share = more ? W / (2 * n) : W / n;
         NameCounts& counts = plan.shapesByIc[ic];
         uint64_t total = 0;
