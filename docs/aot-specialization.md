@@ -291,12 +291,20 @@ receiver), 11 shape compares, the rest store representation tests.
   join the receiver is a parameter of the join and its tag test, header test
   and shape compare are all asked again (`updateTransformAndChildren`: 39
   tag and 39 header tests on join parameters in the MIR). Either those
-  diamonds become exits where the profile saw the slow arm never taken, or
-  the IL's knowledge of the receiver crosses them (layout facts that leave).
-- *Number tests of loaded slots.* A slot the shape calls a double
-  (`runtime/slot_repr.h`) needs none, but a key is eligible only through
-  `--pins`. A layout cell could require the representation at publish, with
-  the harvest naming the keys.
+  diamonds become exits where the profile saw the slow arm never taken
+  (which removes the join), or the receiver needs no test at all (next
+  point). Carrying a layout fact across them was measured and dropped
+  ("Tried and dropped": the repeats are fewer than the receivers).
+- *What a slot holds.* The guards that remain are asked of values just
+  loaded from a slot of an object already guarded: a Number test per number
+  (10 of 37 in `updateLocalTransform`), and a tag, header and shape test per
+  object (`this.localTransform`, `this.position`, ...: 23 of 37). A slot the
+  shape calls a double (`runtime/slot_repr.h`) needs no Number test, but a
+  key is eligible only through `--pins`; the harvest could name the keys and
+  a layout cell require the representation at publish. The same discipline
+  for "this slot holds a plain object of shape S" (a store of anything else
+  moves the object to a shape without the claim, as `withSlotBoxed` does)
+  would make the object a receiver with no test.
 - *Build time*: a three.js image builds in about 130 s with twins against
   40 s; each twinned function is compiled four times (itself, twin, generic,
   probe).
@@ -327,6 +335,31 @@ by a single typed loop. Neither change touches it.
 - **Inlining own-slot callees into `setProgram`-sized callers.** This was already
   measured +2.2% (worse) before this work, because brass spills across the
   enlarged body. Guarded inlining's 800-IL caller cap stays.
+- **Layout facts that leave** (S2's facts in the functions with resume twins;
+  kept as `build/scratch/leaving_facts_wip.patch` in the worktree that
+  measured it). Sites and fast-copy `is.shape` tests grouped by receiver and
+  claim; a `layout.fact` in front of each anchor lowered as the anchor's own
+  guard with exits; every member outside the anchor's memo stretch one exit
+  on `epoch == fact` and its bare access, so that a receiver handed back as a
+  new value by a call or a call-bearing join is not asked again whether it is
+  an object, plain, and of the claimed shape. Two forms of the fact's value,
+  each sound by S1's contract and a monotonic epoch: the epoch read at the
+  function's entry (one compare for every member of the function, folded by
+  brass per stretch between calls), and the epoch read at the anchor. Against
+  the tree without it, on one harvest each: entry epoch pixi_sprites 23.02M
+  to 22.95M, three_skinned 42.05M to 42.41M, image build 115 s to 143 s;
+  anchor epoch 23.15M and 42.14M; entry epoch with members left alone where
+  no call can lie between anchor and member 23.08M. Executed guards a sprite
+  in the four hot functions stayed at 199 to 201. Why: per sprite those
+  functions run 2, 0, 1 and 0 calls, so few members sit behind one, while a
+  fact costs a read of the epoch per activation or per anchor and a value
+  kept across the calls; and what the guards are is one tag, header and shape
+  test per receiver (about 16 receivers a sprite in
+  `updateTransformAndChildren`) and a Number test per loaded number, which no
+  fact about an earlier guard of the same receiver removes. The layout epoch
+  does not move in a steady frame of any of the four scenes (3591 to 4432
+  bumps before the timed frames, none inside), so the facts never lapsed; it
+  is not what failed.
 
 ## What remains, in payoff order
 
