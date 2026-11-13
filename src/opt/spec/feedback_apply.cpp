@@ -832,6 +832,28 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
         }
         return nullptr;
     };
+    // Whether the harvest saw `key` born and kept a Number on every shape
+    // named `shape` its caches met, and nothing else under it anywhere
+    // (feedback_plan.h `harvestDoubles`, `mixedKeys`): the member is then a
+    // `number` one, which the runtime publishes the cell for only on a shape
+    // that calls the slot a double. A mixed key is never one, since making it
+    // eligible would split shapes the run's objects did not.
+    const auto heldDoubles = [&](const std::string& shape, uint32_t keyIndex, uint32_t slot) {
+        if (slot >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT || plan.mixedKeys.count(mod.keyConstants[keyIndex]) != 0) {
+            return false;
+        }
+        const auto held = plan.harvestDoubles.find(shape);
+        if (held == plan.harvestDoubles.end()) return false;
+        std::vector<std::string_view> keys;
+        bool complete = false;
+        if (!shapeKeys(shape, keys, complete) || !complete) return false;
+        for (uint32_t i = 0; i < keys.size(); ++i) {
+            if (keys[i] == mod.keyConstants[keyIndex]) {
+                return std::binary_search(held->second.begin(), held->second.end(), i);
+            }
+        }
+        return false;
+    };
     uint32_t rewritten = 0;
     for (size_t f = 0; f < mod.functions.size(); ++f) {
         il::Function& fn = mod.functions[f];
@@ -884,7 +906,8 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
                 auto pair = std::find_if(entry.pairs.begin(), entry.pairs.end(),
                                          [&](const auto& p) { return p.keyIndex == inst->keyIndex; });
                 if (pair == entry.pairs.end()) {
-                    entry.pairs.push_back({inst->keyIndex, inst->staticSlot, write});
+                    entry.pairs.push_back({inst->keyIndex, inst->staticSlot, write,
+                                           heldDoubles(*g.shape, inst->keyIndex, inst->staticSlot)});
                 } else {
                     pair->write = pair->write || write;
                 }
@@ -896,6 +919,16 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
                     inst->familySpan = 0;
                     ++rewritten;
                 }
+            }
+        }
+    }
+    // The `number` members' keys are eligible for a double slot (slot_repr.h),
+    // or no object of the run would have one.
+    for (const il::Module::LayoutCellEntry& entry : mod.layoutCells) {
+        for (const auto& p : entry.pairs) {
+            if (p.number && std::find(mod.slotReprFields.begin(), mod.slotReprFields.end(), p.keyIndex) ==
+                                mod.slotReprFields.end()) {
+                mod.slotReprFields.push_back(p.keyIndex);
             }
         }
     }

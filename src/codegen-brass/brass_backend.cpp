@@ -364,6 +364,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.template_site_count = module.templateSiteCount;
     options.static_site_count = module.staticSiteCount;
     options.class_family_count = static_cast<uint32_t>(module.classFamilies.size());
+    options.slot_repr_fields = module.slotReprFields;
     // One image, any number of threads: every writable table is addressed
     // through the calling thread's delta (bronze_abi.h,
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
@@ -380,7 +381,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     for (const auto& lc : module.layoutCells) {
         il2mir::LayoutCell& cell = options.layout_cells[lc.cell];
         cell.key_count = lc.keyCount;
-        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write});
+        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write, p.number});
     }
     if (options.twin_exits) {
         options.missed_claim_ics = module.missedClaimIcs;

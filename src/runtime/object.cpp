@@ -6,6 +6,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -76,6 +77,15 @@ static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, boo
         return SlotRepr::Boxed;
     }
     return SlotRepr::Double;
+}
+
+// While a harvest is armed: a property add through the runtime made `node`
+// (rtIcHarvestNoteBirth). The adds generated code's transition arm answers are
+// not seen; what they stored is, by the harvest's heap walk.
+static void noteHarvestBirth(const Shape* node, Value val, bool plainData) {
+    if (BRONZE_UNLIKELY(runtime::rtIcHarvestArmed())) {
+        runtime::rtIcHarvestNoteBirth(node, plainData && slotReprAcceptsValue(val));
+    }
 }
 
 // Starts at 1 so that a zero-initialized IC entry — which is what the table
@@ -547,6 +557,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // prototype, the add shadows what depth > 0 entries below it point at.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
         runtime::noteShapeLeave(shape, next, ShapeLeave::Add);
+        noteHarvestBirth(next, val.get(), true);
         Rooted<Value> self{Value::fromObject(this)};
         ObjectHeader* live = ensureSlots(heap, self, slot + 1);
         live->shape = next;
@@ -729,6 +740,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             desiredSlotRepr(prop_name, val.get(), enumerable, /*accessor=*/false, writable,
                             configurable));
         runtime::noteShapeLeave(shape, next_shape, ShapeLeave::Add);
+        noteHarvestBirth(next_shape, val.get(), enumerable && writable && configurable);
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
         // A set-site entry is what generated code's inline store paths consume,

@@ -20,8 +20,9 @@ Implementation: `src/runtime/slot_repr.{h,cpp}`, `src/runtime/shape.{h,cpp}`
 `SlotRepr::Double` when the store that creates the property is a Number *and*
 the property's name is on the eligibility list the module handed over at init
 (`bronze_register_slot_repr`) — which the compiler builds from the `--pins`
-manifest's `number` fields on classes whose layout it proved. No pins manifest,
-no double slots.
+manifest's `number` fields on classes whose layout it proved, and from an
+inline-cache harvest (below, "From a harvest"). No pins manifest and no
+harvest, no double slots.
 
 **A double slot is taken back by a shape change.** When a non-Number reaches a
 double slot, `ObjectHeader::setSlot` moves *that object* to a shape rebuilt with
@@ -36,11 +37,12 @@ field that turns over splits the shape tree once rather than once per object.
 point, and every store path calls it — `bronze_prop_set` (the store compiled
 code's `prop.set` lowers to), `defineProperty`, `Object.assign`, spread, the
 dictionary conversion, `delete`. A set-site inline cache entry naming a double
-slot carries `BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG` (`ICEntry::isDoubleSlot`), the
-test an inline store arm in generated code would have to make before taking the
-entry. The brass backend emits no inline store arm — `prop.set` is a call to
-`bronze_prop_set` — and the runtime's store path ignores the flag, because it
-reaches `setSlot` in every case.
+slot carries `BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG` (`ICEntry::isDoubleSlot`), and
+every store arm in generated code that takes such an entry tests the value
+first: the inline own-slot and transition arms and a `fromArray`-style element
+run take it only for a Number (whose bits are the double's), and the module's
+set stub also stores an `Int32` box's integer as a double; anything else misses
+to `bronze_prop_set` and so to `setSlot`.
 
 An `Int32`-tagged value — what lowering boxes an `il::Type::I32` into — is a
 Number whose bits are a tag and a payload, not an f64, so `setSlot` converts it
@@ -51,6 +53,29 @@ and every bitwise operator converts that result straight back to `F64`
 `Heap::verify_space` (under `BRONZE_HEAP_VERIFY=1`) is the tripwire for a write
 that got past `setSlot`: every slot a shape calls a double must hold a Number,
 and a violation names the object and the slot.
+
+## From a harvest
+
+A build on an inline-cache harvest (`--feedback-in`, docs/type-feedback.md
+"Harvest") picks double slots from what the harvested run did, without the run
+having had any: no key is eligible while a harvest is taken, so its shapes and
+inline caches are the ones a plain build has. The runtime notes, per shape node
+made by a property add through it, whether every such add held a Number
+(`rtIcHarvestNoteBirth`), and at the write walks the heap for the objects of the
+shapes the caches named; a `doubles` row gives a receiver's key positions that
+were born Numbers and that every object found held a Number in, a `mixed` row a
+key anything else was found under. `applyFeedbackLayoutCells` makes a layout
+cell's member a `number` one when its key is at such a position of the cell's
+shape and is not mixed, and puts the key on the module's eligibility list.
+
+A `number` member is published by `bronze_static_layout_publish` only for a
+shape whose slot is a double (`BRONZE_ABI_LAYOUT_PAIR_DOUBLE`), and shapes are
+immutable, so behind the cell's guard the slot holds a Number: the backend
+answers the IL's `is.number` test of the loaded value with a constant there,
+and with the test itself on the path that missed the cell (`number_flag`,
+`il_property.h`). The IL keeps the test, so the proof checker certifies the
+raw read as it always did. Nothing rests on the harvest being right: a key the
+run misjudged costs a shape split or a refused cell.
 
 ## Why reads need nothing
 

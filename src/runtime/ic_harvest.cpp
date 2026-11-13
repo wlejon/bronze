@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <set>
@@ -17,8 +18,12 @@
 #include "abi/bronze_feedback_site.h"
 #include "runtime/harvest_sampler.h"
 #include "runtime/ic_hot.h"
+#include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/slot_repr.h"
 #include "runtime/type_feedback.h"
 
 namespace bronze::runtime {
@@ -68,6 +73,19 @@ struct State {
     std::unordered_set<const void*> records;
     std::unordered_map<const Shape*, std::string> shapeNames;
     std::unordered_map<const Shape*, std::string> protoNames;
+    // The shapes named here that were not dictionaries when named: shape-tree
+    // nodes, which live as long as the arena, so the heap walk at the write
+    // may follow them (a dictionary shape goes with its object).
+    std::unordered_set<const Shape*> plainNamed;
+    // rtIcHarvestNoteBirth: per node, whether every add through the runtime
+    // that made it held a Number.
+    std::unordered_map<const Shape*, bool> births;
+    // Made by `measureRepresentation` at the write: by receiver name, the key
+    // positions (root first) that were born Numbers and that every object of
+    // every shape of that name held a Number in; and every key some named
+    // shape was born or found holding anything else under.
+    std::map<std::string, std::vector<uint32_t>> doubles;
+    std::set<std::string> mixed;
     bool atexitArmed = false;
     bool dirty = false;
 };
@@ -110,8 +128,74 @@ Module* moduleOf(State& s, uint64_t digest, uint32_t sites) {
 
 const std::string& shapeName(State& s, const Shape* shape) {
     auto it = s.shapeNames.find(shape);
-    if (it == s.shapeNames.end()) it = s.shapeNames.emplace(shape, typeFeedbackShapeName(shape, s.protoNames)).first;
+    if (it == s.shapeNames.end()) {
+        it = s.shapeNames.emplace(shape, typeFeedbackShapeName(shape, s.protoNames)).first;
+        if (shape != nullptr && !shape->isDictionary()) s.plainNamed.insert(shape);
+    }
     return it->second;
+}
+
+// `shape`'s key nodes, root first, as its name lists the keys.
+std::vector<const Shape*> keyNodes(const Shape* shape) {
+    std::vector<const Shape*> chain;
+    for (const Shape* n = shape; n != nullptr && n->parent != nullptr; n = n->parent) chain.push_back(n);
+    std::reverse(chain.begin(), chain.end());
+    return chain;
+}
+
+// The representation the run's objects kept, into `s.doubles` / `s.mixed`.
+// A position is a double when the runtime saw its node born holding a Number
+// (rtIcHarvestNoteBirth: what a build that makes the key eligible gives a
+// double node) and no object of the shape the heap holds now — live, or dead
+// and not yet collected — has anything else there. Both are samples: nothing
+// rests on them but the build's choice of keys, since the runtime keeps a
+// double slot's discipline whatever a store brings (slot_repr.h).
+void measureRepresentation(State& s) {
+    s.doubles.clear();
+    s.mixed.clear();
+    // Per named shape, a position's mark: set when an object held a non-Number.
+    std::unordered_map<const Shape*, std::vector<uint8_t>> held;
+    std::unordered_map<const Shape*, std::vector<const Shape*>> nodes;
+    for (const Shape* shape : s.plainNamed) nodes.emplace(shape, keyNodes(shape));
+    rtHeap().walk_objects([&](HeapObjectHeader* hdr) {
+        if (hdr->flags != HeapKind::Plain) return;
+        const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
+        const auto found = nodes.find(obj->shape);
+        if (found == nodes.end()) return;
+        std::vector<uint8_t>& marks = held[obj->shape];
+        marks.resize(found->second.size(), 0);
+        for (size_t i = 0; i < found->second.size(); ++i) {
+            const Shape* node = found->second[i];
+            if (node->accessor || marks[i] != 0) continue;
+            if (!slotReprAcceptsValue(obj->getSlot(node->slot_index))) marks[i] = 1;
+        }
+    });
+    for (const auto& [shape, chain] : nodes) {
+        const auto marks = held.find(shape);
+        std::vector<uint32_t> mine;
+        for (size_t i = 0; i < chain.size(); ++i) {
+            const Shape* node = chain[i];
+            const auto birth = s.births.find(node);
+            const bool other = marks != held.end() && marks->second[i] != 0;
+            if ((birth != s.births.end() && !birth->second) || other) {
+                if (StringHeader* key = node->key.valid() && !node->key.isSymbol() ? node->key.string() : nullptr) {
+                    s.mixed.insert(rtUtf8Chars(key));
+                }
+            }
+            if (birth == s.births.end() || !birth->second || other || node->accessor ||
+                node->slot_index >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
+                continue;
+            }
+            mine.push_back(static_cast<uint32_t>(i));
+        }
+        auto [d, fresh] = s.doubles.try_emplace(s.shapeNames.at(shape), mine);
+        if (!fresh) {
+            std::vector<uint32_t> both;
+            std::set_intersection(d->second.begin(), d->second.end(), mine.begin(), mine.end(),
+                                  std::back_inserter(both));
+            d->second = std::move(both);
+        }
+    }
 }
 
 std::string calleeOf(const void* code) {
@@ -189,7 +273,7 @@ void appendEscaped(std::string& out, const std::string& in) {
     }
 }
 
-std::string textOf(const Module& m) {
+std::string textOf(const State& s, const Module& m) {
     char hex[17];
     std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(m.digest));
     std::string out = "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION) + "\n";
@@ -219,6 +303,32 @@ std::string textOf(const Module& m) {
         char h[9];
         std::snprintf(h, sizeof h, "%08x", hash);
         out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
+    }
+    // The representation the run kept (docs/type-feedback.md, "Harvest"):
+    // per receiver its caches held, the key positions that stayed Numbers,
+    // then every key something else was found under (measureRepresentation).
+    std::set<std::string> receivers;
+    for (const auto& [index, site] : m.ics) {
+        for (const Fact& f : site.facts) receivers.insert(f.receiver);
+    }
+    for (const std::string& receiver : receivers) {
+        const auto it = s.doubles.find(receiver);
+        if (it == s.doubles.end() || it->second.empty()) continue;
+        out += "doubles\t";
+        appendEscaped(out, receiver);
+        out += '\t';
+        for (size_t i = 0; i < it->second.size(); ++i) {
+            if (i != 0) out += ',';
+            out += std::to_string(it->second[i]);
+        }
+        out += '\n';
+    }
+    if (!receivers.empty()) {
+        for (const std::string& key : s.mixed) {
+            out += "mixed\t";
+            appendEscaped(out, key);
+            out += '\n';
+        }
     }
     return out;
 }
@@ -252,7 +362,7 @@ void writeAtExit() {
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr || !g_state->dirty) return;
     for (const Module& m : g_state->modules) {
-        if (!m.path.empty()) writeFile(m.path, textOf(m));
+        if (!m.path.empty()) writeFile(m.path, textOf(*g_state, m));
     }
     g_state->dirty = false;
 }
@@ -260,6 +370,14 @@ void writeAtExit() {
 }  // namespace
 
 bool rtIcHarvestArmed() noexcept { return g_armed.load(std::memory_order_relaxed); }
+
+void rtIcHarvestNoteBirth(const Shape* node, bool number) {
+    if (node == nullptr) return;
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (g_state == nullptr) return;
+    auto [it, fresh] = g_state->births.emplace(node, number);
+    if (!fresh) it->second = it->second && number;
+}
 
 bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
     Identity id;
@@ -350,9 +468,10 @@ int rtIcHarvestWriteAll() {
     rtIcHotFoldLiveRanges();
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return 0;
+    measureRepresentation(*g_state);
     int written = 0;
     for (const Module& m : g_state->modules) {
-        if (!m.path.empty() && writeFile(m.path, textOf(m))) ++written;
+        if (!m.path.empty() && writeFile(m.path, textOf(*g_state, m))) ++written;
     }
     g_state->dirty = false;
     // Written: what the samples were for is on disk. A later write still
@@ -368,7 +487,9 @@ std::string rtIcHarvestText(const void* identity) {
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return {};
     const Module* m = moduleOf(*g_state, id.digest, id.sites);
-    return m == nullptr || m->path.empty() ? std::string() : textOf(*m);
+    if (m == nullptr || m->path.empty()) return {};
+    measureRepresentation(*g_state);
+    return textOf(*g_state, *m);
 }
 
 }  // namespace bronze::runtime

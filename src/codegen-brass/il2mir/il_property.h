@@ -178,6 +178,24 @@ public:
     // The layout cells (TranslatorOptions::layout_cells): a site whose cell
     // is one publishes through emit_static_fill's layout form.
     void set_layout_cells(const std::unordered_map<uint32_t, LayoutCell>* cells) { layout_cells_ = cells; }
+    // Whether `site`'s cell is a layout cell whose member at `site.slot` is a
+    // `number` one (il.h `LayoutCellEntry`): the runtime publishes it only on
+    // a shape that calls the slot a double, so behind its guard the slot
+    // holds a Number.
+    [[nodiscard]] bool layout_number(const StaticSlotSite& site) const;
+    // NUMBER FLAGS. A read of a `number` member is a Number on every edge on
+    // which its cell's guard held; its join carries an i32 that says, per
+    // edge, whether the value is a Number (1 on the hit, the test on the
+    // miss), and `is.number` of the read's result is that i32. Where the
+    // site's miss leaves the function (an image site) the join has the hit
+    // edge alone and the test folds away; in the resume twin, which keeps
+    // the miss, it is still the test. Keyed by the result Value, which the
+    // flag dominates, so a copy of the read lowered elsewhere (a static run's
+    // two copies) has its own or none; a value is found through the bitcasts
+    // between `i64` and `tagged` a result is stored as. Per function.
+    [[nodiscard]] Value* number_flag(Value* v) const;
+    void set_number_flag(Value* v, Value* flag) { number_flags_[v] = flag; }
+    void clear_number_flags() { number_flags_.clear(); }
     // Whether this module has the table `site`'s guard reads. A site it has
     // none for is a lowering bug the caller diagnoses, never a quiet skip.
     [[nodiscard]] bool static_site_backed(const StaticSlotSite& site) const noexcept {
@@ -582,9 +600,10 @@ public:
     // Monomorphic way-0 guard on a pre-computed receiver shape: checks that
     // `plain` holds, `shape` matches way 0 of `site`, and its slot word is an
     // own data slot. A null `plain` is a shape the caller reached only for a
-    // plain receiver.
+    // plain receiver. A write passes `number_store`, its value is a Number,
+    // and then also hits a double slot's entry (whose slot word it masks).
     void emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
-                              Value*& hit, Value*& slot_word);
+                              Value*& hit, Value*& slot_word, Value* number_store = nullptr);
 
     // Helpers for batched element-offset runs (il_lowering_elem_run.cpp).
     void emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok,
@@ -622,6 +641,7 @@ private:
     uint32_t ic_site_count_ = 0;
     std::unordered_map<uint32_t, uint32_t> method_rank_;
     const std::unordered_map<uint32_t, LayoutCell>* layout_cells_ = nullptr;
+    std::unordered_map<Value*, Value*> number_flags_;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
     std::string family_base_sym_;

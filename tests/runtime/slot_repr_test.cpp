@@ -106,6 +106,26 @@ TEST_CASE("an eligible name whose first store is not a number stays boxed") {
     CHECK_FALSE(obj.get().asObject<ObjectHeader>()->shape->slotIsDouble(0));
 }
 
+TEST_CASE("an eligible Number past the double map takes the one boxed edge") {
+    ReprScope scope;
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    pin("late");
+    Shape* root = freshRoot();
+
+    // Two objects with the same history past slot 64 share a shape: the add
+    // finds the boxed edge the first one made rather than minting another.
+    Shape* shapes[2] = {nullptr, nullptr};
+    for (Shape*& out : shapes) {
+        Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(), root))};
+        for (int i = 0; i < 70; ++i) setProp(heap, obj, ("f" + std::to_string(i)).c_str(), Value::fromDouble(i));
+        setProp(heap, obj, "late", Value::fromDouble(1.5));
+        out = obj.get().asObject<ObjectHeader>()->shape;
+    }
+    CHECK(shapes[0] == shapes[1]);
+    CHECK_FALSE(shapes[0]->slotIsDouble(shapes[0]->slot_index));
+}
+
 TEST_CASE("an Int32-tagged number is a number for a double slot") {
     ReprScope scope;
     ShadowStackFrame frame;

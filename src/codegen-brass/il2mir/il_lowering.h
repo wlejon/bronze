@@ -173,6 +173,7 @@ public:
     // The module's class layouts handed to the runtime at init
     // (il_static_slot.cpp); `map_addr` is the filled key map.
     void register_class_families(Builder& b, Value* map_addr);
+    void register_slot_repr(Builder& b, Value* map_addr);
     // Whether `arr_id` is proven at the current lowering point to be a dense
     // Array with `index < length` and a valid elements block.
     bool is_proven_dense_array(uint32_t arr_id, uint32_t index) const;

@@ -407,11 +407,19 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
 }
 
 void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
-                                                  Value*& hit, Value*& slot_word) {
+                                                  Value*& hit, Value*& slot_word, Value* number_store) {
     Value* cached_shape = way0_shape(b, site);
     Value* shape_match = b.build_eq(shape, cached_shape);
     slot_word = way0_slot_word(b, site);
     Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
+    if (number_store) {
+        // A double slot's entry (BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG): a Number's
+        // bits are the double's, so a store of one is the same word.
+        Value* dbl = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
+                                b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
+        own_data = b.build_or(own_data, b.build_and(dbl, number_store));
+        slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
+    }
     hit = plain ? b.build_and(plain, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
 }
 
@@ -498,7 +506,7 @@ void PropertyLoweringHelper::expand_poly_scan(Builder& b, Instruction* call, Val
 //  - the cached shape's own node is the slot the entry names (slots are unique
 //    along a chain, so this is the key identity), a plain data property
 //    (enumerable, writable, configurable, no accessor), and the slot word has
-//    no flag (depth 0, not an f64 slot);
+//    no flag (depth 0), or only the f64 flag with a Number to store;
 //  - the receiver's shape is not a prototype's (an add to one must bump the
 //    epoch, the helper's job), and the entry's epoch is the thread's: no setter
 //    or read-only property has appeared on the chain since the fill proved
@@ -527,6 +535,15 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     // site holds it, but a pointer is above both either way).
     Value* real = b.build_ugt(cached, b.build_iconst_i64(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD));
     Value* no_flag = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
+    // A transition to a double node is taken by a Number, whose bits are the
+    // double's; anything else misses to the helper, which takes the boxed edge.
+    Value* number = is_known_number(val)
+        ? b.build_iconst_i32(1)
+        : b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    Value* dbl = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
+                            b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
+    no_flag = b.build_or(no_flag, b.build_and(dbl, number));
+    slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
     b.build_br_if(b.build_and(plain, b.build_and(real, no_flag)), bb_node, bb_helper);
 
     b.position_at_end(bb_node);
@@ -622,7 +639,13 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
         shape = plain_shape_or_miss(b, obj, bb_slow);
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     }
-    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
+    // A Number's store also hits a double slot's way (its bits are the
+    // double's); anything else there misses to the stub, which converts an
+    // Int32 box or generalizes the slot.
+    Value* number_store = is_known_number(val)
+        ? b.build_iconst_i32(1)
+        : b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word, number_store);
     Value* counter = nullptr;
     // A write's tag is its key after '=', apart from the reads of it.
     const std::string tag = "=" + std::string(key_tag(key_index));

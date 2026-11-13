@@ -31,6 +31,10 @@
 #include <string>
 #include <vector>
 
+namespace bronze {
+class Shape;
+}
+
 namespace bronze::runtime {
 
 // Whether any module is being harvested. One relaxed load; the only cost the
@@ -51,6 +55,17 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path);
 // the module is being harvested.
 void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* identity,
                      const std::vector<uint64_t>* methodSites);
+
+// A property was added through the runtime and `node` is the shape it took:
+// `number` when the add was a plain data property holding a Number (or an
+// Int32), the add a double slot would be born from under an eligible key.
+// Remembered per node, a non-Number add sticking. Cold (an add the inline
+// transition arm did not answer); called only while armed.
+//
+// With what the live heap holds when the files are written, this is how the
+// harvest says which slots stayed Numbers (the `doubles` and `mixed` rows,
+// docs/type-feedback.md) without changing a shape of the run it measures.
+void rtIcHarvestNoteBirth(const Shape* node, bool number);
 
 // Folds this thread's live instances, then writes every harvested module's
 // file. The number of files written.

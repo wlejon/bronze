@@ -676,7 +676,7 @@ std::string serializeModule(const Module& module) {
         for (const auto& p : lc.pairs) {
             w.var(p.keyIndex);
             w.var(p.slot);
-            w.u8(p.write ? 1 : 0);
+            w.u8((p.write ? 1 : 0) | (p.number ? 2 : 0));
         }
     }
     w.var(module.slotReprFields.size());
@@ -742,7 +742,9 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         for (auto& p : lc.pairs) {
             p.keyIndex = r.u32();
             p.slot = r.u32();
-            p.write = r.u8() != 0;
+            const uint8_t flags = r.u8();
+            p.write = (flags & 1) != 0;
+            p.number = (flags & 2) != 0;
         }
     }
     out.slotReprFields.resize(r.count());

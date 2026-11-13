@@ -39,12 +39,13 @@
 // store path does not read it, since it reaches `setSlot` in every case.
 //
 // WHERE A DOUBLE SLOT COMES FROM. Only from an ELIGIBLE key whose first store
-// is a number. Eligibility is the compiler's `--pins` manifest, handed over at
-// module init as a list of names (`bronze_register_slot_repr`): a field pinned
-// `number` on a class whose layout the compilation proved. An unpinned key is
-// never eligible: an unpinned program has no promise to hold the store paths
-// to, and a key that alternates would cost a shape split each time it turned
-// over.
+// is a number. Eligibility is handed over at module init as a list of names
+// (`bronze_register_slot_repr`), which the compiler takes from the `--pins`
+// manifest (a field pinned `number` on a class whose layout the compilation
+// proved) and from an inline-cache harvest (keys the harvested run's objects
+// were born and kept Numbers under; docs/slot-representation.md "From a
+// harvest"). Any other key is never eligible: a key that alternates would cost
+// a shape split each time it turned over.
 
 #include <cstdint>
 

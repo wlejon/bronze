@@ -23,6 +23,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -93,6 +94,15 @@ struct Harvest {
     // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
     // many of the sampler's interrupts its code took.
     std::map<uint32_t, uint64_t> samples;
+    // The slot representation the run kept (runtime/ic_harvest.h,
+    // rtIcHarvestNoteBirth): by receiver name, the positions in its key list
+    // born a Number and found holding one on every shape of that name the
+    // caches met, and every key something else was found under. What a
+    // build reads off these is which keys to make eligible and which layout
+    // cell members to require as doubles; the runtime holds both to the
+    // truth, so a wrong harvest costs time.
+    std::map<std::string, std::vector<uint32_t>> doubles;
+    std::set<std::string> mixed;
 };
 
 class TypeProfile {

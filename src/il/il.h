@@ -758,12 +758,18 @@ struct Module {
     // shape into the cell only when it has `keyCount` keys and carries every
     // listed key as an own data property at its slot (writable, and no
     // prototype's shape, where a member stores): what each member's own
-    // publish checked for its one key (runtime/static_shape.cpp).
+    // publish checked for its one key (runtime/static_shape.cpp). A member
+    // marked `number` is one the harvest saw hold a double on that shape
+    // (opt/spec/feedback_plan.h `harvestDoubles`): the runtime publishes the
+    // cell only for a shape that calls the slot a double, whose objects hold
+    // a Number there for as long as they keep the shape (runtime/slot_repr.h),
+    // so a read behind the cell's guard is a Number with no test.
     struct LayoutCellEntry {
         struct Pair {
             uint32_t keyIndex = 0;  // into `keyConstants`
             uint32_t slot = 0;
             bool write = false;
+            bool number = false;
         };
         uint32_t cell = 0;  // a `staticCellIndex`
         uint32_t keyCount = 0;
@@ -773,7 +779,8 @@ struct Module {
     // THE SLOT-REPRESENTATION ELIGIBILITY LIST (stage R1,
     // src/runtime/slot_repr.h): indices into `keyConstants` naming the property
     // names a `--pins` manifest declared `number` on some class this
-    // compilation proved a layout for. The runtime is told them at module init
+    // compilation proved a layout for, and the keys of the layout cells'
+    // `number` members (a harvest). The runtime is told them at module init
     // and uses them for one decision — whether a shape transition that FIRST
     // installs such a name, with a Number in hand, may store the slot as a raw
     // double instead of a boxed Value.
@@ -783,7 +790,7 @@ struct Module {
     // at the moment the storage decision has to be made. Over-application is
     // sound — the runtime generalizes a slot whose promise a store breaks — so
     // a name shared with an unpinned class costs a shape split at worst.
-    // Empty without a manifest.
+    // Empty without a manifest or a harvest.
     std::vector<uint32_t> slotReprFields;
     // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
     // entry per site lowering created, handed to the runtime at module init so

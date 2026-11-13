@@ -197,6 +197,30 @@ Value* PropertyLoweringHelper::family_id(Builder& b, Value* keyed) {
     return b.build_sub(runtime_word(b, keyed, kFamilyOffset), runtime_word(b, family_base, 0));
 }
 
+bool PropertyLoweringHelper::layout_number(const StaticSlotSite& site) const {
+    if (layout_cells_ == nullptr || site.none() || site.family()) return false;
+    const auto layout = layout_cells_->find(site.cell);
+    if (layout == layout_cells_->end()) return false;
+    for (const LayoutCell::Pair& p : layout->second.pairs) {
+        if (p.slot == site.slot) return p.number;
+    }
+    return false;
+}
+
+Value* PropertyLoweringHelper::number_flag(Value* v) const {
+    for (int hops = 0; v != nullptr && hops < 3; ++hops) {
+        const auto it = number_flags_.find(v);
+        if (it != number_flags_.end()) return it->second;
+        const Instruction* def = v->defining_instruction();
+        if (def == nullptr || def->operand_count() != 1 ||
+            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
+            return nullptr;
+        }
+        v = def->operand(0);
+    }
+    return nullptr;
+}
+
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
                                             const std::vector<StaticGuardTerm>& terms, Value*& ptr,
                                             Value** family_id_io) {
@@ -252,6 +276,12 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
         // lowering knows is a Number needs no test, nor does a slot past the
         // map's width, which is never a double one.
         if (t.store && !t.store_is_number && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
+            // A layout cell's `number` member is a double slot on every shape
+            // the cell admits: the value alone is the question.
+            if (layout_number(site)) {
+                all(b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits)));
+                continue;
+            }
             if (!doubles) doubles = shape_word(kDoubleSlotsOffset);
             Value* boxed = b.build_eq(b.build_and(doubles, iconst(b, uint64_t{1} << site.slot)), iconst(b, 0));
             Value* is_num = b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits));
@@ -390,15 +420,17 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
         if (layout_cells_ && layout != layout_cells_->end()) {
             // A LAYOUT CELL (il.h `Module::layoutCells`) stands for every
             // member's claim: the whole list goes, three u32 a member (its
-            // key as the runtime knows it, its slot, stored-to), on the
-            // stack.
+            // key as the runtime knows it, its slot, its flags: stored-to,
+            // a double), on the stack.
             const std::vector<LayoutCell::Pair>& pairs = layout->second.pairs;
             Value* list = b.build_alloca(static_cast<uint32_t>(pairs.size() * 12), 4);
             for (size_t i = 0; i < pairs.size(); ++i) {
                 const int32_t at = static_cast<int32_t>(i * 12);
                 b.build_store(Type::i32(), list, at, runtime_key(b, pairs[i].key));
                 b.build_store(Type::i32(), list, at + 4, b.build_iconst_i32(static_cast<int32_t>(pairs[i].slot)));
-                b.build_store(Type::i32(), list, at + 8, b.build_iconst_i32(pairs[i].write ? 1 : 0));
+                const uint32_t flags = (pairs[i].write ? BRONZE_ABI_LAYOUT_PAIR_WRITE : 0u) |
+                                       (pairs[i].number ? BRONZE_ABI_LAYOUT_PAIR_DOUBLE : 0u);
+                b.build_store(Type::i32(), list, at + 8, b.build_iconst_i32(static_cast<int32_t>(flags)));
             }
             b.build_call("bronze_static_layout_publish", Type::void_type(),
                          {obj, list, b.build_iconst_i32(static_cast<int32_t>(pairs.size())),
@@ -442,6 +474,10 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     BasicBlock* bb_miss = b.append_block(prefix + kMissName);
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
+    // The read's NUMBER FLAG (il_property.h), the join's second parameter.
+    const bool number = layout_number(site);
+    Value* merge_flag = number ? b.add_block_param(bb_merge, Type::i32()) : nullptr;
+    const size_t values = number ? 2 : 1;
 
     b.position_at_end(bb_cur);
     Value* ptr = nullptr;
@@ -456,6 +492,7 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     // eight bytes are what [[Get]] answers. A double slot's word is the
     // number's box.
     std::vector<Value*> hit_args{with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass)};
+    if (number) hit_args.push_back(b.build_iconst_i32(1));
     append_memo(hit_args, miss.memo_hit, b);
     b.build_br(bb_merge, hit_args);
 
@@ -464,11 +501,13 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     // The access may have collected, so the receiver's bits are read again.
     emit_static_fill(b, miss.receiver(b), key_index, site, /*for_write=*/false);
     std::vector<Value*> miss_args{slow_val};
+    if (number) miss_args.push_back(b.build_ule(slow_val, iconst(b, kBronzeNumberMaxBits)));
     append_memo(miss_args, miss.memo_miss, b);
     b.build_br(bb_merge, miss_args);
 
     b.position_at_end(bb_merge);
-    merge_memo(b, bb_merge, hit_args.size() - 1, miss);
+    merge_memo(b, bb_merge, hit_args.size() - values, miss);
+    if (number) set_number_flag(merge_val, merge_flag);
     return merge_val;
 }
 
@@ -611,6 +650,11 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
     // shape moves and no barrier is owed, so the memo stays.
     if (inst_ast.op == BronzeOp::PropGet) {
         res = prop_lowering.lower_prop_get_guarded(b, obj, StaticSlotSite::of(inst_ast));
+        // Behind the `is.shape` that admitted this layout cell: a `number`
+        // member is a Number.
+        if (prop_lowering.layout_number(StaticSlotSite::of(inst_ast))) {
+            prop_lowering.set_number_flag(res, b.build_iconst_i32(1));
+        }
     } else {
         prop_lowering.lower_prop_set_guarded(b, obj, val, StaticSlotSite::of(inst_ast));
     }
@@ -669,6 +713,20 @@ void IlLowering::register_class_families(Builder& b, Value* map_addr) {
                   b.build_iconst_i32(static_cast<int32_t>(options_.class_family_count)),
                   b.build_func_addr(module_sym("__bronze_class_family_fields")), map_addr,
                   module_data_addr(b, "__bronze_family_base")});
+}
+
+// The names whose slots may be born doubles (il.h `slotReprFields`; runtime
+// slot_repr.h), as module key indices on the stack: the runtime maps each
+// through the key map and keeps the names.
+void IlLowering::register_slot_repr(Builder& b, Value* map_addr) {
+    const std::vector<uint32_t>& fields = options_.slot_repr_fields;
+    if (fields.empty()) return;
+    Value* list = b.build_alloca(static_cast<uint32_t>(fields.size() * 4), 4);
+    for (size_t i = 0; i < fields.size(); ++i) {
+        b.build_store(Type::i32(), list, static_cast<int32_t>(i * 4), b.build_iconst_i32(static_cast<int32_t>(fields[i])));
+    }
+    b.build_call("bronze_register_slot_repr", Type::void_type(),
+                 {list, b.build_iconst_i32(static_cast<int32_t>(fields.size())), map_addr});
 }
 
 // Whether a site's layout claim gets the static-slot guard: a named key, in

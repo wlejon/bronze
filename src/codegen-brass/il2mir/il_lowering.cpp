@@ -832,6 +832,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             Value* map_addr = b.build_func_addr(module_sym("__bronze_key_map"));
             b.build_call("bronze_register_key_manifest", Type::void_type(), {manifest_addr, map_addr});
             register_class_families(b, map_addr);
+            register_slot_repr(b, map_addr);
             // The method-call sites' env words, registered as value cells
             // (bronze_abi.h, bronze_register_method_ic_cells): a latched
             // direct-form entry may hold a closure's environment record —
@@ -911,6 +912,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // is lowered before its uses (see lowering_order).
     memo_begin_function(fn_ast);
     boolean_values_.clear();
+    prop_lowering_.clear_number_flags();
     for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
         const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];

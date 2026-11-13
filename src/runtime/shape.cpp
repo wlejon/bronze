@@ -241,6 +241,11 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // no double representation to give it, and the width arithmetic below
     // assumes none exists.
     if (is_accessor) desired = SlotRepr::Boxed;
+    // Past the double map a slot is boxed whatever was asked, and the edge is
+    // looked up as the boxed one it was recorded as: asked for after the
+    // lookup, a Number store there found no double edge and minted another
+    // boxed child each time, a fresh shape per object.
+    if (nextSlotIndex(1u) >= kSlotReprLimit) desired = SlotRepr::Boxed;
 
     // Two passes, because the representation is part of the key and the edge
     // this store WANTS may not be the one it gets. A double edge that has
@@ -275,7 +280,6 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
             fatal("internal: a shape transition past the dictionary threshold; "
                   "the caller should have moved the object to dictionary mode");
         }
-        if (next_slot >= kSlotReprLimit) desired = SlotRepr::Boxed;
 
         out_slot = next_slot;
         next_shape =

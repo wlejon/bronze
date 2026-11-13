@@ -165,9 +165,13 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
 
 // A LAYOUT CELL (il.h `Module::layoutCells`): one cell for the claims of
 // every site a profile saw at one shape, `triples` holding each as (runtime
-// key, slot, stored-to). The shape is published only when every claim holds
-// of it, each under exactly the conditions above, so one compare against the
-// cell admits every member's bare access; and only when it has `keyCount`
+// key, slot, flags: bit 0 stored-to, bit 1 a double). The shape is published
+// only when every claim holds of it, each under exactly the conditions above,
+// and every member marked a double is a slot the shape calls an f64
+// (slot_repr.h), so one compare against the cell admits every member's bare
+// access and a read of a double member is a Number with no test: the shape
+// is immutable, and an object whose store breaks the claim leaves it
+// (`Shape::withSlotBoxed`); and only when it has `keyCount`
 // keys, the count of the shape the build named, so that an object still
 // being built, whose shape holds the listed keys and not yet the rest, is not
 // the one the cell keeps. A receiver the list does not describe is not
@@ -196,11 +200,13 @@ void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uin
     if (keys != keyCount) return refuse();
     for (uint32_t i = 0; i < n; ++i) {
         const uint32_t keyIndex = triples[3 * i], slot = triples[3 * i + 1];
-        const bool forWrite = triples[3 * i + 2] != 0;
+        const bool forWrite = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_WRITE) != 0;
+        const bool isDouble = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_DOUBLE) != 0;
         StringHeader* key = rtKeyHeader(keyIndex);
         PropertyInfo info;
         const bool found = key != nullptr && shape->lookupProperty(PropertyKey::forString(key), info);
-        if (!found || info.accessor || info.slot != slot || (forWrite && (!info.writable || shape->used_as_prototype))) {
+        if (!found || info.accessor || info.slot != slot || (forWrite && (!info.writable || shape->used_as_prototype)) ||
+            (isDouble && !shape->slotIsDouble(slot))) {
             return refuse();
         }
     }

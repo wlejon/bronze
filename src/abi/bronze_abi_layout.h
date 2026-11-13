@@ -777,6 +777,14 @@
 #define BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET 64
 #define BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT  64
 
+/* A LAYOUT CELL's member (bronze_static_layout_publish): the third u32 of its
+ * (key, slot, flags) triple. WRITE: a site stores to it, so the shape must
+ * hold it writable and be no prototype's. DOUBLE: the shape must call the
+ * slot a double (Shape::double_slots), so a read behind the cell is a Number
+ * with no test. */
+#define BRONZE_ABI_LAYOUT_PAIR_WRITE        1u
+#define BRONZE_ABI_LAYOUT_PAIR_DOUBLE       2u
+
 /* A TRANSITION RUN's static cells (il.h `transitionRunCell`), five i64s from
  * the run's first: the start shape (0 until published, which no shape is),
  * the shape after the run, the prototype-mutation epoch it was verified at,

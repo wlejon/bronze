@@ -502,7 +502,25 @@ harvest <16 hex digest>  <IC site count>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]
 sample  <8 hex name hash>  <count>
+doubles <receiver>  <key positions, ascending, comma-separated>
+mixed   <key>
 ```
+
+**Slot representation.** The harvest also says which slots held only
+Numbers, without changing a shape of the run it measures (no key is made
+eligible for a double slot while it runs): the runtime notes, per shape node,
+whether every property add that made it held a Number
+(`rtIcHarvestNoteBirth`, `runtime/ic_harvest.h`), and at the write the heap
+is walked for the objects of the shapes the caches named. A `doubles` row
+names, for a receiver the caches held, the positions in its key list that were
+born Numbers and that every object found of every shape of that name held a
+Number in; a `mixed` row names a key some named shape was born or found
+holding anything else under. A build on the harvest makes a layout cell's
+member a `number` one when its key is at such a position of the cell's shape
+and is not mixed
+(`applyFeedbackLayoutCells`), and makes those keys eligible
+(`bronze_register_slot_repr` at module init). See docs/slot-representation.md,
+"From a harvest".
 
 **Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
 case three ways and requires the pinned bytes and exit code from each run:

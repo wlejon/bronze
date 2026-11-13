@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,11 @@ const char* const kHarvest =
     "way\t8\tdirect\tMesh{uuid,name}\t~1204@0badf00d\n"
     "way\t8\tnative\tarray\tnative:array\n"
     "sample\t0000002a\t7\n"
-    "sample\tdeadbeef\t1500\n";
+    "sample\tdeadbeef\t1500\n"
+    "doubles\tMesh{uuid,name}\t1\n"
+    "doubles\tVector3{x,y,z}\t0,1,2\n"
+    "mixed\tname\n"
+    "mixed\tw\n";
 
 // The keys of the module's functions whose IL name ends with `suffix`.
 std::vector<std::string> keysEndingIn(const il::Module& mod, const std::string& suffix) {
@@ -108,6 +113,9 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
     REQUIRE(h->samples.size() == 2);
     CHECK(h->samples.at(0x2a) == 7);
     CHECK(h->samples.at(0xdeadbeef) == 1500);
+    REQUIRE(h->doubles.size() == 2);
+    CHECK(h->doubles.at("Vector3{x,y,z}") == std::vector<uint32_t>{0, 1, 2});
+    CHECK(h->mixed == std::set<std::string>{"name", "w"});
 }
 
 TEST_CASE("profile: a malformed harvest is refused") {
@@ -132,6 +140,15 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nsample\t2a\t7\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(
         head + "harvest\t00112233aabbccdd\t4\nsample\t0000002a\t7\nsample\t0000002a\t1\n", &err));
+    // Positions out of order, empty, or with an empty member; a receiver or
+    // a key listed twice.
+    const std::string h = head + "harvest\t00112233aabbccdd\t4\n";
+    CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t1,0\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t0,\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "doubles\tA{x}\t0\ndoubles\tA{x}\t0\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(h + "mixed\tx\nmixed\tx\n", &err));
+    CHECK(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t0,1\nmixed\tz\n", &err));
 }
 
 TEST_CASE("profile: queries by function key and ordinal") {

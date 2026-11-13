@@ -298,13 +298,20 @@ receiver), 11 shape compares, the rest store representation tests.
 - *What a slot holds.* The guards that remain are asked of values just
   loaded from a slot of an object already guarded: a Number test per number
   (10 of 37 in `updateLocalTransform`), and a tag, header and shape test per
-  object (`this.localTransform`, `this.position`, ...: 23 of 37). A slot the
-  shape calls a double (`runtime/slot_repr.h`) needs no Number test, but a
-  key is eligible only through `--pins`; the harvest could name the keys and
-  a layout cell require the representation at publish. The same discipline
-  for "this slot holds a plain object of shape S" (a store of anything else
-  moves the object to a shape without the claim, as `withSlotBoxed` does)
-  would make the object a receiver with no test.
+  object (`this.localTransform`, `this.position`, ...: 23 of 37). Doubles
+  are done: the harvest names the key positions its run's objects were born
+  and kept Numbers in (docs/slot-representation.md "From a harvest"), those
+  keys become eligible, and a layout cell's `number` member publishes only
+  for a shape whose slot is a double, so behind the cell the backend answers
+  the Number test with a constant. `updateLocalTransform` keeps 4 Number
+  tests of 12 (23 guards of 31): the 4 are family-claim reads of `this`,
+  not layout cells. Instructions per frame, before / after: pixi_sprites
+  23.03M / 21.88M, three_meshes 58.58M / 58.13M, three_lights 3.08M /
+  3.05M, pixi_text 36.04M / 36.11M, three_skinned 42.30M / 42.32M,
+  three_instanced 65.80M / 64.86M. The same discipline for "this slot holds
+  a plain object of shape S" (a store of anything else moves the object to a
+  shape without the claim, as `withSlotBoxed` does) would make the object a
+  receiver with no test.
 - *Build time*: a three.js image builds in about 130 s with twins against
   40 s; each twinned function is compiled four times (itself, twin, generic,
   probe).

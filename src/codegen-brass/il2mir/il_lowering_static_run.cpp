@@ -231,8 +231,13 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         int32_t off = 0;
         Value* base = prop_lowering_.static_slot_base(b, ptr, inst.static_slot, off);
         if (inst.op == BronzeOp::PropGet) {
-            set_inst_result(inst.result_id, with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass), b,
-                            fast_map);
+            Value* loaded = with_alias_class(b.build_load(Type::i64(), base, off), kObjectSlotAliasClass);
+            // Under the guard that asked this site's cell: a layout cell's
+            // `number` member is a Number (il_property.h, NUMBER FLAGS).
+            if (!has_layout_fact(inst) && prop_lowering_.layout_number(StaticSlotSite::of(inst))) {
+                prop_lowering_.set_number_flag(loaded, b.build_iconst_i32(1));
+            }
+            set_inst_result(inst.result_id, loaded, b, fast_map);
             continue;
         }
         const uint32_t val_id = inst.operands[1];
@@ -267,6 +272,22 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     for (size_t k = 0; k < live_out.size(); ++k) {
         slow_args.push_back(ensure_type(slow_map.at(live_out[k]), fast_args[k]->type(), b));
     }
+    // A read the fast copy knows a Number (a layout cell's `number` member)
+    // keeps its NUMBER FLAG past the join (il_property.h): the fast copy's,
+    // and the slow copy's own or its test.
+    std::vector<size_t> flagged;
+    for (size_t k = 0; k < live_out.size(); ++k) {
+        Value* fast_flag = prop_lowering_.number_flag(fast_args[k]);
+        if (fast_flag == nullptr) continue;
+        Value* slow_flag = prop_lowering_.number_flag(slow_args[k]);
+        if (slow_flag == nullptr) {
+            slow_flag = b.build_ule(ensure_type(slow_args[k], Type::i64(), b),
+                                    b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        }
+        flagged.push_back(k);
+        fast_args.push_back(fast_flag);
+        slow_args.push_back(slow_flag);
+    }
     BasicBlock* slow_end = b.current_block();
 
     // The memo past the join: a receiver both copies still hold, as one value
@@ -292,6 +313,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     for (size_t k = 0; k < live_out.size(); ++k) {
         val_map[live_out[k]] = b.add_block_param(bb_merge, fast_args[k]->type());
     }
+    for (size_t k : flagged) prop_lowering_.set_number_flag(val_map[live_out[k]], b.add_block_param(bb_merge, Type::i32()));
     for (size_t idx : memo_params) memo_join[idx].second = b.add_block_param(bb_merge, Type::i64());
     memo_restore(std::move(memo_join));
     b.position_at_end(slow_end);

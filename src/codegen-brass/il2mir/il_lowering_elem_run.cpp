@@ -733,7 +733,10 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             for (size_t k = 0; k < N; ++k) {
                 const IcSite site = prop_lowering_.ic_site_ref(b, get_steps[k].dst_ic_idx);
                 Value* hit = nullptr;
-                prop_lowering_.emit_mono_slot_guard(b, dst_shape, dst_plain, site, hit, dst_slot_words[k]);
+                // Every store of the run is a Number (below), so a double
+                // slot's way is a hit too.
+                prop_lowering_.emit_mono_slot_guard(b, dst_shape, dst_plain, site, hit, dst_slot_words[k],
+                                                    b.build_iconst_i32(1));
                 guard_ok = b.build_and(guard_ok, hit);
             }
         }

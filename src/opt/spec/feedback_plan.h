@@ -133,6 +133,11 @@ struct FeedbackPlan {
     // the module the probe copied (the claims read the dominant ones,
     // function placement all).
     std::unordered_map<std::string, uint32_t> callees;
+    // The harvest's slot representation (profile.h `Harvest::doubles`): by
+    // receiver name, the key positions that held Numbers; and every key
+    // something else was found under. `applyFeedbackLayoutCells` reads them.
+    std::map<std::string, std::vector<uint32_t>> harvestDoubles;
+    std::set<std::string> mixedKeys;
     FeedbackPlanStats stats;
 };
 

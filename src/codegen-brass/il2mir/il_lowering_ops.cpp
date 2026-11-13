@@ -648,6 +648,12 @@ bool lower_ops_instruction(
                 res_val = b.build_iconst_i32(1);
                 return true;
             }
+            // A read of a layout cell's double slot (il_property.h, NUMBER
+            // FLAGS): a Number wherever its cell's guard held.
+            if (Value* flag = lowering->prop_lowering().number_flag(opd)) {
+                res_val = flag;
+                return true;
+            }
             Value* src = lowering->ensure_type(opd, Type::i64(), b);
             Value* limit = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
             res_val = b.build_ule(src, limit);

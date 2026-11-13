@@ -40,7 +40,8 @@ namespace bronze::il {
 // 26: Module::icLayoutDigest, feedbackApplied, harvestOutPath (the IC harvest).
 // 28: Module::hotFunctions, coldFunctions (lower/function_placement.h).
 // 30: Module::layoutCells (opt/spec/feedback_plan.h).
-inline constexpr uint32_t kFormatVersion = 30;
+// 31: a layout cell's member carries `number` (il.h).
+inline constexpr uint32_t kFormatVersion = 31;
 
 std::string serializeModule(const Module& module);
 

@@ -82,6 +82,8 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   ic      <index> property|method <flags: -, or full / mega, comma-separated>
 //   way     <index> <form> <receiver> [<callee>, method sites]
 //   sample  <8 hex digits: the function's name hash> <count>
+//   doubles <receiver> <ascending key positions, comma-separated>
+//   mixed   <key>
 bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harvest>& harvest, std::string& why) {
     if (f[0] == "harvest") {
         Harvest h;
@@ -113,6 +115,32 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
         }
         if (!ok || !parseU64(f[2], count) || !harvest->samples.emplace(hash, count).second) {
             why = "malformed sample row";
+            return false;
+        }
+        return true;
+    }
+    if (f[0] == "doubles") {
+        std::string receiver;
+        std::vector<uint32_t> positions;
+        bool ok = f.size() == 3 && unescapeName(f[1], receiver) && !receiver.empty() && !f[2].empty();
+        for (size_t at = 0; ok && at <= f[2].size();) {
+            const size_t comma = std::min(f[2].find(',', at), f[2].size());
+            uint64_t n = 0;
+            ok = parseU64(f[2].substr(at, comma - at), n) && n <= UINT32_MAX &&
+                 (positions.empty() || n > positions.back());
+            positions.push_back(static_cast<uint32_t>(n));
+            at = comma + 1;
+        }
+        if (!ok || !harvest->doubles.emplace(std::move(receiver), std::move(positions)).second) {
+            why = "malformed doubles row";
+            return false;
+        }
+        return true;
+    }
+    if (f[0] == "mixed") {
+        std::string key;
+        if (f.size() != 2 || !unescapeName(f[1], key) || key.empty() || !harvest->mixed.insert(key).second) {
+            why = "malformed mixed row";
             return false;
         }
         return true;
@@ -226,7 +254,8 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
-        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "sample") {
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "sample" || f[0] == "doubles" ||
+            f[0] == "mixed") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
         }
@@ -353,6 +382,15 @@ std::string TypeProfile::serialize() const {
             std::snprintf(h, sizeof h, "%08x", hash);
             out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
         }
+        for (const auto& [receiver, positions] : harvest_->doubles) {
+            out += "doubles\t" + escapeName(receiver) + "\t";
+            for (size_t i = 0; i < positions.size(); ++i) {
+                if (i != 0) out += ",";
+                out += std::to_string(positions[i]);
+            }
+            out += "\n";
+        }
+        for (const std::string& key : harvest_->mixed) out += "mixed\t" + escapeName(key) + "\n";
     }
     return out;
 }

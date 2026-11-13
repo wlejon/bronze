@@ -390,21 +390,32 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.position_at_end(not_depth1);
     b.build_br_if(b.build_eq(depth, b.build_iconst_i64(kAccessorDepth)), setter, {e.ptr}, dbl_check, {});
 
-    // An f64-represented own slot (BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG): any finite
-    // IEEE-754 double has exponent bits != 0x7FF, so its boxed Value bits are
-    // already canonical and need no barrier; NaN/Infinity, Tag::Int32, and
-    // non-numbers go to `slow` for canonicalization or slot generalization.
+    // An f64-represented own slot (BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG): a
+    // Number's bits are the double's (a Value at or below the number limit is
+    // one, NaN included), and an Int32 box stores its integer as a double
+    // (slotReprCanonicalize); neither needs a barrier. Anything else goes to
+    // `slow`, which generalizes the slot.
+    BasicBlock* dbl_int = b.append_block(prefix + "_dbl_int32");
+    BasicBlock* dbl_other = b.append_block(prefix + "_dbl_other");
+    Value* stored = b.add_block_param(dbl_store, Type::i64());
     b.position_at_end(dbl_check);
     Value* is_dbl_slot = b.build_eq(depth, b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
-    Value* is_finite_f64 = b.build_ne(b.build_and(val, b.build_iconst_i64(0x7FF0000000000000LL)),
-                                      b.build_iconst_i64(0x7FF0000000000000LL));
-    b.build_br_if(b.build_and(is_dbl_slot, is_finite_f64), dbl_store, slow);
+    Value* is_number = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    b.build_br_if(b.build_and(is_dbl_slot, is_number), dbl_store, {val}, dbl_other, {});
+
+    b.position_at_end(dbl_other);
+    Value* is_int32 = b.build_eq(b.build_lshr(val, b.build_iconst_i64(48)),
+                                 b.build_iconst_i64(BRONZE_ABI_TAG_INT32));
+    b.build_br_if(b.build_and(is_dbl_slot, is_int32), dbl_int, slow);
+
+    b.position_at_end(dbl_int);
+    b.build_br(dbl_store, {b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(b.build_trunc_i32(val)))});
 
     b.position_at_end(dbl_store);
     Value* dbl_base = pl.slot_base(b, e.ptr, slot);
     Value* dbl_addr = b.build_add(b.build_add(dbl_base, b.build_shl(slot, b.build_iconst_i64(3))),
                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
-    b.build_store(Type::i64(), dbl_addr, 0, val);
+    b.build_store(Type::i64(), dbl_addr, 0, stored);
     b.build_br(done);
 
     // An accessor's setter is the slot after its getter.

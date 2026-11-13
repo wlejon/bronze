@@ -130,6 +130,8 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
         plan.stats.harvestStale = true;
         return;
     }
+    plan.harvestDoubles = harvest.doubles;
+    plan.mixedKeys = harvest.mixed;
     struct Named {
         il::Op op;
         uint32_t key;
