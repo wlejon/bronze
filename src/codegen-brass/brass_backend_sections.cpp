@@ -359,6 +359,17 @@ private:
 
 }  // namespace
 
+namespace {
+// brass::resume_twin_name's names (il_speculation.cpp make_resume_twins).
+constexpr std::string_view kTwinSuffix = "__twin";
+bool isResumeTwinName(std::string_view name) {
+    return name.size() > kTwinSuffix.size() && name.substr(name.size() - kTwinSuffix.size()) == kTwinSuffix;
+}
+std::string twinFunctionName(std::string_view name) {
+    return std::string(name.substr(0, name.size() - kTwinSuffix.size()));
+}
+}  // namespace
+
 void emitPcTablesAndCodeRanges(
     ObjectFile& obj, Section& roSec, int32_t roIdx,
     const std::string& entrySymbol, const std::vector<std::string>& sourceFiles,
@@ -471,7 +482,9 @@ void emitPcTablesAndCodeRanges(
         roSec.emit32(static_cast<uint32_t>(cfi.text_size));
         auto itDt = debugTableMap.find(cfi.name);
         roSec.emit32(itDt != debugTableMap.end() ? static_cast<uint32_t>(itDt->second->line_entries().size()) : 0);
-        auto itDesc = fnToDesc.find(cfi.name);
+        // A resume twin is the function it finishes.
+        const bool twin = isResumeTwinName(cfi.name);
+        auto itDesc = fnToDesc.find(twin ? twinFunctionName(cfi.name) : cfi.name);
         emitPointer(roSec, itDesc != fnToDesc.end() ? itDesc->second : "");
         auto itPc = fnToPcTable.find(cfi.name);
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
@@ -483,7 +496,7 @@ void emitPcTablesAndCodeRanges(
         auto itInl = fnToInlineFrames.find(cfi.name);
         emitPointer(roSec, itInl != fnToInlineFrames.end() ? itInl->second.first : "");
         roSec.emit32(itInl != fnToInlineFrames.end() ? itInl->second.second : 0);
-        roSec.emit32(0);  // bronze_code_range's tail padding
+        roSec.emit32(twin ? BRONZE_CODE_RANGE_TWIN : 0);
     }
     defineSymbol(obj, codeRangesSymbol, roIdx, rangesOff,
                  obj.functions.size() * sizeof(bronze_code_range), SymbolBinding::Global);

@@ -154,7 +154,15 @@ Value* PropertyLoweringHelper::keyed_shape_flat(Builder& b, Value* obj) {
     return b.build_select(plain, shape, not_plain_shape(b));
 }
 
-Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss) {
+void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits) {
+    if (spec_) {
+        spec_->site_branch(b, hit, fast, slow, exits);
+    } else {
+        b.build_br_if(hit, fast, slow);
+    }
+}
+
+Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss, bool exits) {
     // The payload is the Value with its object tag XORed away, below 2^48
     // exactly when the tag was the object tag; only then is the header read.
     BasicBlock* bb_cur = b.current_block();
@@ -163,10 +171,11 @@ Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, Basic
     BasicBlock* bb_plain = b.append_block(prefix + "_plain");
     b.position_at_end(bb_cur);
     Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
-    b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, miss);
+    site_branch(b, b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, miss, exits);
     b.position_at_end(bb_obj);
     constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), bb_plain, miss);
+    site_branch(b, b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), bb_plain, miss,
+                exits);
     b.position_at_end(bb_plain);
     return b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
 }
@@ -383,7 +392,7 @@ Value* guard_or_miss(Builder& b, PropertyLoweringHelper& pl, Value* obj, const s
     Value* family = miss.family;
     Value* shape = miss.keyed;
     if (!shape) {
-        shape = pl.plain_shape_or_miss(b, obj, bb_miss);
+        shape = pl.plain_shape_or_miss(b, obj, bb_miss, miss.exits);
         if (miss.memo_fresh) miss.memo_fresh(shape);
     }
     Value* ok = pl.static_guard(b, obj, shape, terms, ptr, &family);
@@ -403,7 +412,8 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
 
     b.position_at_end(bb_cur);
     Value* ptr = nullptr;
-    b.build_br_if(guard_or_miss(b, *this, obj, {StaticGuardTerm{site}}, miss, bb_miss, ptr), bb_hit, bb_miss);
+    site_branch(b, guard_or_miss(b, *this, obj, {StaticGuardTerm{site}}, miss, bb_miss, ptr), bb_hit, bb_miss,
+                miss.exits);
 
     b.position_at_end(bb_hit);
     int32_t off = 0;
@@ -443,7 +453,7 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
     StaticGuardTerm term{site};
     term.store = val;
     term.store_is_number = val_is_number;
-    b.build_br_if(guard_or_miss(b, *this, obj, {term}, miss, bb_miss, ptr), bb_hit, bb_miss);
+    site_branch(b, guard_or_miss(b, *this, obj, {term}, miss, bb_miss, ptr), bb_hit, bb_miss, miss.exits);
 
     // A hit stores into a slot the shape already has, which moves no shape;
     // the memo crosses it as it is.

@@ -730,6 +730,29 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
                         to.copyClass == il::CopyClass::Slow && to.copyRegion == block.copyRegion;
                 }
             }
+            // A guard of a fast copy: a branch one of whose edges leaves the
+            // copy, into the slow copy or a trampoline to it.
+            if (block.copyClass == il::CopyClass::Fast && !block.instructions.empty() &&
+                block.instructions.back().op == il::Op::Branch) {
+                const il::Instruction& term = block.instructions.back();
+                const auto leaves = [&](il::BlockId id) {
+                    if (id >= fn.blocks.size()) return false;
+                    const il::Block& to = fn.blocks[id];
+                    if (to.copyRegion != block.copyRegion) return false;
+                    if (to.copyClass == il::CopyClass::Slow) return true;
+                    if (to.copyClass != il::CopyClass::Fast || to.instructions.empty()) return false;
+                    const il::Instruction& last = to.instructions.back();
+                    if (last.op != il::Op::Jump || last.target.block >= fn.blocks.size()) return false;
+                    const il::Block& past = fn.blocks[last.target.block];
+                    return past.copyClass == il::CopyClass::Slow && past.copyRegion == block.copyRegion;
+                };
+                const bool thenLeaves = leaves(term.target.block);
+                const bool elseLeaves = leaves(term.elseTarget.block);
+                if (thenLeaves != elseLeaves) {
+                    bblk.instructions.back().guard_edge = thenLeaves ? il2mir::BronzeInstruction::GuardEdge::Then
+                                                                     : il2mir::BronzeInstruction::GuardEdge::Else;
+                }
+            }
 
             bfn.blocks.push_back(std::move(bblk));
         }

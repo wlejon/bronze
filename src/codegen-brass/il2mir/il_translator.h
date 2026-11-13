@@ -38,6 +38,10 @@ struct FunctionMeta {
     uint32_t adapt_arity = 0;
     std::vector<bool> params_pinned;
     std::vector<uint32_t> param_pin_keys;
+    // One of the functions a profile's samples put the run's time in
+    // (il::Module::hotFunctions): with TranslatorOptions::twin_exits it is
+    // compiled with guards and a resume twin.
+    bool hot = false;
 };
 
 struct TranslatorOptions {
@@ -194,6 +198,14 @@ struct TranslatorOptions {
     // each site's slow path laid out as its counts say, and every slow path
     // kept as a branch. Ignored with spec_feedback.
     std::shared_ptr<const SpecProfile> spec_profile;
+    // An image built on a profile, for a target whose guards can exit into a
+    // resume twin (x64): in the functions the profile's samples call hot
+    // (FunctionMeta::hot) the sites are guards, a claimed property site among
+    // them unless the profile saw it miss (its inline-cache index is in
+    // `missed_claim_ics`), and each such function is compiled twice
+    // (il_speculation.h, "IMAGE SITES"). Off, every site is a branch.
+    bool twin_exits = false;
+    std::unordered_set<uint32_t> missed_claim_ics;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

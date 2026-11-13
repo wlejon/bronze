@@ -620,7 +620,14 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     brass::lower_coroutines(*mod);
     ltimer.mark("coroutines");
 
-    // 5. Optionally optimize module
+    // 5. An image's guards exit into resume twins, built from the functions
+    // as lowered (il_speculation.h, "IMAGE SITES").
+    if (options_.twin_exits) {
+        make_resume_twins(*mod);
+        ltimer.mark("twins");
+    }
+
+    // 6. Optionally optimize module
     if (options_.enable_optimizations) {
         // A hook only when it verifies: with one, brass takes each run of
         // function-local passes a step at a time (all functions through one
@@ -687,7 +694,16 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // The entry's symbol differs between a JIT run and an AOT build; a
     // profile names it kSpecEntryName (il_spec_profile.h).
     const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
-    spec_.begin_function(true, is_entry ? std::string(kSpecEntryName) : fn_name);
+    // In an image a guard exits into the function's resume twin, a second
+    // copy of the function: only for the functions the profile calls hot,
+    // and never a coroutine body, which cannot have one.
+    bool takes_guards = true;
+    if (options_.twin_exits) {
+        const auto meta = options_.function_meta.find(fn_ast.name);
+        takes_guards = meta != options_.function_meta.end() && meta->second.hot && !fn_ast.is_coroutine_body() &&
+                       !fn_ast.is_toplevel;
+    }
+    spec_.begin_function(takes_guards, is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;

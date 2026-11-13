@@ -56,6 +56,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
       alloc_lowering_(options.enable_tlab) {
     spec_.set_feedback(options.spec_feedback.get());
+    spec_.set_image_sites(options.twin_exits);
     // An AOT lowering with a profile lays its sites out as the tiered
     // lowering does (every keyed site inline), minus what only an in-process
     // module can hold (a host address in the code).

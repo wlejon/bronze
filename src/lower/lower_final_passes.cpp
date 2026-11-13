@@ -257,6 +257,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // the claims.
     std::unordered_set<uint32_t> missedClaims;
     if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats, &missedClaims);
+    if (plan != nullptr) mod.missedClaimIcs = missedClaims;
     // The loops inlined bodies brought (guard_region.h, `only`), after the
     // claims: a copy shares its site's cell with the original, as it shares
     // the site's cache, and the fast copy's static sites can then be shape

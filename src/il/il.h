@@ -5,6 +5,7 @@
 #include <deque>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -791,6 +792,12 @@ struct Module {
     uint64_t icLayoutDigest = 0;
     bool feedbackApplied = false;
     std::string harvestOutPath;
+    // With `feedbackApplied`: the inline-cache indices of the claimed
+    // property sites the profile saw miss (spec::applyFeedbackClaimsAndHints).
+    // An image's lowering trusts every other claim enough to leave the
+    // function on its miss (il2mir/il_speculation.h, "IMAGE SITES"). Not
+    // serialized: it is read by the build that made it.
+    std::unordered_set<uint32_t> missedClaimIcs;
     // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
     // `functions` the backend lays out first in its text, in this order, and
     // last. Only where code sits, never what it is.

@@ -60,6 +60,13 @@ public:
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
     SpecSiteEmitter& spec() { return spec_; }
+    // Whether a claimed property site's miss leaves the function for its
+    // resume twin (il_speculation.h, "IMAGE SITES"): an image built on a
+    // profile that did not see the claim miss.
+    bool claim_exits(const BronzeInstruction& inst) const {
+        return options_.twin_exits && inst.static_slot != BronzeInstruction::kNoStaticSlot &&
+               inst.ic_index != BronzeInstruction::kNoIcIndex && options_.missed_claim_ics.count(inst.ic_index) == 0;
+    }
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
     const BronzeFunction* current_fn_ast() const {

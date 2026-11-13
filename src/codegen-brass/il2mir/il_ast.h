@@ -224,6 +224,11 @@ struct BronzeInstruction {
     // Jump: the edge by which a guarded region's fast copy leaves for its
     // slow copy (il.h `CopyClass`), taken when a guard failed.
     bool leaves_fast_copy = false;
+    // Branch, in a region's fast copy: which of its edges leaves the copy
+    // for the slow one, directly or through a trampoline (a guard's failing
+    // side); the other edge stays.
+    enum class GuardEdge : uint8_t { None, Then, Else };
+    GuardEdge guard_edge = GuardEdge::None;
     // A type-feedback hint (il.h `numberHint`): the Number arm falls through
     // and the generic path is laid out cold.
     bool number_hint = false;

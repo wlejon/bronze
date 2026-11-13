@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace il2mir {
 
@@ -85,6 +86,22 @@ public:
     void emit_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, SpecKind kind,
                      std::string_view tag = {}, Value** counter_out = nullptr);
     void finish_function(Function& fn) { sites_.finish_function(fn); }
+    // IMAGE SITES. An image has no lower tier, so a guard there exits into
+    // the function's resume twin, its generic code compiled beside it (brass
+    // docs/speculation_and_deopt.md, section 7; make_resume_twins below).
+    // With this set, a function begun with `can_deopt` lowers the sites its
+    // lowering trusts through site_branch as guards; every other site, and
+    // every site of any other function, stays a branch.
+    void set_image_sites(bool on) { sites_.set_image_sites(on); }
+    // `br_if %hit, fast, slow`, `slow` being the generic code of the
+    // operation `hit` tests (it takes no parameters). With `exits`, in a
+    // function that takes guards, the branch is an image site: the speculated
+    // function leaves through its twin on a miss and `slow` is the twin's.
+    // The builder stays in the block it ended.
+    void site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                     const std::vector<Value*>& fast_args = {});
+    // Whether site_branch makes guards in the function being lowered.
+    [[nodiscard]] bool image_sites_here() const noexcept { return sites_.image_sites() && sites_.can_deopt(); }
     // With a profile: the recorded misses of the next site of (kind, tag),
     // without taking it; nullopt when the profile does not name it.
     std::optional<uint32_t> peek_profile(SpecKind kind, std::string_view tag) const;
@@ -105,6 +122,12 @@ private:
     // Per (kind, tag): how many sites of the current function came before.
     std::unordered_map<std::string, uint32_t> occurrences_;
 };
+
+// An image module lowered with image sites, before any pass: every function
+// holding one gets its resume twin (named resume_twin_name), its guards armed
+// and pointed at the twin. A function whose twin cannot be built keeps its
+// branches.
+void make_resume_twins(Module& mod);
 
 // brass's tier-2 front pass for a program lowered with `feedback`.
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback);

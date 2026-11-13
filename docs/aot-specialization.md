@@ -175,6 +175,45 @@ on `childrenToUpdate` that the run saw miss.
 a store through an alias between two reads, a guard that fails on every
 pass, `break`/`continue`/`throw` out of the slow copy, nested loops).
 
+### 5. Guards that leave for a resume twin (x64 images built on a profile)
+
+brass can compile a function twice into one image: the speculated function,
+whose guards have exits only, and its resume twin, the generic code with every
+guard's slow block as an entry (brass `docs/speculation_and_deopt.md`,
+section 7). An image built with `--feedback-in` for x64 uses it
+(`TranslatorOptions::twin_exits`, `il2mir/il_speculation.h` "IMAGE SITES"):
+
+- **Which functions.** The ones the profile's samples call hot
+  (`il::Module::hotFunctions`), less coroutine bodies and the top level. Every
+  other function is lowered as before, each site a branch.
+- **Which sites.** A claimed property site (read, store, or a static-slot
+  stretch) whose claim the profile did not see miss
+  (`il::Module::missedClaimIcs`, from `applyFeedbackClaimsAndHints`), with its
+  plain-object and header tests, and every branch by which a guarded region's
+  fast copy leaves for its slow copy (`BronzeInstruction::guard_edge`). A site
+  with a layout fact stays a branch: a fact lapses whenever a layout moves.
+  A test that is an `and` of conditions is one guard per condition.
+- **How.** `make_resume_twins` runs on the module as lowered, before any
+  pass: `build_resume_twin`, `arm_image_sites`, `speculate_against_twin` per
+  function; a function no twin can be built for keeps its branches. The twin
+  is named `<function>__twin`, shares the function's descriptor in the code
+  ranges (`BRONZE_CODE_RANGE_TWIN`), and a stack walk reports the twin's
+  position for the activation and passes over the speculated frame under it.
+- **AArch64** and every build without a profile keep the branch form.
+
+pixi_sprites n=10000 (instructions a frame, node 15.7M; 24.42M before this
+section, 24.29M with brass's fixes and no twins): twins for every function
+with a site 25.22M (1587 twins, 30840 guards, image 91.5 MB against 62.2 MB);
+hot functions only, region guards included, 26.61M (140 twins, 7190 guards,
+66.9 MB, build 66.7 s against 50.8 s). What made the exits-only code slower
+was in brass, fixed there in four steps: gcref values no longer whole-life in
+one register unless live across a GC point (25.98M), a condition a dominating
+guard tested is known where read again (25.28M), a guard's compare selected
+as a branch's is (24.42M), one guard per conjunct (24.31M).
+`tests/oracle/cases/twin_exit_*.js` leave through real exits (every call, in a
+loop, in recursion, with GC between, inside `try`/`finally`, after side
+effects).
+
 ### Measured
 
 These are windowed `bro-aot` runs. Each "before" figure is the same tree with both

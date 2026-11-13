@@ -6,8 +6,11 @@
 
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <brass/mir/resume_twin.hpp>
 
+#include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace il2mir {
 
@@ -129,6 +132,45 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
                                   std::string_view tag, Value** counter_out) {
     if (profile_ && !sites_.has_feedback()) apply_profile(b, hit, slow, kind, tag);
     sites_.emit_branch(b, hit, fast, slow, static_cast<uint8_t>(kind), tag, counter_out);
+}
+
+void SpecSiteEmitter::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                                  const std::vector<Value*>& fast_args) {
+    const brass::Span<Value* const> args(fast_args.data(), fast_args.size());
+    if (exits && image_sites_here()) {
+        sites_.emit_image_site(b, hit, fast, slow, args);
+    } else {
+        b.build_br_if(hit, fast, args, slow, brass::Span<Value* const>());
+    }
+}
+
+void make_resume_twins(Module& mod) {
+    // BRONZE_TWIN_TRACE=1: one line per function, its armed guards or why it
+    // has no twin.
+    static const bool trace = [] {
+        const char* v = std::getenv("BRONZE_TWIN_TRACE");
+        return v && v[0] == '1';
+    }();
+    std::vector<Function*> sited;
+    for (Function* fn : mod.functions()) {
+        // A coroutine body's resume points are its suspends; it has no sites.
+        if (fn && !fn->resume_points().empty() && !fn->has_coro_frame_layout()) sited.push_back(fn);
+    }
+    for (Function* fn : sited) {
+        std::string why;
+        const std::string name = brass::resume_twin_name(fn->name());
+        const Function* twin = brass::build_resume_twin(*fn, mod, name, {}, &why);
+        if (!twin) {
+            brass::drop_image_sites(*fn);
+            if (trace) std::fprintf(stderr, "twin: %s none: %s\n", std::string(fn->name()).c_str(), why.c_str());
+            continue;
+        }
+        const uint32_t armed = brass::arm_image_sites(*fn);
+        if (!brass::speculate_against_twin(*fn, *twin, &why)) {
+            throw std::logic_error("il2mir: " + std::string(fn->name()) + " against its resume twin: " + why);
+        }
+        if (trace) std::fprintf(stderr, "twin: %s armed %u\n", std::string(fn->name()).c_str(), armed);
+    }
 }
 
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {

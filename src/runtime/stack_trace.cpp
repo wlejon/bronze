@@ -444,8 +444,21 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     // One frame per function the position is in: an inlined call's callee
     // frames first, innermost out, then the range's own, each at the
     // position its frame would have reported had the call been made.
+    //
+    // The frame under a resume twin's is the one whose guard left for it
+    // (BRONZE_CODE_RANGE_TWIN): the twin has reported that activation, so at
+    // its caller's position the twin's function is passed over, with the
+    // calls compiled into it that the guard was in.
+    const bronze_fn_desc* underTwin = nullptr;
     const auto pushCompiled = [&](const CodeSite& found) {
         CodeSite site = found;
+        const bronze_fn_desc* finished = underTwin;
+        underTwin = (found.range->flags & BRONZE_CODE_RANGE_TWIN) != 0 ? found.range->desc : nullptr;
+        while (finished != nullptr) {
+            const bool last = site.desc == finished;
+            if (!outer_code_site(site)) return;
+            if (last) break;
+        }
         while (true) {
             const bool own = site.inline_frame == 0 && site.desc == site.range->desc;
             frames.push_back({site.desc, site.line, site.col, own ? site.range->code_start : site.desc->code, nullptr,

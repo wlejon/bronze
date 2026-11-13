@@ -139,6 +139,7 @@ struct ModuleMirror {
     uint64_t icLayoutDigest;
     bool feedbackApplied;
     std::string harvestOutPath;
+    std::unordered_set<uint32_t> missedClaimIcs;  // not serialized (il.h)
     std::vector<uint32_t> hotFunctions;
     std::vector<uint32_t> coldFunctions;
     std::vector<Module::NativeImport> nativeImports;
