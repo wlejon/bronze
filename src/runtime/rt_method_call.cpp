@@ -4,6 +4,7 @@
 #include "runtime/fn.h"
 #include "runtime/selfhost.h"
 #include "runtime/gc.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/ic_hot.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
@@ -462,7 +463,17 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
 // read; a store of an old env or of undefined costs a range test each.
 void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
                           const InlineCache& probe, uint32_t keyIndex) {
-    latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
+    // While harvesting: a call that missed and latched nothing met a receiver
+    // the site's ways cannot hold (ic_harvest.h rtIcHarvestNoteUncached).
+    if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr) {
+        constexpr size_t kWays0 = BRONZE_ABI_METHOD_IC_EPOCH_WORD + 1;
+        uint64_t before[kWays0];
+        std::memcpy(before, icEntry, sizeof before);
+        latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
+        if (std::memcmp(before, icEntry, sizeof before) == 0) rtIcHarvestNoteUncached(icEntry);
+    } else {
+        latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
+    }
     rtNoteMethodIcEnvWords(icEntry);
     // The site's method row (bronze_abi_layout.h, "the METHOD ROWS"), which
     // generated code's way-0 guards read: way 0's guard words as they now are.

@@ -71,6 +71,17 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
 enum : uint8_t { kHarvestBirthNumber = 1, kHarvestBirthObject = 2 };
 void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds);
 
+// A property read, a property write or a method call reached the runtime with
+// a receiver no way of `site` can hold for the code a build on the harvest
+// claims (a guard there passes plain objects of one shape only): an Array
+// other than at an array-method way, a primitive, a function, a typed array,
+// a RegExp, a dictionary-mode object, or a method receiver nothing latched
+// for. Such a receiver never fills a way, so without this count the ways read
+// as everything the site met. Counted per site on this thread (a helper's
+// stack scratch site is not counted) and folded with the site's table into an
+// `other` row. Cold (a helper's miss path); called only while armed.
+void rtIcHarvestNoteUncached(const uint64_t* site);
+
 // Folds this thread's live instances, then writes every harvested module's
 // file. The number of files written.
 int rtIcHarvestWriteAll();

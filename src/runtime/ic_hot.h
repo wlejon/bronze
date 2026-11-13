@@ -17,6 +17,9 @@ void rtIcHotDropWithin(const void* begin, size_t size) noexcept;
 void rtIcHotClearThread() noexcept;
 // How many ranges this thread has (tests).
 size_t rtIcHotRangeCount() noexcept;
+// Whether `at` lies in a range this thread registered: a site of a module's
+// IC table, not a helper's stack scratch site.
+bool rtIcHotCovers(const void* at) noexcept;
 
 // After a write to a METHOD-CALL site's way 0 (rt_method_call.cpp's latches):
 // copy its guard words to the site's method row (bronze_abi_layout.h, "the

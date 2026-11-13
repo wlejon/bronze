@@ -23,7 +23,7 @@ using namespace bronze;
 namespace {
 
 const char* const kProfile =
-    "bronze-type-feedback 2\n"
+    "bronze-type-feedback 3\n"
     "fn\tVector3.add#00112233aabbccdd\t40\n"
     "site\t0\tentry\t40\t\n"
     "site\t1\tthis\t40\tobject=40\n"
@@ -41,16 +41,18 @@ const char* const kProfile =
 
 // An inline-cache harvest (docs/type-feedback.md, "Harvest").
 const char* const kHarvest =
-    "bronze-type-feedback 2\n"
+    "bronze-type-feedback 3\n"
     "harvest\t00112233aabbccdd\t9\n"
     "ic\t0\tproperty\t-\n"
     "way\t0\town\tVector3{x,y,z,w,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,aa,bb,cc,dd,ee,ff,gg,hh}\n"
+    "other\t0\t800392\n"
     "ic\t3\tproperty\tfull\n"
     "way\t3\tproto\tVec{}<Vec.prototype>\n"
     "way\t3\tabsent\tObject{a}\n"
     "ic\t8\tmethod\tmega\n"
     "way\t8\tdirect\tMesh{uuid,name}\t~1204@0badf00d\n"
     "way\t8\tnative\tarray\tnative:array\n"
+    "other\t8\t3\n"
     "sample\t0000002a\t7\n"
     "sample\tdeadbeef\t1500\n"
     "doubles\tMesh{uuid,name}\t1\n"
@@ -90,10 +92,13 @@ TEST_CASE("profile: parse and serialize round trip byte for byte") {
     CHECK(profile->serialize() == kProfile);
     CHECK(profile->functions().size() == 2);
     CHECK(profile->harvest() == nullptr);
-    // A version-1 file (a recorder that cut shapes at 32 keys) still reads.
-    std::string v1 = kProfile;
-    v1.replace(v1.find(" 2\n"), 3, " 1\n");
-    CHECK(spec::TypeProfile::parse(v1, &err).has_value());
+    // A version-1 file (a recorder that cut shapes at 32 keys) still reads,
+    // as does a version-2 one (a harvest without `other` rows).
+    for (const char* older : {" 1\n", " 2\n"}) {
+        std::string v = kProfile;
+        v.replace(v.find(" 3\n"), 3, older);
+        CHECK(spec::TypeProfile::parse(v, &err).has_value());
+    }
 }
 
 TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every key") {
@@ -112,6 +117,10 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
     CHECK(h->ics.at(8).method);
     CHECK(h->ics.at(8).mega);
     CHECK(h->ics.at(8).ways.front().callee == "~1204@0badf00d");
+    // The `other` rows: receivers no way could hold, counted.
+    CHECK(h->ics.at(0).uncached == 800392);
+    CHECK(h->ics.at(3).uncached == 0);
+    CHECK(h->ics.at(8).uncached == 3);
     REQUIRE(h->samples.size() == 2);
     CHECK(h->samples.at(0x2a) == 7);
     CHECK(h->samples.at(0xdeadbeef) == 1500);
@@ -124,7 +133,7 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
 
 TEST_CASE("profile: a malformed harvest is refused") {
     std::string err;
-    const std::string head = "bronze-type-feedback 2\n";
+    const std::string head = "bronze-type-feedback 3\n";
     // A row before the harvest row; a short digest; an index past the sites.
     CHECK_FALSE(spec::TypeProfile::parse(head + "ic\t0\tproperty\t-\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t0011\t4\n", &err));
@@ -139,6 +148,14 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nway\t1\town\tA{x}\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(
         head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\t-\nic\t1\tproperty\t-\n", &err));
+    // An `other` row for an ic not listed, of zero, without its count, or
+    // twice.
+    const std::string ic1 = head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\t-\nway\t1\town\tA{x}\n";
+    CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nother\t1\t70\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(ic1 + "other\t1\t0\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(ic1 + "other\t1\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(ic1 + "other\t1\t70\nother\t1\t70\n", &err));
+    CHECK(spec::TypeProfile::parse(ic1 + "other\t1\t70\n", &err));
     // A sample before the harvest row, a short hash, a hash twice.
     CHECK_FALSE(spec::TypeProfile::parse(head + "sample\t0000002a\t7\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nsample\t2a\t7\n", &err));
@@ -156,6 +173,40 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(h + "nonobject\tx\nnonobject\tx\n", &err));
     CHECK(spec::TypeProfile::parse(h + "doubles\tA{x,y}\t0,1\nmixed\tz\n", &err));
     CHECK(spec::TypeProfile::parse(h + "objects\tA{x,y}\t0\nnonobject\ty\n", &err));
+}
+
+TEST_CASE("feedback plan: a harvested read that met uncached receivers is not one shape's") {
+    il::Module mod = lowered("function f(o: any) { return o.fn; }\nf({ fn: 1 });\n");
+    uint32_t ic = UINT32_MAX;
+    for (const il::Function& fn : mod.functions) {
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op == il::Op::PropGet && mod.keyConstants[inst.keyIndex] == "fn") ic = inst.icIndex;
+            }
+        }
+    }
+    REQUIRE(ic != UINT32_MAX);
+    const auto plan = [&](uint64_t uncached) {
+        spec::Harvest h;
+        h.digest = mod.icLayoutDigest;
+        h.sites = mod.icSiteCount;
+        spec::HarvestSite site;
+        site.ways.push_back(spec::HarvestWay{"own", "EE{fn,context,once}", {}});
+        site.uncached = uncached;
+        h.ics.emplace(ic, std::move(site));
+        spec::TypeProfile profile;
+        profile.setHarvest(std::move(h));
+        return spec::planFeedback(mod, profile, mod.functions.size());
+    };
+    // The ways alone: the one shape is dominant.
+    const spec::FeedbackPlan alone = plan(0);
+    REQUIRE(alone.shapesByIc.count(ic) == 1);
+    CHECK(alone.shapesByIc.at(ic).dominant(spec::kDominantPercent) != nullptr);
+    // A few uncached receivers (a start-up path) leave it so; many do not.
+    CHECK(plan(spec::kHarvestUncachedMin - 1).shapesByIc.at(ic).dominant(spec::kDominantPercent) != nullptr);
+    const spec::FeedbackPlan mixed = plan(spec::kHarvestUncachedMin);
+    CHECK(mixed.shapesByIc.at(ic).dominant(spec::kDominantPercent) == nullptr);
+    CHECK(mixed.shapesByIc.at(ic).counts.at("*other*") * 2 >= mixed.shapesByIc.at(ic).total);
 }
 
 TEST_CASE("profile: queries by function key and ordinal") {

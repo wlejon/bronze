@@ -37,6 +37,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
@@ -113,6 +114,18 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                      bool strict) {
     recordPropCall("bronze_prop_set", keyIndex, icEntry);
     recordPropSetMiss(objBits, keyIndex, valBits, icEntry, strict);
+    // While harvesting: a receiver no write way can hold, which never fills
+    // one (ic_harvest.h rtIcHarvestNoteUncached): anything but a plain object
+    // with a shape-tree shape.
+    if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr) {
+        const Value recv(objBits);
+        const auto* hdr = recv.isObject() ? recv.asObject<HeapObjectHeader>() : nullptr;
+        const Shape* shape =
+            hdr != nullptr && hdr->flags == HeapKind::Plain ? reinterpret_cast<const ObjectHeader*>(hdr)->shape : nullptr;
+        if (shape == nullptr || shape->isDictionary()) {
+            rtIcHarvestNoteUncached(icEntry);
+        }
+    }
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
         // At entry, before anything can allocate: the receiver's shape and
         // whether this store ADDS the key (a transition) are both read here.

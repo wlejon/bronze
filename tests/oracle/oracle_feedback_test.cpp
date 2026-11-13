@@ -135,6 +135,7 @@ bronze::spec::TypeProfile adversarial(const bronze::spec::Harvest& real) {
         site.ways = {way};
         site.full = false;
         site.mega = false;
+        site.uncached = 0;
     }
     bronze::spec::TypeProfile profile;
     profile.setHarvest(std::move(out));

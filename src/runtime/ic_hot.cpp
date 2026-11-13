@@ -214,6 +214,15 @@ size_t rtMethodRowRangeCount() noexcept { return t_methodRanges.size(); }
 
 size_t rtIcHotRangeCount() noexcept { return t_ranges.size(); }
 
+bool rtIcHotCovers(const void* at) noexcept {
+    const auto p = reinterpret_cast<uintptr_t>(at);
+    if (p < t_minLo || p >= t_maxHi) return false;
+    for (const HotRange& r : t_ranges) {
+        if (p >= r.lo && p < r.hi) return true;
+    }
+    return false;
+}
+
 void rtIcHotFoldLiveRanges() {
     for (const HotRange& r : t_ranges) foldRange(r);
 }

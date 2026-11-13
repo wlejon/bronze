@@ -129,16 +129,17 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 2)
+## File format (version 3)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
 are comments. Version 2 differs from version 1 in two ways: a shape name lists
-every key, and a file may carry a harvest (below). The reader takes both
-versions.
+every key, and a file may carry a harvest (below). Version 3 adds the
+harvest's `other` row; a version 2 harvest has none, and a build on one claims
+as it did before the row existed. The reader takes all three versions.
 
 ```
-bronze-type-feedback 2
+bronze-type-feedback 3
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -378,6 +379,37 @@ Two flags record that a site met more receivers than its cache holds:
 Receivers are named as the recorder names them, with every key. Writing at
 exit reads only what was already folded and never walks the heap.
 
+**Receivers no way can hold.** A way holds a plain object's shape (or, for a
+read, the array-method sentinel). A receiver that is anything else never fills
+one: an Array read for a name that is not an array method, a primitive, a
+function, a typed array, a RegExp, a dictionary-mode object, or a method
+receiver the call latched nothing for. A site that met one plain object once
+and Arrays ever after would read as that one shape, and a claim's guard (which
+passes plain objects of the claimed shape only) would send the function to its
+resume twin on nearly every call, and to its generic entry for good
+(eventemitter3's `listeners.fn`, an `EE` with one listener and an Array with
+more). So while a harvest is armed, the read, write and method-call helpers
+count, per site, the calls whose receiver the site's ways did not come to hold
+(`rtIcHarvestNoteUncached`, `runtime/ic_harvest.h`): a read whose receiver is
+not a plain object a way names after the read (a read whose four ways are all
+in use is `full` already), a write whose receiver is not a plain object of a
+shape-tree shape, a method call that latched nothing. Only sites of a
+registered IC table count (not a helper's stack scratch site); the counts are
+thread-local and folded with the site's table. Inline-cache hits never reach
+the helpers, so a receiver the cache holds is never counted, and the run's
+shapes and caches are a plain build's. A site that met such receivers gets an
+`other <index> <count>` row after its ways (a site with no ways gets none:
+nothing is claimed there anyway). In `planHarvest` a count of at least
+`kHarvestUncachedMin` (64) makes the site one that met more than its ways
+hold, as `full` does: half its executions go to `*other*`, so it is neither
+claimed nor chained and keeps the plain build's inline cache. Fewer is a
+receiver met now and then (a start-up path), whose exits a twin absorbs.
+
+A read whose receiver expression names a class (`icFnRecv`,
+`Klass.defaultOptions`) is never claimed from a harvest: its ways name the
+class's statics box, the fn-recv arm reads it inline (so the helper sees it
+once), and a claim's guard would refuse the function receiver on every call.
+
 **Identity.** A harvest names sites by IC index, so it is valid only for the
 build whose indices it names. Lowering computes `il::icLayoutDigest` before
 the final threading pass. The digest is FNV-1a over:
@@ -411,7 +443,8 @@ executions go to `*other*`. No consumer claims `*other*`. This applies to:
 
 - a full read;
 - a write whose mega counter is non-zero;
-- a mega method site.
+- a mega method site;
+- a site whose `other` row counts at least 64 receivers no way could hold.
 
 A write cache holds the shape after a transition. A write way filled by the
 add that made its key (form `own`, the key the shape's last) may have met only
@@ -446,7 +479,8 @@ chain. A list related to a family the lowering proved is left out.
 - **`call.dynamic` callees.** There is no call cache, so there is no closure
   split.
 - **Sites that never fill a cache.** These are sites already answered by a
-  static claim, a layout fact or a typed path, and dictionary receivers.
+  static claim, a layout fact or a typed path. (Receivers a cache cannot
+  hold are counted, above, but only at sites some way filled.)
 - **Own-slot callees.** These appear as `*other*`.
 - **Callees without source.** The callee is named `*other*` in a build that
   registers no function source.
@@ -494,13 +528,14 @@ has the same property keys, and therefore the same digest, as the build the
 harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
 build used the profile.
 
-**Format.** A harvest is a version 2 file with these rows (any `fn` rows
+**Format.** A harvest is a version 3 file with these rows (any `fn` rows
 come first):
 
 ```
 harvest <16 hex digest>  <IC site count>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]
+other   <index>  <calls whose receiver no way could hold>
 sample  <8 hex name hash>  <count>
 doubles <receiver>  <key positions, ascending, comma-separated>
 mixed   <key>

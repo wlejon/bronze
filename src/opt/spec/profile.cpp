@@ -81,6 +81,7 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   harvest <16 hex digits> <sites>
 //   ic      <index> property|method <flags: -, or full / mega, comma-separated>
 //   way     <index> <form> <receiver> [<callee>, method sites]
+//   other   <index> <times a receiver no way could hold reached the runtime>
 //   sample  <8 hex digits: the function's name hash> <count>
 //   doubles <receiver> <ascending key positions, comma-separated>
 //   mixed   <key>
@@ -181,8 +182,17 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     }
     auto it = harvest->ics.find(ic);
     if (it == harvest->ics.end()) {
-        why = "a way row for an ic not yet listed";
+        why = "a " + std::string(f[0]) + " row for an ic not yet listed";
         return false;
+    }
+    if (f[0] == "other") {
+        uint64_t count = 0;
+        if (f.size() != 3 || !parseU64(f[2], count) || count == 0 || it->second.uncached != 0) {
+            why = "malformed other row";
+            return false;
+        }
+        it->second.uncached = count;
+        return true;
     }
     HarvestWay way;
     const bool method = it->second.method;
@@ -251,15 +261,15 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         if (!sawHeader) {
             const std::string want =
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
-            if (line != want && line != "bronze-type-feedback 1") {
+            if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
-        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "sample" || f[0] == "doubles" ||
-            f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" || f[0] == "sample" ||
+            f[0] == "doubles" || f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
         }
@@ -379,6 +389,9 @@ std::string TypeProfile::serialize() const {
                 out += "way\t" + std::to_string(index) + "\t" + way.form + "\t" + escapeName(way.receiver);
                 if (site.method) out += "\t" + escapeName(way.callee);
                 out += "\n";
+            }
+            if (site.uncached != 0) {
+                out += "other\t" + std::to_string(index) + "\t" + std::to_string(site.uncached) + "\n";
             }
         }
         for (const auto& [hash, count] : harvest_->samples) {

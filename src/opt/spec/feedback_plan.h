@@ -97,6 +97,13 @@ struct ReadResults {
 // counts as a site that ran past every threshold here, its shapes sharing
 // that count evenly.
 inline constexpr uint64_t kHarvestExecutions = 1024;
+// A harvested site whose `other` row (profile.h HarvestSite::uncached) counts
+// at least this many receivers no way could hold met more than its ways say,
+// as a full read does. Fewer is a site that met one such receiver now and
+// then (a start-up path), which a claim's guard sends to its resume twin as
+// rarely: a function leaves for its generic entry only after hundreds of
+// exits (docs/aot-specialization.md).
+inline constexpr uint64_t kHarvestUncachedMin = 64;
 
 struct FeedbackPlanStats {
     uint32_t profileFunctions = 0;

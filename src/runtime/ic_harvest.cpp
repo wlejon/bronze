@@ -51,6 +51,9 @@ struct Site {
     // The stub's table answered the site (a method site, or a property write
     // that overflowed its BRONZE_ABI_IC_SET_WAYS ways): more shapes than its ways.
     bool mega = false;
+    // rtIcHarvestNoteUncached: the times the site met a receiver no way of
+    // it could hold, written as the site's `other` row.
+    uint64_t uncached = 0;
     std::set<Fact> facts;
 };
 
@@ -98,6 +101,10 @@ struct State {
 std::mutex g_mu;
 State* g_state = nullptr;  // leaked on purpose: the atexit writer may run after statics die
 std::atomic<bool> g_armed{false};
+// rtIcHarvestNoteUncached's counts, by site address, until the thread's
+// instance holding the site is folded (a table is per thread and realm, and
+// folded on its thread).
+thread_local std::unordered_map<const uint64_t*, uint64_t> t_uncached;
 
 struct Identity {
     uint32_t flags = 0;
@@ -311,6 +318,9 @@ std::string textOf(const State& s, const Module& m) {
             }
             out += '\n';
         }
+        if (site.uncached != 0) {
+            out += "other\t" + std::to_string(index) + "\t" + std::to_string(site.uncached) + "\n";
+        }
     }
     for (const auto& [hash, count] : m.samples) {
         char h[9];
@@ -398,6 +408,10 @@ void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds) {
     if (!fresh) it->second &= kinds;
 }
 
+void rtIcHarvestNoteUncached(const uint64_t* site) {
+    if (site != nullptr && rtIcHotCovers(site)) ++t_uncached[site];
+}
+
 bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
     Identity id;
     if (!readIdentity(identity, id) || (id.flags & BRONZE_ABI_IC_IDENTITY_PROFILED) != 0) return false;
@@ -441,6 +455,18 @@ void rtIcHarvestNoteIdentity(const uint64_t* identity) {
 void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* identity,
                      const std::vector<uint64_t>* methodSites) {
     if (!rtIcHarvestArmed() || table == nullptr) return;
+    constexpr uint64_t kWords = BRONZE_ABI_IC_SITE_SIZE / 8;
+    // This table's uncached counts leave the thread's map whether or not the
+    // module is harvested: the table's memory may be another module's next.
+    std::vector<std::pair<uint64_t, uint64_t>> uncached;
+    for (auto it = t_uncached.begin(); it != t_uncached.end();) {
+        if (it->first < table || it->first >= table + siteCount * kWords) {
+            ++it;
+            continue;
+        }
+        uncached.emplace_back(static_cast<uint64_t>(it->first - table) / kWords, it->second);
+        it = t_uncached.erase(it);
+    }
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return;
     State& s = *g_state;
@@ -450,11 +476,18 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
     if (!readIdentity(identity, id) || id.sites != siteCount) return;
     Module* m = moduleOf(s, id.digest, id.sites);
     if (m == nullptr || m->path.empty()) return;
-    constexpr uint64_t kWords = BRONZE_ABI_IC_SITE_SIZE / 8;
+    const auto isMethod = [&](uint64_t i) {
+        return methodSites != nullptr && std::binary_search(methodSites->begin(), methodSites->end(), i);
+    };
+    for (const auto& [i, count] : uncached) {
+        Site& site = m->ics[static_cast<uint32_t>(i)];
+        site.method = isMethod(i);
+        site.uncached += count;
+        s.dirty = true;
+    }
     for (uint64_t i = 0; i < siteCount; ++i) {
         const uint64_t* words = table + i * kWords;
-        const bool method =
-            methodSites != nullptr && std::binary_search(methodSites->begin(), methodSites->end(), i);
+        const bool method = isMethod(i);
         if (words[0] == 0 && (method || words[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD] == 0)) {
             // Nothing latched at way 0; a read's later ways fill only after
             // way 0 (move to front), and a method's way 1 only by displacing

@@ -45,6 +45,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/iterator.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
@@ -352,7 +353,38 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
     return result;
 }
 
+// While harvesting: a read whose receiver the site's ways did not come to
+// hold (ic_harvest.h rtIcHarvestNoteUncached). Held means a plain object whose
+// shape a way names after the read (or a site whose four ways are in use, which
+// the harvest already marks `full`), or an Array without a named-property box
+// at a site whose way 0 is the array-method sentinel. The receiver is
+// classified before the read, which may run a getter that moves it.
+static uint64_t propGetHarvested(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    const Value recv(objBits);
+    const Shape* plainShape = nullptr;
+    bool bareArray = false;
+    if (recv.isObject()) {
+        const auto* hdr = recv.asObject<HeapObjectHeader>();
+        if (hdr->flags == HeapKind::Plain) {
+            const Shape* shape = reinterpret_cast<const ObjectHeader*>(hdr)->shape;
+            if (shape != nullptr && !shape->isDictionary()) plainShape = shape;
+        } else if (hdr->flags == HeapKind::Array) {
+            bareArray = !reinterpret_cast<const ArrayHeader*>(hdr)->properties.isObject();
+        }
+    }
+    const uint64_t result = propGetHelperBody(objBits, keyIndex, icEntry);
+    InlineCacheSite* site = rtAsCacheSite(icEntry);
+    const bool held = plainShape != nullptr
+                          ? site->find(plainShape) != nullptr || site->ways[BRONZE_ABI_IC_WAYS - 1].isRealShape()
+                          : bareArray && site->ways[0].isArrayMethod();
+    if (!held) rtIcHarvestNoteUncached(icEntry);
+    return result;
+}
+
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr && !g_shapeCensusEnabled) {
+        return propGetHarvested(objBits, keyIndex, icEntry);
+    }
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
         // Receiver identity is read BEFORE the body: the walk below can
         // allocate, and a collection would move the receiver out from under a

@@ -6,11 +6,18 @@
 // bits (`numberBits`).
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "il/il.h"
 
 namespace bronze::spec {
+
+// A shape name `<prototype>{k1,k2,...}` (runtime/type_feedback.cpp) split into
+// its keys, in slot order (feedback_apply.cpp).
+bool shapeKeys(const std::string& name, std::vector<std::string_view>& keys, bool& complete,
+               uint32_t* inlineSlots = nullptr);
 
 inline std::vector<uint8_t> observableValues(const il::Function& fn) {
     std::vector<il::Type> types(fn.valueCount, il::Type::Void);

@@ -83,6 +83,10 @@ struct HarvestSite {
     bool method = false;
     bool full = false;  // a read whose four ways were in use
     bool mega = false;  // the stub's table answered a write or a method call
+    // The `other` row: the times the site reached the runtime with a receiver
+    // no way could hold (an Array, a primitive, a dictionary, ...), which the
+    // ways therefore do not show (ic_harvest.h rtIcHarvestNoteUncached).
+    uint64_t uncached = 0;
     std::vector<HarvestWay> ways;
 };
 

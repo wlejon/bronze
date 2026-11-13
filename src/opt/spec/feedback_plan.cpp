@@ -112,7 +112,10 @@ bool lastKeyIs(const std::string& shape, const std::string& key) {
 //   - a read whose four ways were all in use (move to front: at least four
 //     shapes, the stub's table answering the rest);
 //   - a write whose way-0 misses the table answered (it keeps one way);
-//   - a method call whose stub's table answered.
+//   - a method call whose stub's table answered;
+//   - a site whose `other` row says it met, at least kHarvestUncachedMin
+//     times, a receiver no way could hold (an Array, a primitive, a
+//     dictionary), which a claim's guard would send to its resume twin.
 // So one receiver held and nothing more is a dominant shape (A, F), two to
 // three a chain (E), two at a method site poly receivers (B). A write way
 // filled by the add that made its key (form `own`, the key the shape's last)
@@ -164,22 +167,24 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
         const bool method = op == il::Op::MethodCall || op == il::Op::MethodCallSpread;
         if (method != site.method) continue;  // not what this index names here
         ++plan.stats.harvestSites;
+        const bool uncached = site.uncached >= kHarvestUncachedMin;
         if (method) {
             ++plan.stats.harvestMethod;
+            const bool more = site.mega || uncached;
             const uint64_t n = site.ways.size();
-            const uint64_t share = site.mega ? W / (2 * n) : W / n;
+            const uint64_t share = more ? W / (2 * n) : W / n;
             NameCounts& shapes = plan.methodShapesByIc[ic];
             NameCounts& callees = plan.methodsByIc[ic];
             for (const HarvestWay& way : site.ways) {
                 shapes.counts[way.receiver] += share;
                 callees.counts[way.callee] += share;
             }
-            if (site.mega) {
+            if (more) {
                 shapes.counts["*other*"] += W - share * n;
                 callees.counts["*other*"] += W - share * n;
             }
-            shapes.total += site.mega ? W : share * n;
-            callees.total += site.mega ? W : share * n;
+            shapes.total += more ? W : share * n;
+            callees.total += more ? W : share * n;
             continue;
         }
         ++plan.stats.harvestProperty;
@@ -195,7 +200,7 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             absent = absent || way.form == "absent";
             if (way.form == "store") stored.insert(way.receiver);
         }
-        const bool more = site.full || (write && site.mega);
+        const bool more = site.full || (write && site.mega) || uncached;
         const uint64_t n = receivers.size();
         if (site.ways.size() > n) plan.shapeVariantIcs.insert(ic);
         const uint64_t share = more ? W / (2 * n) : W / n;

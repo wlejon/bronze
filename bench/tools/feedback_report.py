@@ -21,8 +21,9 @@ import json
 import sys
 
 # Version 2 lists every key of a shape and may carry a harvest (ic rows,
-# docs/type-feedback.md "Harvest"), which has no counts to report.
-VERSIONS = ("bronze-type-feedback 1", "bronze-type-feedback 2")
+# docs/type-feedback.md "Harvest"), which has no counts to report; version 3
+# adds the harvest's `other` rows.
+VERSIONS = ("bronze-type-feedback 1", "bronze-type-feedback 2", "bronze-type-feedback 3")
 NUMBER_TAGS = {"f64", "i32"}
 
 
