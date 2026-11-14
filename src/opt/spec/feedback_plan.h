@@ -188,6 +188,7 @@ struct FeedbackApplyStats {
     uint32_t shapeRegrow = 0;      //    of them, cells that may latch an unfinished object (staticRegrow)
     uint32_t shapeFamily = 0;      // A: family claims
     uint32_t shapeRefused = 0;     //    a dominant shape the site cannot claim a slot of
+    uint32_t stampsWithdrawn = 0;  //    predicted identity claims on a site the run met several shapes at
     uint32_t numberHints = 0;      // C: numeric ops hinted
     uint32_t truthHints = 0;       // C: truthiness unboxes hinted with the kinds they saw
     uint32_t chainReads = 0;       // E: reads given an inline way chain (icChain)

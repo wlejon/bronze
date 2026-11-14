@@ -94,7 +94,41 @@ public:
     // A read whose receiver names a class (il.h `icFnRecv`) is not claimed:
     // its receiver is a function, whose statics box is the shape the harvest
     // names, and a claim's guard passes plain objects only.
+    // An identity claim made before the profile was read (lowering's from the
+    // constructor, lower_infer.cpp; the whole program's, wpo/stamp.cpp) on a
+    // site whose cache held
+    // several shapes with none dominant: the receivers alternate (a site
+    // whose shapes came one after another is a phase, and has one), so the
+    // one cell latches whichever came first and every other receiver misses
+    // it, asks to fill it, and is answered by the chain behind it. three.js's
+    // PropertyMixer is built with `_workIndex` for a quaternion and without
+    // for a vector, ten to one in a skinned scene, and its `apply` and
+    // `accumulate` read `this.valueSize` and `this.buffer` and store
+    // `this.cumulativeWeight` through such cells. The prediction goes, and
+    // the site is claimed below like one that never had it: by a family
+    // where the shapes share the slot, else left to its cache's ways.
+    void withdrawContradicted(il::Instruction& inst) {
+        if (inst.staticSlot == il::Instruction::kNoStaticSlot || inst.familyLo != il::Instruction::kNoFamily || inst.directTarget != il::Instruction::kNoDirectTarget ||
+            plan_.stampedIcs.count(inst.icIndex) != 0) {
+            return;
+        }
+        const auto it = plan_.shapesByIc.find(inst.icIndex);
+        if (it == plan_.shapesByIc.end() || it->second.dominant(kDominantPercent) != nullptr) return;
+        uint32_t shapes = 0;
+        for (const auto& [name, count] : it->second.counts) {
+            if (name == "*other*") return;
+            shapes += count != 0 ? 1 : 0;
+        }
+        if (shapes < 2) return;
+        inst.staticSlot = il::Instruction::kNoStaticSlot;
+        inst.staticSlotGuessed = false;
+        inst.staticCellIndex = 0;
+        inst.staticRegrow = false;
+        ++stats_.stampsWithdrawn;
+    }
+
     void claim(il::Instruction& inst, const std::vector<uint8_t>& observable) {
+        withdrawContradicted(inst);
         if (inst.staticSlot != il::Instruction::kNoStaticSlot || inst.directTarget != il::Instruction::kNoDirectTarget ||
             inst.icFnRecv || il::isDefineWrite(inst) || inst.operands.empty() ||
             inst.operands[0] >= observable.size() || observable[inst.operands[0]] == 0 ||

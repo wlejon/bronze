@@ -423,7 +423,8 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
     }
     out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + " (regrow " +
            n(stats.shapeRegrow) + "), family " + n(stats.shapeFamily) +
-           " (dominant shape without a claimable slot " + n(stats.shapeRefused) + "); profiled executions " +
+           " (dominant shape without a claimable slot " + n(stats.shapeRefused) + ", predictions withdrawn " +
+           n(stats.stampsWithdrawn) + "); profiled executions " +
            n(stats.shapeExecutions) + "\n";
     out += "feedback: B direct method targets " + n(stats.directMethods) + " (refused " + n(stats.methodRefused) +
            "; profiled executions " + n(stats.methodExecutions) + "), closure calls split " +

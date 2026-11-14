@@ -8,8 +8,8 @@
 // instructions for an add (a listener object's fields in a plain function
 // constructor, a field a setter adds), which is most of what reaches it.
 //
-// This is its two answers that call nothing but the barrier, from way 0
-// alone: the own data slot, and the add into an inline slot. Each test is a compare and a branch of its
+// This is its answers that call nothing but the barrier: the own data slot
+// of way 0 or way 1, and way 0's add into an inline slot. Each test is a compare and a branch of its
 // own against an immediate or a memory operand, as il_prop_get_fast.cpp's
 // are and for its reason, so the paths that answer use argument and scratch
 // registers only. Everything else goes to the full stub with the same
@@ -72,7 +72,9 @@ void build_prop_set_fast_stub(Function* fn) {
     BasicBlock* object = b.append_block(p + "_object");
     BasicBlock* way0 = b.append_block(p + "_way0");
     BasicBlock* add = b.append_block(p + "_add");
+    BasicBlock* way1 = b.append_block(p + "_way1");
     BasicBlock* own = b.append_block(p + "_own");
+    Value* word = b.add_block_param(own, Type::i64());
     BasicBlock* store = b.append_block(p + "_store");
     BasicBlock* barrier = b.append_block(p + "_barrier");
     Value* slot_addr = b.add_block_param(barrier, Type::i64());
@@ -86,7 +88,14 @@ void build_prop_set_fast_stub(Function* fn) {
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), way0, {}, slow, {obj});
     b.position_at_end(way0);
-    b.build_br_if(b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET)), own, add);
+    b.build_br_if(b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET)), own,
+                  {b.build_load(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET)}, way1, {});
+    // Way 1's own data slot: a site whose receivers come in two layouts (an
+    // object built with a field or without it) keeps the first it met in way
+    // 0, and every write to the other paid the full stub.
+    b.position_at_end(way1);
+    b.build_br_if(b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_ENTRY_SIZE + BRONZE_ABI_IC_SHAPE_OFFSET)),
+                  own, {b.build_load(Type::i64(), site, BRONZE_ABI_IC_ENTRY_SIZE + BRONZE_ABI_IC_SLOT_OFFSET)}, add, {});
 
     // The add: PropertyLoweringHelper::emit_transition_arm's tests, which
     // says what each is for. An unfilled entry (zero) and the array-method
@@ -120,9 +129,8 @@ void build_prop_set_fast_stub(Function* fn) {
         b.build_br_if(b.build_ugt(val, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), barrier, {at}, done, {});
     }
 
-    // An own data slot of way 0's shape: the slot word has no flag.
+    // An own data slot of the matched way's shape: the slot word has no flag.
     b.position_at_end(own);
-    Value* word = b.build_load(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET);
     b.build_br_if(b.build_eq(b.build_lshr(word, imm(b, 32)), imm(b, 0)), store, miss);
 
     b.position_at_end(store);
