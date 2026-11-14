@@ -200,7 +200,7 @@ void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uin
     recordHelperCall("bronze_static_layout_publish");
     if (censusFillsSuppressed()) return;
     if (cell == nullptr || *cell != 0 || triples == nullptr) return;
-    constexpr uint64_t kLayoutRetries = 4096, kLayoutUnbuilt = 1024;
+    constexpr uint64_t kLayoutRetries = 4096, kLayoutUnbuilt = 64;
     const auto refuse = [&](bool unbuilt = false) {
         thread_local std::unordered_map<const uint64_t*, uint64_t> tries;
         if ((tries[cell] += unbuilt ? 1 : kLayoutUnbuilt) >= kLayoutRetries * kLayoutUnbuilt) *cell = kRefused;

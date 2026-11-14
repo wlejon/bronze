@@ -498,7 +498,7 @@ speculated code for their generic entries (il_speculation.h, "FAILURE
 POLICY") and the ones that run after keep one compare. A site whose shapes
 alternate for good turns each time and stays a chain. The runtime weighs an
 unfinished receiver at a layout cell's publish (`static_shape.cpp`, fewer keys
-than the cell's count) a 1024th of a wrong one, since every object of the run
+than the cell's count) a 64th of a wrong one, since every object of the run
 may pass a member site before the first finished one does.
 
 Before any claim, `addProfiledFamilies` (`feedback_apply.cpp`) reads layout

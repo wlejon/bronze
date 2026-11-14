@@ -289,18 +289,24 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // read: doubles, floats, the 32-bit integers, the narrower ones.
     enum : uint32_t { kArmArray = 1, kArmView, kArmKeyed, kCellWords = 4, kArmF64 = 4, kArmF32, kArmInt32, kArmNarrow };
 
-    // ONE PAIR: where the harvested build only ever read a plain object's
-    // slot by a key here, the read is the cell's two compares and the slot,
-    // and everything else fills the cell and calls the stub, which answers
-    // any receiver and key. Not an exit: a second pair is a fill, and a site
-    // of many pairs reads through the table from the stub.
-    if (Value* cell = arm_exits(kArmArray) && arm_exits(kArmView) && !arm_exits(kArmKeyed) && elem_stubs_
-                           ? arm_cell(b, kCellWords)
-                           : nullptr) {
+    // ONE PAIR: where the harvested build read here and never indexed an
+    // Array or a view, the read is the cell's two compares and the slot (a
+    // plain object's own slot by a key), and everything else calls the stub,
+    // which answers any receiver and key, after a fill of the cell while the
+    // site has fills left. Not an exit: a second pair is a fill, and a site
+    // of many pairs, or of reads no pair stands for (a constant of the
+    // prototype by its name), reads through the table from the stub without
+    // the index tests it never passed. A site the harvested build never ran
+    // (its slow arm an exit, its key arm cold) stays the ladder's exit.
+    const bool ran = !arm_exits(kArmKeyed) || !slow_exits_;
+    if (Value* cell = arm_exits(kArmArray) && arm_exits(kArmView) && ran && elem_stubs_ ? arm_cell(b, kCellWords)
+                                                                                         : nullptr) {
         BasicBlock* bb_plain = b.append_block(prefix + "_pair");
         BasicBlock* bb_hit = b.append_block(prefix + "_pair_hit");
+        BasicBlock* bb_miss = b.append_block(prefix + "_pair_miss");
         BasicBlock* bb_fill = b.append_block(prefix + "_pair_fill");
         bb_fill->set_cold();
+        BasicBlock* bb_stub = b.append_block(prefix + "_pair_stub");
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
         Value* result = b.add_block_param(bb_merge, Type::i64());
 
@@ -309,7 +315,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         Value* ptr = nullptr;
         Value* is_obj = nullptr;
         object_pointer(b, obj, ptr, is_obj);
-        b.build_br_if(is_obj, bb_plain, bb_fill);
+        b.build_br_if(is_obj, bb_plain, bb_miss);
 
         b.position_at_end(bb_plain);
         const auto word = [&](int32_t at) {
@@ -318,13 +324,19 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         Value* plain = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow));
         Value* same_shape = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), word(0));
         Value* same_key = b.build_eq(key, word(8));
-        b.build_br_if(b.build_and(b.build_and(plain, same_shape), same_key), bb_hit, bb_fill);
+        b.build_br_if(b.build_and(b.build_and(plain, same_shape), same_key), bb_hit, bb_miss);
 
         b.position_at_end(bb_hit);
         b.build_br(bb_merge, {load_slot(b, ptr, word(16))});
 
+        b.position_at_end(bb_miss);
+        b.build_br_if(b.build_ult(word(24), b.build_iconst_i64(BRONZE_ABI_ELEM_CELL_LIMIT)), bb_fill, bb_stub);
+
         b.position_at_end(bb_fill);
         b.build_call("bronze_elem_cell_fill", Type::void_type(), {obj, key, cell});
+        b.build_br(bb_stub);
+
+        b.position_at_end(bb_stub);
         b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
 
         b.position_at_end(bb_merge);

@@ -500,13 +500,18 @@ extern "C" {
 //     its bits name the same characters for as long as the cell holds them,
 //     on every thread. A heap string's bits do not survive a collection, and
 //     this cell is not among what the collector sweeps.
-// A site that names many pairs stops filling after kElemCellFills, and reads
-// through the table as before.
+// A site stops asking at BRONZE_ABI_ELEM_CELL_LIMIT and reads through the
+// table from then on: after eight fills (it names many pairs), or after a
+// million calls that filled nothing (its reads are ones the cell cannot
+// stand for: a property of the prototype, a dictionary, a heap string), which
+// would otherwise call here at every read for good. A thousand was too few:
+// pixi_sprites' ten thousand sprites pass a site several times before the
+// pair it will read from then on can be filled.
 void bronze_elem_cell_fill(uint64_t objBits, uint64_t keyBits, uint64_t* cell) {
     using namespace bronze;
     using namespace bronze::runtime;
-    constexpr uint64_t kElemCellFills = 8;
-    if (cell == nullptr || cell[3] >= kElemCellFills) return;
+    if (cell == nullptr || cell[3] >= BRONZE_ABI_ELEM_CELL_LIMIT) return;
+    ++cell[3];
     const Value key(keyBits);
     const bool arena = key.isString() && key.asString<StringHeader>()->isArena();
     if (!arena && !key.isNumber()) return;
@@ -535,7 +540,7 @@ void bronze_elem_cell_fill(uint64_t objBits, uint64_t keyBits, uint64_t* cell) {
     cell[1] = keyBits;
     cell[2] = slotWord;
     cell[0] = reinterpret_cast<uint64_t>(shape);
-    ++cell[3];
+    cell[3] += BRONZE_ABI_ELEM_CELL_FILL - 1;
 }
 
 }  // extern "C"

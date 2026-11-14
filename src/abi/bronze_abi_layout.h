@@ -521,6 +521,12 @@
  * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
 #define BRONZE_ABI_ELEM_ENTRY_SIZE      56 /* sizeof(ElemCacheEntry) */
 #define BRONZE_ABI_ELEM_IC_OFFSET        0 /* ElemCacheEntry::ic (InlineCache) */
+/* A computed read site's pair cell (runtime/elem_ic.cpp bronze_elem_cell_fill):
+ * the site asks for fills while the cell's fourth word is below the limit; a
+ * fill adds BRONZE_ABI_ELEM_CELL_FILL to it (eight fills), a call that filled
+ * nothing adds 1. */
+#define BRONZE_ABI_ELEM_CELL_LIMIT       (8 << 17)
+#define BRONZE_ABI_ELEM_CELL_FILL        (1 << 17)
 #define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */
 #define BRONZE_ABI_ELEM_KEY_OFFSET      32 /* ElemCacheEntry::key (StringHeader*) */
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
