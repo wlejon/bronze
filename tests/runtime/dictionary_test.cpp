@@ -9,7 +9,10 @@
 
 #include <doctest/doctest.h>
 
+#include <random>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "runtime/dictionary.h"
@@ -162,6 +165,51 @@ TEST_CASE("a symbol key is found by identity, not by description") {
     CHECK(d.find(PropertyKey::forSymbol(b)) == nullptr);
     Rooted<Value> holder{Value::fromUndefined()};
     CHECK(d.find(probeKey(heap, holder, "s"))->slot == 1);
+}
+
+// Two different names whose content hashes are equal, found by search: the
+// pair a probe cannot tell apart by the hash its index cell carries.
+static std::pair<std::string, std::string> collidingNames(Heap& heap) {
+    std::unordered_map<uint32_t, std::string> seen;
+    Rooted<Value> holder{Value::fromUndefined()};
+    std::mt19937_64 rng{12345};
+    for (uint32_t i = 0; i < 1000000; ++i) {
+        // Random content past one hash word: a run of sequential short
+        // names multiplies out to hashes that never meet.
+        std::string s = "n" + std::to_string(rng()) + std::to_string(i);
+        holder.set(Value::fromString(StringHeader::createFromUTF8(heap, s.c_str())));
+        const uint32_t h = holder.get().asString<StringHeader>()->hash();
+        auto [it, fresh] = seen.emplace(h, s);
+        if (!fresh) return {it->second, s};
+    }
+    return {};
+}
+
+// An index cell carries its key's hash so a probe passes a different hash
+// without reading the entry; an EQUAL hash still has to compare the key, or
+// the second of two colliding names would answer for the first.
+TEST_CASE("names with one hash are told apart by content") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+    Dictionary d;
+
+    const auto [a, b] = collidingNames(heap);
+    REQUIRE_FALSE(a.empty());
+    d.add(arenaKey(arena, heap, "other"), d.allocateSlots(1), true, false);
+    d.add(arenaKey(arena, heap, a), d.allocateSlots(1), true, false);
+    Rooted<Value> holder{Value::fromUndefined()};
+    REQUIRE(d.find(probeKey(heap, holder, a)) != nullptr);
+    CHECK(d.find(probeKey(heap, holder, a))->slot == 1);
+    CHECK(d.find(probeKey(heap, holder, b)) == nullptr);
+
+    d.add(arenaKey(arena, heap, b), d.allocateSlots(1), true, false);
+    CHECK(d.find(probeKey(heap, holder, b))->slot == 2);
+    CHECK(d.remove(probeKey(heap, holder, a)));
+    CHECK(d.find(probeKey(heap, holder, a)) == nullptr);
+    REQUIRE(d.find(probeKey(heap, holder, b)) != nullptr);
+    CHECK(d.find(probeKey(heap, holder, b))->slot == 2);
+    CHECK(d.find(probeKey(heap, holder, "other"))->slot == 0);
 }
 
 // The crossing itself: the add that would mint the transition past the

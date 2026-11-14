@@ -206,7 +206,11 @@ bool isRegExp(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags;
 }
 
-std::shared_ptr<const regex::Pattern> programSharedOf(Value re) {
+// The cache's own handle on `re`'s program, recompiled into the cache if it was
+// evicted. Valid until the next insertion into the cache, which is a pattern's
+// compilation: a caller that holds the program across code that may compile one
+// (anything that can run user code) takes a copy of the handle instead.
+const std::shared_ptr<const regex::Pattern>& programSlotOf(Value re) {
     auto* header = re.asObject<RegExpHeader>();
     uint64_t id = static_cast<uint64_t>(header->programIndex.asNumber());
     uint32_t slot = static_cast<uint32_t>(id & 0xFFFF);
@@ -242,7 +246,9 @@ std::shared_ptr<const regex::Pattern> programSharedOf(Value re) {
     return cache.entry(newSlot).pattern;
 }
 
-const regex::Pattern& programOf(Value re) { return *programSharedOf(re); }
+std::shared_ptr<const regex::Pattern> programSharedOf(Value re) { return programSlotOf(re); }
+
+const regex::Pattern& programOf(Value re) { return *programSlotOf(re); }
 
 // 22.2.6.10 EscapeRegExpPattern. `source` is the text a LITERAL of this
 // pattern would carry, so it must be a pattern that can sit between two
@@ -695,8 +701,10 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
         from = lastIndexOf(re, ok);
         if (!ok) return Value::fromUndefined();
     }
-    std::shared_ptr<const regex::Pattern> patternPtr = programSharedOf(re.get());
-    const regex::Pattern& pattern = *patternPtr;
+    // Held by reference: from here to the end nothing runs user code or
+    // compiles a pattern (the match, the result array, the `lastIndex` store
+    // to an own data property), so nothing can evict it.
+    const regex::Pattern& pattern = programOf(re.get());
     const regex::Flags& flags = regex::patternFlags(pattern);
 
     ScratchMatchResult scratch;
@@ -737,8 +745,8 @@ bool rtRegExpExecTest(Rooted<Value>& re, Rooted<Value>& inputStr) {
         from = lastIndexOf(re, ok);
         if (!ok) return false;
     }
-    std::shared_ptr<const regex::Pattern> patternPtr = programSharedOf(re.get());
-    const regex::Pattern& pattern = *patternPtr;
+    // By reference, as rtRegExpExec holds it.
+    const regex::Pattern& pattern = programOf(re.get());
     const regex::Flags& flags = regex::patternFlags(pattern);
 
     ScratchMatchResult scratch;

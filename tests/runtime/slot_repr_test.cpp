@@ -8,13 +8,16 @@
 
 #include <doctest/doctest.h>
 
+#include <random>
 #include <string>
+#include <unordered_map>
 
 #include "runtime/array.h"
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/property_key.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/slot_repr.h"
@@ -553,4 +556,61 @@ TEST_CASE("an object slot survives a collection holding its object") {
     Rooted<Value> child{getProp(heap, obj, "child")};
     REQUIRE(child.get().isObject());
     CHECK(getProp(heap, child, "v").asNumber() == 42.0);
+}
+
+// The registry is sorted by content hash and searched by it: every name of a
+// few hundred registered out of order is found, a name is matched by content
+// whichever encoding carries it, a second representation joins the first
+// name's mask rather than a second entry, and a name sharing a registered
+// name's hash is not taken for it.
+TEST_CASE("the eligible names are found by hash and told apart by content") {
+    ReprScope scope;
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    for (uint32_t i = 300; i-- > 0;) pin(("f" + std::to_string(i)).c_str());
+    CHECK(runtime::slotReprEligibleCount() == 300);
+    for (uint32_t i = 0; i < 300; ++i) {
+        Rooted<Value> key = keyOf(heap, ("f" + std::to_string(i)).c_str());
+        CHECK(runtime::slotReprEligible(PropertyKey::fromValue(key.get())));
+    }
+    Rooted<Value> absent = keyOf(heap, "f300");
+    CHECK_FALSE(runtime::slotReprEligible(PropertyKey::fromValue(absent.get())));
+
+    const uint16_t wide[] = {'f', '1', '7'};
+    Rooted<Value> utf16{Value::fromString(StringHeader::createUTF16(heap, wide, 3))};
+    CHECK(runtime::slotReprEligible(PropertyKey::fromValue(utf16.get())));
+
+    Rooted<Value> f5 = keyOf(heap, "f5");
+    CHECK_FALSE(runtime::slotReprEligible(PropertyKey::fromValue(f5.get()), SlotRepr::Object));
+    pin("f5", SlotRepr::Object);
+    CHECK(runtime::slotReprEligibleCount() == 300);
+    CHECK(runtime::slotReprEligible(PropertyKey::fromValue(f5.get()), SlotRepr::Object));
+    CHECK(runtime::slotReprEligible(PropertyKey::fromValue(f5.get()), SlotRepr::Double));
+
+    // Two names with one hash, found by search.
+    std::unordered_map<uint32_t, std::string> seen;
+    std::string a, b;
+    Rooted<Value> probe{Value::fromUndefined()};
+    std::mt19937_64 rng{12345};
+    for (uint32_t i = 0; i < 1000000 && a.empty(); ++i) {
+        // Random content past one hash word: a run of sequential short
+        // names multiplies out to hashes that never meet.
+        std::string s = "c" + std::to_string(rng()) + std::to_string(i);
+        probe.set(Value::fromString(StringHeader::createFromUTF8(heap, s.c_str())));
+        auto [it, fresh] = seen.emplace(probe.get().asString<StringHeader>()->hash(), s);
+        if (!fresh) {
+            a = it->second;
+            b = s;
+        }
+    }
+    REQUIRE_FALSE(a.empty());
+    pin(a.c_str());
+    Rooted<Value> ka = keyOf(heap, a.c_str());
+    Rooted<Value> kb = keyOf(heap, b.c_str());
+    CHECK(runtime::slotReprEligible(PropertyKey::fromValue(ka.get())));
+    CHECK_FALSE(runtime::slotReprEligible(PropertyKey::fromValue(kb.get())));
+    pin(b.c_str(), SlotRepr::Object);
+    CHECK(runtime::slotReprEligible(PropertyKey::fromValue(kb.get()), SlotRepr::Object));
+    CHECK_FALSE(runtime::slotReprEligible(PropertyKey::fromValue(kb.get()), SlotRepr::Double));
+    CHECK_FALSE(runtime::slotReprEligible(PropertyKey::fromValue(ka.get()), SlotRepr::Object));
 }

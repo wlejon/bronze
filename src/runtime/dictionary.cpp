@@ -55,11 +55,16 @@ uint32_t capacityFor(uint32_t live) noexcept {
 
 const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
     if (!name.valid() || index_.empty()) return nullptr;
+    const uint32_t hash = hashKey(name);
     const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
-    for (uint32_t i = hashKey(name) & mask;; i = (i + 1) & mask) {
-        const uint32_t cell = index_[i];
+    for (uint32_t i = hash & mask;; i = (i + 1) & mask) {
+        const uint64_t cell = index_[i];
         if (cell == 0) return nullptr;
-        const DictEntry& e = entries[cell - 1];
+        // The cell's hash settles every other key in the chain without
+        // reading its entry or its string, each a cache miss in a map of
+        // thousands; only an equal hash pays for the compare.
+        if (static_cast<uint32_t>(cell >> 32) != hash) continue;
+        const DictEntry& e = entries[static_cast<uint32_t>(cell) - 1];
         if (e.live() && e.key.matches(name)) return &e;
     }
 }
@@ -72,7 +77,7 @@ void Dictionary::insertIndex(uint32_t entryPos, uint32_t hash) noexcept {
     const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
     uint32_t i = hash & mask;
     while (index_[i] != 0) i = (i + 1) & mask;
-    index_[i] = entryPos + 1;
+    index_[i] = (static_cast<uint64_t>(hash) << 32) | (entryPos + 1);
     ++used_;
 }
 
@@ -81,7 +86,7 @@ void Dictionary::reindex() {
     for (const DictEntry& e : entries) {
         if (e.live()) ++live_;
     }
-    index_.assign(capacityFor(live_), 0u);
+    index_.assign(capacityFor(live_), uint64_t{0});
     used_ = 0;
     for (uint32_t pos = 0; pos < entries.size(); ++pos) {
         if (entries[pos].live()) insertIndex(pos, hashKey(entries[pos].key));

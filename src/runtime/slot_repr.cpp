@@ -26,11 +26,10 @@ bool envIsOne(const char* name) {
     return v != nullptr && std::strcmp(v, "1") == 0;
 }
 
-// The eligible names, arena-interned and therefore immortal. A vector and a
-// linear `matches` scan rather than a hash set: the list is the pinned fields
-// of a program's math classes (seventeen, for three.js; none for most
-// programs), and content-matching an interned key is a pointer compare in the
-// common case.
+// The eligible names, arena-interned and therefore immortal, sorted by their
+// content hash: a lookup is a binary search for the key's hash and a content
+// compare of the names that share it. A harvest-fed build pins hundreds of
+// names, and a linear scan of them ran on every property a store creates.
 //
 // LEAKED, like the shape census's site table and for the same reason: the
 // report runs from `std::atexit`, and a function-local static constructed after
@@ -49,9 +48,12 @@ std::mutex& eligibleNamesMutex() {
 // A name and the representations it may be born in, as a mask of
 // `1 << SlotRepr`.
 struct EligibleName {
+    uint32_t hash;
     StringHeader* name;
     uint8_t reprs;
 };
+
+bool hashBelow(const EligibleName& e, uint32_t hash) noexcept { return e.hash < hash; }
 using EligibleNames = std::vector<EligibleName>;
 std::atomic<const EligibleNames*> g_eligibleNames{nullptr};
 
@@ -142,21 +144,26 @@ NonMovingArena& slotReprArena() {
 void slotReprRegisterName(StringHeader* name, SlotRepr repr) {
     if (name == nullptr || repr == SlotRepr::Boxed) return;
     const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(repr));
-    const PropertyKey incoming = PropertyKey::forString(name);
+    const uint32_t hash = name->hash();
     std::lock_guard<std::mutex> lock(eligibleNamesMutex());
     const EligibleNames* current = g_eligibleNames.load(std::memory_order_acquire);
     auto* next = current != nullptr ? new EligibleNames(*current) : new EligibleNames();
-    for (EligibleName& existing : *next) {
-        if (!PropertyKey::forString(existing.name).matches(incoming)) continue;
-        if ((existing.reprs & bit) != 0) {
+    auto at = std::lower_bound(next->begin(), next->end(), hash, hashBelow);
+    for (auto it = at; it != next->end() && it->hash == hash; ++it) {
+        if (!it->name->equals(*name)) continue;
+        if ((it->reprs & bit) != 0) {
             delete next;
             return;
         }
-        existing.reprs |= bit;
+        it->reprs |= bit;
         g_eligibleNames.store(next, std::memory_order_release);
         return;
     }
-    next->push_back({StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name)), bit});
+    StringHeader* kept = StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name));
+    // Cached now, under the lock: a reader on another thread compares the
+    // shared copy and must not be the one to write its hash word.
+    kept->hash();
+    next->insert(at, EligibleName{hash, kept, bit});
     g_eligibleNames.store(next, std::memory_order_release);
 }
 
@@ -167,10 +174,13 @@ uint32_t slotReprEligibleCount() noexcept {
 
 bool slotReprEligible(PropertyKey key, SlotRepr repr) noexcept {
     const EligibleNames* names = g_eligibleNames.load(std::memory_order_acquire);
-    if (names == nullptr || !key.valid() || key.isSymbol()) return false;
+    if (names == nullptr || names->empty() || !key.valid() || key.isSymbol()) return false;
+    const StringHeader* s = key.string();
+    const uint32_t hash = s->hash();
     const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(repr));
-    for (const EligibleName& e : *names) {
-        if (PropertyKey::forString(e.name).matches(key)) return (e.reprs & bit) != 0;
+    for (auto it = std::lower_bound(names->begin(), names->end(), hash, hashBelow);
+         it != names->end() && it->hash == hash; ++it) {
+        if (it->name == s || it->name->equals(*s)) return (it->reprs & bit) != 0;
     }
     return false;
 }

@@ -348,6 +348,38 @@ TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
     CHECK(rtRegExpCacheSize() <= 512);
 }
 
+// exec and test hold the program by reference into the cache rather than by a
+// shared handle: one evicted before the call is recompiled into the cache and
+// read from there, and a global pattern's cursor still advances through it.
+TEST_CASE("an evicted program is recompiled for test and for a global exec") {
+    ShadowStackFrame frame;
+    Rooted<Value> plain{makeRegExp("ev(i)cted", "")};
+    Rooted<Value> global{makeRegExp("e", "g")};
+    for (int i = 0; i < 600; ++i) {
+        std::string pattern = "filler_" + std::to_string(i);
+        Rooted<Value> filler{makeRegExp(pattern.c_str(), "")};
+    }
+    Rooted<Value> hit{rtMakeString("an evicted one")};
+    Rooted<Value> miss{rtMakeString("an evacuated one")};
+    CHECK(rtRegExpExecTest(plain, hit));
+    CHECK_FALSE(rtRegExpExecTest(plain, miss));
+    Rooted<Value> match{rtRegExpExec(plain, hit)};
+    CHECK(elementText(match.get(), 1) == "i");
+
+    for (int i = 600; i < 1200; ++i) {
+        std::string pattern = "filler_" + std::to_string(i);
+        Rooted<Value> filler{makeRegExp(pattern.c_str(), "")};
+    }
+    Rooted<Value> input{rtMakeString("xexe")};
+    Rooted<Value> first{rtRegExpExec(global, input)};
+    CHECK(namedText(first.get(), "index") == "1");
+    CHECK(lastIndexOf(global) == 2.0);
+    CHECK(rtRegExpExecTest(global, input));
+    CHECK(lastIndexOf(global) == 4.0);
+    CHECK_FALSE(rtRegExpExecTest(global, input));
+    CHECK(lastIndexOf(global) == 0.0);
+}
+
 TEST_CASE("RegExp symbols throw catchable RangeError on ReDoS / execution limit exceeded") {
     ShadowStackFrame frame;
 
