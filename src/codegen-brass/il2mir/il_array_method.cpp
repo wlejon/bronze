@@ -99,9 +99,9 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     }
 
     b.position_at_end(bb_arr);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* head = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* props = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     // The word is `undefined` until the array is given its box (array.cpp).
     Value* no_props = b.build_eq(props, iconst(b, kUndefinedTag));
     if (which == ArrayInline::Sort) {
@@ -131,7 +131,7 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     // length.
     Value* hazard = lowering->prop_lowering().index_hazard_word(b);
     if (which == ArrayInline::Push) {
-        Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+        Value* capacity = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
         pos = b.build_add(head, length);
         Value* last_pos = k == 1 ? pos : b.build_add(pos, iconst(b, k - 1));
         b.build_br_if(b.build_and(no_props, b.build_ult(b.build_or(last_pos, hazard), capacity)), bb_fast, bb_slow);
@@ -140,7 +140,7 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     }
 
     b.position_at_end(bb_fast);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    Value* block = b.build_and(array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
     if (which == ArrayInline::Push) {
         // Every slot past `length` up to `capacity` is hole-filled, so all k
         // stores append into holes and nothing is overwritten.
@@ -150,7 +150,7 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
                              kBoxedElementAliasClass);
         }
         Value* new_len = b.build_add(length, iconst(b, k));
-        b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(new_len));
+        array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(new_len));
         Value* boxed_len = box_count(b, new_len);
         std::vector<size_t> unproven;
         for (size_t j = 0; j < k; ++j) {
@@ -205,15 +205,15 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
             b.build_br(bb_merge, {boxed_len});
         }
     } else {
-        Value* first = b.build_load_indexed(Type::i64(), block, head, 8, static_cast<int32_t>(kBronzeHdrBytes));
+        Value* first = with_alias_class(b.build_load_indexed(Type::i64(), block, head, 8, static_cast<int32_t>(kBronzeHdrBytes)), kBoxedElementAliasClass);
         // A hole stores no reference, so it needs no barrier.
         b.build_store_indexed(Type::i64(), block, head, 8, static_cast<int32_t>(kBronzeHdrBytes),
                               iconst(b, BRONZE_ABI_HOLE_BITS));
         Value* new_len = b.build_sub(length, iconst(b, 1));
         Value* empty = b.build_eq(new_len, iconst(b, 0));
         Value* new_head = b.build_select(empty, iconst(b, 0), b.build_add(head, iconst(b, 1)));
-        b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(new_len));
-        b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET, b.build_trunc_i32(new_head));
+        array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(new_len));
+        array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET, b.build_trunc_i32(new_head));
         Value* is_hole = b.build_eq(first, iconst(b, BRONZE_ABI_HOLE_BITS));
         b.build_br(bb_merge, {b.build_select(is_hole, iconst(b, kUndefinedTag), first)});
     }

@@ -36,6 +36,9 @@ struct SectionInputs {
     size_t globalCacheCount;
     // The method-call inline-cache site numbers, ascending.
     const std::vector<uint32_t>& methodIcSites;
+    // The slow sites lowering armed with a counter (il2mir::TranslatorOptions
+    // `slow_armed`), or null when it counted none.
+    const std::vector<uint64_t>* slowArmed = nullptr;
 };
 
 // Appends the bronze-owned sections to `obj`, in place:

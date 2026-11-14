@@ -382,6 +382,10 @@ void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* ob
 Value* boxed_elem_key(Builder& b, Value* index) {
     if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
     if (index->type() == Type::f64()) return box_f64_bits(b, index);
+    // A Number boxed earlier is boxed again here, from its double: where the
+    // call is behind a twin exit (il_speculation.h), the exit's state then
+    // holds the double the fast path has anyway, not a box made only for it.
+    if (Value* src = boxed_f64_source(index)) return box_f64_bits(b, src);
     return index;
 }
 

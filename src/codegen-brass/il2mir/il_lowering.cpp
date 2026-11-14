@@ -933,6 +933,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
             const MirMark mark = mir_mark(b, *fn);
+            // The instruction's slow site; a run with a slow arm names its
+            // own (set_run_slow_site).
+            set_slow_site_of(blk_ast.instructions[inst_idx]);
             // A static run carries the shape memo across its join itself; the
             // other runs' slow copies call helpers, so it is forgotten there.
             const bool other_run =

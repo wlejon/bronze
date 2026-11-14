@@ -394,6 +394,18 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     if (options.twin_exits) {
         options.missed_claim_ics = module.missedClaimIcs;
         options.mixed_ics = module.mixedIcs;
+        options.slow_cold = module.slowCold;
+    }
+    options.slow_site_count = module.slowSiteCount;
+    // An image whose caches a harvest may read counts its slow arms too: one
+    // built on no profile, in an object (an in-process tier has no harvest).
+    // Which sites it counts goes into the image beside the counters
+    // (buildObjectFile).
+    options.count_slow_sites = optimize && !module.feedbackApplied && !specFeedback_;
+    slowArmed_.reset();
+    if (options.count_slow_sites && module.slowSiteCount != 0) {
+        slowArmed_ = std::make_shared<std::vector<uint64_t>>((module.slowSiteCount + 63) / 64, 0);
+        options.slow_armed = slowArmed_;
     }
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
@@ -545,7 +557,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // tables, the descriptors and pc tables, the data cells and the import
     // table (brass_backend_sections.cpp).
     codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
-                                         globalCacheCount, methodIcSites};
+                                         globalCacheCount, methodIcSites, slowArmed_.get()};
     codegen::translateDebugLocations(obj, module, uniqueNames, entrySymbol_);
     codegen::emitBronzeSections(obj, target, sectionInputs, timer);
     codegen::emitNativeDebugSections(obj, module, uniqueNames, entrySymbol_, emitDebugInfo_);

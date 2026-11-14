@@ -100,8 +100,19 @@ std::vector<std::string> feedbackFunctionKeys(const Module& module);
 // the first prop.get / prop.set / method.call carrying it — and the site
 // count. A harvest is a table indexed by IC number, so it says something about
 // a build only when that build numbers its sites the same way over the same
-// text; a different digest is a stale harvest, ignored.
+// text; a different digest is a stale harvest, ignored. The slow-site count
+// (below) is mixed in too.
 uint64_t icLayoutDigest(const Module& module);
+
+// SLOW SITES (docs/type-feedback.md, "Slow paths"): hands every instruction
+// whose lowering has an inline fast path with a generic fallback (an element
+// read or write, a named or indexed read or write and the runs of them, a
+// strict compare, a checked unbox) the next index in
+// `slowSiteCount`, in function, block and instruction order. Run first thing
+// in the final passes, on the module every build of the program starts them
+// from, so a harvest's counts name the same instructions in the build that
+// reads it; the passes after it copy an instruction with its index.
+void numberSlowSites(Module& module);
 
 // What a function's descriptor carries as `name_hash` (bronze_abi.h), and
 // what a harvest's samples name a function by: FNV-1a (32-bit) of its IL

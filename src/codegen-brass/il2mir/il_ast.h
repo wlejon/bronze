@@ -253,6 +253,9 @@ struct BronzeInstruction {
     static constexpr uint32_t kNoIcIndex = UINT32_MAX;
     uint32_t static_slot = kNoStaticSlot;
     uint32_t ic_index = kNoIcIndex;
+    // il.h `slowSite`: the instruction's slow-site counter, or kNoSlowSite.
+    static constexpr uint32_t kNoSlowSite = UINT32_MAX;
+    uint32_t slow_site = kNoSlowSite;
     bool is_mono = false;
     bool is_fn_recv = false;
     // A read whose receiver inference typed by a class SOMEBODY EXTENDS (`this`

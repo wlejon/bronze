@@ -572,7 +572,8 @@ bool lower_ops_instruction(
                     res_val = lit1 ? lower_strict_eq_string_literal(b, op0, op1)
                                    : lower_strict_eq_string_literal(b, op1, op0);
                 } else {
-                    res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once(), hint);
+                    res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once(), hint,
+                                                      &lowering->prop_lowering());
                 }
             }
             if (lowering) lowering->note_boolean(res_val);

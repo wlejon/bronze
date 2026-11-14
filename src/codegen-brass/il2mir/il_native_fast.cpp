@@ -108,7 +108,7 @@ void array_guard(Builder& b, Value* recv, BasicBlock* hit, BasicBlock* miss, con
     Value* base = b.build_select(is_obj, ptr, tls_block(b));
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_arr, miss);
     b.position_at_end(bb_arr);
-    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    Value* props = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     b.build_br_if(b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits)), hit, miss);
 }
 

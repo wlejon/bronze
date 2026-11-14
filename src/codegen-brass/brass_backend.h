@@ -153,6 +153,10 @@ private:
     std::vector<std::string>* emittedPathsOut_ = nullptr;
     std::shared_ptr<brass::SpecFeedback> specFeedback_;
     std::shared_ptr<const il2mir::SpecProfile> specProfile_;
+    // The slow sites the last buildMirModule's lowering armed with a counter
+    // (il2mir::TranslatorOptions `slow_armed`), for buildObjectFile to lay out
+    // before the counters; null when it counted none.
+    std::shared_ptr<std::vector<uint64_t>> slowArmed_;
 };
 
 }  // namespace bronze

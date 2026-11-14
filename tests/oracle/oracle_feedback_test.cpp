@@ -109,7 +109,7 @@ bronze::spec::TypeProfile adversarial(const bronze::spec::TypeProfile& real) {
 
 // The harvest made adversarial: every site holds one way, so it reads as
 // monomorphic with every threshold met; its receiver's keys are rotated, and
-// a method site's callee is another site's.
+// a method site's callee is another site's; and no slow arm ran.
 bronze::spec::TypeProfile adversarial(const bronze::spec::Harvest& real) {
     std::set<std::string> calleeSet;
     for (const auto& [index, site] : real.ics) {
@@ -124,6 +124,9 @@ bronze::spec::TypeProfile adversarial(const bronze::spec::Harvest& real) {
         return it == callees.end() ? callees.front() : *it;
     };
     bronze::spec::Harvest out = real;
+    // No slow arm ran, so every armed one of a twinned function is an exit to
+    // its twin (il_speculation.h, "SLOW ARMS").
+    out.slow.clear();
     for (auto& [index, site] : out.ics) {
         if (site.ways.empty()) continue;
         bronze::spec::HarvestWay way = site.ways.front();

@@ -57,6 +57,17 @@ constexpr uint8_t kShapeWordAliasClass = 5;
 // receiver's shape, the cell and the stamp again, and the second guard of a
 // claim on one receiver is the first one's condition.
 constexpr uint8_t kRuntimeWordAliasClass = 6;
+// An Array's header words: length, capacity, head offset, the elements
+// block's pointer, the properties word and the numbers-only bits
+// (BRONZE_ABI_ARRAY_*_OFFSET). Compiled code writes length, head and bits
+// (an append, a push, a shift, a non-Number store), always with this class;
+// the rest only the runtime moves (a call) or an allocation initializes
+// (class 0). So an element store, a slot store or a transition between two
+// reads of one array's length or block leaves the second read the first's
+// value, and a loop whose only stores are of those classes reads them once.
+constexpr uint8_t kArrayHeaderAliasClass = 7;
+// A slow site's counter (il.h `slowSite`): written by its slow arm only.
+constexpr uint8_t kSlowCountAliasClass = 8;
 
 // Marks the access `v` (a load's result) or `inst` (a store) with `cls`.
 inline brass::Value* with_alias_class(brass::Value* v, uint8_t cls) {
@@ -66,6 +77,34 @@ inline brass::Value* with_alias_class(brass::Value* v, uint8_t cls) {
 inline brass::Instruction* with_alias_class(brass::Instruction* inst, uint8_t cls) {
     inst->set_alias_class(cls);
     return inst;
+}
+// A load or store of an Array header word (kArrayHeaderAliasClass).
+inline brass::Value* array_header_load(brass::Builder& b, brass::Type type, brass::Value* ptr, int32_t offset) {
+    return with_alias_class(b.build_load(type, ptr, offset), kArrayHeaderAliasClass);
+}
+inline void array_header_store(brass::Builder& b, brass::Type type, brass::Value* ptr, int32_t offset,
+                               brass::Value* value) {
+    with_alias_class(b.build_store(type, ptr, offset, value), kArrayHeaderAliasClass);
+}
+
+// An Array's elements block (its address) and head offset: element i is the
+// word at block + 8 * (head + i) + kBronzeHdrBytes. A read takes them with
+// the length before its bounds test, so in a loop that holds the array brass
+// hoists all three (it moves no load past a test of the load's object).
+struct ArrayElements {
+    brass::Value* block = nullptr;
+    brass::Value* head = nullptr;
+};
+inline ArrayElements array_elements(brass::Builder& b, brass::Value* ptr) {
+    brass::Value* block = b.build_and(array_header_load(b, brass::Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET),
+                                      b.build_iconst_i64(0x0000FFFFFFFFFFFFLL));
+    return {block, b.build_zext_i64(array_header_load(b, brass::Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET))};
+}
+// Element `idx` of an Array (array_elements), a boxed value.
+inline brass::Value* array_element_load(brass::Builder& b, const ArrayElements& e, brass::Value* idx) {
+    return with_alias_class(b.build_load_indexed(brass::Type::i64(), e.block, b.build_add(idx, e.head), 8,
+                                                 static_cast<int32_t>(BRONZE_ABI_HDR_BYTES)),
+                            kBoxedElementAliasClass);
 }
 
 // The thread-local block, as pinned-register code reads it.
@@ -102,6 +141,11 @@ constexpr int64_t ic_static_cells_offset(uint64_t site_count, uint64_t method_si
     const uint64_t rows = method_sites != 0 ? method_sites : 1;
     const uint64_t end = static_cast<uint64_t>(ic_method_rows_offset(site_count)) + rows * BRONZE_ABI_METHOD_ROW_SIZE;
     return static_cast<int64_t>((end + 7) & ~uint64_t{7});
+}
+// Slow site `index`'s counter, relative to the IC table: the module's
+// `count` counters end where the table starts (brass_backend_sections.cpp).
+constexpr int64_t ic_slow_count_offset(uint32_t index, uint32_t count) {
+    return -8 * static_cast<int64_t>(count - index);
 }
 constexpr int64_t ic_family_base_offset(uint64_t site_count, uint64_t method_sites, uint64_t static_sites) {
     const uint64_t cells = static_sites != 0 ? static_sites : 1;

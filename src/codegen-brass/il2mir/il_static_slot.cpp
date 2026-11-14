@@ -199,11 +199,12 @@ Value* PropertyLoweringHelper::keyed_shape_flat(Builder& b, Value* obj) {
     return b.build_select(plain, shape, not_plain_shape(b));
 }
 
-void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits) {
+void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                                         const std::vector<Value*>& fast_args) {
     if (spec_) {
-        spec_->site_branch(b, hit, fast, slow, exits);
+        spec_->site_branch(b, hit, fast, slow, exits, fast_args);
     } else {
-        b.build_br_if(hit, fast, slow);
+        b.build_br_if(hit, fast, fast_args, slow, {});
     }
 }
 

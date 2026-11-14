@@ -96,7 +96,7 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
         ptr = object_address(b, obj);
         b.build_br(bb_arr);
         b.position_at_end(bb_arr);
-        len = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+        len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     } else {
         Value* is_obj = nullptr;
         object_payload(b, obj, ptr, is_obj);
@@ -107,10 +107,10 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
         b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
 
         b.position_at_end(bb_arr);
-        len = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+        len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
         in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
     }
-    Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+    Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
     Value* has_bit = b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
                                 b.build_iconst_i32(0));
     b.build_br_if(proven_dense ? has_bit : b.build_and(in_bounds, has_bit), bb_merge, {b.build_iconst_i32(1)},
@@ -134,8 +134,8 @@ Value* PropertyLoweringHelper::lower_is_number_array(Builder& b, Value* obj, uin
 
 void PropertyLoweringHelper::forget_numbers(Builder& b, Value* obj) {
     Value* ptr = object_address(b, obj);
-    Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
-    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
+    Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                   b.build_and(bits, b.build_iconst_i32(~static_cast<int32_t>(BRONZE_ABI_ARRAY_BIT_NUMBERS))));
 }
 
@@ -144,8 +144,8 @@ void PropertyLoweringHelper::forget_numbers_unless_number(Builder& b, Value* obj
     Value* not_num = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     Value* mask = b.build_select(not_num, b.build_iconst_i32(~static_cast<int32_t>(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
                                  b.build_iconst_i32(-1));
-    Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
-    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, b.build_and(bits, mask));
+    Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, b.build_and(bits, mask));
 }
 
 // THE HOLE RULE. A hole is no own element, so its read continues up the chain
@@ -196,14 +196,25 @@ void PropertyLoweringHelper::finish_hole_read(Builder& b, Value* elem, BasicBloc
     BasicBlock* bb_hole = append_block_keeping_position(b, prefix + "_hole_cold");
     Value* is_hole = b.build_eq(elem, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
     b.build_br_if(is_hole, bb_hole, {}, done, {elem});
+    // A hole while no prototype holds an index is `undefined`; else the slow
+    // arm (a twin exit where it leaves, which a branch with arguments to
+    // `done` cannot be, so the undefined goes through a block of its own).
     b.position_at_end(bb_hole);
-    b.build_br_if(index_hazard_clear(b), done, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))}, slow, {});
+    Value* undef = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
+    if (!slow_exits()) {
+        b.build_br_if(index_hazard_clear(b), done, {undef}, slow, {});
+        return;
+    }
+    BasicBlock* bb_undef = append_block_keeping_position(b, prefix + "_undef");
+    slow_branch(b, index_hazard_clear(b), bb_undef, slow);
+    b.position_at_end(bb_undef);
+    b.build_br(done, {undef});
 }
 
 void PropertyLoweringHelper::branch_on_hole_store(Builder& b, Value* block, Value* slot, BasicBlock* store,
                                                   BasicBlock* slow, const std::string& prefix) {
     BasicBlock* bb_hole = append_block_keeping_position(b, prefix + "_hole_cold");
-    Value* old = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
+    Value* old = with_alias_class(b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes)), kBoxedElementAliasClass);
     Value* is_hole = b.build_eq(old, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
     b.build_br_if(is_hole, bb_hole, store);
     b.position_at_end(bb_hole);
@@ -229,17 +240,17 @@ void PropertyLoweringHelper::branch_on_hole_store(Builder& b, Value* block, Valu
 void PropertyLoweringHelper::branch_on_array_store(Builder& b, Value* ptr, Value* idx, BasicBlock* store,
                                                    BasicBlock* slow, const std::string& prefix, Value*& out_block,
                                                    Value*& out_slot) {
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* capacity = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+    Value* head = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     Value* slot = b.build_add(idx, head);
-    Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    Value* props = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
     Value* in_bounds = b.build_and(b.build_ult(idx, length), b.build_ult(slot, capacity));
     // The block word is loaded here, where it dominates both stores; with no
     // properties object an Array always has one once its capacity is nonzero,
     // and a capacity of zero passes neither bound below.
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    Value* block = b.build_and(array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
     BasicBlock* bb_slot = append_block_keeping_position(b, prefix + "_array_slot");
     BasicBlock* bb_not_own = append_block_keeping_position(b, prefix + "_array_notown");
     BasicBlock* bb_append = append_block_keeping_position(b, prefix + "_array_append");
@@ -256,7 +267,7 @@ void PropertyLoweringHelper::branch_on_array_store(Builder& b, Value* ptr, Value
     b.build_br_if(b.build_and(b.build_and(at_end, fits), no_props), bb_append, slow);
 
     b.position_at_end(bb_append);
-    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(b.build_add(idx, iconst(b, 1))));
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_trunc_i32(b.build_add(idx, iconst(b, 1))));
     b.build_br(store);
     out_block = block;
     out_slot = slot;
@@ -283,16 +294,16 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
             ? nullptr
             : b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
         auto with_array = [&](Value* v) { return is_array ? b.build_and(is_array, v) : v; };
-        Value* elems = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        Value* elems = array_header_load(b, Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
         // A run reads a hole as `undefined` and stores over one, so the hole
         // rule's TLS tag mask (il_number_array.cpp) fails it once tripped.
         Value* has_elems = b.build_eq(b.build_and(elems, index_hazard_tag_mask(b)), iconst(b, kObjectTagBits));
         Value* raw_block = b.build_and(elems, iconst(b, kPayloadMask));
-        Value* raw_head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* raw_head = b.build_zext_i64(array_header_load(b, Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
         block = b.build_add(raw_block, b.build_shl(raw_head, iconst(b, 3)));
         head = nullptr;
         if (!writable) {
-            Value* len = b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            Value* len = array_header_load(b, Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
             Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
             // has_elems first: brass's register allocation loses the vreg of
             // a `br_if` on `and(ult.i32 const, load.i32, ...)` (in_bounds
@@ -302,9 +313,9 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
             // In bounds of `length` is in the block: the runtime keeps
             // head_offset + length <= capacity (ArrayHeader::setLength grows
             // the block first), as the read above relies on too.
-            Value* len = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+            Value* len = b.build_zext_i64(array_header_load(b, Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
             Value* in_bounds = b.build_ult(iconst(b, max_index), len);
-            Value* props = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+            Value* props = array_header_load(b, Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
             Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
             ok = b.build_and(with_array(no_props), b.build_and(in_bounds, has_elems));
         }
@@ -320,10 +331,10 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
         BasicBlock* bb_arr = b.append_block(prefix + "_arr");
         b.position_at_end(cur);
         Value* ptr = b.build_xor(obj, iconst(b, kObjectTagBits));
-        b.build_br_if(b.build_ult(ptr, iconst(b, kPayloadLimit)), bb_obj, miss);
+        slow_branch(b, b.build_ult(ptr, iconst(b, kPayloadLimit)), bb_obj, miss);
         b.position_at_end(bb_obj);
-        b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_arr,
-                      miss);
+        slow_branch(b, b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow)), bb_arr,
+                    miss);
         b.position_at_end(bb_arr);
         emit_header_checks(ptr, /*header_known=*/true, out_ok, out_block, out_head);
         return;

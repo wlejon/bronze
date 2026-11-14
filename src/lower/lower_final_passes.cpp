@@ -98,6 +98,9 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     std::string scratch;
     std::string& report = wholeProgram && !probe ? wholeProgram_->report : scratch;
     spec::FeedbackApplyStats feedbackStats;
+    // First: the probe, the plain build and the build on its harvest all
+    // start here from one module, so they number the slow sites alike.
+    il::numberSlowSites(mod);
     // After the lowering's own families (lowering is over, and their ids are
     // in its claims) and before any claim of this run.
     if (plan != nullptr) spec::addProfiledFamilies(mod, *plan);
@@ -263,6 +266,7 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats, &missedClaims);
     if (plan != nullptr) {
         mod.missedClaimIcs = missedClaims;
+        mod.slowCold = plan->slowCold;
         const auto mixed = [&](const std::unordered_map<uint32_t, spec::NameCounts>& sites) {
             for (const auto& [ic, names] : sites) {
                 if (names.counts.size() != 1 || names.counts.count("*other*") != 0) mod.mixedIcs.insert(ic);

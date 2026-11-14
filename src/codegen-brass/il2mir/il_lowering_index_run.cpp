@@ -100,7 +100,8 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         if (get_count >= 2) {
             apply_loc(first);
             // The run's blocks first: each guard's object and header tests
-            // branch to the slow path.
+            // branch to the slow path, the run's slow arm.
+            set_run_slow_site(blk_ast.instructions, inst_idx, run_end, /*may_exit=*/false);
             BasicBlock* guard_entry = b.current_block();
             const std::string prefix = "prop_idx_get_run_" + std::to_string(fn->next_block_id());
             BasicBlock* bb_fast = b.append_block(prefix + "_fast");
@@ -162,7 +163,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             }
 
             b.position_at_end(guard_bb);
-            b.build_br_if(all_ok, bb_fast, bb_slow);
+            prop_lowering_.slow_branch(b, all_ok, bb_fast, bb_slow);
 
             b.position_at_end(bb_fast);
             for (uint32_t rid : claimed_recvs) {
@@ -189,6 +190,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             b.build_br(bb_merge, fast_args);
 
             b.position_at_end(bb_slow);
+            prop_lowering_.slow_arm(b);
             const size_t get_slow_base = fn->blocks().size();
             std::vector<Value*> slow_args;
             slow_args.reserve(get_count);
@@ -374,8 +376,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
 
     // 2. Emit combined dense-array guard(s) for the run.
     // The run's blocks first: each array guard's object and header tests
-    // branch to the slow path.
+    // branch to the slow path, the run's slow arm.
     apply_loc(blk_ast.instructions[inst_idx]);
+    set_run_slow_site(blk_ast.instructions, inst_idx, committed_end, /*may_exit=*/false);
     BasicBlock* guard_entry = b.current_block();
     const std::string prefix = "prop_idx_run_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
@@ -478,7 +481,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
 
     BasicBlock* guard_bb = b.current_block();
     b.position_at_end(guard_bb);
-    b.build_br_if(all_ok, bb_fast, bb_slow);
+    prop_lowering_.slow_branch(b, all_ok, bb_fast, bb_slow);
 
     std::unordered_map<uint32_t, Value*> slow_val_map = val_map;
 
@@ -489,7 +492,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         BasicBlock* bb_tested = b.append_block(prefix + "_tested");
         b.position_at_end(bb_fast);
         numbers_src_ptr = b.build_and(numbers_src, iconst(b, kPayloadMask));
-        Value* bits = b.build_load(Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+        Value* bits = array_header_load(b, Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
         Value* has_bit = b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
                                     b.build_iconst_i32(0));
         b.build_br_if(has_bit, bb_num, bb_tested);
@@ -642,8 +645,8 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             BasicBlock* bb_claim_test = b.append_block(prefix + "_claim_test");
             BasicBlock* bb_claim = b.append_block(prefix + "_claim_cold");
             b.position_at_end(bb_claim_test);
-            Value* len = b.build_load(Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-            Value* props = b.build_load(Type::i64(), numbers_src_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+            Value* len = array_header_load(b, Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            Value* props = array_header_load(b, Type::i64(), numbers_src_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
             Value* whole = b.build_and(b.build_eq(len, b.build_iconst_i32(static_cast<int32_t>(numbers_src_len))),
                                        b.build_eq(props, iconst(b, kUndefinedTag)));
             b.build_br_if(whole, bb_claim, bb_merge);
@@ -666,6 +669,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
 
     // 4. Slow path: runtime helper calls in program order.
     b.position_at_end(bb_slow);
+    prop_lowering_.slow_arm(b);
     const size_t slow_base = fn->blocks().size();
     std::unordered_map<uint32_t, Value*> slow_get_vals;
     for (size_t j = inst_idx; j < committed_end; ++j) {

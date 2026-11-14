@@ -412,8 +412,8 @@ void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_a
 
 void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
     Value* ptr = object_address(b, obj);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* block = b.build_and(array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
+    Value* head = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     out_block = b.build_add(block, b.build_shl(head, iconst64(b, 3)));
     out_head = nullptr;
 }
@@ -508,13 +508,14 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     Value* block = nullptr;
     Value* head = nullptr;
     emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head, bb_slow);
-    b.build_br_if(ok, bb_fast, bb_slow);
+    slow_branch(b, ok, bb_fast, bb_slow);
 
     b.position_at_end(bb_fast);
     Value* fast_val = load_proven_dense_array_elem(b, block, head, elem_index, check_hole);
     b.build_br(bb_merge, {fast_val});
 
     b.position_at_end(bb_slow);
+    slow_arm(b);
     Value* slow_val = lower_index_get_helper(b, obj, elem_index);
     b.build_br(bb_merge, {slow_val});
 
@@ -538,7 +539,7 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
     Value* block = nullptr;
     Value* head = nullptr;
     emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head, bb_slow);
-    b.build_br_if(ok, bb_fast, bb_slow);
+    slow_branch(b, ok, bb_fast, bb_slow);
 
     b.position_at_end(bb_fast);
     store_proven_dense_array_elem(b, block, head, elem_index, val);
@@ -557,6 +558,7 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
     }
 
     b.position_at_end(bb_slow);
+    slow_arm(b);
     lower_index_set_helper(b, obj, elem_index, val, strict);
     b.build_br(bb_merge);
 

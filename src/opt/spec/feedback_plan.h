@@ -148,6 +148,10 @@ struct FeedbackPlan {
     // The same for plain objects (profile.h `Harvest::objects`, `nonObject`).
     std::map<std::string, std::vector<uint32_t>> harvestObjects;
     std::set<std::string> nonObjectKeys;
+    // The harvest's slow sites (profile.h `Harvest::slow`), when it counted
+    // the probe's (its `slowsites` is the probe's `slowSiteCount`): the ones
+    // the harvested build armed whose generic code never ran. il.h `slowCold`.
+    std::unordered_set<uint32_t> slowCold;
     FeedbackPlanStats stats;
 };
 

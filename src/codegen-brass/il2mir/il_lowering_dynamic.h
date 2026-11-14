@@ -17,12 +17,16 @@
 namespace il2mir {
 
 class IlLowering;
+class PropertyLoweringHelper;
 
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
                            const char* helper, bool hot = false);
 Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper,
                              bool hot = false);
-Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only, bool hot = false);
+// `arms`: the instruction's slow arm (il_property.h slow_branch), the
+// helper's call here and in lower_dynamic_truthy.
+Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only, bool hot = false,
+                               PropertyLoweringHelper* arms = nullptr);
 Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper,
                                 bool helper_only, bool hot = false);
 // ToBoolean of a dynamic (i64) value as an i32 0/1; inline for every operand
@@ -30,7 +34,8 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // view of the site: `number_hint` (il.h `numberHint`, only Numbers seen), or
 // `kinds` (il.h `truthHint`, the kTruth* kinds seen when every value was one
 // of them). The kinds seen are tested first and the rest is laid out cold.
-Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_hint = false, uint8_t kinds = 0);
+Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_hint = false, uint8_t kinds = 0,
+                            PropertyLoweringHelper* arms = nullptr);
 // The hinted forms of two ops that are a helper call without a hint: `==`
 // with two Numbers as the ordered double compare, unary `-` of a Number as
 // the double's negation, each with the helper in a cold block.

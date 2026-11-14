@@ -93,6 +93,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         out.file = inst.span.file;
     }
     out.inline_frame = inst.inlineFrame;
+    out.slow_site = inst.slowSite;
 
     switch (inst.op) {
         // --- Constants ---

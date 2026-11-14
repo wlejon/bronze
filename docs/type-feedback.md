@@ -129,17 +129,19 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 3)
+## File format (version 4)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
 are comments. Version 2 differs from version 1 in two ways: a shape name lists
 every key, and a file may carry a harvest (below). Version 3 adds the
 harvest's `other` row; a version 2 harvest has none, and a build on one claims
-as it did before the row existed. The reader takes all three versions.
+as it did before the row existed. Version 4 adds the harvest's `slowsites` and
+`slow` rows ("Slow paths", below); an older harvest has none, and a build on
+one keeps every fallback in line. The reader takes all four versions.
 
 ```
-bronze-type-feedback 3
+bronze-type-feedback 4
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -419,9 +421,9 @@ the final threading pass. The digest is FNV-1a over:
 - for each index, the op and key of the first instruction that carries it.
 
 The build bakes the digest into an IC IDENTITY record, `<entry>_ic_identity`
-(`bronze_abi_layout.h`, version 2): version, flags, site count, digest, the
-module's code-range table and its length (for the samples, below), and the
-baked harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
+(`bronze_abi_layout.h`, version 3): version, flags, site count, digest, the
+module's code-range table and its length (for the samples, below), its slow
+sites' count (below) and the baked harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
 argument. The file's `harvest` row carries the digest and site count.
 
 A `--feedback-in` build compares them with its probe's. The probe runs the
@@ -528,11 +530,13 @@ has the same property keys, and therefore the same digest, as the build the
 harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
 build used the profile.
 
-**Format.** A harvest is a version 3 file with these rows (any `fn` rows
+**Format.** A harvest is a version 4 file with these rows (any `fn` rows
 come first):
 
 ```
 harvest <16 hex digest>  <IC site count>
+slowsites <slow-site count>  <armed bitmap: per 64 sites, 16 hex digits>
+slow    <slow-site index>  <times its fallback ran>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]
 other   <index>  <calls whose receiver no way could hold>
@@ -564,6 +568,50 @@ layout cell member or family field at it an `object` one
 (`applyFeedbackObjectKeys`). See docs/slot-representation.md, "From a
 harvest".
 
+**Slow paths.** An inline fast path with a generic fallback (an element read
+or write, a constant-index read or write and the runs of them il2mir lowers
+under one guard, a strict compare's contents call, a checked unbox and a
+truthiness test's helper) joins its fallback again, and the fallback calls
+the runtime. In a loop that one cold call is a write to all memory, so brass
+reloads every header word and slot behind it each iteration. A harvest says
+which fallbacks never ran, and a build on it makes those exits to the
+function's resume twin (il2mir/il_speculation.h, "SLOW ARMS"): no call, no
+join, and the loads after it are the loads before it.
+
+`il::numberSlowSites` (`il/feedback_site.h`) numbers the instructions that
+have such a fallback (`ElemGet`, `ElemSet`, `PropGet`, `PropSet`, `StrictEq`,
+`Unbox`) first thing in the final passes, so the probe of a build on the
+harvest numbers them as the harvested build did; inlined copies keep their
+original's number and share its counter. A build that may be harvested (not
+profiled) gives the module that many u64 counters, ending where its IC table
+starts (`__bronze_slow_counts`, the IC identity's `slowSites`, version 3),
+and every fallback bumps its instruction's counter first thing (alias class
+`kSlowCountAliasClass`, a load, an add and a store, all on the cold path).
+Lowering also notes each site it gave a counting fallback, and the backend
+lays that ARMED bitmap out right before the counters. A run's fallback bumps
+the counter of every numbered instruction in it: the build on the harvest
+need not form the runs the harvested build did. A constant-index run's
+fallback never leaves: its exit holds every element it loaded in its state,
+and three.js's `Matrix4.multiplyMatrices` ran 28% more instructions so. The harvest folds and clears
+the counters with the IC table and writes a `slowsites` row (the count and
+the armed bitmap) and a `slow` row per counter that ran. A build on it whose
+probe's count matches leaves from the COLD fallbacks of a twinned function,
+those armed and never run (`FeedbackPlan::slowCold`); a fallback the harvested
+build did not arm (it lowered the instruction another way: a cache call, a
+proven representation, no hint) stays a branch, and a stale or older harvest
+leaves none.
+
+Every fallback that can leave must count in the harvested build, or an exit
+the harvest never saw runs often and gives the function up for its generic
+entry (il_speculation.h, "FAILURE POLICY"): a constant-index read on a typed
+array whose fallback did not count sent pixi's `Hasher.num` there. So a
+fallback the harvested build reaches another way stays a branch: a hinted
+truthiness test's ladder (the harvested build had no hint, so no ladder to
+count), `ToInt32` (a harvested double has no fallback to count), and an
+inlined method's cell pair, which holds one shape where the site's cache
+holds two (leaving on its miss sent pixi's `updateTransformAndChildren` to
+its generic entry).
+
 **Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
 case three ways and requires the pinned bytes and exit code from each run:
 
@@ -571,7 +619,8 @@ case three ways and requires the pinned bytes and exit code from each run:
 2. on that harvest;
 3. on an adversarial harvest, in which every site holds one way (so it reads
    as monomorphic with every threshold met), every receiver's keys are
-   rotated, and every method site calls another site's callee.
+   rotated, every method site calls another site's callee, and no slow arm
+   ran (so every fallback of a twinned function leaves).
 
 `BRONZE_ORACLE_FEEDBACK_CASES` selects the cases. `aot-module` runs the
 evaluator path, and `spec` covers parsing and round trips.

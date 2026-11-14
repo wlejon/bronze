@@ -92,12 +92,15 @@
       "typedarray", "function", "other" }
 
 /* The file format version `bronze-type-feedback <N>` the writers stamp. The
- * reader takes 1 to 3: 2 names every key of a shape (1 cut the list at 32
+ * reader takes 1 to 4: 2 names every key of a shape (1 cut the list at 32
  * with `,+N`) and may carry an inline-cache harvest (`harvest`, `ic` and
  * `way` rows, runtime/ic_harvest.h); 3 adds the harvest's `other` row (a
  * site's receivers its cache could not hold), which a version 2 harvest
- * lacks, so a build on one claims as it did before. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 3u
+ * lacks, so a build on one claims as it did before; 4 adds the `slowsites`
+ * and `slow` rows (the slow sites' counters, docs/type-feedback.md "Slow
+ * paths"), which an older harvest lacks, so a build on one keeps every slow
+ * arm in line. */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 4u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

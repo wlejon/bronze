@@ -48,7 +48,14 @@ Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits, bool hot) 
 
     b.position_at_end(cur);
     Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
+    PropertyLoweringHelper& prop = lowering->prop_lowering();
+    if (prop.slow_exits()) {
+        prop.slow_branch(b, is_num, fast, slow);
+        b.position_at_end(slow);
+    } else {
+        lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
+    }
+    prop.slow_arm(b);
     b.build_br(merge, {b.build_call("bronze_unbox_f64", Type::f64(), {bits})});
 
     b.position_at_end(fast);
@@ -115,6 +122,7 @@ bool IlLowering::lower_instruction(
     uint32_t* cont_counter
 ) {
     Value* res_val = nullptr;
+    set_slow_site_of(inst_ast);
 
     auto get_val_by_id = [&](uint32_t id) -> Value* {
         return this->get_val_by_id(id, b, val_map);
@@ -681,7 +689,7 @@ bool IlLowering::lower_instruction(
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::Bool) {
                 res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_, inst_ast.number_hint,
-                                               inst_ast.truth_hint);
+                                               inst_ast.truth_hint, &prop_lowering_);
                 note_boolean(res_val);
             } else if (inst_ast.result_type == BronzeType::Str) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);

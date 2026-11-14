@@ -54,14 +54,14 @@ Value* lower_iter_step_inline(Builder& b, Value* iter) {
     Value* arr = b.build_and(b.build_load(Type::i64(), rec, BRONZE_ABI_ITER_TARGET_OFFSET), iconst(b, kPayloadMask));
     Value* cursor = b.build_load(Type::f64(), rec, BRONZE_ABI_ITER_CURSOR_OFFSET);
     Value* i = b.build_fptosi_i64(cursor);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), arr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), arr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     b.build_br_if(b.build_ult(i, length), bb_load, bb_slow);
 
     b.position_at_end(bb_load);
-    Value* block = b.build_and(b.build_load(Type::i64(), arr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), arr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(i, head), 8,
-                                       static_cast<int32_t>(kBronzeHdrBytes));
+    Value* block = b.build_and(array_header_load(b, Type::i64(), arr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    Value* head = b.build_zext_i64(array_header_load(b, Type::i32(), arr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* elem = with_alias_class(b.build_load_indexed(Type::i64(), block, b.build_add(i, head), 8,
+                                       static_cast<int32_t>(kBronzeHdrBytes)), kBoxedElementAliasClass);
     b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_slow, bb_store);
 
     // `current` is a heap slot of the record, so a reference stored there

@@ -6,6 +6,8 @@
 #include "il_abi.h"
 #include "il_lowering_ops.h"
 
+#include <atomic>
+
 namespace il2mir {
 
 Type lower_type(BronzeType t) {
@@ -84,6 +86,20 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                                    : ic_static_cells_offset(sites, methods);
         return b.build_add(hoisted(b, Hoist::IcTable), b.build_iconst_i64(off));
     });
+    if (options.count_slow_sites && options.slow_site_count != 0) {
+        prop_lowering_.set_slow_count_fn([this](Builder& b, uint32_t index) {
+            // Lowering may run on several threads.
+            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
+                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
+                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
+            }
+            Value* at = b.build_add(hoisted(b, Hoist::IcTable),
+                                    b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
+            Value* n = with_alias_class(b.build_load(Type::i64(), at, 0), kSlowCountAliasClass);
+            with_alias_class(b.build_store(Type::i64(), at, 0, b.build_add(n, b.build_iconst_i64(1))),
+                             kSlowCountAliasClass);
+        });
+    }
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

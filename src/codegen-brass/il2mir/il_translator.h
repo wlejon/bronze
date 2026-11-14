@@ -221,6 +221,19 @@ struct TranslatorOptions {
     // (il::Module::mixedIcs): an inlined accessor's guard on one of them
     // keeps its miss in line.
     std::unordered_set<uint32_t> mixed_ics;
+    // SLOW SITES (il.h `slowSite`, il_speculation.h "SLOW ARMS"): the module's
+    // count, laid out as u64 counters right before the IC table
+    // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image
+    // that may be harvested: one built on no profile) each slow arm bumps its
+    // instruction's counter, and lowering sets the site's bit in
+    // `slow_armed` (sized (count + 63) / 64 words by the caller, which lays
+    // it out before the counters). With `twin_exits`, a slow arm of a twinned
+    // function whose site is in `slow_cold` (armed in the harvested build,
+    // never run) is a twin exit.
+    uint32_t slow_site_count = 0;
+    bool count_slow_sites = false;
+    std::shared_ptr<std::vector<uint64_t>> slow_armed;
+    std::unordered_set<uint32_t> slow_cold;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

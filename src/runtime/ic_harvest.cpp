@@ -62,6 +62,13 @@ struct Module {
     uint32_t sites = 0;
     std::string path;
     std::map<uint32_t, Site> ics;
+    // The slow sites' counters (bronze_abi_layout.h, the identity's
+    // `slowSites`): how many the module has, the ones its code counts (the
+    // armed bitmap before the counters), and the counts of the ones that ran,
+    // written as the `slowsites` and `slow` rows.
+    uint32_t slowSites = 0;
+    std::vector<uint64_t> slowArmed;
+    std::map<uint32_t, uint64_t> slow;
     // The sampler's counts (harvest_sampler.h), by the sampled function's
     // descriptor name_hash.
     std::map<uint32_t, uint64_t> samples;
@@ -112,6 +119,7 @@ struct Identity {
     uint64_t digest = 0;
     const bronze_code_range* ranges = nullptr;
     uint32_t rangeCount = 0;
+    uint32_t slowSites = 0;
     std::string path;
 };
 
@@ -127,6 +135,7 @@ bool readIdentity(const void* record, Identity& out) {
     std::memcpy(&out.digest, bytes + BRONZE_ABI_IC_IDENTITY_DIGEST_OFFSET, 8);
     std::memcpy(&out.ranges, bytes + BRONZE_ABI_IC_IDENTITY_RANGES_OFFSET, sizeof(out.ranges));
     std::memcpy(&out.rangeCount, bytes + BRONZE_ABI_IC_IDENTITY_RANGE_COUNT_OFFSET, 4);
+    std::memcpy(&out.slowSites, bytes + BRONZE_ABI_IC_IDENTITY_SLOW_SITES_OFFSET, 4);
     out.path.assign(reinterpret_cast<const char*>(bytes + BRONZE_ABI_IC_IDENTITY_PATH_OFFSET), pathLen);
     return true;
 }
@@ -298,6 +307,18 @@ std::string textOf(const State& s, const Module& m) {
     std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(m.digest));
     std::string out = "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION) + "\n";
     out += "harvest\t" + std::string(hex) + "\t" + std::to_string(m.sites) + "\n";
+    if (m.slowSites != 0) {
+        out += "slowsites\t" + std::to_string(m.slowSites) + "\t";
+        for (size_t w = 0; w < (m.slowSites + 63) / 64; ++w) {
+            const uint64_t bits = w < m.slowArmed.size() ? m.slowArmed[w] : 0;
+            std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(bits));
+            out += hex;
+        }
+        out += "\n";
+        for (const auto& [index, count] : m.slow) {
+            out += "slow\t" + std::to_string(index) + "\t" + std::to_string(count) + "\n";
+        }
+    }
     for (const auto& [index, site] : m.ics) {
         if (site.facts.empty()) continue;
         std::string flags;
@@ -424,6 +445,7 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
         s.modules.push_back(Module{id.digest, id.sites, path, {}});
         m = &s.modules.back();
     }
+    m->slowSites = id.slowSites;
     m->path = path;
     if (path.empty()) {
         s.records.erase(identity);
@@ -484,6 +506,26 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         site.method = isMethod(i);
         site.uncached += count;
         s.dirty = true;
+    }
+    // The slow counters end where the table starts. Taken, and cleared so a
+    // later fold of the same instance adds only what ran since. The armed
+    // bitmap ends where they start (brass_backend_sections.cpp).
+    if (id.slowSites != 0) {
+        auto* counts = const_cast<uint64_t*>(table) - id.slowSites;
+        const size_t armedWords = (id.slowSites + 63) / 64;
+        const uint64_t* armed = counts - armedWords;
+        m->slowArmed.resize(armedWords, 0);
+        for (size_t w = 0; w < armedWords; ++w) {
+            if ((armed[w] & ~m->slowArmed[w]) == 0) continue;
+            m->slowArmed[w] |= armed[w];
+            s.dirty = true;
+        }
+        for (uint32_t i = 0; i < id.slowSites; ++i) {
+            if (counts[i] == 0) continue;
+            m->slow[i] += counts[i];
+            counts[i] = 0;
+            s.dirty = true;
+        }
     }
     for (uint64_t i = 0; i < siteCount; ++i) {
         const uint64_t* words = table + i * kWords;

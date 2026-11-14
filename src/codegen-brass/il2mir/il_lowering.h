@@ -67,6 +67,40 @@ public:
         return options_.twin_exits && inst.static_slot != BronzeInstruction::kNoStaticSlot &&
                inst.ic_index != BronzeInstruction::kNoIcIndex && options_.missed_claim_ics.count(inst.ic_index) == 0;
     }
+    // Whether `inst`'s slow arms leave the function for its resume twin
+    // (il_speculation.h, "SLOW ARMS"): an image built on a harvest whose
+    // build counted this instruction's generic code and never saw it run, in
+    // a function that has a twin.
+    bool slow_exits(const BronzeInstruction& inst) const {
+        return options_.twin_exits && spec_.image_sites_here() && inst.slow_site != BronzeInstruction::kNoSlowSite &&
+               options_.slow_cold.count(inst.slow_site) != 0;
+    }
+    // Makes `inst`'s slow site the one the slow arms lowered next belong to.
+    void set_slow_site_of(const BronzeInstruction& inst) {
+        std::vector<uint32_t> sites;
+        if (inst.slow_site != BronzeInstruction::kNoSlowSite) sites.push_back(inst.slow_site);
+        prop_lowering_.set_slow_sites(std::move(sites), slow_exits(inst));
+    }
+    // A run of instructions [from, to) of `insts` (taken again after it
+    // lowers others): its slow arm is every slow site of the run's, and exits
+    // only when every one is cold (armed, never run). The harvested
+    // build's runs need not be these, and each of its runs counted all of its
+    // sites, so a slow path it took shows on every site that took it.
+    // `may_exit` false keeps the arm a branch (it still counts): a constant-
+    // index run's exit holds every element it loaded in its state, which cost
+    // three.js's Matrix4.multiplyMatrices 28% more instructions.
+    void set_run_slow_site(const std::vector<BronzeInstruction>& insts, size_t from, size_t to,
+                           bool may_exit = true) {
+        std::vector<uint32_t> sites;
+        bool exits = may_exit;
+        for (size_t i = from; i < to; ++i) {
+            if (insts[i].slow_site == BronzeInstruction::kNoSlowSite) continue;
+            sites.push_back(insts[i].slow_site);
+            exits = exits && slow_exits(insts[i]);
+        }
+        exits = exits && !sites.empty();
+        prop_lowering_.set_slow_sites(std::move(sites), exits);
+    }
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
     const BronzeFunction* current_fn_ast() const {

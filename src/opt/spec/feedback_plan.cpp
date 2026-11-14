@@ -137,6 +137,12 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
     plan.mixedKeys = harvest.mixed;
     plan.harvestObjects = harvest.objects;
     plan.nonObjectKeys = harvest.nonObject;
+    if (harvest.slowSites != 0 && harvest.slowSites == probe.slowSiteCount) {
+        for (uint32_t i = 0; i < harvest.slowSites; ++i) {
+            const bool armed = i / 64 < harvest.slowArmed.size() && (harvest.slowArmed[i / 64] >> (i % 64) & 1) != 0;
+            if (armed && harvest.slow.count(i) == 0) plan.slowCold.insert(i);
+        }
+    }
     struct Named {
         il::Op op;
         uint32_t key;

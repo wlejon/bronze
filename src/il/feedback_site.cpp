@@ -368,6 +368,7 @@ uint64_t icLayoutDigest(const Module& module) {
     mix64(module.sourceTexts.size());
     for (const std::string& text : module.sourceTexts) mixText(text);
     mix64(module.icSiteCount);
+    mix64(module.slowSiteCount);
     // Index -> (op, key): the first instruction met in function, block and
     // instruction order. Copies of a site (inlining, versioning, threading)
     // share its index and say the same thing about it.
@@ -390,6 +391,25 @@ uint64_t icLayoutDigest(const Module& module) {
                                                          : std::string_view("?"));
     }
     return h;
+}
+
+void numberSlowSites(Module& module) {
+    uint32_t next = 0;
+    for (Function& fn : module.functions) {
+        for (Block& block : fn.blocks) {
+            for (Instruction& inst : block.instructions) {
+                switch (inst.op) {
+                    case Op::ElemGet: case Op::ElemSet: case Op::PropGet: case Op::PropSet:
+                    case Op::StrictEq: case Op::Unbox:
+                        inst.slowSite = next++;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+    module.slowSiteCount = next;
 }
 
 }  // namespace bronze::il

@@ -178,14 +178,18 @@
  *   u64 ranges    the module's code-range table (bronze_code_range[]), whose
  *                 functions' samples the harvest files under this module
  *   u32 rangeCount
- *   u32 reserved  zero
+ *   u32 slowSites the module's SLOW-SITE counters (il.h `slowSiteCount`):
+ *                 that many u64 words ending where the IC table starts, each
+ *                 bumped by its instruction's generic code in a build that
+ *                 may be harvested, after (slowSites + 63) / 64 words whose
+ *                 bit i says site i is counted at all; version 3
  *   char path[]   where a standalone program writes its harvest
  *                 (`bronze build --harvest-out`), NUL-terminated; empty for
  *                 none (a host names the file at run time instead)
  *
  * Exported as `<entry>_ic_identity` beside the ABI stamp, so a host that
  * loaded the image can name the module to the harvester. */
-#define BRONZE_ABI_IC_IDENTITY_VERSION      2u
+#define BRONZE_ABI_IC_IDENTITY_VERSION      3u
 #define BRONZE_ABI_IC_IDENTITY_PROFILED     1u
 #define BRONZE_ABI_IC_IDENTITY_FLAGS_OFFSET  4
 #define BRONZE_ABI_IC_IDENTITY_SITES_OFFSET  8
@@ -193,6 +197,7 @@
 #define BRONZE_ABI_IC_IDENTITY_DIGEST_OFFSET 16
 #define BRONZE_ABI_IC_IDENTITY_RANGES_OFFSET 24
 #define BRONZE_ABI_IC_IDENTITY_RANGE_COUNT_OFFSET 32
+#define BRONZE_ABI_IC_IDENTITY_SLOW_SITES_OFFSET 36
 #define BRONZE_ABI_IC_IDENTITY_PATH_OFFSET   40
 
 /* ---- the METHOD ROWS: every method-call site's way 0, packed -------------

@@ -94,6 +94,13 @@ struct Harvest {
     uint64_t digest = 0;  // il/feedback_site.h icLayoutDigest of the build harvested
     uint32_t sites = 0;
     std::map<uint32_t, HarvestSite> ics;
+    // The slow sites (il.h `slowSite`; ic_harvest.h): `slowSites` is the
+    // harvested build's count (0: a harvest that did not count them),
+    // `slowArmed` the sites it lowered with a counting fallback (bit i of
+    // word i / 64), and `slow` the count of each site whose generic code ran.
+    uint32_t slowSites = 0;
+    std::vector<uint64_t> slowArmed;
+    std::map<uint32_t, uint64_t> slow;
     // The run's samples (runtime/harvest_sampler.h): per function, by the
     // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
     // many of the sampler's interrupts its code took.

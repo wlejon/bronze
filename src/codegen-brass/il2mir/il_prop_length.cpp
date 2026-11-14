@@ -69,7 +69,7 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr);
 
     b.position_at_end(bb_arr);
-    Value* arr_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* arr_len = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(arr_len))});
 
     b.position_at_end(bb_not_arr);
@@ -104,7 +104,7 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
 // `is.number` and raw unbox of it fold to the double (boxed_f64_source).
 Value* PropertyLoweringHelper::lower_array_length(Builder& b, Value* obj) {
     Value* ptr = object_address(b, obj);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     return box_number(b, b.build_sitofp_f64_i64(length));
 }
 
@@ -135,7 +135,7 @@ Value* PropertyLoweringHelper::lower_length_of_array_like(Builder& b, Value* obj
                   bb_slow);
 
     b.position_at_end(bb_array);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     b.build_br(bb_merge, {b.build_sitofp_f64_i64(length)});
 
     b.position_at_end(bb_slow);

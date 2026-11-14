@@ -306,7 +306,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     Value* is_obj = nullptr;
     object_pointer(b, obj, ptr, is_obj);
     const ElemIndex idx = elem_index(b, index);
-    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+    slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
@@ -315,29 +315,37 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // An Array: an in-bounds element, a hole by the hole rule
     // (il_number_array.cpp). Past the length the helper decides.
     b.position_at_end(bb_array);
-    Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    b.build_br_if(b.build_ult(idx.i64, length), bb_array_load, bb_slow);
+    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    const ArrayElements elems = array_elements(b, ptr);
+    slow_branch(b, b.build_ult(idx.i64, length), bb_array_load, bb_slow);
 
     b.position_at_end(bb_array_load);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx.i64, head), 8,
-                                       static_cast<int32_t>(kBronzeHdrBytes));
+    Value* elem = array_element_load(b, elems, idx.i64);
     finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
 
     b.position_at_end(bb_ta_check);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
+    slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
 
     // A TypedArray of a Number kind, in bounds (a detached view's length is
     // 0); Float16 and the BigInt kinds take the helper.
     b.position_at_end(bb_ta);
     Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    b.build_br_if(b.build_ult(idx.i64, ta_length), bb_ta_load, bb_slow);
+    slow_branch(b, b.build_ult(idx.i64, ta_length), bb_ta_load, bb_slow);
+
+    // Float16 and the BigInt kinds: the slow arm, through a block of its own
+    // (a switch's default cannot be a twin exit) when it is one.
+    BasicBlock* bb_ta_other = bb_slow;
+    if (slow_exits()) {
+        bb_ta_other = b.append_block(prefix + "_ta_other");
+        bb_ta_other->set_cold();
+        b.position_at_end(bb_ta_other);
+        slow_branch(b, b.build_iconst_i32(0), bb_box, bb_slow, {b.build_fconst_f64(0)});
+    }
 
     b.position_at_end(bb_ta_load);
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
     Value* data = typed_array_data(b, ptr);
-    b.build_switch(kind, bb_slow,
+    b.build_switch(kind, bb_ta_other,
                    {SwitchCase(BRONZE_ABI_TA_KIND_FLOAT64, bb_f64), SwitchCase(BRONZE_ABI_TA_KIND_FLOAT32, bb_f32),
                     SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_i32), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_u32),
                     SwitchCase(BRONZE_ABI_TA_KIND_INT16, bb_i16), SwitchCase(BRONZE_ABI_TA_KIND_UINT16, bb_u16),
@@ -367,6 +375,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // Past the array and view arms: a plain object's own slot answers inline
     // from the computed-read cache, and only the rest calls the stub.
     b.position_at_end(bb_slow);
+    slow_arm(b);
     Value* key = boxed_elem_key(b, index);
     if (elem_stubs_) {
         const size_t slow_base = fn->blocks().size();
@@ -409,24 +418,22 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         Value* is_obj = nullptr;
         object_pointer(b, obj, ptr, is_obj);
         const ElemIndex idx = elem_index(b, index, proven_integral);
-        b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+        slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
         b.position_at_end(bb_obj);
         Value* header_low = b.build_load(Type::i32(), ptr, 0);
-        b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
+        slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
 
         b.position_at_end(bb_array);
-        Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-        b.build_br_if(b.build_ult(idx.i64, length), bb_array_load, bb_slow);
+        Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+        const ArrayElements elems = array_elements(b, ptr);
+        slow_branch(b, b.build_ult(idx.i64, length), bb_array_load, bb_slow);
 
         b.position_at_end(bb_array_load);
-        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-        Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx.i64, head), 8,
-                                           static_cast<int32_t>(kBronzeHdrBytes));
-        finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
+        finish_hole_read(b, array_element_load(b, elems, idx.i64), bb_merge, bb_slow, prefix);
 
         b.position_at_end(bb_slow);
+        slow_arm(b);
         b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_elem_key(b, index)})});
 
         // The read is ToNumber of the element (il::elemGetCoerces): a Number

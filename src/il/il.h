@@ -79,6 +79,13 @@ struct Instruction {
     Type boxType = Type::Void;
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
+    // A SLOW SITE (il/feedback_site.h numberSlowSites): the index of the counter a build that
+    // can be harvested bumps each time one of this instruction's inline fast
+    // paths falls to its generic code, or kNoSlowSite. Handed out once, at the
+    // start of the final passes, so the build a harvest came from and the one
+    // that reads it number the same instructions alike; copies share it.
+    static constexpr uint32_t kNoSlowSite = UINT32_MAX;
+    uint32_t slowSite = kNoSlowSite;
     // PropGet: inference proved this site's receiver has ONE shape class, so
     // the backend may inline the cache check instead of calling the helper.
     // False is always sound — it is the plain call — and an unproven site keeps
@@ -736,6 +743,11 @@ struct Module {
     // and the verifier checks every `staticCellIndex` against it. Zero when the
     // seam is off or nothing proved, and then no array is emitted at all.
     uint32_t staticSiteCount = 0;
+    // How many SLOW SITES (Instruction::slowSite) the final passes handed
+    // out: the backend emits this many zeroed u64 counters right before the
+    // IC table, and the harvest reads them back (docs/type-feedback.md,
+    // "Slow paths").
+    uint32_t slowSiteCount = 0;
     // The proven class layouts, in the PREORDER the family ids number: what the
     // module hands `bronze_register_class_family` at init so that the runtime
     // can recognise a shape as an instance of one. Empty when nothing proved,
@@ -848,6 +860,12 @@ struct Module {
     // accessor's or method's) keeps its miss in line in an image; any other
     // may leave the function. Not serialized either.
     std::unordered_set<uint32_t> mixedIcs;
+    // With `feedbackApplied` and a harvest that counted slow sites (its
+    // `slowsites` row matched `slowSiteCount`): the COLD slow sites, those the
+    // harvested build lowered with a counting fallback that never ran. An
+    // image's lowering leaves a twinned function for its resume twin from
+    // these only (il2mir/il_speculation.h, "SLOW ARMS"). Not serialized.
+    std::unordered_set<uint32_t> slowCold;
     // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
     // `functions` the backend lays out first in its text, in this order, and
     // last. Only where code sits, never what it is.

@@ -164,7 +164,8 @@ Value* build_strings_differ(Builder& b, Value* s0, Value* s1) {
 // Different bits are two Numbers compared as doubles (+0 === -0), and only
 // two Strings or two BigInts need the helper's contents compare; any other
 // pair with different bits is false.
-Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only, bool hot) {
+Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only, bool hot,
+                               PropertyLoweringHelper* arms) {
     if (is_bits_identity_constant(op0) || is_bits_identity_constant(op1)) return b.build_eq(op0, op1);
     if (helper_only) {
         return b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}), b.build_iconst_i32(1));
@@ -235,10 +236,16 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
         Value* s0 = b.build_and(op0, mask);
         Value* s1 = b.build_select(is_string, b.build_and(op1, mask), s0);
         Value* texts_differ = build_strings_differ(b, s0, s1);
-        b.build_br_if(b.build_and(is_string, texts_differ), merge, {b.build_iconst_i32(0)}, slow, {});
+        Value* differ_known = b.build_and(is_string, texts_differ);
+        if (arms) {
+            arms->slow_branch(b, differ_known, merge, slow, {b.build_iconst_i32(0)});
+        } else {
+            b.build_br_if(differ_known, merge, {b.build_iconst_i32(0)}, slow, {});
+        }
     }
 
     b.position_at_end(slow);
+    if (arms) arms->slow_arm(b);
     b.build_br(merge, {b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}),
                                    b.build_iconst_i32(1))});
 
@@ -294,7 +301,8 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // kTruth* `kinds` it saw) puts tests for those values first, on the
 // fall-through, and the whole ladder after them in cold blocks; any value
 // still gets its answer there.
-Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_hint, uint8_t kinds) {
+Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_hint, uint8_t kinds,
+                            PropertyLoweringHelper* arms) {
     if (helper_only) return b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
     BasicBlock* cur = b.current_block();
     const std::string prefix = "truthy_" + std::to_string(cur->parent()->next_block_id());
@@ -388,12 +396,20 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
     // unless it is empty, and every string's header holds its length, a
     // `+`-chain builder's included (string.h).
     b.position_at_end(not_num);
-    b.build_br_if(b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_STRING)), str, slow);
+    Value* is_str = b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_STRING));
+    // The helper is the slow arm. Behind a hint's ladder it stays a branch:
+    // the harvested build had no hint (il_speculation.h, "SLOW ARMS").
+    if (arms && !ladder) {
+        arms->slow_branch(b, is_str, str, slow);
+    } else {
+        b.build_br_if(is_str, str, slow);
+    }
     b.position_at_end(str);
     Value* chars = b.build_load(Type::i32(), b.build_and(v, bits(0x0000FFFFFFFFFFFFULL)), BRONZE_ABI_STRING_LENGTH_OFFSET);
     b.build_br(merge, {b.build_ne(chars, b.build_iconst_i32(0))});
 
     b.position_at_end(slow);
+    if (arms) arms->slow_arm(b);
     b.build_br(merge, {b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1))});
     b.position_at_end(merge);
     return result;

@@ -82,6 +82,9 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   ic      <index> property|method <flags: -, or full / mega, comma-separated>
 //   way     <index> <form> <receiver> [<callee>, method sites]
 //   other   <index> <times a receiver no way could hold reached the runtime>
+//   slowsites <the build's slow-site count> <the sites it armed: per 64, a
+//             word of 16 hex digits whose bit i is site 64 * word + i>
+//   slow    <slow-site index> <times its generic code ran>
 //   sample  <8 hex digits: the function's name hash> <count>
 //   doubles <receiver> <ascending key positions, comma-separated>
 //   mixed   <key>
@@ -107,6 +110,35 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     if (!harvest) {
         why = "an '" + std::string(f[0]) + "' row before the harvest row";
         return false;
+    }
+    if (f[0] == "slowsites") {
+        uint64_t n = 0;
+        if (f.size() != 3 || !parseU64(f[1], n) || n == 0 || n > UINT32_MAX || harvest->slowSites != 0 ||
+            f[2].size() != (n + 63) / 64 * 16) {
+            why = "malformed slowsites row";
+            return false;
+        }
+        std::vector<uint64_t> armed((n + 63) / 64);
+        for (size_t w = 0; w < armed.size(); ++w) {
+            const char* at = f[2].data() + w * 16;
+            const auto res = std::from_chars(at, at + 16, armed[w], 16);
+            if (res.ec != std::errc() || res.ptr != at + 16) {
+                why = "malformed slowsites bitmap";
+                return false;
+            }
+        }
+        harvest->slowSites = static_cast<uint32_t>(n);
+        harvest->slowArmed = std::move(armed);
+        return true;
+    }
+    if (f[0] == "slow") {
+        uint64_t index = 0, count = 0;
+        if (f.size() != 3 || !parseU64(f[1], index) || index >= harvest->slowSites || !parseU64(f[2], count) ||
+            count == 0 || !harvest->slow.emplace(static_cast<uint32_t>(index), count).second) {
+            why = "malformed slow row";
+            return false;
+        }
+        return true;
     }
     if (f[0] == "sample") {
         uint32_t hash = 0;
@@ -261,7 +293,8 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         if (!sawHeader) {
             const std::string want =
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
-            if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2") {
+            if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2" &&
+                line != "bronze-type-feedback 3") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;
@@ -269,6 +302,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
         }
         const std::vector<std::string_view> f = splitTabs(line);
         if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" || f[0] == "sample" ||
+            f[0] == "slowsites" || f[0] == "slow" ||
             f[0] == "doubles" || f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
@@ -379,6 +413,19 @@ std::string TypeProfile::serialize() const {
         char hex[17];
         std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(harvest_->digest));
         out += "harvest\t" + std::string(hex) + "\t" + std::to_string(harvest_->sites) + "\n";
+        if (harvest_->slowSites != 0) {
+            out += "slowsites\t" + std::to_string(harvest_->slowSites) + "\t";
+            for (size_t w = 0; w < (harvest_->slowSites + 63) / 64; ++w) {
+                char word[17];
+                const uint64_t bits = w < harvest_->slowArmed.size() ? harvest_->slowArmed[w] : 0;
+                std::snprintf(word, sizeof word, "%016llx", static_cast<unsigned long long>(bits));
+                out += word;
+            }
+            out += "\n";
+            for (const auto& [index, count] : harvest_->slow) {
+                out += "slow\t" + std::to_string(index) + "\t" + std::to_string(count) + "\n";
+            }
+        }
         for (const auto& [index, site] : harvest_->ics) {
             std::string flags;
             if (site.full) flags = "full";

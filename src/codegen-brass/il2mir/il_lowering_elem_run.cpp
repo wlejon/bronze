@@ -359,6 +359,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         const uint32_t src_obj_id = set_steps[0].src_obj_id;
 
         apply_loc(insts[inst_idx]);
+        set_run_slow_site(insts, inst_idx, committed_end);
         Value* arr_obj = ensure_type(get_val_by_id(arr_id, b, val_map), Type::i64(), b);
         Value* arr_ptr = nullptr;
         Value* arr_is_obj = nullptr;
@@ -426,7 +427,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
         b.position_at_end(guard_bb);
-        b.build_br_if(guard_ok, bb_src_load, bb_slow);
+        prop_lowering_.slow_branch(b, guard_ok, bb_src_load, bb_slow);
 
         b.position_at_end(bb_src_load);
         std::vector<Value*> vals_f64(N, nullptr);
@@ -466,13 +467,13 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             BasicBlock* bb_part = reads_whole_source ? b.append_block(prefix + "_src_part") : nullptr;
             b.position_at_end(bb_src_load);
             Value* src_ptr_raw = b.build_and(dense_src, iconst(b, kPayloadMask));
-            Value* bits = b.build_load(Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_BITS_OFFSET);
+            Value* bits = array_header_load(b, Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_BITS_OFFSET);
             Value* has_bit = b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
                                         b.build_iconst_i32(0));
             b.build_br_if(has_bit, bb_ta_check, bb_test);
             b.position_at_end(bb_test);
             if (reads_whole_source) {
-                Value* len = b.build_load(Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+                Value* len = array_header_load(b, Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
                 Value* whole = b.build_eq(len, b.build_iconst_i32(static_cast<int32_t>(N)));
                 b.build_br_if(whole, bb_whole, bb_part);
                 b.position_at_end(bb_claim);
@@ -490,7 +491,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
                         if (num_ok) ok = ok ? b.build_and(ok, num_ok) : num_ok;
                     }
                     BasicBlock* pass = arm == bb_whole ? bb_claim : bb_ta_check;
-                    if (ok) b.build_br_if(ok, pass, bb_slow);
+                    if (ok) prop_lowering_.slow_branch(b, ok, pass, bb_slow);
                     else b.build_br(pass);
                 }
                 // The common tail below expects a block to continue in.
@@ -528,7 +529,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         };
         if (!bb_claim) {
             if (all_num_ok) {
-                b.build_br_if(all_num_ok, bb_ta_check, bb_slow);
+                prop_lowering_.slow_branch(b, all_num_ok, bb_ta_check, bb_slow);
             } else {
                 b.build_br(bb_ta_check);
             }
@@ -549,7 +550,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         b.position_at_end(bb_ta_f64_check);
         Value* is_f64 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)));
-        b.build_br_if(is_f64, bb_ta_f64, bb_slow);
+        prop_lowering_.slow_branch(b, is_f64, bb_ta_f64, bb_slow);
 
         b.position_at_end(bb_ta_f32);
         Value* f32_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
@@ -567,12 +568,12 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         b.build_br(bb_merge);
 
         b.position_at_end(bb_arr);
-        Value* arr_len = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-        Value* arr_cap = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-        Value* arr_head = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* arr_len = b.build_zext_i64(array_header_load(b, Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+        Value* arr_cap = b.build_zext_i64(array_header_load(b, Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+        Value* arr_head = b.build_zext_i64(array_header_load(b, Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
         Value* base_slot = b.build_add(base_i64, arr_head);
         Value* max_slot = b.build_add(max_end_idx, arr_head);
-        Value* props = b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+        Value* props = array_header_load(b, Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
         Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
         // The stores land over whatever is there, a hole included, so the
         // hazard must be clear (il_number_array.cpp, the hole rule): its word
@@ -580,11 +581,11 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* hazard = prop_lowering_.index_hazard_word(b);
         Value* arr_in_bounds =
             b.build_and(b.build_ult(b.build_or(max_end_idx, hazard), arr_len), b.build_ult(max_slot, arr_cap));
-        b.build_br_if(b.build_and(arr_in_bounds, no_props), bb_arr_store, bb_slow);
+        prop_lowering_.slow_branch(b, b.build_and(arr_in_bounds, no_props), bb_arr_store, bb_slow);
 
         b.position_at_end(bb_arr_store);
         Value* arr_block =
-            b.build_and(b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+            b.build_and(array_header_load(b, Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
         for (size_t k = 0; k < N; ++k) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(k) * 8);
             with_alias_class(b.build_store_indexed(Type::i64(), arr_block, base_slot, 8, disp, elem_bits(k)), kBoxedElementAliasClass);
@@ -594,6 +595,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         // Slow path: lower the slice in helper-only mode (`run_once_ = true`).
         b.position_at_end(bb_slow);
+        prop_lowering_.slow_arm(b);
         invalidate_dense_array_proofs();
         const size_t slow_base = fn->blocks().size();
         const bool saved_run_once = run_once_;
@@ -698,6 +700,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         const uint32_t dst_obj_id = get_steps[0].dst_obj_id;
 
         apply_loc(insts[inst_idx]);
+        set_run_slow_site(insts, inst_idx, committed_end);
         Value* arr_obj = ensure_type(get_val_by_id(arr_id, b, val_map), Type::i64(), b);
         Value* arr_ptr = nullptr;
         Value* arr_is_obj = nullptr;
@@ -761,7 +764,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         }
 
         b.position_at_end(guard_bb);
-        b.build_br_if(guard_ok, bb_dispatch, bb_slow);
+        prop_lowering_.slow_branch(b, guard_ok, bb_dispatch, bb_slow);
 
         b.position_at_end(bb_dispatch);
         Value* max_end_idx = b.build_add(base_i64, iconst(b, N - 1));
@@ -769,23 +772,24 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_src_arr, bb_src_ta);
 
         b.position_at_end(bb_src_arr);
-        Value* arr_len = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-        b.build_br_if(b.build_ult(max_end_idx, arr_len), bb_src_arr_load, bb_slow);
+        Value* arr_len = b.build_zext_i64(array_header_load(b, Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+        prop_lowering_.slow_branch(b, b.build_ult(max_end_idx, arr_len), bb_src_arr_load, bb_slow);
 
         b.position_at_end(bb_src_arr_load);
         Value* src_block =
-            b.build_and(b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-        Value* src_head = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+            b.build_and(array_header_load(b, Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+        Value* src_head = b.build_zext_i64(array_header_load(b, Type::i32(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
         Value* src_base_slot = b.build_add(base_i64, src_head);
         std::vector<Value*> arr_elems(N, nullptr);
         Value* all_num = nullptr;
         for (size_t k = 0; k < N; ++k) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(k) * 8);
-            arr_elems[k] = b.build_load_indexed(Type::i64(), src_block, src_base_slot, 8, disp);
+            arr_elems[k] = with_alias_class(b.build_load_indexed(Type::i64(), src_block, src_base_slot, 8, disp),
+                                            kBoxedElementAliasClass);
             Value* is_num = b.build_ule(arr_elems[k], iconst(b, kBronzeNumberMaxBits));
             all_num = all_num ? b.build_and(all_num, is_num) : is_num;
         }
-        b.build_br_if(all_num, bb_store, arr_elems, bb_slow, {});
+        prop_lowering_.slow_branch(b, all_num, bb_store, bb_slow, arr_elems);
 
         b.position_at_end(bb_src_ta);
         Value* is_ta = b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow));
@@ -797,7 +801,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         b.position_at_end(bb_src_ta_f64_check);
         Value* is_f64 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)));
-        b.build_br_if(is_f64, bb_src_ta_f64, bb_slow);
+        prop_lowering_.slow_branch(b, is_f64, bb_src_ta_f64, bb_slow);
 
         b.position_at_end(bb_src_ta_f32);
         Value* f32_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
@@ -833,6 +837,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         // Slow path: lower the slice in helper-only mode (`run_once_ = true`).
         b.position_at_end(bb_slow);
+        prop_lowering_.slow_arm(b);
         invalidate_dense_array_proofs();
         const size_t slow_base = fn->blocks().size();
         const bool saved_run_once = run_once_;

@@ -146,6 +146,22 @@ private:
 // and then pays a probe's count for kTwinProbeCalls calls each
 // kTwinExitLimit exits. A site's identity cell is filled by the generic code
 // its first exit runs, so every function leaves a few times as it warms up.
+//
+// SLOW ARMS (docs/type-feedback.md, "Slow paths"). An inline fast path's
+// generic fallback, the slow arm of an instruction with a slow site (il.h
+// `slowSite`), is reached through PropertyLoweringHelper::slow_branch and
+// begins with slow_arm. In a build that may be harvested slow_arm bumps the
+// site's counter and marks the site armed; in a function with a twin, built
+// on a harvest whose build armed the site and never ran its arm
+// (IlLowering::slow_exits), slow_branch is an image site: the arm is the
+// twin's, and the function keeps no call or join there. Every slow arm of
+// one instruction shares its counter, so an exit is taken only where the
+// harvested build ran none of them, and an instruction it lowered with no
+// counting arm (a cache call, a representation with no fallback) keeps its
+// branches. A run of instructions under one guard counts every slow site in
+// it and exits only when all are cold (IlLowering::set_run_slow_site),
+// whatever runs the harvested build formed; a constant-index run's never
+// exits (its state would hold every element it loaded).
 void make_resume_twins(Module& mod);
 inline constexpr int64_t kTwinExitLimit = 256;
 inline constexpr int64_t kTwinProbeCalls = 8 * kTwinExitLimit;

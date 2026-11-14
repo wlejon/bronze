@@ -27,6 +27,7 @@ struct InstructionMirror {
     Type boxType;
     uint32_t keyIndex;
     uint32_t icIndex;
+    uint32_t slowSite;
     bool icMonomorphic;
     bool icPolymorphic;
     bool icAbsent;
@@ -132,6 +133,7 @@ struct ModuleMirror {
     uint32_t icSiteCount;
     uint32_t templateSiteCount;
     uint32_t staticSiteCount;
+    uint32_t slowSiteCount;
     std::vector<Module::ClassFamilyEntry> classFamilies;
     std::vector<Module::LayoutCellEntry> layoutCells;
     std::vector<uint32_t> slotReprFields;
@@ -143,6 +145,7 @@ struct ModuleMirror {
     std::string harvestOutPath;
     std::unordered_set<uint32_t> missedClaimIcs;  // not serialized (il.h)
     std::unordered_set<uint32_t> mixedIcs;        // not serialized (il.h)
+    std::unordered_set<uint32_t> slowCold;        // not serialized (il.h)
     std::vector<uint32_t> hotFunctions;
     std::vector<uint32_t> coldFunctions;
     std::vector<Module::NativeImport> nativeImports;
@@ -318,7 +321,8 @@ enum InstBits : uint64_t {
     kHasTruthHint = uint64_t{1} << 34,
     kHasIcChain = uint64_t{1} << 35,
     kRawBox = uint64_t{1} << 36,
-    kKnownBits = (uint64_t{1} << 37) - 1,
+    kHasSlowSite = uint64_t{1} << 37,
+    kKnownBits = (uint64_t{1} << 38) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -347,6 +351,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.boxType != Type::Void) m |= kHasBoxType;
     if (inst.keyIndex != 0) m |= kHasKey;
     if (inst.icIndex != 0) m |= kHasIc;
+    if (inst.slowSite != Instruction::kNoSlowSite) m |= kHasSlowSite;
     if (inst.staticSlot != Instruction::kNoStaticSlot) m |= kHasStaticSlot;
     if (inst.staticCellIndex != 0) m |= kHasStaticCell;
     if (inst.familyLo != Instruction::kNoFamily) m |= kHasFamilyLo;
@@ -391,6 +396,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasBoxType) w.u8(static_cast<uint8_t>(inst.boxType));
     if (m & kHasKey) w.var(inst.keyIndex);
     if (m & kHasIc) w.var(inst.icIndex);
+    if (m & kHasSlowSite) w.var(inst.slowSite);
     if (m & kHasStaticSlot) w.var(inst.staticSlot);
     if (m & kHasStaticCell) w.var(inst.staticCellIndex);
     if (m & kHasFamilyLo) w.var(inst.familyLo);
@@ -436,6 +442,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasBoxType) inst.boxType = r.type();
     if (m & kHasKey) inst.keyIndex = r.u32();
     if (m & kHasIc) inst.icIndex = r.u32();
+    if (m & kHasSlowSite) inst.slowSite = r.u32();
     if (m & kHasStaticSlot) inst.staticSlot = r.u32();
     if (m & kHasStaticCell) inst.staticCellIndex = r.u32();
     if (m & kHasFamilyLo) inst.familyLo = r.u32();
@@ -660,6 +667,7 @@ std::string serializeModule(const Module& module) {
     w.var(module.icSiteCount);
     w.var(module.templateSiteCount);
     w.var(module.staticSiteCount);
+    w.var(module.slowSiteCount);
     w.var(module.classFamilies.size());
     for (const auto& fam : module.classFamilies) {
         w.str(fam.name);
@@ -728,6 +736,7 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     out.icSiteCount = r.u32();
     out.templateSiteCount = r.u32();
     out.staticSiteCount = r.u32();
+    out.slowSiteCount = r.u32();
     out.classFamilies.resize(r.count());
     for (auto& fam : out.classFamilies) {
         fam.name = r.str();

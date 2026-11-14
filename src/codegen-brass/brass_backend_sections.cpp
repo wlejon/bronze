@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -179,7 +180,8 @@ void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::s
     // carries (ic_harvest.cpp).
     emitPointer(roSec, entrySymbol == "bronze_main" ? "bronze_object_code_ranges" : entrySymbol + "_code_ranges");
     roSec.emit32(static_cast<uint32_t>(obj.functions.size()));
-    roSec.emit32(0);
+    // The slow sites' counters, right before the IC table.
+    roSec.emit32(module.slowSiteCount);
     roSec.emit_bytes(reinterpret_cast<const uint8_t*>(module.harvestOutPath.data()), module.harvestOutPath.size());
     roSec.emit8(0);
     const size_t size = roSec.data.size() - at;
@@ -516,7 +518,7 @@ void emitPcTablesAndCodeRanges(
 }
 
 void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::Module& module,
-                     size_t globalCacheCount) {
+                     size_t globalCacheCount, const std::vector<uint64_t>* slowArmed) {
     const std::string dataSecName = ".data";
     Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -594,6 +596,26 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_global_cache"), dataIdx, cacheOffset,
                  cacheBytes, SymbolBinding::Local);
 
+    // The slow sites' counters (il.h `slowSiteCount`), zero, ending where the
+    // table starts (il2mir::ic_slow_count_offset): generated code bumps one
+    // off the table's base, and the harvest finds them by their count, which
+    // the identity record carries. Right before them the ARMED bitmap: bit i
+    // of word i / 64 set when the code counts site i (`slowArmed`, from
+    // lowering; all clear in a build that counts nothing), which the harvest
+    // writes beside the counts.
+    if (module.slowSiteCount != 0) {
+        const size_t armedWords = (static_cast<size_t>(module.slowSiteCount) + 63) / 64;
+        const size_t bytes = (armedWords + module.slowSiteCount) * sizeof(uint64_t);
+        const size_t end = (dataSec.data.size() + bytes + 63) & ~size_t{63};
+        dataSec.data.resize(end, 0);
+        const size_t armedAt = end - bytes;
+        for (size_t w = 0; slowArmed != nullptr && w < armedWords && w < slowArmed->size(); ++w) {
+            std::memcpy(dataSec.data.data() + armedAt + w * sizeof(uint64_t), &(*slowArmed)[w], sizeof(uint64_t));
+        }
+        defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_slow_counts"), dataIdx,
+                     armedAt + armedWords * sizeof(uint64_t), module.slowSiteCount * sizeof(uint64_t),
+                     SymbolBinding::Local);
+    }
     // Line-aligned, and the packed rows a fixed distance after it
     // (il2mir::ic_hot_table_offset): generated code reads a row off the
     // table's base.
@@ -762,7 +784,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
 
     emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, timer);
 
-    emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount);
+    emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount, in.slowArmed);
     demoteInternalSymbols(obj, entrySymbol);
     timer.mark("data section");
 

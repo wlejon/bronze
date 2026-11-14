@@ -261,7 +261,30 @@ public:
     // `exits` the two tests are image sites whose generic code is `miss`.
     Value* plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss, bool exits = false);
     // SpecSiteEmitter::site_branch, for the sites lowered here.
-    void site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits);
+    void site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                     const std::vector<Value*>& fast_args = {});
+    // SLOW ARMS (il_speculation.h): the instruction being lowered's slow
+    // site, and whether its slow arms are twin exits; set by IlLowering for
+    // every instruction. `slow_branch` is site_branch to a slow arm, `slow_arm`
+    // starts one (its counter in a build that may be harvested): every slow
+    // block of an inline fast path whose generic code runs the instruction
+    // from its start, with nothing done yet that it would do again. A run's
+    // slow arm runs all of its instructions, so it carries (and counts) every
+    // slow site among them: the harvested build may have formed other runs.
+    void set_slow_sites(std::vector<uint32_t> sites, bool exits) {
+        slow_sites_ = std::move(sites);
+        slow_exits_ = exits;
+    }
+    [[nodiscard]] bool slow_exits() const noexcept { return slow_exits_; }
+    void slow_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow,
+                     const std::vector<Value*>& fast_args = {}) {
+        site_branch(b, hit, fast, slow, slow_exits_, fast_args);
+    }
+    void slow_arm(Builder& b) {
+        if (!slow_count_fn_) return;
+        for (const uint32_t site : slow_sites_) slow_count_fn_(b, site);
+    }
+    void set_slow_count_fn(std::function<void(Builder&, uint32_t)> fn) { slow_count_fn_ = std::move(fn); }
     // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
     // else the stand-in shape (not_plain_shape). One i64 that answers
     // "plain, and of shape S" with one compare against S, for every S a guard
@@ -583,7 +606,8 @@ public:
     // sets `out_ok`, `out_block` and `out_head`. It also requires the array
     // index hazard clear (through the TLS tag mask, at no cost), since what
     // it licenses reads a hole as `undefined` and stores over one unlooked.
-    // With `miss`, a value that is no object or no Array branches there and
+    // With `miss`, a value that is no object or no Array branches there (the
+    // caller's slow arm: slow_branch, so `miss` must start with slow_arm) and
     // `out_ok` is the rest, the builder left where both tests held.
     void emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
                                 Value*& out_ok, Value*& out_block, Value*& out_head, BasicBlock* miss = nullptr);
@@ -683,6 +707,9 @@ private:
     std::function<Value*(Builder&)> module_delta_fn_;
     std::function<Value*(Builder&, bool)> static_base_fn_;
     std::function<Value*(Builder&)> table_base_fn_;
+    std::function<void(Builder&, uint32_t)> slow_count_fn_;
+    std::vector<uint32_t> slow_sites_;
+    bool slow_exits_ = false;
     struct LastTypedGet {
         BasicBlock* merge_bb = nullptr;
         BasicBlock* load_bb = nullptr;
