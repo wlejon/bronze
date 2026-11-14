@@ -13,6 +13,7 @@
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
+#include <unordered_map>
 
 namespace il2mir {
 
@@ -20,7 +21,7 @@ class IlLowering;
 class PropertyLoweringHelper;
 
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
-                           const char* helper, bool hot = false);
+                           const char* helper, bool hot, const std::unordered_map<uint32_t, Value*>& val_map);
 Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper,
                              bool hot = false);
 // `arms`: the instruction's slow arm (il_property.h slow_branch), the

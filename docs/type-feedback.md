@@ -582,7 +582,21 @@ join, and the loads after it are the loads before it.
 have such a fallback (`ElemGet`, `ElemSet`, `PropGet`, `PropSet`, `StrictEq`,
 `Unbox`) first thing in the final passes, so the probe of a build on the
 harvest numbers them as the harvested build did; inlined copies keep their
-original's number and share its counter. A build that may be harvested (not
+original's number and share its counter. The dynamic `+ - * /` are numbered
+too: their helper's arm is a fallback, the result past an arm that left is a
+Number with nothing to ask (its number flag), and the shape memo crosses the
+join as it crosses a static site's. An instruction takes `kSlowSiteArms`
+(8) indices: the first is its fallback's, the rest are its **arms**, the
+alternatives of its inline path (a store into an Array or a view of one
+element kind, a truthiness test's flag / object / Number / String answers,
+a `===` of equal or different bits of Numbers or of anything else). Each
+arm stores a 1 in its counter where it begins, and a build on the harvest
+asks only for the kind the harvested build saw and leaves for the whole
+ladder otherwise: one test for a truthiness site that saw one kind, the
+doubles' compare for a `===` that saw only Numbers, the bits' for one that
+saw only objects (il_speculation.h, "ARMS"). An arm's answer is computed in
+the arm's block: in front of the test it would be the exit's state, kept
+alive on the fast path for the twin alone. A build that may be harvested (not
 profiled) gives the module that many u64 counters, ending where its IC table
 starts (`__bronze_slow_counts`, the IC identity's `slowSites`, version 3),
 and every fallback bumps its instruction's counter first thing (alias class

@@ -1,5 +1,7 @@
 #include "codegen-brass/il_to_brass_ast.h"
 #include "abi/bronze_abi.h"
+#include "codegen-brass/il2mir/il_abi.h"
+#include "il/feedback_site.h"
 #include "support/source.h"
 
 #include <algorithm>
@@ -10,6 +12,8 @@
 #include <vector>
 
 namespace bronze::codegen {
+
+static_assert(il2mir::kSlowSiteArms == bronze::il::kSlowSiteArms, "one slow site's indices, counted twice");
 
 static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWriteLiteralElement),
               "the array literal element write mode is one number on both sides");

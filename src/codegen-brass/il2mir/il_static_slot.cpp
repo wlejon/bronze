@@ -178,6 +178,17 @@ Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
         b.position_at_end(bb_obj);
         b.build_br(bb_join, {shape_word_of(b, ptr)});
     } else {
+        // Past a block that proved the value plain (PROVEN FACTS), the shape
+        // word with neither test.
+        if (Value* proven = proven_plain(b, obj)) {
+            BasicBlock* bb_proven = b.append_block(prefix + "_proven");
+            BasicBlock* bb_test = b.append_block(prefix + "_test");
+            b.position_at_end(bb_cur);
+            b.build_br_if(proven, bb_proven, bb_test);
+            b.position_at_end(bb_proven);
+            b.build_br(bb_join, {shape_word_of(b, ptr)});
+            b.position_at_end(bb_test);
+        }
         b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, bb_other);
         b.position_at_end(bb_obj);
         constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
@@ -208,6 +219,21 @@ void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fas
     }
 }
 
+void PropertyLoweringHelper::arm_test(Builder& b, Value* cond, BasicBlock* hit, BasicBlock* miss, bool miss_cold) {
+    site_branch(b, cond, hit, miss, /*exits=*/miss_cold);
+}
+
+uint32_t PropertyLoweringHelper::only_arm(uint32_t first, uint32_t last) const {
+    if (!slow_exits_) return 0;
+    uint32_t only = 0;
+    for (uint32_t arm = first; arm <= last; ++arm) {
+        if (arm_exits(arm)) continue;
+        if (only != 0) return 0;
+        only = arm;
+    }
+    return only;
+}
+
 Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss, bool exits) {
     // A value known a plain object (OBJECT FLAGS) asks nothing, or its flag
     // once in place of the two tests.
@@ -225,18 +251,26 @@ Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, Basic
     }
     // The payload is the Value with its object tag XORed away, below 2^48
     // exactly when the tag was the object tag; only then is the header read.
+    // Past a block that proved the value plain (PROVEN FACTS) neither is.
     BasicBlock* bb_cur = b.current_block();
     const std::string prefix = "recv_" + std::to_string(bb_cur->parent()->next_block_id());
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
     BasicBlock* bb_plain = b.append_block(prefix + "_plain");
     b.position_at_end(bb_cur);
     Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    if (Value* proven = proven_plain(b, obj)) {
+        BasicBlock* bb_test = b.append_block(prefix + "_test");
+        b.position_at_end(bb_cur);
+        b.build_br_if(proven, bb_plain, bb_test);
+        b.position_at_end(bb_test);
+    }
     site_branch(b, b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, miss, exits);
     b.position_at_end(bb_obj);
     constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
     site_branch(b, b.build_eq(header_word(b, ptr), b.build_iconst_i32(kPlainHeader)), bb_plain, miss,
                 exits);
     b.position_at_end(bb_plain);
+    prove_plain(b, obj);
     return shape_word_of(b, ptr);
 }
 
@@ -258,6 +292,45 @@ bool PropertyLoweringHelper::layout_number(const StaticSlotSite& site) const {
 Value* PropertyLoweringHelper::number_flag(Value* v) const { return find_flag(number_flags_, v); }
 
 Value* PropertyLoweringHelper::object_flag(Value* v) const { return find_flag(object_flags_, v); }
+
+namespace {
+// The value a fact is recorded under: `v` behind the bitcasts between `i64`
+// and `tagged`.
+Value* fact_root(Value* v) {
+    for (int hops = 0; hops < 3; ++hops) {
+        const Instruction* def = v->defining_instruction();
+        if (def == nullptr || def->operand_count() != 1 ||
+            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
+            break;
+        }
+        v = def->operand(0);
+    }
+    return v;
+}
+// The marks of one value a test asks: the latest ones, each a call until
+// resolve_fact_markers.
+constexpr size_t kProofsAsked = 3;
+}  // namespace
+
+void PropertyLoweringHelper::prove_plain(Builder& b, Value* v) {
+    if (!spec_ || !spec_->image_sites() || v == nullptr) return;
+    const uint32_t id = next_proof_++;
+    b.build_call(kFactProofSymbol, Type::void_type(), {b.build_iconst_i32(static_cast<int32_t>(id))});
+    plain_proofs_[fact_root(v)].push_back(id);
+}
+
+Value* PropertyLoweringHelper::proven_plain(Builder& b, Value* v) {
+    if (v == nullptr) return nullptr;
+    const auto it = plain_proofs_.find(fact_root(v));
+    if (it == plain_proofs_.end()) return nullptr;
+    const std::vector<uint32_t>& ids = it->second;
+    Value* any = nullptr;
+    for (size_t i = ids.size() > kProofsAsked ? ids.size() - kProofsAsked : 0; i < ids.size(); ++i) {
+        Value* p = b.build_call(kFactProvenSymbol, Type::i32(), {b.build_iconst_i32(static_cast<int32_t>(ids[i]))});
+        any = any ? b.build_or(any, p) : p;
+    }
+    return any;
+}
 
 bool PropertyLoweringHelper::object_member(const StaticSlotSite& site) const {
     if (site.none() || site.slot >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) return false;
@@ -351,13 +424,17 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
         if (t.store && !t.store_is_number && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
             // A layout cell's `number` member is a double slot on every shape
             // the cell admits: the value alone is the question.
+            // The value's NUMBER FLAG where it has one: nothing to ask of a
+            // value known a Number.
+            Value* is_num = number_flag(t.store);
+            if (const_one(is_num)) continue;
+            if (!is_num) is_num = b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits));
             if (layout_number(site)) {
-                all(b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits)));
+                all(is_num);
                 continue;
             }
             if (!doubles) doubles = shape_word(kDoubleSlotsOffset);
             Value* boxed = b.build_eq(b.build_and(doubles, iconst(b, uint64_t{1} << site.slot)), iconst(b, 0));
-            Value* is_num = b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits));
             all(b.build_or(boxed, is_num));
         }
     }
@@ -561,6 +638,8 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
                 miss.exits);
 
     b.position_at_end(bb_hit);
+    // A cell or a stamp admits only a plain receiver (static_guard).
+    if (!site.none()) prove_plain(b, obj);
     int32_t off = 0;
     Value* base = static_slot_base(b, ptr, site.slot, off);
     // No correction of any kind: the cell or the stamp stands for the key
@@ -609,6 +688,7 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
     // A hit stores into a slot the shape already has, which moves no shape;
     // the memo crosses it as it is.
     b.position_at_end(bb_hit);
+    if (!site.none()) prove_plain(b, obj);
     int32_t off = 0;
     Value* base = static_slot_base(b, ptr, site.slot, off);
     store_with_barrier(b, base, off, val, need_barrier, prefix);

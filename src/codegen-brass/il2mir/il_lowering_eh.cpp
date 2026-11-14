@@ -9,6 +9,7 @@
 // A call outside one is a plain call, and nothing after it looks at anything:
 // an exception passes the frame by through its unwind data.
 #include "il_lowering.h"
+#include "il_abi.h"
 
 #include <string>
 
@@ -63,6 +64,8 @@ void IlLowering::route_exception_edges(Builder& b, const std::unordered_map<uint
         work.pop_back();
         for (Instruction* inst = bb->head(); inst; inst = inst->next()) {
             if (inst->opcode() != Opcode::call) continue;
+            // A fact marker (il_speculation.h, "PROVEN FACTS") is no call.
+            if (inst->symbol() == kFactProofSymbol || inst->symbol() == kFactProvenSymbol) continue;
             // The instructions after the call continue in a block of their
             // own, the invoke's normal successor, which is protected by the
             // same handler and so is scanned in its turn.

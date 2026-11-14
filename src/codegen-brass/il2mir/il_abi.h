@@ -190,6 +190,14 @@ std::string code_range_count_symbol(const std::string& entry_symbol);
 // POLICY"), which the backend defines in the image's shared data: the
 // address f's direct calls call, f's exits and a probe's calls.
 inline constexpr std::string_view kTwinGenericSuffix = "__generic";
+// The indices one slow site takes (il/feedback_site.h kSlowSiteArms): its
+// slow arm's and its ARMS' (il_speculation.h).
+inline constexpr uint32_t kSlowSiteArms = 8;
+// PROVEN FACTS (il_speculation.h, resolve_fact_markers): the two marker
+// calls of an image's lowering, each taking a fact's id, both gone before
+// any pass runs.
+inline constexpr std::string_view kFactProofSymbol = "__bronze_fact_proof";
+inline constexpr std::string_view kFactProvenSymbol = "__bronze_fact_proven";
 inline constexpr std::string_view kTwinProbeSuffix = "__probe";
 inline constexpr std::string_view kTwinEntryCellPrefix = "__bronze_twin_entry_";
 inline constexpr int32_t kTwinCellEntry = 0;

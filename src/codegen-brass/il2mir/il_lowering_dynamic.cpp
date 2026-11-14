@@ -12,6 +12,9 @@
 #include "il_lowering.h"
 #include "il_lowering_ops.h"
 #include "il_abi.h"
+#include <functional>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace il2mir {
@@ -21,7 +24,7 @@ namespace il2mir {
 // test is a speculation site (il_speculation.h), which tier 2 turns into a
 // guard where the helper never ran.
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
-                           const char* helper, bool hot) {
+                           const char* helper, bool hot, const std::unordered_map<uint32_t, Value*>& val_map) {
     if (lowering->run_once()) return b.build_call(helper, Type::i64(), {op0, op1});
     BasicBlock* cur = b.current_block();
     const std::string prefix = "num_" + std::to_string(cur->parent()->next_block_id());
@@ -31,11 +34,51 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
     Value* result = b.add_block_param(merge, Type::i64());
     if (hot) slow->set_cold();
 
+    // In an image the helper's arm is a slow arm (il_speculation.h, "SLOW
+    // ARMS"): counted in a build that may be harvested, an exit to the twin
+    // where the harvested build never ran it. The join's i32 is the result's
+    // NUMBER FLAG (il_property.h): 1 from the Number arm, the test from the
+    // helper's, so the constant where that arm left.
+    PropertyLoweringHelper& prop = lowering->prop_lowering();
+    const bool image = lowering->spec().image_sites();
+    Value* flag = image ? b.add_block_param(merge, Type::i32()) : nullptr;
+    // And the SHAPE MEMO (il_shape_memo.cpp) crosses the join as it crosses
+    // a static site's: the Number arm moves no shape and passes each word on,
+    // the helper's arm, which may run a valueOf, reads each again.
+    std::optional<MemoCarry> carry = image ? lowering->memo_carry(0, nullptr, val_map) : std::nullopt;
+    std::vector<Value*> kept;
+    if (carry) kept = carry->hit(b);
+    if (kept.empty()) carry.reset();
+    std::vector<Value*> joined;
+    for (size_t i = 0; i < kept.size(); ++i) joined.push_back(b.add_block_param(merge, Type::i64()));
+
     b.position_at_end(cur);
     Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
-    Value* both = b.build_and(b.build_ule(op0, max), b.build_ule(op1, max));
-    lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith, helper);
-    b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
+    auto is_number = [&](Value* v) {
+        Value* known = prop.number_flag(v);
+        return known ? known : b.build_ule(v, max);
+    };
+    Value* both = b.build_and(is_number(op0), is_number(op1));
+    if (image) {
+        if (prop.slow_exits()) {
+            prop.slow_branch(b, both, fast, slow);
+            b.position_at_end(slow);
+        } else {
+            lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith, helper);
+        }
+        prop.slow_arm(b);
+        Value* r = b.build_call(helper, Type::i64(), {op0, op1});
+        std::vector<Value*> args{r, b.build_ule(r, max)};
+        if (carry) {
+            const std::vector<Value*> again = carry->miss(b);
+            args.insert(args.end(), again.begin(), again.end());
+        }
+        b.build_br(merge, args);
+    } else {
+        lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith, helper);
+        prop.slow_arm(b);
+        b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
+    }
 
     b.position_at_end(fast);
     Value* f0 = b.build_bitcast_f64_i64(op0);
@@ -44,9 +87,17 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
              : op == BronzeOp::Sub ? b.build_sub(f0, f1)
              : op == BronzeOp::Mul ? b.build_mul(f0, f1)
                                    : b.build_sdiv(f0, f1);
-    b.build_br(merge, {box_f64_bits(b, f)});
+    if (image) {
+        std::vector<Value*> args{box_f64_bits(b, f), b.build_iconst_i32(1)};
+        args.insert(args.end(), kept.begin(), kept.end());
+        b.build_br(merge, args);
+    } else {
+        b.build_br(merge, {box_f64_bits(b, f)});
+    }
 
     b.position_at_end(merge);
+    if (image) prop.set_number_flag(result, flag);
+    if (carry) carry->merged(joined);
     return result;
 }
 
@@ -189,14 +240,81 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
         slow->set_cold();
     }
 
+    // The compare's ARMS (il_speculation.h): equal bits of a Number, of a
+    // String or BigInt, or of anything else; two Numbers with different
+    // bits; and different bits whose first operand is or is not a String or
+    // a BigInt.
+    enum : uint32_t { kArmSame = 1, kArmSameNumber, kArmNumbers, kArmIdentity, kArmText, kArmSameText };
+    const uint64_t text_bits = uint64_t{BRONZE_ABI_TAG_STRING} << BRONZE_ABI_VALUE_TAG_SHIFT;
+    auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
+    // A block that marks `arm` and joins with `answer`.
+    auto arm_edge = [&](uint32_t arm, const char* name, int32_t answer) {
+        if (!arms) return merge;
+        BasicBlock* at = b.current_block();
+        BasicBlock* bb = b.append_block(prefix + name);
+        b.position_at_end(bb);
+        arms->arm_begin(b, arm);
+        b.build_br(merge, {b.build_iconst_i32(answer)});
+        b.position_at_end(at);
+        return bb;
+    };
+
     b.position_at_end(cur);
     Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
+    if (arms && arms->slow_exits() && arms->arm_exits(kArmText)) {
+        // What the harvested build compared here: only Numbers, only values
+        // whose bits are their identity (an object, a Boolean, null,
+        // undefined: all between the Numbers and the Strings), or only equal
+        // bits of a String (one constant against itself, `mode !== "normal"`
+        // over the same interned text). Each is one test and the answer;
+        // anything else leaves for the ladder below.
+        const bool numbers = !arms->arm_exits(kArmSameNumber) || !arms->arm_exits(kArmNumbers);
+        const bool identity = !arms->arm_exits(kArmSame) || !arms->arm_exits(kArmIdentity);
+        const bool same_text = !arms->arm_exits(kArmSameText);
+        if (int{numbers} + int{identity} + int{same_text} == 1) {
+            BasicBlock* at = b.current_block();
+            BasicBlock* one = b.append_block(prefix + "_one");
+            BasicBlock* all = b.append_block(prefix + "_all");
+            b.position_at_end(at);
+            if (numbers) {
+                auto is_number = [&](Value* v) {
+                    Value* known = arms->number_flag(v);
+                    return known ? known : b.build_ule(v, max);
+                };
+                arms->site_branch(b, b.build_and(is_number(op0), is_number(op1)), one, all, /*exits=*/true);
+                b.position_at_end(one);
+                b.build_br(merge, {b.build_eq(b.build_bitcast_f64_i64(op0), b.build_bitcast_f64_i64(op1))});
+            } else if (identity) {
+                Value* between = b.build_ult(b.build_sub(op0, bits(kBronzeNumberMaxBits + 1)),
+                                             bits(text_bits - kBronzeNumberMaxBits - 1));
+                arms->site_branch(b, between, one, all, /*exits=*/true);
+                b.position_at_end(one);
+                b.build_br(merge, {b.build_eq(op0, op1)});
+            } else {
+                arms->site_branch(b, b.build_and(b.build_eq(op0, op1), b.build_uge(op0, bits(text_bits))), one, all,
+                                  /*exits=*/true);
+                b.position_at_end(one);
+                b.build_br(merge, {b.build_iconst_i32(1)});
+            }
+            b.position_at_end(all);
+        }
+    }
     b.build_br_if(b.build_eq(op0, op1), same, differ);
 
     // Equal bits: equal, unless a Number that is NaN.
     b.position_at_end(same);
-    b.build_br_if(b.build_ule(op0, max), same_num, {}, merge, {b.build_iconst_i32(1)});
+    BasicBlock* same_other = arms ? b.append_block(prefix + "_same_other") : merge;
+    b.position_at_end(same);
+    if (arms) {
+        b.build_br_if(b.build_ule(op0, max), same_num, same_other);
+        b.position_at_end(same_other);
+        b.build_br_if(b.build_ult(op0, bits(text_bits)), arm_edge(kArmSame, "_same_id", 1),
+                      arm_edge(kArmSameText, "_same_text", 1));
+    } else {
+        b.build_br_if(b.build_ule(op0, max), same_num, {}, merge, {b.build_iconst_i32(1)});
+    }
     b.position_at_end(same_num);
+    if (arms) arms->arm_begin(b, kArmSameNumber);
     Value* self = b.build_bitcast_f64_i64(op0);
     b.build_br(merge, {b.build_eq(self, self)});
 
@@ -204,6 +322,7 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     b.build_br_if(b.build_and(b.build_ule(op0, max), b.build_ule(op1, max)), num, other);
 
     b.position_at_end(num);
+    if (arms) arms->arm_begin(b, kArmNumbers);
     b.build_br(merge, {b.build_eq(b.build_bitcast_f64_i64(op0), b.build_bitcast_f64_i64(op1))});
 
     // Different bits, not two Numbers: false unless two Strings or two
@@ -211,10 +330,9 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     // above the Numbers, is one compare; the tags are read only past it, and
     // the second operand's only for a String or a BigInt first one.
     b.position_at_end(other);
-    b.build_br_if(b.build_ult(op0, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_STRING}
-                                                                           << BRONZE_ABI_VALUE_TAG_SHIFT))),
-                  merge, {b.build_iconst_i32(0)}, contents, {});
+    b.build_br_if(b.build_ult(op0, bits(text_bits)), arm_edge(kArmIdentity, "_identity", 0), contents);
     b.position_at_end(contents);
+    if (arms) arms->arm_begin(b, kArmText);
     Value* shift = b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT);
     Value* tag0 = b.build_lshr(op0, shift);
     Value* by_contents = b.build_or(b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)),
@@ -368,22 +486,69 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
     static_assert(BRONZE_ABI_TAG_NULL == BRONZE_ABI_TAG_BOOL + 1 && BRONZE_ABI_TAG_UNDEFINED == BRONZE_ABI_TAG_BOOL + 2 &&
                       kUndefinedTag == uint64_t{BRONZE_ABI_TAG_UNDEFINED} << BRONZE_ABI_VALUE_TAG_SHIFT,
                   "Boolean, null and undefined are one range of bits");
-    b.build_br_if(b.build_ule(b.build_sub(v, bits(kBoolTag)), bits(kUndefinedTag - kBoolTag)), merge,
-                  {b.build_eq(v, bits(kBoolTag | 1))}, not_obj, {});
+    // With no hint each answer is an ARM (il_speculation.h). Where the
+    // harvested build saw one kind at this test, that kind's test is the
+    // speculated function's and the ladder is the twin's; else the ladder
+    // ends, in an exit, behind the last kind it saw.
+    enum : uint32_t { kArmFlag = 1, kArmObject, kArmNumber, kArmString };
+    const bool armed = arms != nullptr && !ladder;
+    const bool rest_cold = armed && arms->slow_exits() && arms->arm_exits(kArmString);
+    // An arm's own block: its mark, then the join with its answer, which is
+    // computed there (in front of the test it would be the exit's state).
+    auto arm_edge = [&](uint32_t arm, const char* name, const std::function<Value*()>& answer) {
+        BasicBlock* at = b.current_block();
+        BasicBlock* bb = b.append_block(prefix + name);
+        b.position_at_end(bb);
+        arms->arm_begin(b, arm);
+        b.build_br(merge, {answer()});
+        b.position_at_end(at);
+        return bb;
+    };
+    auto is_flag = [&] { return b.build_ule(b.build_sub(v, bits(kBoolTag)), bits(kUndefinedTag - kBoolTag)); };
+    auto flag_answer = [&] { return b.build_eq(v, bits(kBoolTag | 1)); };
+    // A Number or an Int32, and its answer: |x| in [1, +Inf] bits is neither
+    // a zero nor a NaN.
+    struct NumberTest {
+        Value* is;
+        Value* answer;
+    };
+    auto number_test = [&] {
+        Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
+        Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
+        Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
+        Value* is_int =
+            b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
+                        bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT));
+        Value* int_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
+        return NumberTest{b.build_or(is_num, is_int), b.build_select(is_num, num_true, int_true)};
+    };
+    BasicBlock* flag_bb = armed ? arm_edge(kArmFlag, "_flag", flag_answer) : nullptr;
+    BasicBlock* object_bb = armed ? arm_edge(kArmObject, "_object", [&] { return b.build_iconst_i32(1); }) : nullptr;
+    BasicBlock* number_bb = armed ? arm_edge(kArmNumber, "_number", [&] { return number_test().answer; }) : nullptr;
+    if (const uint32_t only = armed ? arms->only_arm(kArmFlag, kArmString) : 0; only != 0 && only != kArmString) {
+        BasicBlock* at = b.current_block();
+        BasicBlock* all = b.append_block(prefix + "_all");
+        b.position_at_end(at);
+        Value* is = only == kArmFlag ? is_flag() : only == kArmObject ? is_object() : number_test().is;
+        arms->arm_test(b, is, only == kArmFlag ? flag_bb : only == kArmObject ? object_bb : number_bb, all,
+                       /*miss_cold=*/true);
+        b.position_at_end(all);
+    }
+    if (armed) {
+        arms->arm_test(b, is_flag(), flag_bb, not_obj,
+                       rest_cold && arms->arm_exits(kArmNumber) && arms->arm_exits(kArmObject));
+    } else {
+        b.build_br_if(is_flag(), merge, {flag_answer()}, not_obj, {});
+    }
     // Then an Object: a presence test of a field that is set.
     b.position_at_end(not_obj);
-    b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, classify, {});
+    if (armed) {
+        arms->arm_test(b, is_object(), object_bb, classify, rest_cold && arms->arm_exits(kArmNumber));
+    } else {
+        b.build_br_if(is_object(), merge, {b.build_iconst_i32(1)}, classify, {});
+    }
     // What is left of the inline answers: a Number or an Int32 (no Boolean,
     // Object or nullish value comes this far).
-    b.position_at_end(classify);
-    Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
-    // |x| in [1, +Inf] bits: neither a zero nor a NaN.
-    Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
-    Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
-    Value* is_int = b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
-                                bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT));
-    Value* int_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
-    Value* answer = b.build_select(is_num, num_true, int_true);
     BasicBlock* not_num = b.append_block(prefix + "_notnum");
     BasicBlock* str = b.append_block(prefix + "_str");
     if (ladder) {
@@ -391,7 +556,14 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
         str->set_cold();
     }
     b.position_at_end(classify);
-    b.build_br_if(b.build_or(is_num, is_int), merge, {answer}, not_num, {});
+    {
+        const NumberTest number = number_test();
+        if (armed) {
+            arms->arm_test(b, number.is, number_bb, not_num, rest_cold);
+        } else {
+            b.build_br_if(number.is, merge, {number.answer}, not_num, {});
+        }
+    }
     // Then a String (`if (renderable.renderPipeId)`, `if (name)`): true
     // unless it is empty, and every string's header holds its length, a
     // `+`-chain builder's included (string.h).
@@ -405,6 +577,7 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only, bool number_
         b.build_br_if(is_str, str, slow);
     }
     b.position_at_end(str);
+    if (armed) arms->arm_begin(b, kArmString);
     Value* chars = b.build_load(Type::i32(), b.build_and(v, bits(0x0000FFFFFFFFFFFFULL)), BRONZE_ABI_STRING_LENGTH_OFFSET);
     b.build_br(merge, {b.build_ne(chars, b.build_iconst_i32(0))});
 

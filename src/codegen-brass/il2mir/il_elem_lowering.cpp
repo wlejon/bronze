@@ -549,9 +549,13 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     BasicBlock* bb_i8 = b.append_block(prefix + "_i8");
     BasicBlock* bb_clamp_check = b.append_block(prefix + "_clamp_check");
     BasicBlock* bb_clamp = b.append_block(prefix + "_clamp");
+    BasicBlock* bb_kinds = b.append_block(prefix + "_kinds");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     bb_slow->set_cold();
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    // The store's ARMS (il_speculation.h): which receiver, and which element
+    // kind of a view. One site stores into one of them, nearly always.
+    enum : uint32_t { kArmArray = 1, kArmView, kArmF64, kArmF32, kArmInt, kArmClamp };
 
     // An object and an integral index, or the helper.
     b.position_at_end(cur);
@@ -559,15 +563,26 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* is_obj = nullptr;
     object_pointer(b, obj, ptr, is_obj);
     const ElemIndex idx = elem_index(b, index);
-    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+    slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check);
+    // A site that stored only into views asks for a view, and leaves for
+    // the two tests otherwise.
+    if (only_arm(kArmArray, kArmView) == kArmView) {
+        BasicBlock* bb_which = b.append_block(prefix + "_which");
+        b.position_at_end(bb_obj);
+        site_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_which,
+                    /*exits=*/true);
+        b.position_at_end(bb_which);
+    }
+    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check,
+             slow_exits() && arm_exits(kArmView));
 
     // An Array: an element in bounds or the append at `length`, and no
     // properties object (il_number_array.cpp, branch_on_array_store).
     b.position_at_end(bb_array);
+    arm_begin(b, kArmArray);
     Value* block = nullptr;
     Value* slot = nullptr;
     branch_on_array_store(b, ptr, idx.i64, bb_array_store, bb_slow, prefix, block, slot);
@@ -585,18 +600,44 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 
     // A TypedArray of a Number kind, in bounds, and a Number value.
     b.position_at_end(bb_ta_check);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
+    slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
 
     b.position_at_end(bb_ta);
+    arm_begin(b, kArmView);
     Value* num = boxed_f64_source(val);
     Value* is_number = num ? b.build_iconst_i32(1) : b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
     if (!num) num = b.build_bitcast_f64_i64(val);
     Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    b.build_br_if(b.build_and(is_number, b.build_ult(idx.i64, ta_length)), bb_ta_store, bb_slow);
+    slow_branch(b, b.build_and(is_number, b.build_ult(idx.i64, ta_length)), bb_ta_store, bb_slow);
 
     b.position_at_end(bb_ta_store);
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
     Value* data = typed_array_data(b, ptr);
+    // The one kind the harvested build stored into, where it is one whose
+    // test is a compare, is asked alone; the switch is then the twin's.
+    {
+        struct KindArm {
+            uint32_t arm;
+            int32_t kind;
+            BasicBlock* bb;
+        };
+        const KindArm arms[] = {{kArmF64, BRONZE_ABI_TA_KIND_FLOAT64, bb_f64},
+                                {kArmF32, BRONZE_ABI_TA_KIND_FLOAT32, bb_f32},
+                                {kArmClamp, BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_clamp_check}};
+        const KindArm* only = nullptr;
+        size_t ran = arm_exits(kArmInt) ? 0 : 1;
+        for (const KindArm& k : arms) {
+            if (arm_exits(k.arm)) continue;
+            ++ran;
+            only = &k;
+        }
+        if (ran == 1 && only != nullptr) {
+            site_branch(b, b.build_eq(kind, b.build_iconst_i32(only->kind)), only->bb, bb_kinds, /*exits=*/true);
+        } else {
+            b.build_br(bb_kinds);
+        }
+    }
+    b.position_at_end(bb_kinds);
     b.build_switch(kind, bb_slow,
                    {SwitchCase(BRONZE_ABI_TA_KIND_FLOAT64, bb_f64), SwitchCase(BRONZE_ABI_TA_KIND_FLOAT32, bb_f32),
                     SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_int_check), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_int_check),
@@ -605,15 +646,18 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
                     SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_clamp_check)});
 
     b.position_at_end(bb_f64);
+    arm_begin(b, kArmF64);
     with_alias_class(b.build_store_indexed(Type::f64(), data, idx.i64, 8, num), kTypedElementAliasClass);
     b.build_br(bb_merge);
     b.position_at_end(bb_f32);
+    arm_begin(b, kArmF32);
     with_alias_class(b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(num)), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     // The integer kinds: a magnitude below 2^63 (NaN and the infinities fail
     // it) truncates exactly, and its low bits are the stored element.
     b.position_at_end(bb_int_check);
+    arm_begin(b, kArmInt);
     Value* abs_bits = b.build_and(b.build_bitcast_i64_f64(num), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
     b.build_br_if(b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)), bb_int, bb_slow);
 
@@ -639,6 +683,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     // Uint8Clamped: an integral value (the round trip is exact, so no
     // rounding is owed and NaN fails it), clamped to 0..255.
     b.position_at_end(bb_clamp_check);
+    arm_begin(b, kArmClamp);
     Value* c_abs = b.build_and(b.build_bitcast_i64_f64(num), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
     Value* c_whole = b.build_fptosi_i64(num);
     Value* c_exact = b.build_eq(b.build_sitofp_f64_i64(c_whole), num);
@@ -651,6 +696,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);
+    slow_arm(b);
     b.build_call(elem_set_helper(), Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
     b.build_br(bb_merge);
 

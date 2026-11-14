@@ -5,10 +5,13 @@
 
 #include "abi/bronze_abi.h"
 
+#include <brass/mir/builder.hpp>
+#include <brass/mir/dominators.hpp>
 #include <brass/mir/function.hpp>
 #include <brass/mir/loop_opt.hpp>
 #include <brass/mir/module.hpp>
 #include <brass/mir/resume_twin.hpp>
+#include <brass/mir/uses.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -179,6 +182,59 @@ void make_probe_entry(Module& mod, const Function& fn, const std::string& probe,
     out->rebuild_cfg_predecessors();
 }
 
+// PROVEN FACTS (il_speculation.h): fn's `proven` calls become constants and
+// its `proof` calls go.
+void resolve_fact_markers(Module& mod, Function& fn) {
+    struct Mark {
+        Instruction* inst;
+        BasicBlock* bb;
+        uint32_t id;
+        uint32_t at;  // position among the block's marks
+        bool proof;
+    };
+    std::vector<Mark> marks;
+    for (BasicBlock* bb : fn.blocks()) {
+        if (!bb) continue;
+        uint32_t at = 0;
+        for (Instruction* inst : *bb) {
+            if (!inst || inst->opcode() != Opcode::call) continue;
+            const bool proof = inst->symbol() == kFactProofSymbol;
+            if (!proof && inst->symbol() != kFactProvenSymbol) continue;
+            const Instruction* id = inst->operand(0)->defining_instruction();
+            marks.push_back({inst, bb, static_cast<uint32_t>(id->imm_i32()), at++, proof});
+        }
+    }
+    if (marks.empty()) return;
+    std::unordered_map<uint32_t, std::vector<const Mark*>> proofs;
+    bool asked = false;
+    for (const Mark& m : marks) {
+        if (m.proof) {
+            proofs[m.id].push_back(&m);
+        } else {
+            asked = true;
+        }
+    }
+    if (asked) {
+        fn.rebuild_cfg_predecessors();
+        const brass::DominatorTree dom(fn);
+        Builder b(mod);
+        b.set_function(&fn);
+        for (const Mark& m : marks) {
+            if (m.proof) continue;
+            bool holds = false;
+            if (const auto it = proofs.find(m.id); it != proofs.end() && dom.is_reachable(m.bb)) {
+                for (const Mark* p : it->second) {
+                    holds = p->bb == m.bb ? p->at < m.at : dom.dominates(p->bb, m.bb);
+                    if (holds) break;
+                }
+            }
+            b.position_before(m.inst);
+            brass::replace_all_uses(fn, m.inst->result(), b.build_iconst_i32(holds ? 1 : 0));
+        }
+    }
+    for (const Mark& m : marks) m.bb->remove_instruction(m.inst);
+}
+
 } // namespace
 
 void make_resume_twins(Module& mod) {
@@ -238,6 +294,10 @@ void make_resume_twins(Module& mod) {
             throw std::logic_error("il2mir: " + std::string(fn->name()) + " against its resume twin: " + why);
         }
         if (trace) std::fprintf(stderr, "twin: %s armed %u\n", std::string(fn->name()).c_str(), armed);
+    }
+    // Every copy is cut; each resolves its marks.
+    for (Function* fn : mod.functions()) {
+        if (fn && fn->block_count() != 0) resolve_fact_markers(mod, *fn);
     }
     if (cells.empty()) return;
     for (Function* fn : mod.functions()) {

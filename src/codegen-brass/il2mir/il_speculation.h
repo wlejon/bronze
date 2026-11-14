@@ -102,6 +102,9 @@ public:
                      const std::vector<Value*>& fast_args = {});
     // Whether site_branch makes guards in the function being lowered.
     [[nodiscard]] bool image_sites_here() const noexcept { return sites_.image_sites() && sites_.can_deopt(); }
+    // Whether the module is an image's, whose functions make_resume_twins
+    // sees: where the fact markers below may be emitted.
+    [[nodiscard]] bool image_sites() const noexcept { return sites_.image_sites(); }
     // With a profile: the recorded misses of the next site of (kind, tag),
     // without taking it; nullopt when the profile does not name it.
     std::optional<uint32_t> peek_profile(SpecKind kind, std::string_view tag) const;
@@ -162,6 +165,36 @@ private:
 // it and exits only when all are cold (IlLowering::set_run_slow_site),
 // whatever runs the harvested build formed; a constant-index run's never
 // exits (its state would hold every element it loaded).
+//
+// ARMS. An inline path is often several: a store into an Array or into a
+// view of one of nine element kinds, a truthiness test of a flag, an object,
+// a Number or a String. One site nearly always takes one of them, and which
+// is in the harvest too: an instruction with a slow site has
+// kSlowSiteArms indices, the first its slow arm's and the rest its arms',
+// which its lowering names (an enum beside the code) and marks where each
+// begins (PropertyLoweringHelper::arm_begin: one store of a constant, an arm
+// being on the fast path). Built on the harvest, in a function with a twin,
+// a site whose one arm ran asks that arm's test and leaves for the whole
+// ladder otherwise (only_arm), and a ladder ends in an exit behind the last
+// arm that ran (arm_test); the twin has all of them. An exit never goes
+// INTO an arm past a test turned around: that kept every value the arm
+// reads alive for the twin and ran pixi's sprite loop 3% more instructions.
+// A run of instructions has no arms.
+//
+// PROVEN FACTS. A fact about a value that nothing can undo (that it is a
+// plain object: its tag is the value, its heap kind set once at creation)
+// holds wherever a block that established it dominates. Lowering cannot see
+// that: an exit's miss leaves the speculated function and rejoins in the
+// twin, and the two are cut from one lowering. So it marks instead, with two
+// calls that exist only until make_resume_twins has cut every copy:
+// `__bronze_fact_proof(id)` in a block only a value with the fact reaches,
+// `i32 __bronze_fact_proven(id)` where a later test of that value would run
+// (PropertyLoweringHelper::prove_plain / proven_plain). Each copy then
+// resolves its own: a `proven` is 1 where a `proof` of its id dominates it
+// in that copy's control flow, else 0, and the proofs go. The speculated
+// function, whose misses left, keeps few tests; the generic copy keeps those
+// behind a join with a miss; the twin, entered at its resume blocks, nearly
+// all.
 void make_resume_twins(Module& mod);
 inline constexpr int64_t kTwinExitLimit = 256;
 inline constexpr int64_t kTwinProbeCalls = 8 * kTwinExitLimit;

@@ -47,8 +47,10 @@ Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits, bool hot) 
     if (hot) slow->set_cold();
 
     b.position_at_end(cur);
-    Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     PropertyLoweringHelper& prop = lowering->prop_lowering();
+    // A value with a NUMBER FLAG (il_property.h) is asked through it.
+    Value* is_num = prop.number_flag(bits);
+    if (!is_num) is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     if (prop.slow_exits()) {
         prop.slow_branch(b, is_num, fast, slow);
         b.position_at_end(slow);

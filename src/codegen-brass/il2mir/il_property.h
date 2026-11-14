@@ -201,6 +201,8 @@ public:
     void clear_number_flags() {
         number_flags_.clear();
         object_flags_.clear();
+        plain_proofs_.clear();
+        next_proof_ = 0;
     }
     // Per class family (TranslatorOptions::class_family_object_slots), the
     // slots of its `object` fields.
@@ -220,6 +222,16 @@ public:
     // constant. Per function, cleared with the number flags.
     [[nodiscard]] Value* object_flag(Value* v) const;
     void set_object_flag(Value* v, Value* flag) { object_flags_[v] = flag; }
+    // PROVEN FACTS (il_speculation.h, resolve_fact_markers), in an image:
+    // `prove_plain` marks the block the builder is in as one only a plain
+    // object `v` reaches, which holds for the rest of the function, a
+    // value's tag and an object's heap kind being fixed at its creation.
+    // `proven_plain` is an i32 for a later receiver test of `v`, 1 where one
+    // of the marked blocks dominates it in the function as finally built
+    // (the speculated copy, whose misses left; rarely the twin, entered at
+    // its resume blocks) and 0 elsewhere, or null with nothing marked.
+    void prove_plain(Builder& b, Value* v);
+    Value* proven_plain(Builder& b, Value* v);
     // Whether `v` is a plain object, as an i32, with no branch: the header is
     // read through a mapped block when `v` is no object (receiver_shape).
     Value* plain_object_test(Builder& b, Value* v);
@@ -285,6 +297,29 @@ public:
         for (const uint32_t site : slow_sites_) slow_count_fn_(b, site);
     }
     void set_slow_count_fn(std::function<void(Builder&, uint32_t)> fn) { slow_count_fn_ = std::move(fn); }
+    // ARMS (il_speculation.h): the alternatives of the instruction's inline
+    // path, each an index after its slow site's (below kSlowSiteArms).
+    // `arm_begin` starts one, marking it run in a build that may be
+    // harvested; `arm_exits` says the harvested build reached the
+    // instruction's lowering there and never ran the arm, in a function with
+    // a twin. `only_arm` is the one arm of [first, last] that ran, where
+    // every other and the slow arm never did (else 0): its test alone is
+    // then the speculated function's, an exit into the whole ladder.
+    // A run of instructions has no arms.
+    void set_arm_fns(std::function<bool(uint32_t)> cold, std::function<void(Builder&, uint32_t)> mark) {
+        arm_cold_fn_ = std::move(cold);
+        arm_mark_fn_ = std::move(mark);
+    }
+    [[nodiscard]] bool arm_exits(uint32_t arm) const {
+        return slow_sites_.size() == 1 && arm_cold_fn_ && arm_cold_fn_(slow_sites_[0] + arm);
+    }
+    void arm_begin(Builder& b, uint32_t arm) {
+        if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm);
+    }
+    [[nodiscard]] uint32_t only_arm(uint32_t first, uint32_t last) const;
+    // One test of a ladder: `br_if cond, hit, miss`, an exit where
+    // `miss_cold` says every arm behind it, and the slow arm, never ran.
+    void arm_test(Builder& b, Value* cond, BasicBlock* hit, BasicBlock* miss, bool miss_cold);
     // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
     // else the stand-in shape (not_plain_shape). One i64 that answers
     // "plain, and of shape S" with one compare against S, for every S a guard
@@ -696,6 +731,8 @@ private:
     const std::unordered_map<uint32_t, LayoutCell>* layout_cells_ = nullptr;
     std::unordered_map<Value*, Value*> number_flags_;
     std::unordered_map<Value*, Value*> object_flags_;
+    std::unordered_map<Value*, std::vector<uint32_t>> plain_proofs_;
+    uint32_t next_proof_ = 0;
     const std::vector<uint64_t>* family_objects_ = nullptr;
     std::string static_cells_sym_;
     uint32_t static_cell_count_ = 0;
@@ -708,6 +745,8 @@ private:
     std::function<Value*(Builder&, bool)> static_base_fn_;
     std::function<Value*(Builder&)> table_base_fn_;
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
+    std::function<bool(uint32_t)> arm_cold_fn_;
+    std::function<void(Builder&, uint32_t)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
     bool slow_exits_ = false;
     struct LastTypedGet {

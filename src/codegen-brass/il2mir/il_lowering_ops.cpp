@@ -295,7 +295,7 @@ bool lower_ops_instruction(
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
                 res_val = lower_dynamic_arith(lowering, b, BronzeOp::Add, op0, op1, "bronze_dynamic_add",
-                                              hint);
+                                              hint, val_map);
             } else {
                 op0 = lowering->ensure_type(op0, Type::i32(), b);
                 op1 = lowering->ensure_type(op1, Type::i32(), b);
@@ -316,7 +316,7 @@ bool lower_ops_instruction(
                 const char* fn_name = (inst_ast.op == BronzeOp::Sub) ? "bronze_dynamic_sub" :
                                       (inst_ast.op == BronzeOp::Mul) ? "bronze_dynamic_mul" :
                                                                        "bronze_dynamic_div";
-                res_val = lower_dynamic_arith(lowering, b, inst_ast.op, op0, op1, fn_name, hint);
+                res_val = lower_dynamic_arith(lowering, b, inst_ast.op, op0, op1, fn_name, hint, val_map);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 op1 = lowering->ensure_type(op1, Type::f64(), b);

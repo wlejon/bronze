@@ -100,6 +100,25 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                              kSlowCountAliasClass);
         });
     }
+    // ARMS (il_speculation.h). An arm is on the instruction's fast path, so
+    // its mark is one store of a constant where a slow arm counts.
+    std::function<void(Builder&, uint32_t)> mark;
+    if (options.count_slow_sites && options.slow_site_count != 0) {
+        mark = [this](Builder& b, uint32_t index) {
+            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
+                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
+                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
+            }
+            Value* at = b.build_add(hoisted(b, Hoist::IcTable),
+                                    b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
+            with_alias_class(b.build_store(Type::i64(), at, 0, b.build_iconst_i64(1)), kSlowCountAliasClass);
+        };
+    }
+    prop_lowering_.set_arm_fns(
+        [this](uint32_t index) {
+            return options_.twin_exits && spec_.image_sites_here() && options_.slow_cold.count(index) != 0;
+        },
+        std::move(mark));
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

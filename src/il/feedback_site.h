@@ -107,11 +107,17 @@ uint64_t icLayoutDigest(const Module& module);
 // SLOW SITES (docs/type-feedback.md, "Slow paths"): hands every instruction
 // whose lowering has an inline fast path with a generic fallback (an element
 // read or write, a named or indexed read or write and the runs of them, a
-// strict compare, a checked unbox) the next index in
+// strict compare, a checked unbox, a `+ - * /` whose dynamic form computes two
+// Numbers inline) the next index in
 // `slowSiteCount`, in function, block and instruction order. Run first thing
 // in the final passes, on the module every build of the program starts them
 // from, so a harvest's counts name the same instructions in the build that
 // reads it; the passes after it copy an instruction with its index.
+// An instruction takes kSlowSiteArms indices: its own is its slow arm's (the
+// generic fallback), the ones after it the ARMS its lowering names (il2mir
+// il_speculation.h, "ARMS"): the alternatives of an inline path, each marked
+// where it begins.
+inline constexpr uint32_t kSlowSiteArms = 8;
 void numberSlowSites(Module& module);
 
 // What a function's descriptor carries as `name_hash` (bronze_abi.h), and

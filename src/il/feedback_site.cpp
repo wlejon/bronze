@@ -401,7 +401,9 @@ void numberSlowSites(Module& module) {
                 switch (inst.op) {
                     case Op::ElemGet: case Op::ElemSet: case Op::PropGet: case Op::PropSet:
                     case Op::StrictEq: case Op::Unbox:
-                        inst.slowSite = next++;
+                    case Op::Add: case Op::Sub: case Op::Mul: case Op::Div:
+                        inst.slowSite = next;
+                        next += kSlowSiteArms;
                         break;
                     default:
                         break;

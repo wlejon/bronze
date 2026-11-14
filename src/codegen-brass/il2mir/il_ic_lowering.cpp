@@ -415,8 +415,12 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     Value* not_object = in_process_
         ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
         : b.build_pinned_tls_read();
-    Value* base = b.build_select(is_obj, ptr, not_object);
+    // Past a block that proved the value plain (PROVEN FACTS) both tests are
+    // the constant.
+    Value* proven = proven_plain(b, obj);
+    Value* base = b.build_select(proven ? b.build_or(proven, is_obj) : is_obj, ptr, not_object);
     plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
+    if (proven) plain = b.build_or(proven, plain);
     shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     if (base_out) *base_out = base;
 }
