@@ -279,6 +279,7 @@
     X(bronze_method_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_cell_fill,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
+    X(bronze_twin_exit_note,      BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U32)) \
     X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_iter_step,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_iter_value,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \

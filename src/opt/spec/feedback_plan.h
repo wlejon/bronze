@@ -128,6 +128,11 @@ struct FeedbackPlan {
     // the same keys in the same order, laid out differently (a slot's
     // representation, an attribute), so one identity cell answers one of them.
     std::unordered_set<uint32_t> shapeVariantIcs;
+    // Property sites whose harvested cache answered an accessor the receiver
+    // holds itself (an object literal's `get workingColorSpace()`): the
+    // receiver's name lists the key and its slot holds the getter and setter,
+    // so the site has no slot to claim.
+    std::unordered_set<uint32_t> ownAccessorIcs;
     // The property sites that had a slot before the profile was read (a
     // class family's, the whole-program stamps') in a harvested build that
     // ran them through a guard of their own (one not built with

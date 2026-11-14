@@ -244,6 +244,14 @@ void make_resume_twins(Module& mod) {
         const char* v = std::getenv("BRONZE_TWIN_TRACE");
         return v && v[0] == '1';
     }();
+    // BRONZE_TWIN_EXITS=1 (at the build): every exit also tells the runtime
+    // which function left at which guard (bronze_twin_exit_note), which
+    // prints the counts when the program ends; the build prints a
+    // `twin-site` line per guard, its function, resume id and block.
+    static const bool exits = [] {
+        const char* v = std::getenv("BRONZE_TWIN_EXITS");
+        return v && v[0] == '1';
+    }();
     std::vector<Function*> sited;
     for (Function* fn : mod.functions()) {
         // A coroutine body's resume points are its suspends; it has no sites.
@@ -260,7 +268,11 @@ void make_resume_twins(Module& mod) {
         brass::ResumeTwinOptions options;
         // An exit counts; the kTwinExitLimit'th moves the entry on (trusted
         // to probing, probing to generic) and starts both counts again.
-        options.on_exit = [&](Builder& b, uint32_t) {
+        options.on_exit = [&](Builder& b, uint32_t id) {
+            if (exits) {
+                b.build_call("bronze_twin_exit_note", Type::void_type(),
+                             {b.build_func_addr(fn->name()), b.build_iconst_i32(static_cast<int32_t>(id))});
+            }
             Value* addr = b.build_func_addr(cell);
             Value* zero = b.build_iconst_i64(0);
             Value* n = b.build_add(b.build_load(Type::i64(), addr, kTwinCellExits), b.build_iconst_i64(1));
@@ -290,6 +302,15 @@ void make_resume_twins(Module& mod) {
         mod.add_symbol_role(cell, brass::SymbolRole::Data);
         cells.emplace(fn->name(), mod.string_pool().intern(cell));
         const uint32_t armed = brass::arm_image_sites(*fn);
+        if (exits) {
+            for (const BasicBlock* bb : fn->blocks()) {
+                for (const Instruction* inst = bb ? bb->head() : nullptr; inst; inst = inst->next()) {
+                    if (inst->opcode() != Opcode::guard) continue;
+                    std::fprintf(stderr, "twin-site\t%s\t%u\t%s\n", std::string(fn->name()).c_str(),
+                                 inst->resume_id(), std::string(bb->name()).c_str());
+                }
+            }
+        }
         if (!brass::speculate_against_twin(*fn, *twin, &why)) {
             throw std::logic_error("il2mir: " + std::string(fn->name()) + " against its resume twin: " + why);
         }

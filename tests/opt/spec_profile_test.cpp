@@ -238,6 +238,38 @@ TEST_CASE("feedback plan: a harvested read that met uncached receivers is not on
     CHECK(mixed.shapesByIc.at(ic).counts.at("*other*") * 2 >= mixed.shapesByIc.at(ic).total);
 }
 
+TEST_CASE("feedback plan: a read answered by the receiver's own accessor has no slot to claim") {
+    il::Module mod = lowered("function f(o: any) { return o.working + o.plain; }\nf({ working: 1, plain: 2 });\n");
+    uint32_t working = UINT32_MAX, plainIc = UINT32_MAX;
+    for (const il::Function& fn : mod.functions) {
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::PropGet) continue;
+                if (mod.keyConstants[inst.keyIndex] == "working") working = inst.icIndex;
+                if (mod.keyConstants[inst.keyIndex] == "plain") plainIc = inst.icIndex;
+            }
+        }
+    }
+    REQUIRE(working != UINT32_MAX);
+    REQUIRE(plainIc != UINT32_MAX);
+    spec::Harvest h;
+    h.digest = mod.icLayoutDigest;
+    h.sites = mod.icSiteCount;
+    // `working` is a getter of the literal itself, so the shape's name lists
+    // it; an accessor found on a prototype is under a name that does not.
+    spec::HarvestSite own;
+    own.ways.push_back(spec::HarvestWay{"accessor", "Object#3{_working,working,plain}", {}});
+    h.ics.emplace(working, std::move(own));
+    spec::HarvestSite inherited;
+    inherited.ways.push_back(spec::HarvestWay{"accessor", "Point{_x,_y}", {}});
+    h.ics.emplace(plainIc, std::move(inherited));
+    spec::TypeProfile profile;
+    profile.setHarvest(std::move(h));
+    const spec::FeedbackPlan plan = spec::planFeedback(mod, profile, mod.functions.size());
+    CHECK(plan.ownAccessorIcs.count(working) == 1);
+    CHECK(plan.ownAccessorIcs.count(plainIc) == 0);
+}
+
 TEST_CASE("profile: queries by function key and ordinal") {
     auto profile = spec::TypeProfile::parse(kProfile, nullptr);
     REQUIRE(profile.has_value());

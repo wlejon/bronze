@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -17,6 +19,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/stack_trace.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -301,3 +304,37 @@ void dumpProfileReport() {
 }
 
 }  // namespace bronze::runtime
+
+// BRONZE_TWIN_EXITS=1 builds (il_speculation.cpp make_resume_twins): which
+// guard of which function left for its resume twin, and how often, printed
+// when the program ends, most exits first.
+namespace {
+struct TwinExits {
+    std::mutex lock;
+    std::map<std::pair<const void*, uint32_t>, uint64_t> counts;
+};
+TwinExits& twinExits() {
+    static TwinExits* t = [] {
+        std::atexit([] {
+            TwinExits& e = twinExits();
+            std::vector<std::pair<uint64_t, std::pair<const void*, uint32_t>>> rows;
+            for (const auto& [site, n] : e.counts) rows.emplace_back(n, site);
+            std::sort(rows.rbegin(), rows.rend());
+            for (const auto& [n, site] : rows) {
+                const bronze_code_range* range = bronze::runtime::find_code_range(site.first);
+                std::fprintf(stderr, "twin-exit\t%s\t%u\t%llu\n",
+                             range && range->desc && range->desc->name ? range->desc->name : "?", site.second,
+                             static_cast<unsigned long long>(n));
+            }
+        });
+        return new TwinExits;  // leaked: the atexit report reads it
+    }();
+    return *t;
+}
+}  // namespace
+
+extern "C" void bronze_twin_exit_note(uint64_t* fn, uint32_t id) {
+    TwinExits& e = twinExits();
+    std::lock_guard<std::mutex> hold(e.lock);
+    ++e.counts[{fn, id}];
+}

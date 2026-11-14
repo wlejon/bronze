@@ -229,6 +229,13 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             bool& absent = receivers[way.receiver];
             absent = absent || way.form == "absent";
             if (way.form == "store") stored.insert(way.receiver);
+            if (way.form == "accessor") {
+                std::vector<std::string_view> keys;
+                bool complete = false;
+                if (shapeKeys(way.receiver, keys, complete) && std::find(keys.begin(), keys.end(), key) != keys.end()) {
+                    plan.ownAccessorIcs.insert(ic);
+                }
+            }
         }
         const bool more = site.full || (write && site.mega) || uncached;
         const uint64_t n = receivers.size();

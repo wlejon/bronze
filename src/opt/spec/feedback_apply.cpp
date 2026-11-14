@@ -102,7 +102,7 @@ public:
             return;
         }
         const auto it = plan_.shapesByIc.find(inst.icIndex);
-        if (it == plan_.shapesByIc.end()) return;
+        if (it == plan_.shapesByIc.end() || plan_.ownAccessorIcs.count(inst.icIndex) != 0) return;
         const std::string* shape = it->second.dominant(kDominantPercent);
         if (shape == nullptr) {
             claimPolyFamily(inst, it->second);
