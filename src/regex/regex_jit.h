@@ -125,11 +125,11 @@ public:
     static std::unique_ptr<RegexJitPlan> tryCompile(const Pattern& pattern);
 
     // The DFA kernels every plan runs are one generic module, compiled once
-    // per process. The
-    // first plan starts that on a thread of its own and never waits for it:
-    // until the kernels are in, a plan answers false from tryMatchAt /
-    // trySearch and the interpreter matches, with the same result. This
-    // blocks until they are in, for tests that measure the kernels themselves.
+    // per process. The first match/search (or waitForKernels) starts that on
+    // a thread of its own and never waits for it: until the kernels are in, a
+    // plan answers false from tryMatchAt / trySearch and the interpreter
+    // matches, with the same result. This blocks until they are in, for tests
+    // that measure the kernels themselves.
     static void waitForKernels();
 
     // If a background kernel build has already been started in this process,

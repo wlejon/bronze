@@ -358,32 +358,43 @@ struct SharedRegexJitKernels {
     }
 };
 
-// Built once, on a thread of its own (RegexJitPlan::waitForKernels): the page
-// thread that compiles the first regex never waits on the kernel compile.
-// Leaked at exit so its destructor never runs inside DllMain(DLL_PROCESS_DETACH)
-// under the Windows loader lock; waitForPendingKernels() joins the worker before
-// static teardown begins.
+// Built once, on a thread of its own (RegexJitPlan::waitForKernels): the first
+// match/search (or waitForKernels) starts the background kernel build so the
+// caller never blocks on it and a process that only parses regexes never
+// compiles them. Leaked at exit so its destructor never runs inside
+// DllMain(DLL_PROCESS_DETACH) under the Windows loader lock; at-exit teardown
+// cancels any still-pending build and waitForPendingKernels() joins the worker
+// before static teardown begins.
 struct KernelBuild {
     std::atomic<const SharedRegexJitKernels*> ready{nullptr};
+    std::atomic<bool> canceled{false};
     std::unique_ptr<SharedRegexJitKernels> kernels;
     std::mutex mu, joinMu;
     std::condition_variable cv;
+    bool done = false;
     std::thread worker;
 
     KernelBuild() {
         worker = std::thread([this] {
-            auto k = std::make_unique<SharedRegexJitKernels>();
+            std::unique_ptr<SharedRegexJitKernels> k;
+            if (!canceled.load(std::memory_order_acquire)) {
+                k = std::make_unique<SharedRegexJitKernels>();
+            }
             std::lock_guard<std::mutex> lock(mu);
-            kernels = std::move(k);
-            ready.store(kernels.get(), std::memory_order_release);
+            if (k) {
+                kernels = std::move(k);
+                ready.store(kernels.get(), std::memory_order_release);
+            }
+            done = true;
             cv.notify_all();
         });
     }
-    void waitAndJoin() {
+    void waitAndJoin(bool cancelIfPending = false) {
         if (brass::runtime::process_exiting()) return;
         {
             std::unique_lock<std::mutex> lock(mu);
-            cv.wait(lock, [this] { return ready.load(std::memory_order_acquire) != nullptr; });
+            if (cancelIfPending) canceled.store(true, std::memory_order_release);
+            cv.wait(lock, [this] { return done; });
         }
         std::lock_guard<std::mutex> joinLock(joinMu);
         if (worker.joinable()) worker.join();
@@ -392,11 +403,15 @@ struct KernelBuild {
 
 static std::atomic<KernelBuild*> g_kernelBuild{nullptr};
 
+void atExitWaitForKernels() {
+    if (KernelBuild* b = g_kernelBuild.load(std::memory_order_acquire)) b->waitAndJoin(true);
+}
+
 KernelBuild& kernelBuild() {
     static KernelBuild* build = [] {
         auto* b = new KernelBuild();
         g_kernelBuild.store(b, std::memory_order_release);
-        std::atexit(&RegexJitPlan::waitForPendingKernels);
+        std::atexit(&atExitWaitForKernels);
         return b;
     }();
     return *build;
@@ -469,17 +484,15 @@ std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
         return nullptr;
     }
 
-    // Starts the shared kernels' build if nothing has yet.
-    (void)readyKernels();
     plan->stats_.dfa_states = static_cast<uint32_t>(plan->num_dfa_states_);
     plan->supported_ = true;
     return plan;
 }
 
-void RegexJitPlan::waitForKernels() { kernelBuild().waitAndJoin(); }
+void RegexJitPlan::waitForKernels() { kernelBuild().waitAndJoin(false); }
 
 void RegexJitPlan::waitForPendingKernels() {
-    if (KernelBuild* b = g_kernelBuild.load(std::memory_order_acquire)) b->waitAndJoin();
+    if (KernelBuild* b = g_kernelBuild.load(std::memory_order_acquire)) b->waitAndJoin(false);
 }
 
 RegexJitStats RegexJitPlan::stats() const noexcept { return stats_; }
