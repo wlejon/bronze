@@ -110,9 +110,9 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
         Value* fits = b.build_or(boxed, b.build_and(b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_DOUBLE)),
                                                     number));
         if (!val_is_number) {
-            Value* plain = plain_object_test(b, val);
-            fits = b.build_or(fits,
-                              b.build_and(b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_OBJECT)), plain));
+            Value* val_plain = plain_object_test(b, val);
+            fits = b.build_or(
+                fits, b.build_and(b.build_eq(repr, b.build_iconst_i64(BRONZE_ABI_SLOT_REPR_OBJECT)), val_plain));
         }
         ok = b.build_and(ok, fits);
     }
