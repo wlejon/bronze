@@ -607,7 +607,20 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::ToStr: {
             Value* val = ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_to_string", Type::i64(), {val});
+            // A String is its own conversion (a template's substitution is
+            // one most of the time); the helper has everything else.
+            BasicBlock* cur = b.current_block();
+            const std::string prefix = "tostr_" + std::to_string(cur->parent()->next_block_id());
+            BasicBlock* slow = b.append_block(prefix + "_slow");
+            BasicBlock* merge = b.append_block(prefix + "_merge");
+            res_val = b.add_block_param(merge, Type::i64());
+            b.position_at_end(cur);
+            Value* is_str = b.build_eq(b.build_lshr(val, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT)),
+                                       b.build_iconst_i64(BRONZE_ABI_TAG_STRING));
+            b.build_br_if(is_str, merge, {val}, slow, {});
+            b.position_at_end(slow);
+            b.build_br(merge, {b.build_call("bronze_to_string", Type::i64(), {val})});
+            b.position_at_end(merge);
             break;
         }
 

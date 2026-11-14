@@ -949,6 +949,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 shape_memo_kept_ = false;
                 continue;
             }
+            if (try_lower_string_join(blk_ast, inst_idx, b, val_map)) {
+                if (has_error_) return false;
+                continue;
+            }
             const auto& inst_ast = blk_ast.instructions[inst_idx];
             apply_inst_loc(b, inst_ast);
             next_inst_ = inst_idx + 1 < blk_ast.instructions.size() ? &blk_ast.instructions[inst_idx + 1] : nullptr;

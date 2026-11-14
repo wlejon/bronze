@@ -207,6 +207,50 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
     return concatAppendSlow(accBits, xBits);
 }
 
+uint64_t bronze_concat_strings(const uint64_t* pieces, uint32_t count) {
+    recordHelperCall("bronze_concat_strings");
+    // Every piece a sealed Latin-1 String and room in the young window: the
+    // result is allocated at its length with nothing collected on the way, so
+    // the texts are copied straight out of the caller's block.
+    uint64_t total = 0;
+    bool plain = true;
+    for (uint32_t i = 0; i < count; ++i) {
+        const Value v(pieces[i]);
+        if (!v.isString()) {
+            plain = false;
+            break;
+        }
+        const StringHeader* s = v.asString<StringHeader>();
+        plain = plain && s->isLatin1() && !s->isBuilder();
+        total += s->length;
+    }
+    if (plain && total < (uint64_t{1} << 31)) {
+        if (HeapObjectHeader* h =
+                rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(total) + 1, Tag::String)) {
+            auto* out = reinterpret_cast<StringHeader*>(h);
+            out->header.flags = 0;
+            out->length = static_cast<uint32_t>(total);
+            out->flags = 0;
+            char* text = out->latin1Data();
+            for (uint32_t i = 0; i < count; ++i) {
+                const StringHeader* s = Value(pieces[i]).asString<StringHeader>();
+                std::memcpy(text, s->latin1Data(), s->length);
+                text += s->length;
+            }
+            *text = '\0';
+            return Value::fromString(out).rawBits();
+        }
+    }
+    // Anything else is the accumulator's, a step at a time. The block is the
+    // caller's root, so each piece is read after whatever the step before it
+    // collected.
+    Rooted<Value> acc{Value(bronze_concat_begin(pieces[0], pieces[1], count - 2))};
+    for (uint32_t i = 2; i < count; ++i) {
+        acc.set(Value(bronze_concat_append(acc.get().rawBits(), pieces[i])));
+    }
+    return bronze_concat_end(acc.get().rawBits());
+}
+
 uint64_t bronze_concat_end(uint64_t vBits) {
     recordHelperCall("bronze_concat_end");
     Value v(vBits);

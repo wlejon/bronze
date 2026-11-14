@@ -353,6 +353,10 @@ private:
                                    std::unordered_map<uint32_t, Value*>& val_map,
                                    const std::unordered_map<uint32_t, BasicBlock*>& block_map,
                                    uint32_t* cont_counter);
+    // A template's pieces, every one a String, joined by one call
+    // (il_string_join.cpp).
+    bool try_lower_string_join(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b,
+                               std::unordered_map<uint32_t, Value*>& val_map);
     // A constructor's stretch of adds behind one guard and one shape store
     // (il_transition_run.cpp).
     bool try_lower_transition_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
@@ -390,6 +394,7 @@ private:
     std::unordered_set<uint32_t> primitive_value_ids_;
     std::unordered_set<uint32_t> number_value_ids_;
     std::unordered_set<uint32_t> string_literal_ids_;
+    std::unordered_set<uint32_t> to_string_ids_;
     std::unordered_set<uint32_t> typeof_value_ids_;
     std::unordered_set<uint32_t> elided_typeof_ids_;
     std::unordered_set<uint32_t> elided_typeof_lit_ids_;

@@ -224,6 +224,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     primitive_value_ids_.clear();
     number_value_ids_.clear();
     string_literal_ids_.clear();
+    to_string_ids_.clear();
     typeof_value_ids_.clear();
     elided_typeof_ids_.clear();
     elided_typeof_lit_ids_.clear();
@@ -287,6 +288,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                         string_literal_texts_.emplace(inst.result_id, options_.key_constants[inst.index]);
                     }
                 }
+                if (inst.op == BronzeOp::ToStr) to_string_ids_.insert(inst.result_id);
                 if (inst.op == BronzeOp::TypeOf) {
                     typeof_value_ids_.insert(inst.result_id);
                 }

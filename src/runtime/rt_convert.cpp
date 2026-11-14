@@ -744,6 +744,24 @@ uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
             }
             if (!sA->isBuilder()) return aBits;
         }
+        // Two sealed Latin-1 strings and room in the young window: nothing is
+        // collected, so neither needs a root and the texts are copied straight
+        // across (as bronze_concat_begin starts a chain).
+        const uint64_t total = static_cast<uint64_t>(sA->length) + sB->length;
+        if (sA->isLatin1() && sB->isLatin1() && !sA->isBuilder() && !sB->isBuilder() && total < (uint64_t{1} << 31)) {
+            if (HeapObjectHeader* h =
+                    rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(total) + 1, Tag::String)) {
+                auto* out = reinterpret_cast<StringHeader*>(h);
+                out->header.flags = 0;
+                out->length = static_cast<uint32_t>(total);
+                out->flags = 0;
+                char* text = out->latin1Data();
+                std::memcpy(text, sA->latin1Data(), sA->length);
+                std::memcpy(text + sA->length, sB->latin1Data(), sB->length);
+                text[total] = '\0';
+                return Value::fromString(out).rawBits();
+            }
+        }
         Rooted<Value> aRoot{aVal};
         Rooted<Value> bRoot{bVal};
         return StringHeader::concat(rtHeap(), aRoot, bRoot).rawBits();

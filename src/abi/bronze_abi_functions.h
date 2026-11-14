@@ -363,6 +363,11 @@
     X(bronze_concat_begin,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_concat_append,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_concat_end,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    /* A whole chain at once, for one whose `count` operands (three or more,\
+     * in a rooted block the caller owns) are all Strings already, as a\
+     * template's are once each substitution has been converted: joining\
+     * Strings runs nothing, so the result is allocated once at its length. */ \
+    X(bronze_concat_strings,      BRONZE_ABI_U64,  (BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     /* The rest of 13.15.3 ApplyStringOrNumericBinaryOperator over BOXED\
      * operands, which `+` alone used to need. They exist because a BigInt\
      * operand makes every one of these a two-algorithm operator: ToNumeric\

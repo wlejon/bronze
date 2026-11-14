@@ -227,6 +227,11 @@ uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_a
                 inst.run_length > widest) {
                 widest = inst.run_length;
             }
+            // A chain of Strings stages its pieces for the join (il_string_join.cpp).
+            if (inst.op == BronzeOp::ConcatBegin && inst.imm_i64 >= 0 && inst.imm_i64 + 2 > widest &&
+                inst.imm_i64 + 2 <= kStringJoinMaxPieces) {
+                widest = static_cast<uint32_t>(inst.imm_i64 + 2);
+            }
             if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
                 (inst.param_count > 16 || (direct && inst.op != BronzeOp::SuperCall)) && inst.param_count > widest) {
                 widest = inst.param_count;

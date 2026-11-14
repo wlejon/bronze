@@ -22,6 +22,10 @@ bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeI
 // (il_lowering_direct.h), every call, `new` and closure call.
 uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_ast);
 
+// The longest chain of Strings joined by one call (il_string_join.cpp); a
+// longer one keeps the accumulator.
+constexpr int64_t kStringJoinMaxPieces = 64;
+
 bool lower_call_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,
