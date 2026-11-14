@@ -479,3 +479,63 @@ ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
 }
 
 }  // namespace bronze::runtime
+
+extern "C" {
+
+// A computed read's SITE CELL (il2mir lower_elem_get, "one pair"): four words
+// of the site's own, `shape, key bits, slot word, fills`. Generated code
+// answers `o[k]` from them with two compares where the table costs a hash and
+// a probe: pixi reads `renderPipes[renderable.renderPipeId]` once a sprite a
+// frame, and every one of those reads names one pair. Called on the site's
+// miss, before the read; it runs no code of the program's and allocates
+// nothing a collection would see.
+//
+// What the cell's two compares stand for, each a thing checked here:
+//   - a plain receiver of that shape, and an own data slot (the table's
+//     entry describes it, by the property path's own rules; a shape names
+//     its own properties for good, so no epoch);
+//   - the key, by its bits: a Number's are the Number (`sprite._gpuData[uid]`
+//     names a string property by one, and the table answers it without the
+//     string), and of strings an ARENA string only, which is immortal, so
+//     its bits name the same characters for as long as the cell holds them,
+//     on every thread. A heap string's bits do not survive a collection, and
+//     this cell is not among what the collector sweeps.
+// A site that names many pairs stops filling after kElemCellFills, and reads
+// through the table as before.
+void bronze_elem_cell_fill(uint64_t objBits, uint64_t keyBits, uint64_t* cell) {
+    using namespace bronze;
+    using namespace bronze::runtime;
+    constexpr uint64_t kElemCellFills = 8;
+    if (cell == nullptr || cell[3] >= kElemCellFills) return;
+    const Value key(keyBits);
+    const bool arena = key.isString() && key.asString<StringHeader>()->isArena();
+    if (!arena && !key.isNumber()) return;
+    const Value obj(objBits);
+    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return;
+    auto* plain = obj.asObject<ObjectHeader>();
+    Shape* shape = plain->shape;
+    if (shape == nullptr || shape->isDictionary()) return;
+    uint64_t slotWord = 0;
+    PropertyInfo info;
+    if (arena && plain->internalSlotCount() == 0) {
+        // The shape answers for a name: no read need have come before.
+        if (!shape->lookupProperty(PropertyKey::forString(key.asString<StringHeader>()), info) || info.accessor) return;
+        slotWord = info.slot;
+    } else {
+        // What the table holds for the pair, from the read before this one.
+        const ElemProbe probe = elemCacheProbe(obj, key);
+        if (!probe.hit || probe.entry == nullptr || probe.entry->ic.cached_shape != shape) return;
+        if (probe.kind != (arena ? ElemKeyKind::String : ElemKeyKind::Number)) return;
+        std::memcpy(&slotWord,
+                    reinterpret_cast<const char*>(probe.entry) + BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOTWORD_OFFSET,
+                    sizeof slotWord);
+        if (slotWord >= (uint64_t{1} << 32)) return;
+    }
+    cell[0] = 0;
+    cell[1] = keyBits;
+    cell[2] = slotWord;
+    cell[0] = reinterpret_cast<uint64_t>(shape);
+    ++cell[3];
+}
+
+}  // extern "C"

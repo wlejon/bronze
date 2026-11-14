@@ -24,6 +24,7 @@ constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -279,6 +280,61 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "elem_get_" + std::to_string(fn->next_block_id());
+
+    // ARMS: an index into an Array, into a view, and a plain object's own
+    // slot by a key (the computed-read cache's hit). The words after them are the
+    // site's CELL in a build that marks nothing (runtime/elem_ic.cpp
+    // bronze_elem_cell_fill): `shape, key bits, slot word, fills`; in a build
+    // that marks they are a view's element kinds, which the cell's site never
+    // read: doubles, floats, the 32-bit integers, the narrower ones.
+    enum : uint32_t { kArmArray = 1, kArmView, kArmKeyed, kCellWords = 4, kArmF64 = 4, kArmF32, kArmInt32, kArmNarrow };
+
+    // ONE PAIR: where the harvested build only ever read a plain object's
+    // slot by a key here, the read is the cell's two compares and the slot,
+    // and everything else fills the cell and calls the stub, which answers
+    // any receiver and key. Not an exit: a second pair is a fill, and a site
+    // of many pairs reads through the table from the stub.
+    if (Value* cell = arm_exits(kArmArray) && arm_exits(kArmView) && !arm_exits(kArmKeyed) && elem_stubs_
+                           ? arm_cell(b, kCellWords)
+                           : nullptr) {
+        BasicBlock* bb_plain = b.append_block(prefix + "_pair");
+        BasicBlock* bb_hit = b.append_block(prefix + "_pair_hit");
+        BasicBlock* bb_fill = b.append_block(prefix + "_pair_fill");
+        bb_fill->set_cold();
+        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+        Value* result = b.add_block_param(bb_merge, Type::i64());
+
+        b.position_at_end(cur);
+        Value* key = boxed_elem_key(b, index);
+        Value* ptr = nullptr;
+        Value* is_obj = nullptr;
+        object_pointer(b, obj, ptr, is_obj);
+        b.build_br_if(is_obj, bb_plain, bb_fill);
+
+        b.position_at_end(bb_plain);
+        const auto word = [&](int32_t at) {
+            return with_alias_class(b.build_load(Type::i64(), cell, at), kSlowCountAliasClass);
+        };
+        Value* plain = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow));
+        Value* same_shape = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), word(0));
+        Value* same_key = b.build_eq(key, word(8));
+        b.build_br_if(b.build_and(b.build_and(plain, same_shape), same_key), bb_hit, bb_fill);
+
+        b.position_at_end(bb_hit);
+        b.build_br(bb_merge, {load_slot(b, ptr, word(16))});
+
+        b.position_at_end(bb_fill);
+        b.build_call("bronze_elem_cell_fill", Type::void_type(), {obj, key, cell});
+        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
+
+        b.position_at_end(bb_merge);
+        return result;
+    }
+    // A site whose key arm ran reads through it: its slow branches are no
+    // exits, whatever the stub's call did.
+    const bool exits = slow_exits_;
+    if (slow_sites_.size() == 1 && !arm_exits(kArmKeyed)) slow_exits_ = false;
+
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
     BasicBlock* bb_array = b.append_block(prefix + "_array");
     BasicBlock* bb_array_load = b.append_block(prefix + "_array_load");
@@ -308,13 +364,24 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     const ElemIndex idx = elem_index(b, index);
     slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
+    // A site that read only views asks for a view, and leaves for the two
+    // tests otherwise; one that read only Arrays leaves at the first.
     b.position_at_end(bb_obj);
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check);
+    if (only_arm(kArmArray, kArmKeyed) == kArmView) {
+        BasicBlock* bb_which = b.append_block(prefix + "_which");
+        b.position_at_end(bb_obj);
+        site_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_which,
+                    /*exits=*/true);
+        b.position_at_end(bb_which);
+    }
+    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check,
+             slow_exits() && arm_exits(kArmView));
 
     // An Array: an in-bounds element, a hole by the hole rule
     // (il_number_array.cpp). Past the length the helper decides.
     b.position_at_end(bb_array);
+    arm_begin(b, kArmArray);
     Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     const ArrayElements elems = array_elements(b, ptr);
     slow_branch(b, b.build_ult(idx.i64, length), bb_array_load, bb_slow);
@@ -329,6 +396,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // A TypedArray of a Number kind, in bounds (a detached view's length is
     // 0); Float16 and the BigInt kinds take the helper.
     b.position_at_end(bb_ta);
+    arm_begin(b, kArmView);
     Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     slow_branch(b, b.build_ult(idx.i64, ta_length), bb_ta_load, bb_slow);
 
@@ -345,6 +413,33 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.position_at_end(bb_ta_load);
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
     Value* data = typed_array_data(b, ptr);
+    // The one kind the harvested build read, asked alone (a 32-bit integer
+    // view's two, one after the other); the switch is then the twin's.
+    {
+        BasicBlock* bb_kinds = b.append_block(prefix + "_kinds");
+        b.position_at_end(bb_ta_load);
+        const auto is_kind = [&](int32_t k) { return b.build_eq(kind, b.build_iconst_i32(k)); };
+        switch (only_arm(kArmF64, kArmNarrow)) {
+            case kArmF64:
+                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_FLOAT64), bb_f64, bb_kinds, /*exits=*/true);
+                break;
+            case kArmF32:
+                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_FLOAT32), bb_f32, bb_kinds, /*exits=*/true);
+                break;
+            case kArmInt32: {
+                BasicBlock* bb_unsigned = b.append_block(prefix + "_unsigned");
+                b.position_at_end(bb_ta_load);
+                b.build_br_if(is_kind(BRONZE_ABI_TA_KIND_INT32), bb_i32, bb_unsigned);
+                b.position_at_end(bb_unsigned);
+                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_UINT32), bb_u32, bb_kinds, /*exits=*/true);
+                break;
+            }
+            default:
+                b.build_br(bb_kinds);
+                break;
+        }
+        b.position_at_end(bb_kinds);
+    }
     b.build_switch(kind, bb_ta_other,
                    {SwitchCase(BRONZE_ABI_TA_KIND_FLOAT64, bb_f64), SwitchCase(BRONZE_ABI_TA_KIND_FLOAT32, bb_f32),
                     SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_i32), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_u32),
@@ -353,20 +448,28 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
                     SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_u8)});
 
     b.position_at_end(bb_f64);
+    arm_begin(b, kArmF64);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT64)});
     b.position_at_end(bb_f32);
+    arm_begin(b, kArmF32);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT32)});
     b.position_at_end(bb_i32);
+    arm_begin(b, kArmInt32);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT32)});
     b.position_at_end(bb_u32);
+    arm_begin(b, kArmInt32);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT32)});
     b.position_at_end(bb_i16);
+    arm_begin(b, kArmNarrow);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT16)});
     b.position_at_end(bb_u16);
+    arm_begin(b, kArmNarrow);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT16)});
     b.position_at_end(bb_i8);
+    arm_begin(b, kArmNarrow);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT8)});
     b.position_at_end(bb_u8);
+    arm_begin(b, kArmNarrow);
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT8)});
 
     b.position_at_end(bb_box);
@@ -374,18 +477,23 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
 
     // Past the array and view arms: a plain object's own slot answers inline
     // from the computed-read cache, and only the rest calls the stub.
+    // The key arm is an arm where the site has arms (alone, no run of
+    // instructions), and part of the slow arm elsewhere.
     b.position_at_end(bb_slow);
-    slow_arm(b);
+    const bool armed = slow_sites_.size() == 1;
+    if (!armed) slow_arm(b);
     Value* key = boxed_elem_key(b, index);
     if (elem_stubs_) {
         const size_t slow_base = fn->blocks().size();
         BasicBlock* bb_stub = b.append_block(prefix + "_stub");
         b.position_at_end(bb_slow);
-        build_inline_elem_get_hit(*this, b, obj, key, bb_merge, bb_stub);
+        build_inline_elem_get_hit(*this, b, obj, key, bb_merge, bb_stub, kArmKeyed);
         for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
         b.position_at_end(bb_stub);
     }
+    if (armed) slow_arm(b);
     b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
+    slow_exits_ = exits;
 
     b.position_at_end(bb_merge);
     return result;

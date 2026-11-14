@@ -24,7 +24,7 @@ using namespace bronze;
 namespace {
 
 const char* const kProfile =
-    "bronze-type-feedback 4\n"
+    "bronze-type-feedback 5\n"
     "fn\tVector3.add#00112233aabbccdd\t40\n"
     "site\t0\tentry\t40\t\n"
     "site\t1\tthis\t40\tobject=40\n"
@@ -42,11 +42,12 @@ const char* const kProfile =
 
 // An inline-cache harvest (docs/type-feedback.md, "Harvest").
 const char* const kHarvest =
-    "bronze-type-feedback 4\n"
+    "bronze-type-feedback 5\n"
     "harvest\t00112233aabbccdd\t9\n"
     "slowsites\t12\t0000000000000808\n"
     "slow\t3\t1\n"
     "slow\t11\t40\n"
+    "last\t10\tObject{a}\n"
     "ic\t0\tproperty\t-\n"
     "way\t0\town\tVector3{x,y,z,w,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,aa,bb,cc,dd,ee,ff,gg,hh}\n"
     "other\t0\t800392\n"
@@ -97,11 +98,12 @@ TEST_CASE("profile: parse and serialize round trip byte for byte") {
     CHECK(profile->functions().size() == 2);
     CHECK(profile->harvest() == nullptr);
     // A version-1 file (a recorder that cut shapes at 32 keys) still reads,
-    // as do a version-2 one (a harvest without `other` rows) and a version-3
-    // one (a harvest without slow-site rows).
-    for (const char* older : {" 1\n", " 2\n", " 3\n"}) {
+    // as do a version-2 one (a harvest without `other` rows), a version-3
+    // one (a harvest without slow-site rows) and a version-4 one (a harvest
+    // without `last` rows).
+    for (const char* older : {" 1\n", " 2\n", " 3\n", " 4\n"}) {
         std::string v = kProfile;
-        v.replace(v.find(" 4\n"), 3, older);
+        v.replace(v.find(" 5\n"), 3, older);
         CHECK(spec::TypeProfile::parse(v, &err).has_value());
     }
 }
@@ -122,6 +124,9 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
     CHECK(h->ics.at(8).method);
     CHECK(h->ics.at(8).mega);
     CHECK(h->ics.at(8).ways.front().callee == "~1204@0badf00d");
+    // The `last` rows: a named site's last receiver's shape, by slow site.
+    REQUIRE(h->last.size() == 1);
+    CHECK(h->last.at(10) == "Object{a}");
     // The `other` rows: receivers no way could hold, counted.
     CHECK(h->ics.at(0).uncached == 800392);
     CHECK(h->ics.at(3).uncached == 0);
@@ -142,7 +147,7 @@ TEST_CASE("profile: a harvest parses, serializes byte for byte, and keeps every 
 
 TEST_CASE("profile: a malformed harvest is refused") {
     std::string err;
-    const std::string head = "bronze-type-feedback 4\n";
+    const std::string head = "bronze-type-feedback 5\n";
     // A row before the harvest row; a short digest; an index past the sites.
     CHECK_FALSE(spec::TypeProfile::parse(head + "ic\t0\tproperty\t-\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t0011\t4\n", &err));
@@ -156,6 +161,12 @@ TEST_CASE("profile: a malformed harvest is refused") {
     CHECK_FALSE(spec::TypeProfile::parse(h4 + "slowsites\t2\t0000000000000003\nslow\t2\t1\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(h4 + "slowsites\t2\t0000000000000003\nslow\t1\t0\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(h4 + "slowsites\t2\t0000000000000003\nslow\t1\t1\nslow\t1\t1\n", &err));
+    // A last row past the slow sites, without a name, or twice.
+    const std::string slows = h4 + "slowsites\t2\t0000000000000003\n";
+    CHECK(spec::TypeProfile::parse(slows + "last\t0\tA{x}\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(slows + "last\t2\tA{x}\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(slows + "last\t0\n", &err));
+    CHECK_FALSE(spec::TypeProfile::parse(slows + "last\t0\tA{x}\nlast\t0\tA{y}\n", &err));
     // An unknown flag, form, or a method way without its callee.
     CHECK_FALSE(spec::TypeProfile::parse(head + "harvest\t00112233aabbccdd\t4\nic\t1\tproperty\thot\n", &err));
     CHECK_FALSE(spec::TypeProfile::parse(

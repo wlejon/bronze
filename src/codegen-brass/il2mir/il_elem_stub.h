@@ -36,8 +36,8 @@ Value* boxed_elem_key(Builder& b, Value* index);
 
 // The get stub's own-slot hit inlined at a site: the slot's value branches to
 // `merge` (its one i64 parameter), everything else to `miss`, which calls the
-// stub.
+// stub. The hit is the site's arm `arm` (il_speculation.h ARMS).
 void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* key, BasicBlock* merge,
-                               BasicBlock* miss);
+                               BasicBlock* miss, uint32_t arm);
 
 }  // namespace il2mir

@@ -129,7 +129,7 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 4)
+## File format (version 5)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
@@ -138,10 +138,12 @@ every key, and a file may carry a harvest (below). Version 3 adds the
 harvest's `other` row; a version 2 harvest has none, and a build on one claims
 as it did before the row existed. Version 4 adds the harvest's `slowsites` and
 `slow` rows ("Slow paths", below); an older harvest has none, and a build on
-one keeps every fallback in line. The reader takes all four versions.
+one keeps every fallback in line. Version 5 adds the shape turns among the
+harvest's `slow` rows and its `last` rows ("Phases", below); a build on an
+older harvest reads no site as a phase. The reader takes all five versions.
 
 ```
-bronze-type-feedback 4
+bronze-type-feedback 5
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -247,8 +249,17 @@ the plan where each claim has to be made:
   list, move to that shape's layout cell (`il::Module::layoutCells`, one per
   shape name), which the runtime publishes for the listed (key, slot, written)
   pairs together. A site that is a missed claim, a shape variant, a direct
-  target, a define or a regrow keeps its claim, and so does a group one of
-  whose sites does. Report line `feedback-layout`.
+  target, a define or a profile's own regrow keeps its claim, and so does a
+  group one of whose sites does. A site that had its slot before the profile
+  was read (a class family's range, a whole-program stamp's cell, regrow or
+  not) is a member like any other where the harvested build ran it through
+  its cache (`--harvest-out`, "Phases"). In a harvest of a build that kept
+  the stamps' own guards (`eval::runModule`'s), such a site's cache holds
+  only what missed its guard, so its group takes the shape the receiver's
+  profiled sites met instead, where they all met one, each of the group's
+  keys is at its slot in it, and one of them is in the site's block or one
+  that dominates it. So a receiver read through a family's range, a stamp's
+  cell and a profile's claim is tested once. Report line `feedback-layout`.
 - **C, number hints**: an arithmetic, compare, truthiness or unbox op whose
   every observed Dynamic operand was a Number gets `numberHint` (`!num` in
   `bronze il`). The backend then lays the Number test first and moves the
@@ -457,6 +468,39 @@ share. A write that met a shape and the one it grew from by one or two keys
 counts as the grown shape's, the other keeping one execution, which is what
 gives the claim its regrow. The result:
 
+**Phases.** A build made to be harvested (`--harvest-out`) differs from a
+plain one in two ways. Every named read and write goes through its cache: a
+site with a slot of its own (a class family's, a whole-program stamp's) is
+lowered as if it had none (`il_to_brass_ast.cpp`, `cacheEvidence`), because
+its guard's hits never touch the cache and the harvest would hold only what
+missed the guard. And in front of each such site the build keeps the SHAPE
+TURNS of its receivers in two of the site's slow-site words
+(`il/feedback_site.h` `kLastShapeArm`, `kShapeTurnArm`;
+`PropertyLoweringHelper::count_shape_turn`): the last receiver's shape, with
+bit 63 set so the harvest leaves the word alone, and the count of receivers
+whose shape was not that one, a few instructions and no branch. The harvest
+names the first word's shape in a `last` row, by the word's slow-site index
+(`*other*` for a receiver that was no plain object). The order of a cache's
+ways does not say which shape came last: a site behind a recursion meets a
+child first, then its parent once, then children for good.
+
+`planHarvest` reads a site that held several shapes, none of them through
+`*other*`, as a PHASE when its turns are at most `kPhaseTurns` (16; a site
+that ran counts its first receiver, and copies of a site that inlining made
+share the count) and its `last` row names one of them: the shapes came one
+after another, and the site is the last one's alone. pixi's `Container._onUpdate` runs for every sprite while its
+constructor's `b.x = ...` sets a position, before `vx` and `vy` are added, and
+then on every frame for finished sprites; its sites held both shapes and
+turned twice. Read as the finished shape's, they are members of that shape's
+layout cell with every other site on the receiver. The claim's guard leaves
+for an unfinished object, so the functions that build the objects leave their
+speculated code for their generic entries (il_speculation.h, "FAILURE
+POLICY") and the ones that run after keep one compare. A site whose shapes
+alternate for good turns each time and stays a chain. The runtime weighs an
+unfinished receiver at a layout cell's publish (`static_shape.cpp`, fewer keys
+than the cell's count) a 1024th of a wrong one, since every object of the run
+may pass a member site before the first finished one does.
+
 Before any claim, `addProfiledFamilies` (`feedback_apply.cpp`) reads layout
 families off the plan: where a property site met several shapes that all begin
 with the keys of the shortest (a base class's method run on the base and its
@@ -537,6 +581,7 @@ come first):
 harvest <16 hex digest>  <IC site count>
 slowsites <slow-site count>  <armed bitmap: per 64 sites, 16 hex digits>
 slow    <slow-site index>  <times its fallback ran>
+last    <slow-site index>  <shape of the named site's last receiver>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]
 other   <index>  <calls whose receiver no way could hold>

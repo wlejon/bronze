@@ -99,8 +99,10 @@
  * lacks, so a build on one claims as it did before; 4 adds the `slowsites`
  * and `slow` rows (the slow sites' counters, docs/type-feedback.md "Slow
  * paths"), which an older harvest lacks, so a build on one keeps every slow
- * arm in line. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 4u
+ * arm in line; 5 adds, in a build made to be harvested, the count of a
+ * named site's shape turns among the `slow` rows and its last receiver's
+ * shape as a `last` row, without which a build reads no site as a phase. */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 5u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

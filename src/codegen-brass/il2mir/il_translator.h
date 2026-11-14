@@ -232,6 +232,11 @@ struct TranslatorOptions {
     // never run) is a twin exit.
     uint32_t slow_site_count = 0;
     bool count_slow_sites = false;
+    // The image is built to be harvested (il::Module::harvestOutPath): its
+    // named reads and writes count their off-way receivers too
+    // (il/feedback_site.h kOffWayArm), and none has a slot of its own
+    // (il_to_brass_ast.cpp cacheEvidence).
+    bool cache_evidence = false;
     std::shared_ptr<std::vector<uint64_t>> slow_armed;
     std::unordered_set<uint32_t> slow_cold;
     struct SourceFileMeta {

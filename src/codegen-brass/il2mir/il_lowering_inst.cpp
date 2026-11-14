@@ -18,6 +18,34 @@ namespace il2mir {
 
 namespace {
 
+// `!cond` of a 0/1 value, as the compare brass fuses with a branch: the
+// opposite compare of the same operands where `cond` is one (integers and
+// pointers; of doubles only `==` and `!=`, whose opposites say the same of a
+// NaN), else `cond == 0`, which costs a setcc and a test in front of the
+// branch.
+Value* opposite_condition(Builder& b, Value* cond) {
+    const Instruction* def = cond->is_instruction() ? cond->defining_instruction() : nullptr;
+    if (def && def->operand_count() == 2) {
+        Value* l = def->operand(0);
+        Value* r = def->operand(1);
+        const bool ints = !l->type().is_float() && !r->type().is_float();
+        switch (def->opcode()) {
+            case Opcode::eq: return b.build_ne(l, r);
+            case Opcode::ne: return b.build_eq(l, r);
+            case Opcode::slt: if (ints) return b.build_sge(l, r); break;
+            case Opcode::sle: if (ints) return b.build_sgt(l, r); break;
+            case Opcode::sgt: if (ints) return b.build_sle(l, r); break;
+            case Opcode::sge: if (ints) return b.build_slt(l, r); break;
+            case Opcode::ult: if (ints) return b.build_uge(l, r); break;
+            case Opcode::ule: if (ints) return b.build_ugt(l, r); break;
+            case Opcode::ugt: if (ints) return b.build_ule(l, r); break;
+            case Opcode::uge: if (ints) return b.build_ult(l, r); break;
+            default: break;
+        }
+    }
+    return b.build_eq(cond, b.build_iconst_i32(0));
+}
+
 // A double that is a Value's bits and no arithmetic's result: an i64
 // reinterpreted, or a boxed element loaded as one (il.h `numberBits`). The
 // bridge verifier's rule for a bitcast back that canonicalises nothing
@@ -886,11 +914,23 @@ bool IlLowering::lower_instruction(
             // twin's, entered at the block that edge goes to. A shape test
             // left to this branch (defer_shape_test) is lowered here.
             const BronzeInstruction* test = std::exchange(pending_shape_test_, nullptr);
-            if ((inst_ast.guard_edge != BronzeInstruction::GuardEdge::None || test != nullptr) &&
-                spec_.image_sites_here()) {
-                const bool then_leaves = inst_ast.guard_edge == BronzeInstruction::GuardEdge::Then;
+            // The branch's ARMS (il_speculation.h): its two edges. An edge
+            // the harvested build never took, of a branch it took the other
+            // way, leaves as a guard's does: the block behind it, the calls
+            // in it and the join after it are the twin's, and what the
+            // taken side proved holds past where the two met.
+            enum : uint32_t { kArmThen = 1, kArmElse };
+            BronzeInstruction::GuardEdge guard_edge = inst_ast.guard_edge;
+            if (guard_edge == BronzeInstruction::GuardEdge::None && test == nullptr) {
+                const bool then_cold = prop_lowering_.arm_exits(kArmThen);
+                if (then_cold != prop_lowering_.arm_exits(kArmElse)) {
+                    guard_edge = then_cold ? BronzeInstruction::GuardEdge::Then : BronzeInstruction::GuardEdge::Else;
+                }
+            }
+            if ((guard_edge != BronzeInstruction::GuardEdge::None || test != nullptr) && spec_.image_sites_here()) {
+                const bool then_leaves = guard_edge == BronzeInstruction::GuardEdge::Then;
                 const bool true_leaves = then_leaves != swap;
-                Value* hit = true_leaves ? b.build_eq(cond, b.build_iconst_i32(0)) : cond;
+                Value* hit = true_leaves ? opposite_condition(b, cond) : cond;
                 BasicBlock* stays = true_leaves ? on_false : on_true;
                 BasicBlock* leaves = true_leaves ? on_true : on_false;
                 const std::vector<Value*>& stay_args = true_leaves ? false_args : true_args;
@@ -926,6 +966,23 @@ bool IlLowering::lower_instruction(
                               : accessor_cell_hit(this, b, obj, test->static_cell, keyed);
                 }
                 spec_.site_branch(b, hit, stays, leaves, /*exits=*/true, stay_args);
+                break;
+            }
+            // A build that may be harvested marks the edge taken, in a block
+            // of the edge's own.
+            if (prop_lowering_.arms_marked()) {
+                BasicBlock* cur = b.current_block();
+                const auto marked = [&](BasicBlock* to, const std::vector<Value*>& args, bool then_edge) {
+                    BasicBlock* edge = b.append_block("edge_" + std::to_string(fn->next_block_id()));
+                    b.position_at_end(edge);
+                    prop_lowering_.arm_begin(b, then_edge ? kArmThen : kArmElse);
+                    b.build_br(to, args);
+                    return edge;
+                };
+                BasicBlock* true_edge = marked(on_true, true_args, !swap);
+                BasicBlock* false_edge = marked(on_false, false_args, swap);
+                b.position_at_end(cur);
+                b.build_br_if(cond, true_edge, {}, false_edge, {});
                 break;
             }
             b.build_br_if(cond, on_true, true_args, on_false, false_args);

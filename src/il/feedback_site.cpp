@@ -402,6 +402,7 @@ void numberSlowSites(Module& module) {
                     case Op::ElemGet: case Op::ElemSet: case Op::PropGet: case Op::PropSet:
                     case Op::StrictEq: case Op::Unbox:
                     case Op::Add: case Op::Sub: case Op::Mul: case Op::Div:
+                    case Op::Branch:
                         inst.slowSite = next;
                         next += kSlowSiteArms;
                         break;

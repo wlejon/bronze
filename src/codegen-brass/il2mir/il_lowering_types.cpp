@@ -100,6 +100,27 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                              kSlowCountAliasClass);
         });
     }
+    if (options.cache_evidence && options.slow_site_count != 0) {
+        prop_lowering_.set_shape_turn_fn([this](Builder& b, uint32_t site, Value* keyed) {
+            const uint32_t index = site + kShapeTurnArm;
+            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
+                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
+                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
+            }
+            const auto word = [&](uint32_t arm) {
+                return b.build_add(hoisted(b, Hoist::IcTable),
+                                   b.build_iconst_i64(ic_slow_count_offset(site + arm, options_.slow_site_count)));
+            };
+            Value* last_at = word(kLastShapeArm);
+            Value* turns_at = word(kShapeTurnArm);
+            Value* now = b.build_or(keyed, b.build_iconst_i64(INT64_MIN));
+            Value* last = with_alias_class(b.build_load(Type::i64(), last_at, 0), kSlowCountAliasClass);
+            Value* n = with_alias_class(b.build_load(Type::i64(), turns_at, 0), kSlowCountAliasClass);
+            with_alias_class(b.build_store(Type::i64(), turns_at, 0, b.build_add(n, b.build_zext_i64(b.build_ne(now, last)))),
+                             kSlowCountAliasClass);
+            with_alias_class(b.build_store(Type::i64(), last_at, 0, now), kSlowCountAliasClass);
+        });
+    }
     // ARMS (il_speculation.h). An arm is on the instruction's fast path, so
     // its mark is one store of a constant where a slow arm counts.
     std::function<void(Builder&, uint32_t)> mark;
@@ -113,6 +134,12 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             with_alias_class(b.build_store(Type::i64(), at, 0, b.build_iconst_i64(1)), kSlowCountAliasClass);
         };
+    }
+    if (!options.count_slow_sites && options.slow_site_count != 0) {
+        prop_lowering_.set_arm_cell_fn([this](Builder& b, uint32_t index) {
+            return b.build_add(hoisted(b, Hoist::IcTable),
+                               b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
+        });
     }
     prop_lowering_.set_arm_fns(
         [this](uint32_t index) {

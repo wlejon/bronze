@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -21,6 +22,7 @@
 #include "lower/elem_reread.h"
 #include "lower/function_placement.h"
 #include "lower/guard_region.h"
+#include "lower/guard_region_cfg.h"
 #include "lower/guarded_load_fold.h"
 #include "lower/inline_guarded.h"
 #include "lower/inline_small.h"
@@ -297,7 +299,12 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         for (uint32_t f : mod.hotFunctions) {
             if (f < hot.size()) hot[f] = 1;
         }
-        const uint32_t layoutSites = spec::applyFeedbackLayoutCells(mod, *plan, hot, missedClaims);
+        const uint32_t layoutSites =
+            spec::applyFeedbackLayoutCells(mod, *plan, hot, missedClaims, [](const il::Function& fn) {
+                return [cfg = std::make_shared<const Cfg>(buildCfg(fn))](il::BlockId a, il::BlockId b) {
+                    return cfg->dominates(a, b);
+                };
+            });
         if (wholeProgram && build.stats) {
             report += "feedback-layout: sites and tests on a layout cell " + std::to_string(layoutSites) + " (" +
                       std::to_string(mod.layoutCells.size()) + " cells)\n";

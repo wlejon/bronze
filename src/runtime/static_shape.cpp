@@ -190,16 +190,20 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
 // being built, whose shape holds the listed keys and not yet the rest, is not
 // the one the cell keeps. A receiver the list does not describe is not
 // refused until kLayoutRetries have come: an object of the named shape may
-// still.
+// still. One with fewer keys than the count weighs a kLayoutUnbuilt'th of
+// one: a site read as a phase (opt/spec/feedback_plan.cpp, PHASE) is a
+// member of the finished shape's cell and runs for every object while it is
+// built, which is every object of the program before the first finished one
+// comes back to a member (ten thousand sprites, each through its setters).
 void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uint32_t n, uint32_t keyCount,
                                   uint64_t* cell) {
     recordHelperCall("bronze_static_layout_publish");
     if (censusFillsSuppressed()) return;
     if (cell == nullptr || *cell != 0 || triples == nullptr) return;
-    constexpr uint32_t kLayoutRetries = 4096;
-    const auto refuse = [&] {
-        thread_local std::unordered_map<const uint64_t*, uint32_t> tries;
-        if (++tries[cell] >= kLayoutRetries) *cell = kRefused;
+    constexpr uint64_t kLayoutRetries = 4096, kLayoutUnbuilt = 1024;
+    const auto refuse = [&](bool unbuilt = false) {
+        thread_local std::unordered_map<const uint64_t*, uint64_t> tries;
+        if ((tries[cell] += unbuilt ? 1 : kLayoutUnbuilt) >= kLayoutRetries * kLayoutUnbuilt) *cell = kRefused;
     };
     Value objVal(objBits);
     if (!objVal.isObject()) return refuse();
@@ -211,7 +215,7 @@ void bronze_static_layout_publish(uint64_t objBits, const uint32_t* triples, uin
     // One node a key, as the recorder names a shape (type_feedback.cpp).
     uint32_t keys = 0;
     for (const Shape* node = shape; node != nullptr && node->parent != nullptr; node = node->parent) ++keys;
-    if (keys != keyCount) return refuse();
+    if (keys != keyCount) return refuse(keys < keyCount);
     for (uint32_t i = 0; i < n; ++i) {
         const uint32_t keyIndex = triples[3 * i], slot = triples[3 * i + 1];
         const bool forWrite = (triples[3 * i + 2] & BRONZE_ABI_LAYOUT_PAIR_WRITE) != 0;

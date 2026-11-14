@@ -140,6 +140,16 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
         }
         return true;
     }
+    if (f[0] == "last") {
+        uint64_t index = 0;
+        std::string name;
+        if (f.size() != 3 || !parseU64(f[1], index) || index >= harvest->slowSites || !unescapeName(f[2], name) ||
+            name.empty() || !harvest->last.emplace(static_cast<uint32_t>(index), std::move(name)).second) {
+            why = "malformed last row";
+            return false;
+        }
+        return true;
+    }
     if (f[0] == "sample") {
         uint32_t hash = 0;
         uint64_t count = 0;
@@ -294,15 +304,15 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
             const std::string want =
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
             if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2" &&
-                line != "bronze-type-feedback 3") {
+                line != "bronze-type-feedback 3" && line != "bronze-type-feedback 4") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
-        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" || f[0] == "sample" ||
-            f[0] == "slowsites" || f[0] == "slow" ||
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" ||  f[0] == "sample" ||
+            f[0] == "slowsites" || f[0] == "slow" || f[0] == "last" ||
             f[0] == "doubles" || f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
             continue;
@@ -424,6 +434,9 @@ std::string TypeProfile::serialize() const {
             out += "\n";
             for (const auto& [index, count] : harvest_->slow) {
                 out += "slow\t" + std::to_string(index) + "\t" + std::to_string(count) + "\n";
+            }
+            for (const auto& [index, name] : harvest_->last) {
+                out += "last\t" + std::to_string(index) + "\t" + name + "\n";
             }
         }
         for (const auto& [index, site] : harvest_->ics) {

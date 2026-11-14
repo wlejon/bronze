@@ -14,6 +14,9 @@
 namespace bronze::codegen {
 
 static_assert(il2mir::kSlowSiteArms == bronze::il::kSlowSiteArms, "one slow site's indices, counted twice");
+static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
+                  il2mir::kLastShapeArm == bronze::il::kLastShapeArm,
+              "the shape turns' indices, named twice");
 
 static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWriteLiteralElement),
               "the array literal element write mode is one number on both sides");
@@ -50,6 +53,15 @@ struct LowerContext {
     const il::Module& module;
     const std::vector<std::string>& uniqueNames;
     const std::vector<LineTable>& lineTables;
+    // A build made to be harvested (`bronze build --harvest-out`) runs every
+    // named read and write through its cache: a site with a slot of its own
+    // (a class family's, the whole-program stamps') answers its hits with a
+    // guard that never touches the cache, and the harvest would say of it
+    // only what missed the guard. Such a site is lowered here as if it had
+    // no slot; the build is slower by those guards and says what each met.
+    // A site with a direct target keeps its stamps: the accessor it calls
+    // is named under their guard and under nothing else.
+    bool cacheEvidence() const noexcept { return !module.harvestOutPath.empty() && !module.feedbackApplied; }
 
     const std::string& fnName(size_t idx) const noexcept {
         if (idx < uniqueNames.size() && !uniqueNames[idx].empty()) {
@@ -234,17 +246,19 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.ic_index = inst.icIndex;
             out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
-            out.static_slot = inst.staticSlot;
-            out.static_cell = inst.staticCellIndex;
-            out.static_regrow = inst.staticRegrow;
-            out.family_lo = inst.familyLo;
-            out.family_span = inst.familySpan;
-            out.is_family = inst.familyLo != il::Instruction::kNoFamily;
+            if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
+                out.static_slot = inst.staticSlot;
+                out.static_cell = inst.staticCellIndex;
+                out.static_regrow = inst.staticRegrow;
+                out.family_lo = inst.familyLo;
+                out.family_span = inst.familySpan;
+                out.is_family = inst.familyLo != il::Instruction::kNoFamily;
+                out.shape_guarded = inst.shapeGuarded;
+            }
             out.is_poly = inst.icPolymorphic;
             out.is_absent = inst.icAbsent;
             out.ic_chain = inst.icChain;
             out.number_bits = inst.numberBits;
-            out.shape_guarded = inst.shapeGuarded;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }
@@ -283,16 +297,18 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.ic_index = inst.icIndex;
             out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
-            out.static_slot = inst.staticSlot;
-            out.static_cell = inst.staticCellIndex;
-            out.static_regrow = inst.staticRegrow;
-            out.family_lo = inst.familyLo;
-            out.family_span = inst.familySpan;
+            if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
+                out.static_slot = inst.staticSlot;
+                out.static_cell = inst.staticCellIndex;
+                out.static_regrow = inst.staticRegrow;
+                out.family_lo = inst.familyLo;
+                out.family_span = inst.familySpan;
+                out.shape_guarded = inst.shapeGuarded;
+            }
             out.imm_i64 = inst.immI32;
             out.run_cell = inst.transitionRunCell;
             out.run_length = inst.transitionRunLength;
             out.run_slot = inst.transitionRunSlot;
-            out.shape_guarded = inst.shapeGuarded;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }

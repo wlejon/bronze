@@ -210,6 +210,17 @@ Value* PropertyLoweringHelper::keyed_shape_flat(Builder& b, Value* obj) {
     return b.build_select(plain, shape, not_plain_shape(b));
 }
 
+void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSite& site) {
+    if (!site || !shape_turn_fn_ || slow_sites_.size() != 1) return;
+    // Zero for a receiver that is no plain object: the harvest reads the
+    // word as a shape's address.
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    shape_turn_fn_(b, slow_sites_[0], b.build_select(plain, shape, b.build_iconst_i64(0)));
+}
+
 void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
                                          const std::vector<Value*>& fast_args) {
     if (spec_) {

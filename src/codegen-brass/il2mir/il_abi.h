@@ -193,6 +193,10 @@ inline constexpr std::string_view kTwinGenericSuffix = "__generic";
 // The indices one slow site takes (il/feedback_site.h kSlowSiteArms): its
 // slow arm's and its ARMS' (il_speculation.h).
 inline constexpr uint32_t kSlowSiteArms = 8;
+// A named property site's last shape and its count of shape turns
+// (il/feedback_site.h).
+inline constexpr uint32_t kLastShapeArm = 6;
+inline constexpr uint32_t kShapeTurnArm = 7;
 // PROVEN FACTS (il_speculation.h, resolve_fact_markers): the two marker
 // calls of an image's lowering, each taking a fact's id, both gone before
 // any pass runs.

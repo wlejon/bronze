@@ -69,6 +69,10 @@ struct Module {
     uint32_t slowSites = 0;
     std::vector<uint64_t> slowArmed;
     std::map<uint32_t, uint64_t> slow;
+    // The shape of a named site's last receiver (il/feedback_site.h
+    // kLastShapeArm), by the slow-site index of the word that held it: the
+    // `last` rows. `*other*` for a receiver that was no plain object.
+    std::map<uint32_t, std::string> last;
     // The sampler's counts (harvest_sampler.h), by the sampled function's
     // descriptor name_hash.
     std::map<uint32_t, uint64_t> samples;
@@ -318,6 +322,11 @@ std::string textOf(const State& s, const Module& m) {
         for (const auto& [index, count] : m.slow) {
             out += "slow\t" + std::to_string(index) + "\t" + std::to_string(count) + "\n";
         }
+        for (const auto& [index, name] : m.last) {
+            out += "last\t" + std::to_string(index) + "\t";
+            appendEscaped(out, name);
+            out += '\n';
+        }
     }
     for (const auto& [index, site] : m.ics) {
         if (site.facts.empty()) continue;
@@ -342,6 +351,7 @@ std::string textOf(const State& s, const Module& m) {
         if (site.uncached != 0) {
             out += "other\t" + std::to_string(index) + "\t" + std::to_string(site.uncached) + "\n";
         }
+
     }
     for (const auto& [hash, count] : m.samples) {
         char h[9];
@@ -521,6 +531,19 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
             s.dirty = true;
         }
         for (uint32_t i = 0; i < id.slowSites; ++i) {
+            // A word with bit 63 is a site's last shape (il/feedback_site.h
+            // kLastShapeArm), not a count: it stays, and is named. A shape
+            // is never freed, so the word names one whenever it is read.
+            if ((counts[i] >> 63) != 0) {
+                const auto* shape = reinterpret_cast<const Shape*>(counts[i] & ~(uint64_t{1} << 63));
+                std::string name = shape != nullptr ? shapeName(s, shape) : std::string("*other*");
+                std::string& held = m->last[i];
+                if (held != name) {
+                    held = std::move(name);
+                    s.dirty = true;
+                }
+                continue;
+            }
             if (counts[i] == 0) continue;
             m->slow[i] += counts[i];
             counts[i] = 0;

@@ -118,6 +118,17 @@ uint64_t icLayoutDigest(const Module& module);
 // il_speculation.h, "ARMS"): the alternatives of an inline path, each marked
 // where it begins.
 inline constexpr uint32_t kSlowSiteArms = 8;
+// Of a named property read's or write's indices, the two a build made to be
+// harvested keeps its receivers' SHAPE TURNS in: kLastShapeArm's word holds
+// the shape of the site's last receiver (the stand-in for one that is no
+// plain object) with bit 63 set, which no count has and the harvest leaves
+// where it is; kShapeTurnArm's counts the receivers whose shape was not that
+// one. A site that met one shape while its objects were being built and
+// another ever after turned twice (its first receiver, and the first of the
+// later shape), and one that meets both for good turns each time they
+// alternate.
+inline constexpr uint32_t kLastShapeArm = 6;
+inline constexpr uint32_t kShapeTurnArm = 7;
 void numberSlowSites(Module& module);
 
 // What a function's descriptor carries as `name_hash` (bronze_abi.h), and

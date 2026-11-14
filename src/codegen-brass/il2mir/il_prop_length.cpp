@@ -46,9 +46,15 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     Value* result = b.add_block_param(bb_merge, Type::i64());
     // A loop bound's `length` is a header's: the helper is the exception.
     bb_slow->set_cold();
+    // The read's ARMS (il_speculation.h): which receiver's header answered,
+    // or the plain object's own guard. A site reads one kind, nearly always,
+    // and where the harvested build read no other the tests behind it are
+    // exits: `i < list.length` then has no call in its loop.
+    enum : uint32_t { kArmString = 1, kArmArray, kArmView, kArmOther };
+    const bool other_cold = arm_exits(kArmOther) || !mono;
 
     b.position_at_end(cur);
-    b.build_br_if(is_obj, bb_obj, bb_not_obj);
+    arm_test(b, is_obj, bb_obj, bb_not_obj, slow_exits() && arm_exits(kArmString));
 
     // A String's `length` is its code-unit count, which nothing can redefine
     // (22.1.4.1: an own, non-writable, non-configurable property of every
@@ -56,9 +62,10 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     // a `+`-chain builder included (string.h).
     b.position_at_end(bb_not_obj);
     Value* tag = b.build_lshr(obj, b.build_iconst_i64(48));
-    b.build_br_if(b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), bb_str, bb_slow);
+    slow_branch(b, b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), bb_str, bb_slow);
 
     b.position_at_end(bb_str);
+    arm_begin(b, kArmString);
     Value* str = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(0x0000FFFFFFFFFFFFULL)));
     Value* str_len = b.build_zext_i64(b.build_load(Type::i32(), str, BRONZE_ABI_STRING_LENGTH_OFFSET));
     b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(str_len))});
@@ -66,20 +73,24 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     b.position_at_end(bb_obj);
     constexpr int32_t kViewHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr);
+    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr,
+             slow_exits() && arm_exits(kArmView) && other_cold);
 
     b.position_at_end(bb_arr);
+    arm_begin(b, kArmArray);
     Value* arr_len = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(arr_len))});
 
     b.position_at_end(bb_not_arr);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kViewHeaderLow)), bb_ta, bb_other);
+    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kViewHeaderLow)), bb_ta, bb_other,
+             slow_exits() && other_cold);
 
     b.position_at_end(bb_ta);
     Value* kind = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET));
-    b.build_br_if(typed_array_chain_pristine(b, ptr, kind), bb_ta_hit, bb_slow);
+    slow_branch(b, typed_array_chain_pristine(b, ptr, kind), bb_ta_hit, bb_slow);
 
     b.position_at_end(bb_ta_hit);
+    arm_begin(b, kArmView);
     Value* ta_len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(ta_len))});
 
@@ -87,12 +98,14 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     // when the IL calls it monomorphic, the helper otherwise.
     b.position_at_end(bb_other);
     if (mono) {
+        arm_begin(b, kArmOther);
         b.build_br(bb_merge, {lower_prop_get_mono(b, obj, key_index, site, is_family)});
     } else {
         b.build_br(bb_slow);
     }
 
     b.position_at_end(bb_slow);
+    slow_arm(b);
     b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
 
     b.position_at_end(bb_merge);

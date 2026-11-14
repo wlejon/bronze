@@ -101,6 +101,10 @@ struct Harvest {
     uint32_t slowSites = 0;
     std::vector<uint64_t> slowArmed;
     std::map<uint32_t, uint64_t> slow;
+    // The `last` rows: the shape of a named site's last receiver, by the
+    // slow-site index of the word that held it (il/feedback_site.h
+    // kLastShapeArm); `*other*` for one that was no plain object.
+    std::map<uint32_t, std::string> last;
     // The run's samples (runtime/harvest_sampler.h): per function, by the
     // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
     // many of the sampler's interrupts its code took.

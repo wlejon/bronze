@@ -316,7 +316,25 @@ public:
     void arm_begin(Builder& b, uint32_t arm) {
         if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm);
     }
+    // Whether arm_begin marks here: a build that may be harvested, at an
+    // instruction with a site of its own.
+    [[nodiscard]] bool arms_marked() const noexcept { return arm_mark_fn_ && slow_sites_.size() == 1; }
     [[nodiscard]] uint32_t only_arm(uint32_t first, uint32_t last) const;
+    // The address of the word behind arm index `arm`, to hold a fact of
+    // the site's own (a computed read's pair, lower_elem_get) where the
+    // build marks no arms: the words are the marks' in a build that may be
+    // harvested, so there it is null.
+    void set_arm_cell_fn(std::function<Value*(Builder&, uint32_t)> fn) { arm_cell_fn_ = std::move(fn); }
+    [[nodiscard]] Value* arm_cell(Builder& b, uint32_t arm) {
+        return arm_cell_fn_ && slow_sites_.size() == 1 ? arm_cell_fn_(b, slow_sites_[0] + arm) : nullptr;
+    }
+    // SHAPE TURNS (il/feedback_site.h kShapeTurnArm), in a build made to be
+    // harvested, in front of a named read or write with a cache: one more
+    // where `obj`'s keyed shape is not the one the site's last receiver
+    // had, and that shape kept. No branch: the count takes the compare's
+    // bit. `fn(b, slow site, keyed shape)`.
+    void set_shape_turn_fn(std::function<void(Builder&, uint32_t, Value*)> fn) { shape_turn_fn_ = std::move(fn); }
+    void count_shape_turn(Builder& b, Value* obj, const IcSite& site);
     // One test of a ladder: `br_if cond, hit, miss`, an exit where
     // `miss_cold` says every arm behind it, and the slow arm, never ran.
     void arm_test(Builder& b, Value* cond, BasicBlock* hit, BasicBlock* miss, bool miss_cold);
@@ -748,6 +766,8 @@ private:
     std::function<bool(uint32_t)> arm_cold_fn_;
     std::function<void(Builder&, uint32_t)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
+    std::function<Value*(Builder&, uint32_t)> arm_cell_fn_;
+    std::function<void(Builder&, uint32_t, Value*)> shape_turn_fn_;
     bool slow_exits_ = false;
     struct LastTypedGet {
         BasicBlock* merge_bb = nullptr;

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 
 #include "abi/bronze_feedback_site.h"
@@ -95,6 +96,12 @@ bool grewFrom(const std::string& grown, const std::string& from) {
 // cache holding that shape may have latched the transition that ADDS the key,
 // whose receivers have the shape one key short (object.cpp, the
 // shape-transition hit), or a store to a key the receiver already had.
+// The most shape turns (il/feedback_site.h kShapeTurnArm) a site that held
+// several shapes may have counted and still be read as having met them one
+// after another: one a shape, with room for the copies of a site that
+// inlining made, which share its count.
+constexpr uint64_t kPhaseTurns = 16;
+
 bool lastKeyIs(const std::string& shape, const std::string& key) {
     if (key.empty() || shape.size() < key.size() + 2 || shape.back() != '}') return false;
     const size_t start = shape.size() - 1 - key.size();
@@ -146,6 +153,17 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
     struct Named {
         il::Op op;
         uint32_t key;
+        uint32_t slowSite;
+    };
+    const bool counted = harvest.slowSites != 0 && harvest.slowSites == probe.slowSiteCount;
+    // A site's count of shape turns (il/feedback_site.h kShapeTurnArm); none
+    // where the harvested build did not count the site.
+    const auto turnsOf = [&](uint32_t slowSite) -> std::optional<uint64_t> {
+        if (!counted || slowSite == il::Instruction::kNoSlowSite) return std::nullopt;
+        const uint32_t i = slowSite + il::kShapeTurnArm;
+        if (i / 64 >= harvest.slowArmed.size() || (harvest.slowArmed[i / 64] >> (i % 64) & 1) == 0) return std::nullopt;
+        const auto at = harvest.slow.find(i);
+        return at == harvest.slow.end() ? 0 : at->second;
     };
     std::unordered_map<uint32_t, Named> named;
     for (const il::Function& fn : probe.functions) {
@@ -153,7 +171,13 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             for (const il::Instruction& inst : block.instructions) {
                 if (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet || inst.op == il::Op::MethodCall ||
                     inst.op == il::Op::MethodCallSpread) {
-                    named.emplace(inst.icIndex, Named{inst.op, inst.keyIndex});
+                    named.emplace(inst.icIndex, Named{inst.op, inst.keyIndex, inst.slowSite});
+                    // A stamped site whose shape turns were counted ran through
+                    // its cache (a build made to be harvested).
+                    if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                        inst.staticSlot != il::Instruction::kNoStaticSlot && !turnsOf(inst.slowSite)) {
+                        plan.stampedIcs.insert(inst.icIndex);
+                    }
                 }
             }
         }
@@ -208,6 +232,30 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
         }
         const bool more = site.full || (write && site.mega) || uncached;
         const uint64_t n = receivers.size();
+        // A PHASE: the site held several shapes and its receivers' shape
+        // turned only a few times (kPhaseTurns; a site that ran at all
+        // counts its first receiver), so the shapes came one after another
+        // and its last receiver's (the `last` row) is what the site has met
+        // since: a setter's `this._observer`, run by `b.x = ...` while the
+        // object was being built and by every frame after it had its last
+        // keys. The site is that shape's alone. Its claim's guard leaves for
+        // the earlier shapes, which a chain or a cell that moves on would
+        // have answered: the functions that build the objects leave their
+        // speculated code (the exit valve), the ones that run after keep one
+        // compare.
+        if (const std::optional<uint64_t> turns = turnsOf(it->second.slowSite);
+            n >= 2 && !more && turns && *turns != 0 && *turns <= kPhaseTurns) {
+            const auto last = harvest.last.find(it->second.slowSite + il::kLastShapeArm);
+            const auto held = last == harvest.last.end() ? receivers.end() : receivers.find(last->second);
+            if (held != receivers.end() && !held->second &&
+                (!write || stored.count(held->first) != 0 || !lastKeyIs(held->first, key))) {
+                plan.shapesByIc[ic].counts[held->first] += W;
+                plan.shapesByIc[ic].total += W;
+                if (!write) plan.readResultsByIc[ic].total += W;
+                ++plan.stats.harvestPhased;
+                continue;
+            }
+        }
         if (site.ways.size() > n) plan.shapeVariantIcs.insert(ic);
         const uint64_t share = more ? W / (2 * n) : W / n;
         NameCounts& counts = plan.shapesByIc[ic];
@@ -363,8 +411,8 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
         out += plan.stats.harvestStale
                    ? std::string("feedback: harvest from another build (IC layout digest differs): ignored\n")
                    : "feedback: harvest sites " + n(plan.stats.harvestSites) + " (property " +
-                         n(plan.stats.harvestProperty) + ", method " + n(plan.stats.harvestMethod) +
-                         "), samples " + n(plan.stats.harvestSamples) + "; no value sites (C, D)\n";
+                         n(plan.stats.harvestProperty) + ", phased " + n(plan.stats.harvestPhased) + ", method " +
+                         n(plan.stats.harvestMethod) + "), samples " + n(plan.stats.harvestSamples) + "; no value sites (C, D)\n";
     }
     out += "feedback: A shape claims identity " + n(stats.shapeIdentity) + " (regrow " +
            n(stats.shapeRegrow) + "), family " + n(stats.shapeFamily) +

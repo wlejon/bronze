@@ -309,6 +309,7 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
 Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                              const IcSite& site, const MemoCarry* carry = nullptr) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    prop_lowering.count_shape_turn(b, obj_val, site);
     // A receiver written as a class's name: the function arms first
     // (il_fn_recv.cpp), the site's ordinary read for anything else.
     if (inst_ast.is_fn_recv && site && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
@@ -382,6 +383,7 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
 void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                            Value* val, const IcSite& site) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    prop_lowering.count_shape_turn(b, obj_val, site);
     // The strict flag of an assignment, or kDefineWriteMode for a PropDefine:
     // the helper the miss calls is chosen by it (lower_prop_set).
     const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);

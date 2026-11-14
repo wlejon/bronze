@@ -360,7 +360,7 @@ void build_index_set_stub(PropertyLoweringHelper& pl, Function* fn) {
 // every site and measured no better (keyed microbench, 7.79G instructions
 // against 7.72G).
 void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* key, BasicBlock* merge,
-                               BasicBlock* miss) {
+                               BasicBlock* miss, uint32_t arm) {
     // append_block moves the insertion point: the blocks first.
     BasicBlock* cur = b.current_block();
     const std::string prefix = "kget_" + std::to_string(cur->parent()->next_block_id());
@@ -376,6 +376,7 @@ void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* ob
     b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit)), own, miss);
 
     b.position_at_end(own);
+    pl.arm_begin(b, arm);
     b.build_br(merge, {pl.load_slot(b, k.ptr, slot_word)});
 }
 

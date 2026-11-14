@@ -115,6 +115,7 @@ struct FeedbackPlanStats {
     bool harvest = false;
     bool harvestStale = false;
     uint32_t harvestSites = 0, harvestProperty = 0, harvestMethod = 0;
+    uint32_t harvestPhased = 0;  // property sites read as one shape after another (feedback_plan.cpp, PHASE)
     uint64_t harvestSamples = 0;  // the samples matched to a function
 };
 
@@ -127,6 +128,12 @@ struct FeedbackPlan {
     // the same keys in the same order, laid out differently (a slot's
     // representation, an attribute), so one identity cell answers one of them.
     std::unordered_set<uint32_t> shapeVariantIcs;
+    // The property sites that had a slot before the profile was read (a
+    // class family's, the whole-program stamps') in a harvested build that
+    // ran them through a guard of their own (one not built with
+    // `--harvest-out`, il_to_brass_ast.cpp cacheEvidence), so their caches
+    // hold only what missed it. `applyFeedbackLayoutCells` reads them.
+    std::unordered_set<uint32_t> stampedIcs;
     std::map<SpanKey, NameCounts> dynamicCallees;          // call.dynamic callees
     std::map<ValueKey, NumberCounts> values;               // operands of numeric ops
     // Function name -> the times its entry site ran (a probe function's
@@ -252,8 +259,11 @@ void applyFeedbackObjectKeys(il::Module& mod, const FeedbackPlan& plan);
 // with as many different compares. A receiver some site of which met a second
 // shape keeps its claims: a family range admits the subclasses a layout cell
 // would refuse. Returns the number of sites and tests rewritten.
+// `dominanceOf(fn)`: whether block a of `fn` dominates block b, asked only
+// of the functions that have a stamped site a profiled one may speak for.
+using DominanceOf = std::function<std::function<bool(il::BlockId, il::BlockId)>(const il::Function&)>;
 uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, const std::vector<uint8_t>& hot,
-                                  const std::unordered_set<uint32_t>& missedClaims);
+                                  const std::unordered_set<uint32_t>& missedClaims, const DominanceOf& dominanceOf);
 
 // Layout families read off the profile, for the classes whose construction
 // the compiler could not model (a constructor that copies an options object,

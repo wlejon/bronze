@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <functional>
 #include <map>
 #include <set>
 #include <tuple>
@@ -622,7 +623,7 @@ void applyFeedbackObjectKeys(il::Module& mod, const FeedbackPlan& plan) {
 }
 
 uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, const std::vector<uint8_t>& hot,
-                                  const std::unordered_set<uint32_t>& missedClaims) {
+                                  const std::unordered_set<uint32_t>& missedClaims, const DominanceOf& dominanceOf) {
     // By shape name: its entry in `mod.layoutCells`.
     std::unordered_map<std::string, size_t> cellOf;
     // A member or a family field under a key the harvest saw hold only plain
@@ -631,6 +632,23 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
         return slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
                std::find(mod.slotReprObjectFields.begin(), mod.slotReprObjectFields.end(), keyIndex) !=
                    mod.slotReprObjectFields.end();
+    };
+    // Whether `shape` (a whole shape's name) has the site's key at the
+    // site's slot.
+    const auto slotIn = [&](const std::string& shape, const il::Instruction& inst) {
+        std::vector<std::string_view> keys;
+        bool complete = false;
+        uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+        if (inst.keyIndex >= mod.keyConstants.size() || !shapeKeys(shape, keys, complete, &inlineSlots) || !complete) {
+            return false;
+        }
+        const std::string& key = mod.keyConstants[inst.keyIndex];
+        for (uint32_t i = 0; i < keys.size(); ++i) {
+            if (keys[i] != key) continue;
+            const uint32_t slot = i >= inlineSlots ? BRONZE_ABI_OBJ_OVERFLOW_SLOT + (i - inlineSlots) : i;
+            return slot == inst.staticSlot;
+        }
+        return false;
     };
     // The one shape a claimed site met, with the site's key at its slot; null
     // for a site that met none, several, or one its claim does not describe.
@@ -647,18 +665,7 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
             if (sole != nullptr || name == "*other*") return nullptr;
             sole = &name;
         }
-        if (sole == nullptr) return nullptr;
-        std::vector<std::string_view> keys;
-        bool complete = false;
-        uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
-        if (!shapeKeys(*sole, keys, complete, &inlineSlots) || !complete) return nullptr;
-        const std::string& key = mod.keyConstants[inst.keyIndex];
-        for (uint32_t i = 0; i < keys.size(); ++i) {
-            if (keys[i] != key) continue;
-            const uint32_t slot = i >= inlineSlots ? BRONZE_ABI_OBJ_OVERFLOW_SLOT + (i - inlineSlots) : i;
-            return slot == inst.staticSlot ? sole : nullptr;
-        }
-        return nullptr;
+        return sole != nullptr && slotIn(*sole, inst) ? sole : nullptr;
     };
     // Whether the harvest saw `key` born and kept a Number on every shape
     // named `shape` its caches met, and nothing else under it anywhere
@@ -690,13 +697,22 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
         // shape they agree on (null once two disagree or one names none).
         struct Group {
             std::vector<il::Instruction*> sites;
+            std::vector<il::BlockId> blocks;  // each site's
             std::vector<il::Instruction*> tests;
             const std::string* shape = nullptr;
             bool refused = false;
+            // Every site is a STAMPED one that could be a cell's member.
+            bool stamped = true;
         };
         std::map<std::tuple<il::ValueId, uint32_t, uint32_t, uint32_t>, Group> groups;
-        for (il::Block& block : fn.blocks) {
-            for (il::Instruction& inst : block.instructions) {
+        // By receiver: the shapes its PROFILED sites met alone, and where.
+        // A profiled site is one the harvested build ran through its cache
+        // every time, so its ways are everything it met; a stamped one
+        // (`FeedbackPlan::stampedIcs`) kept a guard of its own in that build
+        // and filled its cache only where the guard missed.
+        std::map<il::ValueId, std::vector<std::pair<il::BlockId, const std::string*>>> profiled;
+        for (il::BlockId bi = 0; bi < fn.blocks.size(); ++bi) {
+            for (il::Instruction& inst : fn.blocks[bi].instructions) {
                 const bool site = (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
                                   inst.staticSlot != il::Instruction::kNoStaticSlot;
                 if ((!site && inst.op != il::Op::IsShape) || inst.operands.empty()) continue;
@@ -708,13 +724,46 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
                     continue;
                 }
                 g.sites.push_back(&inst);
-                const std::string* shape = inst.directTarget == il::Instruction::kNoDirectTarget &&
-                                                   !il::isDefineWrite(inst) && !inst.staticRegrow
-                                               ? soleShape(inst)
-                                               : nullptr;
+                g.blocks.push_back(bi);
+                const bool member = inst.directTarget == il::Instruction::kNoDirectTarget && !il::isDefineWrite(inst);
+                const bool stamped = plan.stampedIcs.count(inst.icIndex) != 0;
+                // A stamp that may latch an unfinished object (il.h
+                // staticRegrow) is a member where the site's cache says
+                // what it met; a profile's own such claim met two shapes.
+                const std::string* shape = member && (!inst.staticRegrow || !stamped) ? soleShape(inst) : nullptr;
                 if (shape == nullptr || (g.shape != nullptr && *g.shape != *shape)) g.refused = true;
                 if (g.shape == nullptr) g.shape = shape;
+                if (!member || !stamped) g.stamped = false;
+                if (!stamped && shape != nullptr) profiled[inst.operands[0]].emplace_back(bi, shape);
             }
+        }
+        // A group of stamped sites takes the shape the receiver's profiled
+        // sites met, where they all met one and one of them runs whenever
+        // the stamped site does (its block is the site's or dominates it):
+        // what the stamped site's own cache says is what missed its guard,
+        // often one object met before the guard held. So a receiver read
+        // through a class family's range, a cell of the whole-program
+        // stamps' and a profile's claim is tested once, against the cell.
+        std::function<bool(il::BlockId, il::BlockId)> dominates;
+        for (auto& [key, g] : groups) {
+            if (!g.stamped || g.sites.empty()) continue;
+            const auto met = profiled.find(std::get<0>(key));
+            if (met == profiled.end()) continue;
+            const std::string* shape = met->second.front().second;
+            bool one = true;
+            for (const auto& [block, name] : met->second) one = one && *name == *shape;
+            if (!one) continue;
+            if (!dominates) dominates = dominanceOf(fn);
+            bool all = true;
+            for (size_t i = 0; i < g.sites.size() && all; ++i) {
+                all = slotIn(*shape, *g.sites[i]) &&
+                      std::any_of(met->second.begin(), met->second.end(), [&](const auto& at) {
+                          return at.first == g.blocks[i] || dominates(at.first, g.blocks[i]);
+                      });
+            }
+            if (!all) continue;
+            g.shape = shape;
+            g.refused = false;
         }
         for (auto& [key, g] : groups) {
             if (g.refused || g.shape == nullptr || g.sites.empty()) continue;
@@ -746,6 +795,7 @@ uint32_t applyFeedbackLayoutCells(il::Module& mod, const FeedbackPlan& plan, con
                     inst->staticCellIndex = entry.cell;
                     inst->familyLo = il::Instruction::kNoFamily;
                     inst->familySpan = 0;
+                    inst->staticRegrow = false;
                     ++rewritten;
                 }
             }
