@@ -1,5 +1,7 @@
 #include "opt/core/cfg_edit.h"
 
+#include <iterator>
+
 #include "opt/core/uses.h"
 
 namespace bronze::opt {
@@ -36,6 +38,30 @@ void retargetEdge(il::Function& fn, const Edge& edge, BlockId newTarget, std::ve
     if (t == nullptr) return;
     t->block = newTarget;
     t->args = std::move(args);
+}
+
+BlockId splitBlockBefore(il::Function& fn, BlockId block, size_t index) {
+    // newBlock reallocates the block vector: take what is moved first.
+    std::vector<il::Instruction>& from = fn.blocks[block].instructions;
+    std::vector<il::Instruction> moved(std::make_move_iterator(from.begin() + static_cast<std::ptrdiff_t>(index)),
+                                       std::make_move_iterator(from.end()));
+    from.erase(from.begin() + static_cast<std::ptrdiff_t>(index), from.end());
+    const BlockId handler = fn.blocks[block].handler;
+    const bool cold = fn.blocks[block].cold;
+    const Span span = moved.empty() ? Span{} : moved.front().span;
+
+    il::Block& tail = newBlock(fn);
+    const BlockId tailId = tail.id;
+    tail.handler = handler;
+    tail.cold = cold;
+    tail.instructions = std::move(moved);
+
+    il::Instruction jump;
+    jump.op = il::Op::Jump;
+    jump.target.block = tailId;
+    jump.span = span;
+    fn.blocks[block].instructions.push_back(std::move(jump));
+    return tailId;
 }
 
 BlockId splitEdge(il::Function& fn, const Edge& edge) {
