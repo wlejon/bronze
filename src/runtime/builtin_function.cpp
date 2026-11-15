@@ -180,6 +180,11 @@ uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
             }
             return fnHdr->code(fnHdr->env_record.rawBits(), thisArgBits, forwarded, fwdArgv);
         }
+        // Any other function: the call it is, on the caller's own argument
+        // block past `thisArg` (rooted by the caller, as above), which is all
+        // `listener.fn.call(listener.context, a1)` asks for.
+        return bronze_dynamic_call(thisBits, argc > 0 ? argv[0] : Value::fromUndefined().rawBits(), forwarded,
+                                   forwarded > 0 ? (argv + 1) : nullptr);
     }
     RootedArgs args(argc, argv);
     Rooted<Value> fn{Value(thisBits)};

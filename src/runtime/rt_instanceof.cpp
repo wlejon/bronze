@@ -19,6 +19,7 @@
 #include <cstdint>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -47,6 +48,19 @@ struct InstanceofCacheEntry {
     bool result = false;
 };
 
+// The `objShape` of an Array with no property box (runtime/native_base.h): it
+// is no subclass instance and holds no named property, so its answer depends
+// on the constructor alone, as a primitive's does. `[x, y] instanceof Color`
+// is how three.js and pixi tell an argument's form, and without an entry
+// every such test walked the whole slow path.
+inline const Shape* boxlessArrayKey() noexcept {
+    static const char tag = 0;
+    return reinterpret_cast<const Shape*>(&tag);
+}
+inline bool isBoxlessArray(const HeapObjectHeader* hdr) noexcept {
+    return hdr->flags == HeapKind::Array && !reinterpret_cast<const ArrayHeader*>(hdr)->properties.isObject();
+}
+
 constexpr uint32_t kInstanceofCacheBits = 6;
 constexpr uint32_t kInstanceofCacheEntries = 1u << kInstanceofCacheBits;
 thread_local InstanceofCacheEntry t_instanceofCache[kInstanceofCacheEntries];
@@ -66,6 +80,7 @@ inline uint32_t instanceofCacheIndex(const Shape* objShape, const Shape* ctorIns
 bool objectChainCacheable(Value obj, Value targetProto) noexcept {
     if (!obj.isObject()) return true;
     const auto* firstHdr = obj.asObject<HeapObjectHeader>();
+    if (isBoxlessArray(firstHdr)) return true;
     if (!HeapKind::carriesShape(firstHdr->flags)) return false;
     const Shape* firstShape = reinterpret_cast<const ObjectHeader*>(firstHdr)->shape;
     if (!firstShape || firstShape->isDictionary()) return false;
@@ -210,6 +225,9 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                     if (HeapKind::carriesShape(objHdr->flags)) {
                         objShape = reinterpret_cast<const ObjectHeader*>(objHdr)->shape;
                         objOk = (objShape != nullptr && !objShape->isDictionary());
+                    } else if (isBoxlessArray(objHdr)) {
+                        objShape = boxlessArrayKey();
+                        objOk = true;
                     }
                 }
                 if (objOk) {
@@ -271,10 +289,12 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                         fillPropsOk = (fillProps != nullptr && !fillProps->isDictionary());
                     }
                     if (fillPropsOk) {
-                        const Shape* fillObjShape =
-                            objRoot.get().isObject()
-                                ? objRoot.get().asObject<ObjectHeader>()->shape
-                                : nullptr;
+                        const Shape* fillObjShape = nullptr;
+                        if (objRoot.get().isObject()) {
+                            const auto* hdr = objRoot.get().asObject<HeapObjectHeader>();
+                            fillObjShape = isBoxlessArray(hdr) ? boxlessArrayKey()
+                                                               : objRoot.get().asObject<ObjectHeader>()->shape;
+                        }
                         const bronze_tls_block* tls = rtTls();
                         InstanceofCacheEntry& dst = t_instanceofCache[instanceofCacheIndex(
                             fillObjShape, fillInst, fillProps)];

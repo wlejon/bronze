@@ -501,25 +501,31 @@ extern "C" {
 //     on every thread. A heap string's bits do not survive a collection, and
 //     this cell is not among what the collector sweeps.
 // A site stops asking at BRONZE_ABI_ELEM_CELL_LIMIT and reads through the
-// table from then on: after eight fills (it names many pairs), or after a
-// million calls that filled nothing (its reads are ones the cell cannot
-// stand for: a property of the prototype, a dictionary, a heap string), which
-// would otherwise call here at every read for good. A thousand was too few:
-// pixi_sprites' ten thousand sprites pass a site several times before the
-// pair it will read from then on can be filled.
+// table from then on: after eight fills (it names many pairs), after a
+// thousand reads of a kind the cell never stands for (a heap string's key, a
+// dictionary, a receiver that is no plain object: pixi_text's caches keyed by
+// built strings called here 300k instructions a frame), or after a million
+// calls that filled nothing for another reason (a property of the
+// prototype, a pair the table does not hold yet), which would otherwise call
+// here at every read for good. A thousand of those was too few: pixi_sprites'
+// ten thousand sprites pass a site several times before the pair it will
+// read from then on can be filled.
 void bronze_elem_cell_fill(uint64_t objBits, uint64_t keyBits, uint64_t* cell) {
     using namespace bronze;
     using namespace bronze::runtime;
     if (cell == nullptr || cell[3] >= BRONZE_ABI_ELEM_CELL_LIMIT) return;
     ++cell[3];
+    // A read the cell can never stand for, as opposed to one it cannot stand
+    // for yet: such a site gives up after a thousand of them.
+    const auto never = [&] { cell[3] += (BRONZE_ABI_ELEM_CELL_LIMIT >> 10) - 1; };
     const Value key(keyBits);
     const bool arena = key.isString() && key.asString<StringHeader>()->isArena();
-    if (!arena && !key.isNumber()) return;
+    if (!arena && !key.isNumber()) return never();
     const Value obj(objBits);
-    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return;
+    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return never();
     auto* plain = obj.asObject<ObjectHeader>();
     Shape* shape = plain->shape;
-    if (shape == nullptr || shape->isDictionary()) return;
+    if (shape == nullptr || shape->isDictionary()) return never();
     uint64_t slotWord = 0;
     PropertyInfo info;
     if (arena && plain->internalSlotCount() == 0) {
