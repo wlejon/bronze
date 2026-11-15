@@ -33,6 +33,9 @@ class IlLowering;
 Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering);
 Value* box_call_arg(IlLowering* lowering, Builder& b, Value* v, Type as);
 
+// il_lowering_types.cpp: the f64 block parameters of `fn` carried as i32.
+std::unordered_set<uint32_t> int32_block_params(const BronzeFunction& fn);
+
 class IlLowering {
 public:
     IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag = nullptr);

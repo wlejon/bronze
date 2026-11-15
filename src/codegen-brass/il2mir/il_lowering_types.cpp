@@ -7,6 +7,8 @@
 #include "il_lowering_ops.h"
 
 #include <atomic>
+#include <cmath>
+#include <unordered_map>
 
 namespace il2mir {
 
@@ -148,6 +150,85 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
         std::move(mark));
 }
 
+// The f64 block parameters of `fn` that only ever hold an int32: every value
+// an edge passes is the result of a bitwise operation or Math.imul (each an
+// int32 by definition), a constant that is one, or another such parameter.
+// The lowering carries these as i32 (IlLowering's block-parameter setup), so
+// a value a loop keeps in the integer domain (`h = Math.imul(h ^ x, k)`, a
+// bit set, a PRNG's state) crosses the back edge as the integer it is and not
+// as a double converted back at every use.
+//
+// Found optimistically: every f64 parameter of a block reached only by jumps
+// and branches starts in the set, and one leaves when an edge passes it a
+// value that is none of the above, until nothing changes. `>>>` is a uint32
+// and -0 is no int32, so neither qualifies.
+std::unordered_set<uint32_t> int32_block_params(const BronzeFunction& fn) {
+    std::unordered_map<uint32_t, const BronzeInstruction*> def;
+    std::unordered_set<uint32_t> handlers;
+    std::unordered_map<uint32_t, const BronzeBlock*> block_of;
+    for (const BronzeBlock& blk : fn.blocks) {
+        block_of.emplace(blk.id, &blk);
+        if (blk.handler_id != UINT32_MAX) handlers.insert(blk.handler_id);
+        for (const BronzeInstruction& inst : blk.instructions) {
+            if (inst.result_id != UINT32_MAX) def.emplace(inst.result_id, &inst);
+        }
+    }
+    std::unordered_set<uint32_t> set;
+    for (size_t i = 1; i < fn.blocks.size(); ++i) {
+        const BronzeBlock& blk = fn.blocks[i];
+        if (handlers.count(blk.id)) continue;
+        for (const auto& p : blk.params) {
+            if (p.second == BronzeType::F64) set.insert(p.first);
+        }
+    }
+    if (set.empty()) return set;
+    const auto is_int32 = [&](uint32_t id) {
+        if (set.count(id)) return true;
+        const auto it = def.find(id);
+        if (it == def.end()) return false;
+        const BronzeInstruction& d = *it->second;
+        switch (d.op) {
+            case BronzeOp::BitAnd:
+            case BronzeOp::BitOr:
+            case BronzeOp::BitXor:
+            case BronzeOp::Shl:
+            case BronzeOp::Shr:
+            case BronzeOp::BitNot:
+            case BronzeOp::MathImul:
+                return d.result_type == BronzeType::F64;
+            case BronzeOp::ConstF64:
+                return d.imm_f64 >= -2147483648.0 && d.imm_f64 <= 2147483647.0 &&
+                       d.imm_f64 == std::trunc(d.imm_f64) && !std::signbit(d.imm_f64);
+            default:
+                return false;
+        }
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        const auto check = [&](const BronzeBlockTarget& tgt) {
+            const auto it = block_of.find(tgt.block_id);
+            if (it == block_of.end()) return;
+            const auto& params = it->second->params;
+            for (size_t i = 0; i < params.size(); ++i) {
+                if (!set.count(params[i].first)) continue;
+                if (i < tgt.args.size() && is_int32(tgt.args[i])) continue;
+                set.erase(params[i].first);
+                changed = true;
+            }
+        };
+        for (const BronzeBlock& blk : fn.blocks) {
+            for (const BronzeInstruction& inst : blk.instructions) {
+                if (inst.op == BronzeOp::Jump) check(inst.target);
+                if (inst.op == BronzeOp::Branch) {
+                    check(inst.target);
+                    check(inst.else_target);
+                }
+            }
+        }
+    }
+    return set;
+}
+
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
     if (!val || val->type() == target_type) return val;
 
@@ -179,6 +260,14 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
         src_type = Type::i64();
     }
     if (src_type == Type::f64() && target_type == Type::i32()) {
+        // The int32 a double was made from is that int32.
+        if (const Instruction* def = val->defining_instruction()) {
+            if (def->opcode() == Opcode::sitofp_f64_i32) return def->operand(0);
+            if (def->opcode() == Opcode::fconst_f64 && def->imm_f64() >= -2147483648.0 &&
+                def->imm_f64() <= 2147483647.0 && def->imm_f64() == std::trunc(def->imm_f64())) {
+                return b.build_iconst_i32(static_cast<int32_t>(def->imm_f64()));
+            }
+        }
         return b.build_fptosi_i32(val);
     }
     if (src_type == Type::i32() && target_type == Type::f64()) {

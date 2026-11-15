@@ -897,15 +897,31 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     }
 
     // 3. Set up non-entry block parameters
+    // An f64 parameter that only ever holds an int32 (int32_block_params) is
+    // an i32 parameter, and the IL value is the double made from it at the
+    // top of its block: a use that wants the integer takes the parameter
+    // (ensure_type, ToInt32), and a block with no other use leaves the
+    // conversion dead.
+    const std::unordered_set<uint32_t> int32_params = int32_block_params(fn_ast);
     for (size_t i = 1; i < fn_ast.blocks.size(); ++i) {
         const auto& blk_ast = fn_ast.blocks[i];
         BasicBlock* bb = block_map[blk_ast.id];
+        std::vector<std::pair<uint32_t, Value*>> narrowed;
         for (const auto& p : blk_ast.params) {
             uint32_t param_id = p.first;
+            if (int32_params.count(param_id)) {
+                narrowed.emplace_back(param_id, b.add_block_param(bb, Type::i32()));
+                continue;
+            }
             Type param_type = lower_abi_type(p.second);
             Value* param_val = b.add_block_param(bb, param_type);
             val_map[param_id] = param_val;
         }
+        if (narrowed.empty()) continue;
+        BasicBlock* at = b.current_block();
+        b.position_at_end(bb);
+        for (const auto& [id, param] : narrowed) val_map[id] = b.build_sitofp_f64_i32(param);
+        b.position_at_end(at);
     }
     add_handler_params(fn_ast, b, block_map);
 
