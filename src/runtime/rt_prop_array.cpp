@@ -9,17 +9,19 @@
 // `index` to answer for; a program can write one now, so the answer moved here
 // and each path asks rather than restates it.
 //
-// WHERE A NAMED PROPERTY LIVES. In `ArrayHeader::properties`, the side object
-// that already held a match array's `index`/`input`/`groups` and an `arguments`
-// object's `callee` — a plain object with a NULL prototype, so it is storage
-// and not a link in the array's chain (array.cpp says why that matters). Two
-// consequences are the whole design:
+// WHERE A NAMED PROPERTY LIVES. In the array's own shape and overflow block,
+// the object prefix every object value carries (heap.h carriesShape) — where a
+// match array's `index`/`input`/`groups` and an `arguments` object's `callee`
+// live too. The shape's root is NOT the array's [[Prototype]]: it is null for
+// an ordinary array and the subclass prototype for a subclass instance
+// (array.h), so the root says nothing about Array.prototype, which the ladder
+// in rt_prop.cpp answers. Two consequences are the whole design:
 //
 //   - the ELEMENT path is untouched. An array that never takes a named write
-//     has no side object, the same header it always had, and the element fast
-//     path reaches the block without loading anything new.
-//   - the collector needs nothing: `properties` is a Value in the array's
-//     payload, which the generic payload scan already forwards.
+//     stays at the bare array shape (ArrayHeader::isBare), and the element
+//     fast path's one test is a compare of that word.
+//   - an inline cache names an array's own named property the way it names a
+//     plain object's: the shape word and a slot.
 //
 // `length` is not a named property and never lands in that object. It is the
 // exotic own property of 10.4.2, stored as the array's `length` field, and
@@ -44,25 +46,23 @@
 namespace bronze::runtime {
 
 bool rtArrayOwnNamed(Value arrVal, PropertyKey name, PropertyInfo& out) {
-    const Value props = arrVal.asObject<ArrayHeader>()->properties;
-    if (!props.isObject()) return false;
-    ObjectHeader* holder = props.asObject<ObjectHeader>();
+    const ObjectHeader* holder = arrVal.asObject<ArrayHeader>()->object();
     return holder->shape && holder->shape->lookupProperty(name, out);
 }
 
 StringKeyList rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly) {
-    const Value props = arrVal.asObject<ArrayHeader>()->properties;
-    if (!props.isObject()) return {};
-    return rtOwnStringKeysOrdered(props.asObject<ObjectHeader>(), enumerableOnly);
+    auto* arr = arrVal.asObject<ArrayHeader>();
+    if (arr->isBare()) return {};
+    return rtOwnStringKeysOrdered(arr->object(), enumerableOnly);
 }
 
 SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, bool askChain) {
     // 10.1.9.2: a name the array does not own is asked of its chain first. The
-    // box has a null prototype (storage, not a link), so its own write would
-    // never see an inherited setter — which is how `a.__proto__ = p` made an
-    // own property named `__proto__` rather than running Object.prototype's
-    // setter. A define onto the array (askChain false: the chain already
-    // answered) skips the walk.
+    // shape's root is not the array's [[Prototype]] (null for an ordinary
+    // array), so the own write below would never see an inherited setter —
+    // which is how `a.__proto__ = p` made an own property named `__proto__`
+    // rather than running Object.prototype's setter. A define onto the array
+    // (askChain false: the chain already answered) skips the walk.
     if (askChain) {
         OwnPropertyDetail own;
         if (!rtOwnPropertyOf(arr, key.get(), own)) {
@@ -70,33 +70,25 @@ SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>
             if (rtArrayInheritedNamedSet(arr, key, val, refusal)) return refusal;
         }
     }
-    ArrayHeader::ensureProperties(rtHeap(), rtArena(), arr);
-    Rooted<Value> props{arr.get().asObject<ArrayHeader>()->properties};
     SetRefusal refusal = SetRefusal::None;
-    // The RECEIVER is the array, not the box its named properties live in: an
-    // accessor reached through this write must see the array as `this`, or a
-    // setter would be handed the storage rather than the object the program
-    // wrote to. The box's own [[Extensible]] answers for the array's, which is
-    // where `Object.preventExtensions(a); a.foo = 1` is refused — the level is
-    // recorded in that object's dictionary (integrity.h).
-    //
-    // No inline cache. An entry describes a shape, and the shape here belongs
-    // to the side object while the site's receiver is the array; generated code
-    // never reaches this path with a cached hit (it checks for a plain object
-    // first), and filling the entry would leave a shape behind that only a
-    // different receiver kind could match.
-    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr,
-                                                  /*enumerable=*/true, /*defineOwn=*/false,
-                                                  arr.slot_ptr(), &refusal);
+    // The array's [[Extensible]] is its own dictionary's (integrity.h), which
+    // is where `Object.preventExtensions(a); a.foo = 1` is refused. No inline
+    // cache: the stores that reach here are the ones the miss path did not
+    // cache, and a fill from here would be the first to name an array's shape
+    // for a store.
+    arr.get().asObject<ArrayHeader>()->object()->setProp(rtHeap(), rtArena(), key, val,
+                                                        /*ic=*/nullptr, /*enumerable=*/true,
+                                                        /*defineOwn=*/false, arr.slot_ptr(),
+                                                        &refusal);
     return refusal;
 }
 
 bool rtArrayNamedDelete(Value arrVal, PropertyKey name) {
-    const Value props = arrVal.asObject<ArrayHeader>()->properties;
+    auto* arr = arrVal.asObject<ArrayHeader>();
     // Nothing was ever written, so the property is already absent — which is
     // the state `delete` wants, and 13.5.1 answers true for it.
-    if (!props.isObject()) return true;
-    return props.asObject<ObjectHeader>()->deleteProperty(rtArena(), name);
+    if (arr->isBare()) return true;
+    return arr->object()->deleteProperty(rtArena(), name);
 }
 
 SetRefusal rtArrayOwnIndexWrite(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val) {
@@ -125,16 +117,16 @@ void rtArrayIndexSet(Value arrVal, uint32_t index, Value v, bool strict) {
 
 // `arr.length = n` that truncates (or keeps) an ordinary array: what
 // rtArraySetLength does for it, without its tests that cannot fail here. An
-// array with no properties object is open — extensible, its elements
+// array at the bare array shape is open — extensible, its elements
 // configurable, `length` writable (integrity.cpp keeps a sealed or frozen
-// array's attributes in that object) — and a Number that is an integer in
+// array's attributes in its dictionary) — and a Number that is an integer in
 // [0, length] is its own ToUint32, so neither the RangeError nor the sealed
 // stop applies. Shrinking allocates nothing but the root. False when the write
 // is not that one, for the caller's ordinary path.
 bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal) {
     if (!newLenVal.isNumber()) return false;
     auto* arr = arrVal.asObject<ArrayHeader>();
-    if (arr->properties.isObject() || !rtKeyInfo(keyIndex).isLength) return false;
+    if (!arr->isBare() || !rtKeyInfo(keyIndex).isLength) return false;
     const double num = newLenVal.asNumber();
     if (!(num >= 0.0) || num > static_cast<double>(arr->length) || std::floor(num) != num) {
         return false;

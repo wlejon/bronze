@@ -11,8 +11,8 @@
 //     be reused.
 //   - Assigning or redefining `ctor.prototype` mints or updates
 //     `ctor->instance_shape` (or clears it to null), changing `ctorInstShape`.
-//   - Defining `ctor[Symbol.hasInstance]` transitions `ctor->properties` away
-//     from `ctorPropsShape`; defining `Base[Symbol.hasInstance]` on an
+//   - Defining `ctor[Symbol.hasInstance]` transitions `ctor`'s own shape (its
+//     statics) away from `ctorPropsShape`; defining `Base[Symbol.hasInstance]` on an
 //     ancestor class or mutating any prototype link via `Object.setPrototypeOf`
 //     bumps `proto_epoch`.
 
@@ -48,17 +48,28 @@ struct InstanceofCacheEntry {
     bool result = false;
 };
 
-// The `objShape` of an Array with no property box (runtime/native_base.h): it
-// is no subclass instance and holds no named property, so its answer depends
+// The `objShape` of an Array at the bare array shape (array.h): it is no
+// subclass instance and holds no named property, so its answer depends
 // on the constructor alone, as a primitive's does. `[x, y] instanceof Color`
 // is how three.js and pixi tell an argument's form, and without an entry
 // every such test walked the whole slow path.
-inline const Shape* boxlessArrayKey() noexcept {
+inline const Shape* bareArrayKey() noexcept {
     static const char tag = 0;
     return reinterpret_cast<const Shape*>(&tag);
 }
-inline bool isBoxlessArray(const HeapObjectHeader* hdr) noexcept {
-    return hdr->flags == HeapKind::Array && !reinterpret_cast<const ArrayHeader*>(hdr)->properties.isObject();
+inline bool isBareArray(const HeapObjectHeader* hdr) noexcept {
+    return hdr->flags == HeapKind::Array && reinterpret_cast<const ArrayHeader*>(hdr)->isBare();
+}
+
+// The key a constructor's statics contribute: its own shape, when no dictionary
+// and when the chain it says nothing about is the default one — a function
+// whose statics chain ends at null inherits through its [[Prototype]], which
+// only an undefined `parent` (%Function.prototype%) leaves fixed.
+inline const Shape* ctorStaticsKey(const FunctionHeader* fn, bool& ok) noexcept {
+    const Shape* sh = fn->shape;
+    ok = sh != nullptr && !sh->isDictionary() &&
+         (sh->prototypeValue().isObject() || fn->parent.isUndefined());
+    return sh;
 }
 
 constexpr uint32_t kInstanceofCacheBits = 6;
@@ -80,15 +91,15 @@ inline uint32_t instanceofCacheIndex(const Shape* objShape, const Shape* ctorIns
 bool objectChainCacheable(Value obj, Value targetProto) noexcept {
     if (!obj.isObject()) return true;
     const auto* firstHdr = obj.asObject<HeapObjectHeader>();
-    if (isBoxlessArray(firstHdr)) return true;
-    if (!HeapKind::carriesShape(firstHdr->flags)) return false;
+    if (isBareArray(firstHdr)) return true;
+    if (!HeapKind::shapeNamesPrototype(firstHdr->flags)) return false;
     const Shape* firstShape = reinterpret_cast<const ObjectHeader*>(firstHdr)->shape;
     if (!firstShape || firstShape->isDictionary()) return false;
 
     Value cur = obj;
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         const uint16_t kind = cur.asObject<HeapObjectHeader>()->flags;
-        if (!HeapKind::carriesShape(kind)) {
+        if (!HeapKind::shapeNamesPrototype(kind)) {
             // Non-Proxy shapeless ancestors terminate `rtOrdinaryHasInstance`
             // without running traps; only Proxy is dynamic.
             return kind != HeapKind::Proxy;
@@ -143,7 +154,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     }
 
     const uint16_t objKind = objRoot.get().asObject<HeapObjectHeader>()->flags;
-    if (!HeapKind::carriesShape(objKind) && objKind != HeapKind::Proxy) {
+    if (!HeapKind::shapeNamesPrototype(objKind) && objKind != HeapKind::Proxy) {
         if (protoRoot.get().rawBits() == rtObjectPrototype().rawBits()) {
             return true;
         }
@@ -151,11 +162,11 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
             protoRoot.get().rawBits() == rtFunctionPrototypeObject().rawBits()) {
             return true;
         }
-        // A SUBCLASS instance of an exotic kind does have a chain, on the box
-        // holding its ordinary half (runtime/native_base.h) — so `sub
-        // instanceof MySubArray` walks it here rather than answering the false
-        // that every shapeless receiver used to get. An instance that is not a
-        // subclass has no box and falls straight through, unchanged.
+        // A SUBCLASS instance of an exotic kind does have a chain, at its
+        // shape's root (runtime/native_base.h) — so `sub instanceof
+        // MySubArray` walks it here rather than answering the false that every
+        // other exotic receiver gets. An instance that is not a subclass has
+        // no such root and falls straight through, unchanged.
         Rooted<Value> chain{rtExoticSubclassPrototype(objRoot.get())};
         for (uint32_t depth = 0;
              chain.get().isObject() && depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
@@ -181,7 +192,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         Value next = Value::fromUndefined();
         const uint16_t kind = cur.get().asObject<HeapObjectHeader>()->flags;
-        if (HeapKind::carriesShape(kind)) {
+        if (HeapKind::shapeNamesPrototype(kind)) {
             Shape* shape = cur.get().asObject<ObjectHeader>()->shape;
             next = shape ? shape->prototypeValue() : Value::fromUndefined();
         } else if (kind == HeapKind::Proxy) {
@@ -208,13 +219,7 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         if (!ctorFn->isNativeCode() && ctorInst != nullptr && !ctorInst->isDictionary() &&
             ctorFn->prototype.isObject()) {
             bool propsOk = false;
-            const Shape* ctorProps = nullptr;
-            if (ctorFn->properties.isUndefined()) {
-                propsOk = ctorFn->parent.isUndefined();
-            } else if (ctorFn->properties.isObject()) {
-                ctorProps = ctorFn->properties.asObject<ObjectHeader>()->shape;
-                propsOk = (ctorProps != nullptr && !ctorProps->isDictionary());
-            }
+            const Shape* ctorProps = ctorStaticsKey(ctorFn, propsOk);
             if (propsOk) {
                 bool objOk = false;
                 const Shape* objShape = nullptr;
@@ -222,11 +227,11 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                     objOk = true;
                 } else {
                     const auto* objHdr = objVal.asObject<HeapObjectHeader>();
-                    if (HeapKind::carriesShape(objHdr->flags)) {
+                    if (HeapKind::shapeNamesPrototype(objHdr->flags)) {
                         objShape = reinterpret_cast<const ObjectHeader*>(objHdr)->shape;
                         objOk = (objShape != nullptr && !objShape->isDictionary());
-                    } else if (isBoxlessArray(objHdr)) {
-                        objShape = boxlessArrayKey();
+                    } else if (isBareArray(objHdr)) {
+                        objShape = bareArrayKey();
                         objOk = true;
                     }
                 }
@@ -262,15 +267,13 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         const PropertyKey hasInstProp = PropertyKey::forSymbol(rtSymbolHasInstance());
         bool ancestorsMarked = true;
         for (uint32_t depth = 0; cur != nullptr && depth < 16; ++depth) {
-            if (cur->properties.isObject()) {
+            {
                 PropertyInfo info;
-                Shape* sh = cur->properties.asObject<ObjectHeader>()->shape;
+                const Shape* sh = cur->shape;
                 if (sh && sh->lookupProperty(hasInstProp, info)) break;
                 if (depth > 0 && (!sh || sh->isDictionary() || !sh->used_as_prototype)) {
                     ancestorsMarked = false;
                 }
-            } else if (depth > 0) {
-                ancestorsMarked = false;
             }
             if (cur->parent.isUndefined()) {
                 const bool answer = rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
@@ -281,18 +284,12 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                     fillInst->prototypeValue().rawBits() == liveCtor->prototype.rawBits() &&
                     objectChainCacheable(objRoot.get(), liveCtor->prototype)) {
                     bool fillPropsOk = false;
-                    const Shape* fillProps = nullptr;
-                    if (liveCtor->properties.isUndefined()) {
-                        fillPropsOk = liveCtor->parent.isUndefined();
-                    } else if (liveCtor->properties.isObject()) {
-                        fillProps = liveCtor->properties.asObject<ObjectHeader>()->shape;
-                        fillPropsOk = (fillProps != nullptr && !fillProps->isDictionary());
-                    }
+                    const Shape* fillProps = ctorStaticsKey(liveCtor, fillPropsOk);
                     if (fillPropsOk) {
                         const Shape* fillObjShape = nullptr;
                         if (objRoot.get().isObject()) {
                             const auto* hdr = objRoot.get().asObject<HeapObjectHeader>();
-                            fillObjShape = isBoxlessArray(hdr) ? boxlessArrayKey()
+                            fillObjShape = isBareArray(hdr) ? bareArrayKey()
                                                                : objRoot.get().asObject<ObjectHeader>()->shape;
                         }
                         const bronze_tls_block* tls = rtTls();

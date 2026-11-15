@@ -33,13 +33,14 @@
 // so each carries a shape and the [[Prototype]] is the shape's — and the
 // constructor already holds the memoized root shape for its own prototype
 // (`instance_shape`), which is exactly what 10.1.13 asks for and costs no
-// shape per instance. An Array is the one exotic kind that carries no shape:
-// its members are answered from a table beside the value, and a subclass
-// instance's [[Prototype]] lives on the side object holding its ordinary named
-// properties (`ArrayHeader::properties`). The read path walks that box before
-// the builtin table, so a subclass method shadows a builtin one exactly as the
-// chain says, and an array that is NOT a subclass has no box at all, which is
-// what keeps the plain-array path free of every check this adds.
+// shape per instance. An Array is the one exotic kind whose shape root is not
+// its [[Prototype]]: its members are answered from a table beside the value,
+// and only a subclass instance's shape is rooted at its [[Prototype]] (the bare
+// root over the subclass prototype, array.h). The read path walks that chain
+// before the builtin table, so a subclass method shadows a builtin one exactly
+// as the chain says, and an array that is NOT a subclass stays at the bare
+// array shape, which is what keeps the plain-array path free of every check
+// this adds.
 
 namespace bronze::runtime {
 
@@ -96,16 +97,16 @@ void rtInheritNativeBase(Rooted<Value>& derived, Rooted<Value>& base);
 //
 // 15.7.14 step 6 gives a derived constructor the base constructor as its
 // [[Prototype]], so `MyArr.of` is `Array.of` found by an ordinary walk — and
-// bronze already builds that walk, between the `properties` boxes the two
-// constructors keep their own properties in. What breaks it is that the
+// bronze already builds that walk, along the statics chain `extends` roots at
+// the base. What breaks it is that the
 // global constructors answer their statics BESIDE the value, off a table keyed
 // on the constructor's code pointer (`Array.of`, `Array.from`,
-// `Array.isArray`), because an interned function singleton had no box worth
-// building. A subclass is a different function object with a different code
+// `Array.isArray`), because an interned function singleton had no statics
+// worth building. A subclass is a different function object with a different code
 // pointer, so the table never fires for it and the walk finds nothing: a
 // silent `undefined` where the language names a function.
 //
-// So the statics are REALIZED — written into the base's box as ordinary
+// So the statics are REALIZED — written into the base as ordinary
 // non-enumerable own properties — at the one moment it starts to matter, which
 // is the `extends` link. `Promise` and `Map` need none of this because their
 // statics are already real properties, and that is the arrangement this makes
@@ -154,12 +155,6 @@ bool rtIsNativeConstructReceiver(Value v);
 // BUILD the intrinsic it compares against.
 void rtCheckNativeBaseExtends(Rooted<Value>& base);
 
-// The ordinary-object half of an array: the box holding its own named
-// properties, whose [[Prototype]] is the instance's. `undefined` for an array
-// that has neither — which is every array a program did not subclass and did
-// not write an expando on, and is the whole fast path.
-Value rtExoticPropertyBox(Value obj);
-
 // The [[Prototype]] a subclass instance of an array carries, or `undefined`.
 // `Object.getPrototypeOf` and the property path both ask.
 Value rtExoticSubclassPrototype(Value obj);
@@ -169,7 +164,7 @@ Value rtExoticSubclassPrototype(Value obj);
 // separating "the subclass defines this" from "the builtin table is the
 // answer"; a stored `undefined` is a real property and must not fall through.
 // `recv` is the receiver an accessor found on the chain is run against, so a
-// getter on a subclass prototype sees the array and not the box.
+// getter on a subclass prototype sees the array and not the prototype.
 bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out);
 
 }  // namespace bronze::runtime

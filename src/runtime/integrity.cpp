@@ -120,27 +120,22 @@ void refuseKind(Value v, const char* operation) {
     rtThrowTypeError(std::string("unsupported: Object.") + operation + " on " + refusedKindName(v));
 }
 
-// The plain object a receiver keeps its own NAMED properties in, created on
-// demand and moved to dictionary mode, which is where the level is recorded.
-// Only called for the three targets that have one.
+// The receiver's own NAMED properties moved to dictionary mode, which is where
+// the level is recorded. Every one of the three targets keeps them in its own
+// shape (heap.h carriesShape), so the owner is the receiver itself.
 ObjectHeader* integrityTableOwner(Rooted<Value>& self, Target target) {
     runtime::ShapeLeaveReason why(ShapeLeave::Integrity);
     switch (target) {
         case Target::Plain:
+        case Target::Array:
             ObjectHeader::toDictionary(rtArena(), self);
             return self.get().asObject<ObjectHeader>();
-        case Target::Array: {
-            ArrayHeader::ensureProperties(rtHeap(), rtArena(), self);
-            Rooted<Value> props{self.get().asObject<ArrayHeader>()->properties};
-            ObjectHeader::toDictionary(rtArena(), props);
-            return props.get().asObject<ObjectHeader>();
-        }
-        case Target::Function: {
+        case Target::Function:
+            // A constructor's table statics move into its own slots first, so
+            // freezing reaches them (rtPrepareFunctionOwnWrite).
             rtPrepareFunctionOwnWrite(self);
-            Rooted<Value> props{self.get().asObject<FunctionHeader>()->properties};
-            ObjectHeader::toDictionary(rtArena(), props);
-            return props.get().asObject<ObjectHeader>();
-        }
+            ObjectHeader::toDictionary(rtArena(), self);
+            return self.get().asObject<ObjectHeader>();
         default:
             rtThrowTypeError("integrity table asked of a receiver that has none");
             return nullptr;
@@ -300,7 +295,7 @@ bool testIntegrity(Value receiver, bool frozen) {
     }
 
     const Dictionary* d = rtIntegrityTable(receiver);
-    // A function lockdown hardened without a box (fn.h, harden_on_box).
+    // A function lockdown hardened without statics (fn.h, harden_on_write).
     if (!d && rtIsHardened(receiver)) return true;
     if (!d || d->extensible) return false;  // step 3
 
@@ -359,25 +354,16 @@ const char* rtObjectKindName(Value v) {
 }
 
 Dictionary* rtIntegrityTable(Value obj) {
-    ObjectHeader* owner = nullptr;
     switch (targetOf(obj)) {
         case Target::Plain:
-            owner = obj.asObject<ObjectHeader>();
+        case Target::Array:
+        case Target::Function:
             break;
-        case Target::Array: {
-            Value props = obj.asObject<ArrayHeader>()->properties;
-            if (props.isObject()) owner = props.asObject<ObjectHeader>();
-            break;
-        }
-        case Target::Function: {
-            Value props = obj.asObject<FunctionHeader>()->properties;
-            if (props.isObject()) owner = props.asObject<ObjectHeader>();
-            break;
-        }
         default:
             return nullptr;
     }
-    if (!owner || !owner->shape || !owner->shape->isDictionary()) return nullptr;
+    const ObjectHeader* owner = obj.asObject<ObjectHeader>();
+    if (!owner->shape || !owner->shape->isDictionary()) return nullptr;
     return owner->shape->dict;
 }
 
@@ -400,7 +386,7 @@ bool rtFunctionPrototypeWritable(Value fnVal) {
     // (fn.h says which clause), so it is asked before the level: nothing has to
     // have frozen `Object` for `Object.prototype = 5` to be refused.
     if (fnVal.asObject<FunctionHeader>()->prototype_readonly) return false;
-    if (fnVal.asObject<FunctionHeader>()->harden_on_box) return false;
+    if (fnVal.asObject<FunctionHeader>()->harden_on_write) return false;
     return rtIntegrityLevel(fnVal) != IntegrityLevel::Frozen;
 }
 
@@ -408,25 +394,31 @@ void rtFreezeObject(Value receiver) {
     setIntegrity(receiver, IntegrityLevel::Frozen, "freeze");
 }
 
-// A function with no statics box that lockdown may leave without one: not a
+// A function with no statics that lockdown may leave at its shared shape: not a
 // constructor whose statics a C table answers (freezing one moves them to its
-// box, which is how they come to be frozen).
-static bool hardensBoxless(Value v) {
+// own slots, which is how they come to be frozen).
+static bool hardensDeferred(Value v) {
     if (v.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
     const auto* fn = v.asObject<FunctionHeader>();
-    return !fn->properties.isObject() && !rtIntrinsicConstructorHasTableStatics(v);
+    return !fn->hasOwnStatics() && !rtIntrinsicConstructorHasTableStatics(v);
 }
 
 void rtHarden(Value receiver) {
     if (!receiver.isObject()) return;
-    // Hundreds of intrinsic functions, each of which a box would take off the
-    // boxless paths for good (`hasOwnProperty.call(o, k)` was 4.8 times the
-    // instructions after lockdown): the function is marked instead, and its
-    // box is frozen when one is first made (fn.h, harden_on_box).
-    if (hardensBoxless(receiver)) {
-        receiver.asObject<FunctionHeader>()->harden_on_box = true;
+    // Hundreds of intrinsic functions, each of which a dictionary shape of its
+    // own would take off the statics-less paths for good
+    // (`hasOwnProperty.call(o, k)` was 4.8 times the instructions after
+    // lockdown): the function is marked instead, and frozen the first time it
+    // is readied for an own write (fn.h, harden_on_write).
+    if (hardensDeferred(receiver)) {
+        receiver.asObject<FunctionHeader>()->harden_on_write = true;
         return;
     }
+    rtHardenNow(receiver);
+}
+
+void rtHardenNow(Value receiver) {
+    if (!receiver.isObject()) return;
     Rooted<Value> self{receiver};
     setIntegrity(self.get(), IntegrityLevel::Frozen, "freeze");
     Dictionary* d = rtIntegrityTable(self.get());
@@ -440,7 +432,7 @@ void rtHarden(Value receiver) {
 
 bool rtIsHardened(Value receiver) {
     if (receiver.isObject() && receiver.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
-        receiver.asObject<FunctionHeader>()->harden_on_box) {
+        receiver.asObject<FunctionHeader>()->harden_on_write) {
         return true;
     }
     const Dictionary* d = rtIntegrityTable(receiver);

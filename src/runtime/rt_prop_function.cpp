@@ -3,17 +3,18 @@
 // for the reason rt_prop.cpp is split by receiver kind at all: this is one
 // kind, and it is the one whose answer comes from FOUR places in a fixed order
 // — the global-constructor table, the `prototype` slot, the function's own
-// statics object (and the base classes' it inherits through `extends`), then
-// %Function.prototype%'s own statics box and %Object.prototype%.
+// statics (and the base classes' it inherits through `extends`), then
+// %Function.prototype%'s own members and %Object.prototype%.
 //
 // That order is the file's whole content and every step of it is load-bearing;
 // each one carries the clause it implements. The one thing to know before
-// reading it is that a function's `static` members do not live in the
-// FunctionHeader. They live in a side object hanging off `properties`, with its
-// own shape and its own prototype chain — the chain `extends` links to the base
-// class's statics. `C.DEFAULT_UP` is therefore an own property of an object
-// that is not the receiver, which is what `installStaticsCacheEntry` below has
-// to say out loud to the inline cache.
+// reading it is that a function's `static` members are slots of the function
+// itself — its shape and overflow block, as a plain object's properties are
+// (fn.h) — but its shape's ROOT names the chain those statics inherit
+// through, which `extends` roots at the base class, and not the function's
+// [[Prototype]]. So an own static is an ordinary own-property cache entry, and
+// an inherited one is a STATICS entry (`installStaticsCacheEntry` below) that
+// only the function arms take.
 
 #include <cstdlib>
 #include <cstring>
@@ -40,14 +41,14 @@
 
 namespace bronze::runtime {
 
-// May a shape-keyed inline-cache entry describe this (function receiver,
-// statics box) pair at all? Two fills ask it: the property READ's
+// May a shape-keyed inline-cache entry describe this function receiver's
+// statics at all? Two fills ask it: the property READ's
 // `installStaticsCacheEntry` below, and the method call's
 // `latchFunctionStaticsMethodIc` (rt_method_call.cpp), which caches the same
-// box's shape and slot so a call's callee lookup hits where a read's does. One
+// shape and slot so a call's callee lookup hits where a read's does. One
 // function rather than a copy each, because every refusal here is about the
-// RECEIVER and the BOX and not about what the site goes on to do with the slot
-// — the two askers differ only in that.
+// RECEIVER and not about what the site goes on to do with the slot — the two
+// askers differ only in that.
 //
 // Three refusals, and each one is a correctness condition rather than a
 // heuristic:
@@ -61,31 +62,51 @@ namespace bronze::runtime {
 //     which one warm site would answer 9 where the language says the builtin.
 //   - An ACCESSOR is never cached — the caller's own gate, since only it knows
 //     whether the property it found is one. A `static get` sees the CLASS as
-//     its receiver, not the side object the getter is stored in (which is why
-//     the read below hands `getProp` the function's own slot). Generated
-//     code's inline arms hold the box, so they would dispatch the getter with
-//     the wrong receiver; both stay on the helper instead.
+//     its receiver, not the base class an inherited one is stored in (which is
+//     why the reads below hand `getProp` the receiver). An own accessor is
+//     filled as a plain object's own accessor is; an inherited one stays on
+//     the helper.
 //   - A DICTIONARY shape is never cached unless it is frozen
 //     (Shape::readCacheable), on the same terms as the plain-object
 //     path: its slots are not shape-indexed and its shape is private to one
 //     object, so an entry naming it goes stale on the next delete.
 //
-// A statics shape and a plain object's shape are drawn from the same arena and
-// CAN be the same pointer — `rtEnsureFunctionProperties` starts the box from
-// `rtPlainObjectShape()`, the very root `{}` starts from. That collision is
-// harmless and is worth saying why: a shape IS a key-to-slot map and nothing
-// else, so a plain receiver that matches such an entry finds the site's key at
-// the same slot in ITSELF, which is the answer it should have had. What an
-// entry must not do is survive into a case where the answer does NOT come from
-// a key-to-slot map, and the refusals above are exactly those cases.
-bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
-    if (box == nullptr || box->shape == nullptr || !box->shape->readCacheable()) return false;
+// A function's shape is drawn from a BARE root (no inline Values), which no
+// plain object ever has, so no plain object's entry can name it; an array at
+// the same bare root (one over the same prototype) holds its named properties
+// the same way, and a shape is a key-to-slot map and nothing else, so an own
+// entry filled for one answers for the other with the slot its key really is
+// in. What an entry must not do is survive into a case where the answer does
+// NOT come from a key-to-slot map, and the refusals above are exactly those
+// cases. (An intrinsic constructor with table statics may share a shape with
+// a function whose entry a site holds: a key that shape has is one the
+// constructor holds itself, and an own static answers ahead of its table.)
+bool rtStaticsCacheable(Value fnVal, const ObjectHeader* self) noexcept {
+    if (self == nullptr || self->shape == nullptr || !self->shape->readCacheable()) return false;
     // Refuse only constructors whose `kCtors` row answers static members or
-    // unimplemented-member diagnostics ahead of `properties` (`Array`,
+    // unimplemented-member diagnostics ahead of their own statics (`Array`,
     // `String`, `Proxy`). `Number`, `Boolean`, `Object`, typed-array
-    // constructors and user classes keep their statics in `properties` itself.
+    // constructors and user classes keep their statics in their own slots.
     if (rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
     return !censusFillsSuppressed();
+}
+
+ObjectHeader* rtStaticsAncestor(ObjectHeader* fnObj, uint32_t depth, bool* crossedDictionary) {
+    if (crossedDictionary) *crossedDictionary = false;
+    ObjectHeader* cur = fnObj;
+    for (uint32_t i = 0; i < depth; ++i) {
+        if (!cur->shape) return nullptr;
+        const Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject()) return nullptr;
+        const uint16_t kind = proto.asObject<HeapObjectHeader>()->flags;
+        if (kind != HeapKind::Function && !HeapKind::shapeNamesPrototype(kind)) return nullptr;
+        cur = proto.asObject<ObjectHeader>();
+        if (crossedDictionary && cur->shape && !cur->shape->readCacheable()) {
+            *crossedDictionary = true;
+            return nullptr;
+        }
+    }
+    return cur;
 }
 
 bool rtStaticsArmServes(Value fnVal) noexcept {
@@ -96,30 +117,29 @@ bool rtStaticsArmServes(Value fnVal) noexcept {
 
 namespace {
 
-// The statics box of an intrinsic function after lockdown: the walk read the
-// function's members, which gave it a box, and froze the box hardened. Its
-// keys and its prototype are fixed for good.
-bool hardenedBox(Value box) noexcept {
-    if (!box.isObject() || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
-    const Shape* shape = box.asObject<ObjectHeader>()->shape;
+// The statics of an intrinsic function after lockdown: the walk read the
+// function's members and froze them hardened. Its keys and its statics chain
+// are fixed for good.
+bool hardenedStatics(const FunctionHeader* fn) noexcept {
+    const Shape* shape = fn->shape;
     return shape != nullptr && shape->dict != nullptr && shape->dict->hardened &&
            shape->dict->level == IntegrityLevel::Frozen;
 }
 
 // A function's member without the ladder: `length` and `name` of a function
-// with no box, and `call` / `apply` / `bind` / `toString` read off
-// %Function.prototype%. Lockdown must not cost these: it gives every
-// intrinsic function a (hardened) box and freezes %Function.prototype%'s into
-// a dictionary, and a frozen dictionary is as fixed a key-to-slot map as a
-// shape (Shape::readCacheable). So a hardened box that does not hold the key
-// is passed like no box, and the prototype's box is read frozen or not;
-// before, every `f.call(...)` of a locked-down program walked the whole
-// ladder (1,800 instructions a call).
+// with no statics, and `call` / `apply` / `bind` / `toString` read off
+// %Function.prototype%. Lockdown must not cost these: it freezes the statics
+// of the intrinsic functions that have any and %Function.prototype%'s into
+// dictionaries, and a frozen dictionary is as fixed a key-to-slot map as a
+// shape (Shape::readCacheable). So hardened statics that do not hold the key
+// are passed like none, and the prototype's are read frozen or not; before,
+// every `f.call(...)` of a locked-down program walked the whole ladder (1,800
+// instructions a call).
 bool tryFastBoxlessFunctionMember(Value fnVal, const FunctionHeader* fn,
                                   StringHeader* keyHeader, uint64_t& out) noexcept {
     if (keyHeader == nullptr) return false;
-    const bool boxed = fn->properties.isObject();
-    if (boxed && !hardenedBox(fn->properties)) return false;
+    const bool boxed = fn->hasOwnStatics();
+    if (boxed && !hardenedStatics(fn)) return false;
     if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
     if (!boxed) {
         if (keyHeader->equalsASCII("length")) {
@@ -136,23 +156,19 @@ bool tryFastBoxlessFunctionMember(Value fnVal, const FunctionHeader* fn,
          keyHeader->equalsASCII("bind") || keyHeader->equalsASCII("toString"))) {
         if (boxed) {
             PropertyInfo own;
-            if (fn->properties.asObject<ObjectHeader>()->shape->lookupProperty(
-                    PropertyKey::forString(keyHeader), own)) {
+            if (fn->shape->lookupProperty(PropertyKey::forString(keyHeader), own)) {
                 return false;
             }
         }
         const Value fpVal = rtFunctionPrototypeIfBuilt();
         if (fpVal.isObject()) {
-            const Value fpBoxVal = fpVal.asObject<FunctionHeader>()->properties;
-            if (fpBoxVal.isObject()) {
-                auto* fpObj = fpBoxVal.asObject<ObjectHeader>();
-                PropertyInfo info;
-                if (fpObj->shape && fpObj->shape->readCacheable() &&
-                    fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), info) &&
-                    !info.accessor) {
-                    out = fpObj->getSlot(info.slot).rawBits();
-                    return true;
-                }
+            const ObjectHeader* fpObj = fpVal.asObject<FunctionHeader>()->object();
+            PropertyInfo info;
+            if (fpObj->shape && fpObj->shape->readCacheable() &&
+                fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), info) &&
+                !info.accessor) {
+                out = fpObj->getSlot(info.slot).rawBits();
+                return true;
             }
         }
     }
@@ -165,36 +181,34 @@ bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint32_t keyInde
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;
     }
-    const auto* fn = fnVal.asObject<FunctionHeader>();
-    const Value box = fn->properties;
-    if (!box.isObject() || hardenedBox(box)) {
+    auto* fn = fnVal.asObject<FunctionHeader>();
+    if (!fn->hasOwnStatics() || hardenedStatics(fn)) {
         if (keyIndex != BRONZE_ABI_KEY_NONE &&
             tryFastBoxlessFunctionMember(fnVal, fn, rtKeyHeader(keyIndex), out)) {
             return true;
         }
-        if (!box.isObject()) return false;
     }
-    if (site == nullptr || box.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+    if (site == nullptr) return false;
     if (fn->isNativeCode() && rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
-    ObjectHeader* boxObj = box.asObject<ObjectHeader>();
-    InlineCache* ic = site->find(boxObj->shape);
+    ObjectHeader* fnObj = fn->object();
+    InlineCache* ic = site->find(fnObj->shape);
     if (ic == nullptr && keyIndex != BRONZE_ABI_KEY_NONE &&
         site->ways[BRONZE_ABI_IC_WAYS - 1].isRealShape()) {
-        ic = rtMegaPropProbe(boxObj->shape, keyIndex);
+        ic = rtMegaPropProbe(fnObj->shape, keyIndex);
     }
-    if (ic == nullptr || !ic->describesForFunction(boxObj->shape)) return false;
-    ObjectHeader* holder = boxObj;
+    if (ic == nullptr || !ic->describesForFunction(fnObj->shape)) return false;
+    ObjectHeader* holder = fnObj;
     if (ic->isStatics()) {
         if (!rtStaticsArmServes(fnVal)) return false;
         bool crossedDictionary = false;
-        holder = boxObj->cachedProtoHolder(ic->staticsDepth(), crossedDictionary);
+        holder = rtStaticsAncestor(fnObj, ic->staticsDepth(), &crossedDictionary);
         if (holder == nullptr) return false;
     }
     if (!ic->isAccessor()) {
         out = holder->getSlot(ic->cached_slot).rawBits();
         return true;
     }
-    // A getter sees the function, not the box it is kept in.
+    // A getter sees the function, not the base class it is kept in.
     Rooted<Value> self{fnVal};
     Rooted<Value> getter{holder->getSlot(ic->cached_slot)};
     out = callGetter(getter.get(), self).rawBits();
@@ -203,37 +217,35 @@ bool rtFunctionCachedMember(Value fnVal, InlineCacheSite* site, uint32_t keyInde
 
 namespace {
 
-// Every link `depth` up from a statics box is a plain object of a
-// non-dictionary shape marked as a prototype, so an add to any of them bumps
-// the epoch an inherited entry is filled at (InlineCache::describesForFunction).
-bool statsChainMarked(ObjectHeader* box, uint32_t depth) {
-    ObjectHeader* cur = box;
+// Every link `depth` up from a function's statics is a base constructor (or a
+// plain object a program put on the chain) of a non-dictionary shape marked as
+// a prototype, so an add to any of them bumps the epoch an inherited entry is
+// filled at (InlineCache::describesForFunction).
+bool statsChainMarked(ObjectHeader* fnObj, uint32_t depth) {
+    ObjectHeader* cur = fnObj;
     for (uint32_t i = 0; i < depth; ++i) {
         if (!cur->shape) return false;
         const Value proto = cur->shape->prototypeValue();
-        if (!proto.isObject() || proto.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+        if (!proto.isObject()) return false;
+        const uint16_t kind = proto.asObject<HeapObjectHeader>()->flags;
+        if (kind != HeapKind::Function && kind != HeapKind::Plain) return false;
         cur = proto.asObject<ObjectHeader>();
         if (!cur->shape || cur->shape->isDictionary() || !cur->shape->used_as_prototype) return false;
     }
     return true;
 }
 
-// Teach this site that the answer for a FUNCTION receiver is an own data
-// property of the receiver's STATICS object, so the next read hits inline
-// instead of walking this whole file again.
+// Teach this site that the answer for a FUNCTION receiver is one of its
+// statics, so the next read hits instead of walking this whole file again.
 //
-// What goes in the entry is the statics object's shape and slot, NOT the
-// receiver's — a function has no shape of its own. Generated code holds up its
-// end by loading `properties` out of the FunctionHeader and scanning way 0
-// against THAT object's shape (llvm_prop_get.cpp), so the two sides describe
-// the same object or neither does.
+// An OWN static is the receiver's own slot at the receiver's own shape, the
+// entry a plain object's own property gets: generated code's way-0 guard
+// compares the shape word every object value has and loads the slot, with no
+// kind test (heap.h carriesShape). An own ACCESSOR is filled too, as the
+// accessor entry a plain object's own accessor gets.
 //
-// An own ACCESSOR of the box is filled too, as the accessor entry a plain
-// object's own accessor gets: every reader of it calls the getter with the
-// RECEIVER as `this` (the function, for a function receiver), never the box.
-//
-// A static INHERITED through `extends` (`depth` links up the box chain, every
-// link a base class's box) is filled with BRONZE_ABI_IC_DEPTH_STATICS_FLAG,
+// A static INHERITED through `extends` (`depth` links up the statics chain,
+// every link a base class) is filled with BRONZE_ABI_IC_DEPTH_STATICS_FLAG,
 // which only the function arms take (InlineCache::describesForFunction): a
 // plain object's chain entry at the same shape would name %Object.prototype%,
 // which is not on a function's path to its members, and the flag keeps the
@@ -241,7 +253,7 @@ bool statsChainMarked(ObjectHeader* box, uint32_t depth) {
 void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* propsObj,
                               const PropertyInfo& found, uint32_t depth) {
     if (site == nullptr) return;
-    if (!rtStaticsBoxCacheable(fnVal, propsObj)) return;
+    if (!rtStaticsCacheable(fnVal, propsObj)) return;
     if (depth > 0 && !rtStaticsArmServes(fnVal)) return;
     const uint32_t word = depth == 0 ? 0u : (depth | BRONZE_ABI_IC_DEPTH_STATICS_FLAG);
     if (InlineCache* into = site->slotForInstall(propsObj->shape)) {
@@ -253,7 +265,7 @@ void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* 
     }
 }
 
-// The keys a function's ladder answers between its own box and the boxes
+// The keys a function's ladder answers between its own statics and the ones
 // `extends` linked in: an inherited entry for one would skip that answer.
 bool keyAnsweredBeforeInheritedStatics(const StringHeader* keyHeader) {
     return keyHeader->equalsASCII("prototype") || keyHeader->equalsASCII("length") ||
@@ -300,31 +312,29 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
     // that nothing would ever find.
     //
     // Once the program has written to such a constructor's statics they live
-    // in its box (rtPrepareFunctionOwnWrite), and the table stops answering
-    // them. A name the program put in the box is then found by the box block
-    // below BEFORE the table's unimplemented-member diagnosis can refuse it —
-    // a polyfill for a member bronze has not built is the program's to add.
-    // Every entry in `kCtors` is a native function, so source functions skip
-    // both the box pre-probe and the table lookup.
+    // in its own slots (rtPrepareFunctionOwnWrite), and the table stops
+    // answering them. A name the program put there is then found by the own
+    // statics block below BEFORE the table's unimplemented-member diagnosis
+    // can refuse it — a polyfill for a member bronze has not built is the
+    // program's to add. Every entry in `kCtors` is a native function, so
+    // source functions skip both the pre-probe and the table lookup.
     if (recv.get().asObject<FunctionHeader>()->isNativeCode()) {
         bool boxFirst = false;
         if (recv.get().asObject<FunctionHeader>()->statics_materialized) {
-            const Value box = recv.get().asObject<FunctionHeader>()->properties;
+            const Shape* own_shape = recv.get().asObject<FunctionHeader>()->shape;
             PropertyInfo own;
-            boxFirst = box.isObject() && box.asObject<ObjectHeader>()->shape &&
-                       box.asObject<ObjectHeader>()->shape->lookupProperty(
-                           PropertyKey::forString(keyHeader), own);
+            boxFirst = own_shape && own_shape->lookupProperty(PropertyKey::forString(keyHeader), own);
         }
         if (Value ctorMember;
             !boxFirst && rtGlobalConstructorMember(recv.get(), keyText(), ctorMember)) {
             return ctorMember.rawBits();
         }
     }
-    // `prototype` lives in its own slot; every other own property lives in
-    // the function's property object and is found through ITS prototype
-    // chain, which `extends` linked to the base class's. Reading
-    // `prototype` first is what keeps `call`, `bind` and `name` answered
-    // or diagnosed rather than read as undefined.
+    // `prototype` lives in its own header slot; every other own property is
+    // one of the function's statics, found through the statics chain
+    // `extends` rooted at the base class. Reading `prototype` first is what
+    // keeps `call`, `bind` and `name` answered or diagnosed rather than read
+    // as undefined.
     if (keyHeader->equalsASCII("prototype")) {
         if (rtIsFunctionConstructor(recv.get())) {
             return rtFunctionPrototypeObject().rawBits();
@@ -345,23 +355,12 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
         rtEnsureFunctionPrototype(recv);
         return recv.get().asObject<FunctionHeader>()->prototype.rawBits();
     }
-    // ROOTED for the whole branch, not just for the own-property block: the
-    // box is read TWICE, once for the function's own statics here and again
-    // for the ones `extends` linked in, with the entire miss ladder in
-    // between. Every probe in that ladder is meant to be allocation-free
-    // for a receiver that is not its own, but "meant to" is not a
-    // guarantee a compiler checks, and one probe that builds an intrinsic
-    // on first use is enough to relocate this box — after which the second
-    // read walks a retired header and either misses a static that is there
-    // or dereferences a garbage shape. Rooting it costs one shadow-stack
-    // slot and makes the ladder's discipline unnecessary rather than
-    // load-bearing.
-    Rooted<Value> props{recv.get().asObject<FunctionHeader>()->properties};
-    if (props.get().isObject()) {
-        // The receiver a `static get` sees is the CLASS, not the side
-        // object its statics are kept in — which is the whole reason
-        // getProp takes a receiver at all.
-        ObjectHeader* propsObj = props.get().asObject<ObjectHeader>();
+    // The function's OWN statics. The function is read through its root,
+    // `recv`, here and again for the statics `extends` linked in below, with
+    // the entire miss ladder in between: one probe there that builds an
+    // intrinsic on first use is enough to relocate it.
+    {
+        ObjectHeader* propsObj = recv.get().asObject<FunctionHeader>()->object();
         PropertyInfo own;
         if (propsObj->shape &&
             propsObj->shape->lookupProperty(
@@ -418,45 +417,49 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
     // members below: a base class's `static call()` is nearer on the chain
     // than 20.2.3.3, so a derived class reads the static — the ordinary
     // shadowing rule, and the reason the cheaper lookup is not made first.
-    if (props.get().isObject()) {
+    {
         // The chain's end BEFORE the pointer that walks toward it:
         // `rtObjectPrototype` builds %Object.prototype% on first use, so a
-        // `propsObj` read out first would be the address the box had before
-        // that allocation. Same statement, opposite order, and only one of
-        // the two orders survives a collection here.
+        // `propsObj` read out first would be the address the function had
+        // before that allocation. Same statement, opposite order, and only one
+        // of the two orders survives a collection here. (A chain a program
+        // ran into %Object.prototype% with `setPrototypeOf` stops there: its
+        // members are the ladder's last step.)
         const uint64_t objProtoBits = rtObjectPrototype().rawBits();
-        ObjectHeader* propsObj = props.get().asObject<ObjectHeader>();
+        ObjectHeader* propsObj = recv.get().asObject<FunctionHeader>()->object();
         for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
-            ObjectHeader* ancestor = propsObj->protoAncestor(depth);
+            ObjectHeader* ancestor = rtStaticsAncestor(propsObj, depth);
             if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
             PropertyInfo inherited;
             if (ancestor->shape &&
                 ancestor->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
-                // The ladder's steps between the own box and here answered
-                // nothing for this key (they returned above), and for any
-                // other function the arms serve they answer by key alone, so
-                // the entry is the answer for every box at this shape while
-                // the epoch holds.
+                // The ladder's steps between the own statics and here
+                // answered nothing for this key (they returned above), and
+                // for any other function the arms serve they answer by key
+                // alone, so the entry is the answer for every function at
+                // this shape while the epoch holds.
                 if (!keyAnsweredBeforeInheritedStatics(keyHeader) &&
                     statsChainMarked(propsObj, depth)) {
                     installStaticsCacheEntry(recv.get(), site, propsObj, inherited, depth);
                 }
+                // Read off the holder, whose own property it is, with the
+                // receiver handed down so a getter sees the class.
                 Rooted<Value> key(Value::fromString(keyHeader));
-                return propsObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
+                return ancestor->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
             }
         }
     }
     // %Function.prototype%'s own members (20.2.3): `call`, `apply`, `bind`,
-    // `toString` and `constructor`, held in ITS statics box, which is the
-    // one box every function receiver's chain reaches whether or not the
-    // receiver has a box of its own — a closure that was never assigned a
-    // static has none, and must still read `call`. The receiver is handed
-    // to the read so an accessor installed there would see the function and
-    // not the box. `rtFunctionPrototypeObject` builds the intrinsics on
-    // first use, which is why the box is taken through a root afterwards.
+    // `toString` and `constructor`, held in ITS statics, which every function
+    // receiver's chain reaches whether or not the receiver has statics of its
+    // own — a closure that was never assigned a static has none, and must
+    // still read `call`. The receiver is handed to the read so an accessor
+    // installed there would see the function. `rtFunctionPrototypeObject`
+    // builds the intrinsics on first use, which is why it is taken through a
+    // root afterwards.
     {
-        Rooted<Value> fpBox{rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
-        ObjectHeader* fpObj = fpBox.get().asObject<ObjectHeader>();
+        Rooted<Value> fpBox{rtFunctionPrototypeObject()};
+        ObjectHeader* fpObj = fpBox.get().asObject<FunctionHeader>()->object();
         PropertyInfo inherited;
         if (fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
             Rooted<Value> key(Value::fromString(keyHeader));

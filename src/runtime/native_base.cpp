@@ -34,35 +34,31 @@ bool isFunctionObject(Value v) {
 }
 
 // Give an array subclass instance's ordinary half the [[Prototype]] 10.1.14
-// derived, which means BUILDING the box with that prototype behind it rather
-// than the null one an ordinary expando store leaves it with.
+// derived: its shape moves from the bare array root to the bare root over that
+// prototype, before it has any named property.
 //
-// The box is built here rather than through `ensureProperties` and
-// `setPrototype`, and it is not a shortcut: `setPrototype` puts an object into
-// DICTIONARY mode by design (a prototype lives on a shape's root, so swapping
-// one needs a shape of this object's own), and a dictionary per subclass
-// instance would cost every one of them its shape sharing and its inline
-// caches. Creating the box already pointed at the right prototype gives every
-// instance of a class ONE memoized root shape, which is what an ordinary class
-// instance gets.
+// The root is swapped here rather than through `setPrototype`, and it is not a
+// shortcut: `setPrototype` puts an object into DICTIONARY mode by design (a
+// prototype lives on a shape's root, so swapping one needs a shape of this
+// object's own), and a dictionary per subclass instance would cost every one
+// of them its shape sharing and its inline caches. The memoized bare root
+// gives every instance of a class ONE root shape, which is what an ordinary
+// class instance gets.
 //
 // Skipped entirely when `proto` is not a subclass's: `new Array()` reaches here
-// with %Array.prototype%, and it may not be given a box — an array with one is
-// an array that has left the method-cache fast path (rt_prop.cpp fills the
-// array-method IC only for an array with no box, which is precisely the guard
-// that keeps a subclass instance off it).
+// with %Array.prototype%, and it must stay at the bare array shape — an array
+// off it has left the method-cache fast path (rt_prop.cpp fills the
+// array-method IC only for a bare array, which is precisely the guard that
+// keeps a subclass instance off it).
 void attachSubclassPrototype(Rooted<Value>& self, Rooted<Value>& proto) {
     if (!proto.get().isObject()) return;
     if (rtIsArrayPrototypeObject(proto.get())) return;
     if (auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
-        HeapKind::carriesShape(protoHdr->flags)) {
+        HeapKind::shapeNamesPrototype(protoHdr->flags)) {
         Shape::markObjectAsPrototype(rtArena(), reinterpret_cast<ObjectHeader*>(protoHdr));
     }
-    Shape* boxShape = rtRootShapeForPrototype(proto.get());
-    ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), boxShape);
-    box->header.flags = HeapKind::Plain;
-    // Re-derived through the root: `create` above may have moved the instance.
-    self.get().asObject<ArrayHeader>()->properties = Value::fromObject(box);
+    Shape* root = rtBareRootShapeForPrototype(proto.get());
+    self.get().asObject<ArrayHeader>()->shape = root;
     self.get().asObject<ArrayHeader>()->reserved |= ArrayHeader::kHasCustomPrototype;
 }
 
@@ -241,39 +237,28 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
     }
 }
 
-Value rtExoticPropertyBox(Value obj) {
-    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
-        return Value::fromUndefined();
-    }
-    return obj.asObject<ArrayHeader>()->properties;
-}
-
 Value rtExoticSubclassPrototype(Value obj) {
     if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
         return Value::fromUndefined();
     }
     auto* arr = obj.asObject<ArrayHeader>();
-    const Value box = arr->properties;
-    if (!box.isObject()) return Value::fromUndefined();
-    if (arr->reserved & ArrayHeader::kHasCustomPrototype) {
-        ObjectHeader* boxObj = box.asObject<ObjectHeader>();
-        return boxObj->shape ? boxObj->shape->prototypeValue() : Value::fromNull();
-    }
-    ObjectHeader* proto = box.asObject<ObjectHeader>()->protoAncestor(1);
-    return proto ? Value::fromObject(proto) : Value::fromUndefined();
+    if (!(arr->reserved & ArrayHeader::kHasCustomPrototype)) return Value::fromUndefined();
+    return arr->shape ? arr->shape->prototypeValue() : Value::fromNull();
 }
 
 bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out) {
     if (!keyHeader) return false;
     // THE FAST PATH, and the reason this is one call rather than a chain walk
     // spliced into five member functions: an array a program has neither
-    // subclassed nor written a named property on has no box, and answers here
-    // with one load and one tag test.
-    Rooted<Value> box{rtExoticPropertyBox(recv.get())};
-    if (!box.get().isObject()) return false;
+    // subclassed nor written a named property on is at the bare array shape,
+    // and answers here with one compare.
+    if (!recv.get().isObject() || recv.get().asObject<HeapObjectHeader>()->flags != HeapKind::Array ||
+        recv.get().asObject<ArrayHeader>()->isBare()) {
+        return false;
+    }
 
     const PropertyKey name = PropertyKey::forString(keyHeader);
-    Rooted<Value> holder{box.get()};
+    Rooted<Value> holder{recv.get()};
     for (uint32_t depth = 0; depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
         ObjectHeader* obj = holder.get().asObject<ObjectHeader>();
         PropertyInfo info;
@@ -281,7 +266,7 @@ bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out)
             Rooted<Value> key{Value::fromString(keyHeader)};
             // The RECEIVER is the array, so an accessor defined on a subclass
             // prototype runs against the array the program read from and not
-            // against the box its own properties live in.
+            // against the prototype it is stored on.
             out = holder.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
                                                                  recv.slot_ptr());
             return true;

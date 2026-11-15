@@ -128,7 +128,11 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
             const Value key = name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string());
             return rtProxyHas(proto, key);
         }
-        ObjectHeader* next = holder->protoAncestor(1);
+        // A function's links are its statics chain (base classes); every
+        // other holder's are its shape's prototype links.
+        ObjectHeader* next = holder->header.flags == HeapKind::Function
+                                 ? rtStaticsAncestor(holder, 1)
+                                 : holder->protoAncestor(1);
         if (!next) return false;
         holder = next;
     }
@@ -217,10 +221,14 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
             break;
         case HeapKind::Function: {
             // A function keeps its own properties, symbol-keyed ones included,
-            // in the side object its statics live in.
-            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
-            if (!props.isObject()) return false;
-            holder = props.asObject<ObjectHeader>();
+            // in its own shape, and inherits through its statics chain, then
+            // %Function.prototype%'s own members, then %Object.prototype%'s —
+            // the read ladder's order (rt_prop_function.cpp).
+            const PropertyKey name = PropertyKey::fromValue(key);
+            if (plainObjectHas(objRoot.get().asObject<ObjectHeader>(), name)) return true;
+            Rooted<Value> fp{rtFunctionPrototypeObject()};
+            if (plainObjectHas(fp.get().asObject<ObjectHeader>(), name)) return true;
+            holder = rtObjectPrototype().asObject<ObjectHeader>();
             break;
         }
         case HeapKind::Array:
@@ -367,17 +375,15 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                 return true;
             }
             Rooted<Value> keyStr{rtMakeString(key)};
-            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
-            if (props.isObject() && plainObjectHas(props.asObject<ObjectHeader>(),
-                                                   keyStr.get().asString<StringHeader>())) {
+            if (plainObjectHas(objRoot.get().asObject<ObjectHeader>(),
+                               keyStr.get().asString<StringHeader>())) {
                 return true;
             }
             // %Function.prototype%'s own members (20.2.3), which every
-            // function reaches whether or not it has a box of its own — the
+            // function reaches whether or not it has statics of its own — the
             // same step the READ ladder takes (rt_prop_function.cpp). Read
             // through a root: building the intrinsic on first use allocates.
-            Rooted<Value> fpBox{
-                rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+            Rooted<Value> fpBox{rtFunctionPrototypeObject()};
             if (plainObjectHas(fpBox.get().asObject<ObjectHeader>(),
                                keyStr.get().asString<StringHeader>())) {
                 return true;

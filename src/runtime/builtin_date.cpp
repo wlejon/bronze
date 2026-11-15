@@ -361,7 +361,7 @@ void ensureDateIntrinsics() {
     // 21.4.3: `Date` has length 7, the seven fields of the component form.
     Rooted<Value> ctor{rtNativeFunction(dateConstructor, 0, "Date", 7)};
     rtEnsureFunctionProperties(ctor);
-    Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{ctor.get()};
     const NativeMethod statics[] = {
         {"now", dateNow, 0, 0},
         {"parse", dateParse, 0, 1},

@@ -220,16 +220,13 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     }
     // A function's own keys are `length`, `name` and `prototype` — every one of
     // them non-enumerable (10.2.4, 20.2.4) — plus the statics it was assigned,
-    // which are the only group this member reports. Those live in the side
-    // object, so the answer is COMPLETE, and that is what separates this from
+    // which are the only group this member reports. Those live in its own
+    // shape, so the answer is COMPLETE, and that is what separates this from
     // `Object.getOwnPropertyNames` of the same function: that member wants the
     // non-enumerable three, and bronze stores none of them.
     if (hdr->flags == HeapKind::Function) {
-        Value props = objVal.asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return bronze_create_array(0);
-        Rooted<Value> propsRoot{props};
-        const StringKeyList named =
-            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
+        if (!objVal.asObject<FunctionHeader>()->hasOwnStatics()) return bronze_create_array(0);
+        const StringKeyList named = rtOwnStringKeysOrdered(objVal.asObject<ObjectHeader>());
         Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
         uint32_t at = 0;
         for (StringHeader* k : named) {
@@ -265,7 +262,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (!HeapKind::carriesShape(hdr->flags)) {
+    if (!HeapKind::shapeNamesPrototype(hdr->flags)) {
         // An iteration record and an environment record are the remainder, and
         // nothing hands a program either — so reaching here is a lowering bug
         // rather than something a program did.

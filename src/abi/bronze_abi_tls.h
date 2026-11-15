@@ -148,6 +148,12 @@ typedef struct bronze_tls_block {
      * runtime has made it. What a sized literal's inline allocation reads;
      * a 0 entry takes the helper, which makes it. */
     uint64_t plain_shapes[BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1];
+    /* The shape every ordinary array is at (runtime/array.h,
+     * runtime::rtArrayShape): a bare root over null, or 0 until the runtime
+     * has made it. What generated code's inline array allocation stores at
+     * BRONZE_ABI_OBJ_SHAPE_OFFSET, and what `is.plain_array` compares an
+     * array's shape word with; a 0 takes the helper, which makes it. */
+    uint64_t array_shape;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -172,6 +178,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_MEGA_PROP_OFF                 152
 #define BRONZE_TLS_PLAIN_SHAPES_OFF              (BRONZE_TLS_MEGA_PROP_OFF + \
     8 * BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS)
+#define BRONZE_TLS_ARRAY_SHAPE_OFF               (BRONZE_TLS_PLAIN_SHAPES_OFF + \
+    8 * (BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1))
 
 /*
  * ---- the constants below the block ---------------------------------------

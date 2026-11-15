@@ -43,11 +43,11 @@ Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
     if (!proxied && !isArray(originalArray.get())) {
         return Value(bronze_create_array(length));
     }
-    if (!proxied && !rtExoticPropertyBox(originalArray.get()).isObject()) {
+    if (!proxied && originalArray.get().asObject<ArrayHeader>()->isBare()) {
         return Value(bronze_create_array(length));
     }
     // Step 5: Get(originalArray, "constructor"), which for a subclass instance
-    // is `A.prototype.constructor` up the chain the box carries — and for an
+    // is `A.prototype.constructor` up the chain its shape is rooted at — and for an
     // array carrying only an expando is absent, leaving %Array%.
     Rooted<Value> ctorKey{rtMakeString("constructor")};
     // Both reads below are held in ROOTS from the moment they exist, because
@@ -61,7 +61,7 @@ Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
                rtExoticNamedRead(originalArray, ctorKey.get().asString<StringHeader>(), found)) {
         ctorRoot.set(found);
     }
-    // `Array` itself takes the same shortcut the missing-box case does: its
+    // `Array` itself takes the same shortcut the bare-array case does: its
     // @@species is itself (rt_prop.cpp), so constructing through it would run
     // 23.1.1.1 to reach exactly ArrayCreate(length).
     if (ctorRoot.get().isUndefined() || rtIsArrayConstructor(ctorRoot.get())) {

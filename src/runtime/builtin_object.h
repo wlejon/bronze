@@ -44,8 +44,8 @@ enum class ObjectOwnKeys {
     Shape,        // a plain object: its own keys are in its shape
     StringChars,  // a primitive string: 10.4.3 synthesises them from the characters
     Namespace,    // a module namespace: 10.4.6.2's sorted export names
-    Function,     // a function: its statics are in FunctionHeader::properties
-    Array,        // an array: its elements, `length`, and ArrayHeader::properties
+    Function,     // a function: its header's three, then its statics (its own shape)
+    Array,        // an array: its elements, `length`, then its own shape's keys
     TypedArray,   // a typed array: its elements (10.4.5.7), then its shape's keys
     RegExp,       // a RegExp: the header's `lastIndex` (22.2.4.1), then its shape's keys
     Proxy,        // a Proxy: 10.5.11's `ownKeys` trap, or the target's, per ask

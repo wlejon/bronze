@@ -74,12 +74,12 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 // global-constructor function receiver, whose method is a native builtin from
 // an immutable C table. The entry is the DIRECT form under a kind guard
 // instead of a shape guard — bronze_abi.h's method-site contract states the
-// word 0 encoding and why the box-offset clause is the complete shadowing
+// word 0 encoding and why the bare-shape clause is the complete shadowing
 // story. What makes each latch sound:
 //
 //   Array: the probe's way 0 holds the ARRAY-METHOD sentinel, which the read
 //   path fills only when the answer came from the method table, the receiver
-//   carried no named-property box, and the array-method get IC is enabled
+//   was at the bare array shape, and the array-method get IC is enabled
 //   (rt_prop.cpp) — and that table cannot change, because
 //   `Array.prototype` is frozen (lockdown.h).
 //
@@ -153,7 +153,13 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     uint64_t epochWord = 0;
     if (kind == HeapKind::Array) {
         if (!probe.isArrayMethod()) return false;
-        auxOffset = offsetof(ArrayHeader, properties);
+        // The SHAPE guard: the receiver still at the bare array shape, so no
+        // own property, subclass prototype or integrity level can answer
+        // ahead of the table.
+        const auto* arr = reinterpret_cast<const ArrayHeader*>(objHdr);
+        if (!arr->isBare()) return false;
+        icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(arr->shape);
+        auxOffset = BRONZE_ABI_OBJ_SHAPE_OFFSET;
     } else if (kind == TypedArrayHeader::kFlags) {
         // A view is a shape-carrying object whose methods live on
         // %TypedArray%.prototype, two links up — the plain DIRECT form's
@@ -205,8 +211,8 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     } else if (kind == HeapKind::Function) {
         // A global constructor's static (`Array.isArray`, `String.raw`):
         // answered FIRST on the function-receiver ladder from a fixed C table
-        // keyed by the RECEIVER'S code pointer, ahead even of the own-property
-        // box (rt_prop.cpp) — until the program writes to that constructor's
+        // keyed by the RECEIVER'S code pointer, ahead even of its own statics
+        // (rt_prop.cpp) — until the program writes to that constructor's
         // statics, the answer is a pure function of (receiver code, key); the
         // epoch below covers the case where it has. The witness walks
         // the same table with raw code pointers (no allocation), and the hit
@@ -220,22 +226,25 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
             auxOffset = offsetof(FunctionHeader, code);
             guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
             // Once the program has written to this constructor's statics they
-            // live in its box, where an assignment or a delete can replace the
-            // one just read — so the entry is good only until the next such write,
-            // and every one of them bumps the prototype-mutation epoch
-            // (rtPrepareFunctionOwnWrite). The witness above still holds: the
-            // read found the table's own function in the box.
+            // live in its own slots, where an assignment or a delete can
+            // replace the one just read — so the entry is good only until the
+            // next such write, and every one of them bumps the
+            // prototype-mutation epoch (rtPrepareFunctionOwnWrite). The
+            // witness above still holds: the read found the table's own
+            // function there.
             if (recvFn->statics_materialized) epochWord = protoMutationEpoch();
-        } else if (!recvFn->properties.isObject() && fn->isNativeCode() &&
+        } else if (recvFn->shape == rtFunctionShape() && fn->isNativeCode() &&
                    rtIntrinsicConstructorName(
                        Value::fromObject(const_cast<FunctionHeader*>(recvFn))) == nullptr &&
                    (keyStr == "call" || keyStr == "apply" || keyStr == "bind" ||
                     keyStr == "toString")) {
             const Value fpVal = rtFunctionPrototypeObject();
             if (!fpVal.isObject()) return false;
-            const Value fpBoxVal = fpVal.asObject<FunctionHeader>()->properties;
-            if (!fpBoxVal.isObject()) return false;
-            auto* fpBox = fpBoxVal.asObject<ObjectHeader>();
+            // %Function.prototype%'s own member, read by a receiver with no
+            // statics and no statics chain (the bare function shape, which the
+            // SHAPE guard below keeps it at), under the epoch every write to
+            // %Function.prototype% moves.
+            const ObjectHeader* fpBox = fpVal.asObject<FunctionHeader>()->object();
             PropertyInfo info;
             if (!fpBox->shape ||
                 !fpBox->shape->lookupProperty(PropertyKey::forString(rtKeyHeader(keyIndex)),
@@ -243,7 +252,8 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
                 info.accessor || fpBox->getSlot(info.slot).rawBits() != fnVal.rawBits()) {
                 return false;
             }
-            auxOffset = offsetof(FunctionHeader, properties);
+            icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(recvFn->shape);
+            auxOffset = BRONZE_ABI_OBJ_SHAPE_OFFSET;
             guardBits = 0;
             epochWord = protoMutationEpoch();
         } else {
@@ -269,26 +279,24 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
 // The FUNCTION-receiver STATICS latch: the call twin of the property read's
 // `installStaticsCacheEntry` (rt_prop_function.cpp), for the receivers the
 // exotic latch above declines — a class or an ordinary function whose members
-// live in a real, shape-indexed box hanging off `properties` rather than in a
-// C table. `Object.defineProperty(this, …)` and `Object.defineProperties(this,
+// are its own shape-indexed slots rather than in a C table. `Object.defineProperty(this, …)` and `Object.defineProperties(this,
 // …)` in three.js's `Object3D` constructor are the case that made it: %Object%
 // is not one of `kCtors`, so nothing above could latch them and every instance
 // built paid the helper twice.
 //
-// The entry it writes is the SLOT form, keyed on the BOX's shape, and the form
-// is not a choice — it is the only one that stays sound here:
+// The entry it writes is the SLOT form, keyed on the function's shape, and the
+// form is not a choice — it is the only one that stays sound here:
 //
 //   - DIRECT would cache a code pointer against a shape. Two different
-//     classes' boxes can BE the same shape (`class A { static make(){} }` and
-//     `class B { static make(){} }` share `{make}`), and so can a plain
-//     object's, so a cached callee would answer for a receiver it was never
-//     resolved from. SLOT caches only WHERE — and a shape is a key-to-slot map
+//     classes can BE the same shape (`class A { static make(){} }` and
+//     `class B { static make(){} }` share `{make}`), so a cached callee would
+//     answer for a receiver it was never resolved from. SLOT caches only WHERE — and a shape is a key-to-slot map
 //     and nothing else, so every object matching it holds the site's key at
 //     that slot, in itself.
 //   - SLOT also re-derives code, env and arity from the function object found
 //     there at every hit, and re-checks that a Function is what is there at
 //     all. That is what makes `A.make = somethingElse`, `delete A.make` (which
-//     changes the box's shape) and a static replaced by a non-function all
+//     changes the function's shape) and a static replaced by a non-function all
 //     land where they did before: the generated arm's own Function test, or
 //     the helper's TypeError.
 //
@@ -298,29 +306,26 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
 //
 // Generated code's statics arm reads way 0 only — the same way-0-only policy,
 // for the same measured reason, as the read arm. Displaced into way 1, one of
-// these is a SLOT entry keyed on a shape like any other: only a PLAIN receiver
-// of that shape is answered from it, and such a receiver holds the key at that
-// slot in itself, which is the whole of the SLOT form's argument.
+// these is a SLOT entry keyed on a shape like any other: a receiver of that
+// shape holds the key at that slot in itself, which is the whole of the SLOT
+// form's argument.
 //
 // Loads, compares and stores only, like everything else here.
 bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value calleeVal,
                                   const InlineCache& probe) {
     // The probe is the scratch site the read just filled. Only
     // `installStaticsCacheEntry` fills it for a function receiver, and only for
-    // an own data property of the box — so a real, non-flagged, depth-0 entry
-    // here IS that fill, and anything else means the read was answered by the
-    // ladder and there is nothing to cache.
+    // an own data property — so a real, non-flagged, depth-0 entry here IS
+    // that fill, and anything else means the read was answered by the ladder
+    // and there is nothing to cache.
     if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent()) return false;
     if (probe.realDepth() != 0) return false;
-    const Value boxVal = fnRecvVal.asObject<FunctionHeader>()->properties;
-    if (!boxVal.isObject()) return false;
-    ObjectHeader* box = boxVal.asObject<ObjectHeader>();
-    if (box->header.flags != HeapKind::Plain) return false;
-    // The box the probe named must be the box the receiver has NOW: the read
+    ObjectHeader* box = fnRecvVal.asObject<FunctionHeader>()->object();
+    // The shape the probe named must be the shape the receiver has NOW: the read
     // ran between the fill and here, and a shape that has since transitioned
     // would make the cached slot an unrelated property's.
     if (box->shape != probe.cached_shape) return false;
-    if (!rtStaticsBoxCacheable(fnRecvVal, box)) return false;
+    if (!rtStaticsCacheable(fnRecvVal, box)) return false;
     // And the slot must still hold what the read returned. Cheap, and it is
     // the one line that ties the entry to the call about to be made rather
     // than to a lookup that agreed with it a moment ago.
@@ -408,7 +413,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
         // FUNCTION it declines is then offered its statics BOX's shape, which
         // is a shape word after all — just not the receiver's. The two are
         // disjoint by construction (the exotic Function form serves exactly the
-        // `kCtors` receivers `rtStaticsBoxCacheable` refuses), so the order is
+        // `kCtors` receivers `rtStaticsCacheable` refuses), so the order is
         // for legibility rather than precedence.
         if (!latchExoticMethodIc(icEntry, objHdr, fnVal, fn, probe, keyIndex) &&
             objHdr->flags == HeapKind::Function) {
@@ -586,19 +591,15 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
 
     auto* hdr = thisVal.asObject<HeapObjectHeader>();
     if (w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) {
-        // The EXOTIC form: kind guard, then the box or code clause on the u64
-        // at the carried offset.
+        // The EXOTIC form: kind guard, then the u64 at the carried offset
+        // against the aux word (the bare shape, or the latched code or shape).
         const uint32_t kind = static_cast<uint32_t>(w0) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT;
         if (hdr->flags != kind) return false;
         const uint64_t auxOffset = w0 >> BRONZE_ABI_METHOD_IC_BOX_SHIFT;
         uint64_t aux;
         std::memcpy(&aux, reinterpret_cast<const char*>(hdr) + auxOffset, sizeof(aux));
-        if (w0 & BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT) {
-            if (aux != icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD]) return false;
-        } else if (Value(aux).isObject()) {
-            return false;
-        }
-        // A constructor whose statics were written down answers from a box
+        if (aux != icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD]) return false;
+        // A constructor whose statics were written down answers from slots
         // the program can write to, so its entry carries an epoch as the
         // typed-array one does; one never touched answers from the C table.
         const bool epochGuarded =
@@ -634,16 +635,12 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t keyIndex, uint32
         return false;
     }
     if (hdr->flags == HeapKind::Function) {
-        // A function receiver takes the SLOT form against its statics box and
+        // A function receiver takes the SLOT form against its own shape and
         // never a DIRECT entry (the contract's function-receiver rule).
         if (slotPlusOne == 0) return false;
-        const Value boxVal = reinterpret_cast<FunctionHeader*>(hdr)->properties;
-        if (!boxVal.isObject()) return false;
-        auto* boxHdr = boxVal.asObject<HeapObjectHeader>();
-        if (boxHdr->flags != HeapKind::Plain) return false;
-        auto* box = reinterpret_cast<ObjectHeader*>(boxHdr);
-        if (reinterpret_cast<uint64_t>(box->shape) != w0) return false;
-        return dispatchSlot(box, slotPlusOne);
+        auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+        if (reinterpret_cast<uint64_t>(obj->shape) != w0) return false;
+        return dispatchSlot(obj, slotPlusOne);
     }
     return false;
 }

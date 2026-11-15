@@ -609,7 +609,7 @@ void ensurePromiseIntrinsics() {
     // 27.2.3: `Promise` has length 1 (the executor).
     Rooted<Value> ctor{rtNativeFunction(promiseConstructorBody, 1, "Promise", 1)};
     rtEnsureFunctionProperties(ctor);
-    Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{ctor.get()};
     // 27.2.4's function properties, non-enumerable like every intrinsic's.
     const NativeMethod statics[] = {
         {"resolve", staticResolve, 1, 1}, {"reject", staticReject, 1, 1},

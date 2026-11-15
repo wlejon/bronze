@@ -308,15 +308,18 @@ uint32_t receiverName(State& s, Value v) {
 
 // The callee `receiver[methodKey]` resolves to, found WITHOUT running anything:
 // own and prototype data slots by shape, an accessor named as one. The
-// receiver of a static call is the function's own-properties object.
+// receiver of a static call is the function, whose statics chain the walk
+// follows.
 uint32_t methodTarget(State& s, Value receiver, uint32_t methodKeyId) {
     const std::string& method = rtKeyString(methodKeyId);
     if (!receiver.isObject()) return internName(s, std::string(primitiveWord(receiver)) + "." + method);
     auto* hdr = receiver.asObject<HeapObjectHeader>();
     Value holder = receiver;
     if (hdr->flags == HeapKind::Function) {
-        holder = receiver.asObject<FunctionHeader>()->properties.get();
-        if (!holder.isObject()) return internName(s, "function." + method);
+        if (!receiver.asObject<FunctionHeader>()->hasOwnStatics() &&
+            !receiver.asObject<ObjectHeader>()->shape->prototypeValue().isObject()) {
+            return internName(s, "function." + method);
+        }
     } else if (hdr->flags != HeapKind::Plain) {
         return internName(s, std::string(kindWord(hdr->flags)) + "." + method);
     }
@@ -337,7 +340,7 @@ uint32_t methodTarget(State& s, Value receiver, uint32_t methodKeyId) {
     for (int depth = 0; depth < 32; ++depth) {
         if (!cur.isObject()) return internName(s, "absent." + method);
         auto* curHdr = cur.asObject<HeapObjectHeader>();
-        if (curHdr->flags != HeapKind::Plain) {
+        if (curHdr->flags != HeapKind::Plain && curHdr->flags != HeapKind::Function) {
             return internName(s, std::string(kindWord(curHdr->flags)) + "-proto." + method);
         }
         auto* obj = cur.asObject<ObjectHeader>();

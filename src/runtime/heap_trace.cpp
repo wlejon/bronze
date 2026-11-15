@@ -94,13 +94,14 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
     // the length and flags.
     if (h->tag == static_cast<uint16_t>(Tag::String)) return {2, words, false};
     if (h->tag != static_cast<uint16_t>(Tag::Object)) return {0, 0, false};
-    // A kind that carries a shape begins with an ObjectHeader; every word
-    // after the shape pointer is a Value (a typed array's packed length words
-    // are small integers, far below any pointer tag).
+    // Every object value begins with the shape word and the overflow block
+    // (heap.h carriesShape); every word after the shape pointer is a Value or
+    // a word no pointer tag can spell — a typed array's or an array's packed
+    // length words are small integers, a function's code, instance shape and
+    // name pointers are raw addresses with a zero top half.
     if (HeapKind::carriesShape(h->flags)) return {kFirstValueWord, words, true};
-    // Everything else — a function, an array, an environment, an iterator
-    // record, a proxy, a namespace, a slot block, a value block — is a Value
-    // in every word after the header.
+    // Everything else — an environment, an iterator record, a slot block, a
+    // value block — is a Value in every word after the header.
     return {1, words, false};
 }
 

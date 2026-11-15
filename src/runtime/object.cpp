@@ -282,7 +282,7 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
         Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (!HeapKind::carriesShape(hdr->flags)) return nullptr;
+        if (!HeapKind::shapeNamesPrototype(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
     }
     return cur;
@@ -303,7 +303,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
         Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (!HeapKind::carriesShape(hdr->flags)) return nullptr;
+        if (!HeapKind::shapeNamesPrototype(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
         if (cur->shape && !cur->shape->readCacheable()) {
             crossedDictionary = true;
@@ -320,7 +320,7 @@ bool ObjectHeader::chainIsCacheable() const noexcept {
         const Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return true;  // the chain ENDS here
         const auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (!HeapKind::carriesShape(hdr->flags)) return false;
+        if (!HeapKind::shapeNamesPrototype(hdr->flags)) return false;
         cur = reinterpret_cast<const ObjectHeader*>(hdr);
         if (!cur->shape || !cur->shape->readCacheable()) return false;
         // A frozen dictionary is exempt from the mark: the mark exists so an
@@ -470,7 +470,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             const Value self = receiver ? *receiver : Value::fromObject(this);
             return runtime::rtProxyGet(proto, key.get(), self);
         }
-        if (!HeapKind::carriesShape(protoHdr->flags)) return Value::fromUndefined();
+        if (!HeapKind::shapeNamesPrototype(protoHdr->flags)) return Value::fromUndefined();
         holder = reinterpret_cast<ObjectHeader*>(protoHdr);
     }
     return runtime::rtThrowTypeError("prototype chain too deep (a cycle?)");

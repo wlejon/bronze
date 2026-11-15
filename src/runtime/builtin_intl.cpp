@@ -507,7 +507,7 @@ void ensureIntlIntrinsics() {
     Rooted<Value> ctor{rtNativeFunction(dtfConstructor, 0, "DateTimeFormat", 0)};
     rtEnsureFunctionProperties(ctor);
     {
-        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+        Rooted<Value> props{ctor.get()};
         Rooted<Value> slKey{rtMakeString("supportedLocalesOf")};
         Rooted<Value> slVal{rtNativeFunction(dtfSupportedLocalesOf, 0, "supportedLocalesOf", 1)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), slKey, slVal, nullptr,

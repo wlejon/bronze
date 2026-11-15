@@ -58,7 +58,7 @@ struct ViewIntrinsics {
     Value proto = Value::fromUndefined();
     Shape* instanceShape = nullptr;
     Shape* protoPristineShape = nullptr;
-    Shape* ctorBoxPristineShape = nullptr;
+    Shape* ctorPristineShape = nullptr;
     uint32_t constructorSlot = 0;
 };
 
@@ -68,7 +68,7 @@ struct FamilyIntrinsics {
     Value ctor = Value::fromUndefined();
     Value proto = Value::fromUndefined();
     Shape* protoPristineShape = nullptr;
-    Shape* ctorBoxPristineShape = nullptr;
+    Shape* ctorPristineShape = nullptr;
     static constexpr size_t kAccessorCount = 4;
     uint32_t accessorSlot[kAccessorCount] = {};
     Value accessorGetter[kAccessorCount] = {Value::fromUndefined(), Value::fromUndefined(),
@@ -309,19 +309,18 @@ void buildFamily() {
             slotOf(proto.get(), PropertyKey::forString(key.get().asString<StringHeader>()));
     }
 
-    // 23.2.2: the statics, ordinary own properties of the constructor's box —
-    // where a view constructor reaches them by the chain `extends` builds
-    // between the boxes, exactly as a class reaches an inherited static.
+    // 23.2.2: the statics, ordinary own properties of the constructor — where
+    // a view constructor reaches them by the statics chain `extends` builds,
+    // exactly as a class reaches an inherited static.
     // 23.2.2.4's `@@species` is a real accessor there too, so a subclass
     // inherits it and `Object.getOwnPropertyDescriptor` can describe it.
     rtEnsureFunctionProperties(ctor);
     {
-        Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
         const NativeMethod statics[] = {
             {"from", rtTypedArrayFromBody, 1, 1},
             {"of", rtTypedArrayOfBody, 0, 0},
         };
-        rtDefineMethods(box, statics, std::size(statics));
+        rtDefineMethods(ctor, statics, std::size(statics));
         rtDefineSpeciesGetter(ctor);
     }
 
@@ -363,25 +362,21 @@ void buildView(ElementKind kind, bronze_fn_code code) {
     // on the prototype and on the constructor alike.
     defineData(proto, bpeKey, bpe, /*writable=*/false, /*configurable=*/false);
 
-    // The statics box, chained to `%TypedArray%`'s so `Uint8Array.from` is
-    // found by the walk `MyArr.of` is found by (runtime/native_base.h).
-    Rooted<Value> familyBox{g_family.ctor.asObject<FunctionHeader>()->properties};
-    ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(familyBox.get()));
-    box->header.flags = HeapKind::Plain;
-    Rooted<Value> boxRoot{Value::fromObject(box)};
-    defineData(boxRoot, bpeKey, bpe, /*writable=*/false, /*configurable=*/false);
+    // The statics, rooted at `%TypedArray%` so `Uint8Array.from` is found by
+    // the walk `MyArr.of` is found by (runtime/native_base.h).
+    ctor.get().asObject<FunctionHeader>()->shape = rtBareRootShapeForPrototype(g_family.ctor);
+    defineData(ctor, bpeKey, bpe, /*writable=*/false, /*configurable=*/false);
     // Marked as a prototype's shape would be, though nothing inherits from it
-    // yet: the mark is what makes a mutation of the box — a `@@species` a
+    // yet: the mark is what makes a mutation of the statics — a `@@species` a
     // program defines on `Uint8Array` itself — bump the epoch that
     // reverifyPristine latches on, so the species fast path can trust the
     // latch instead of re-reading this shape on every `slice`.
-    boxRoot.get().asObject<ObjectHeader>()->shape->used_as_prototype = true;
+    Shape::markObjectAsPrototype(rtArena(), ctor.get().asObject<ObjectHeader>());
 
     FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
     fn->prototype = proto.get();
     // 23.2.6.2: non-writable, non-enumerable, non-configurable.
     fn->prototype_readonly = true;
-    fn->properties = boxRoot.get();
     // 23.2.6: the constructor's own [[Prototype]] is %TypedArray%.
     fn->parent = g_family.ctor;
     // Which native object `new` allocates — recorded on the intrinsic itself
@@ -393,19 +388,19 @@ void buildView(ElementKind kind, bronze_fn_code code) {
     fn->instance_shape = rtNewRootShape(proto.get());
     out.instanceShape = fn->instance_shape;
     out.protoPristineShape = proto.get().asObject<ObjectHeader>()->shape;
-    out.ctorBoxPristineShape = boxRoot.get().asObject<ObjectHeader>()->shape;
+    out.ctorPristineShape = ctor.get().asObject<ObjectHeader>()->shape;
 }
 
 void ensureTypedArrayIntrinsics() {
     if (g_family.proto.isObject()) return;
     buildFamily();
     for (const CtorEntry& entry : kCtors) buildView(entry.kind, entry.code);
-    // The family box's shape is captured LAST: each view's box chains to it
+    // The family constructor's shape is captured LAST: each view's chains to it
     // (rtNewRootShape marks the link, and can move a shared shape to a
     // dedicated one when it does), so the pristine shape is whatever the
     // twelve links left it.
-    g_family.ctorBoxPristineShape =
-        g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    g_family.ctorPristineShape =
+        g_family.ctor.asObject<ObjectHeader>()->shape;
     g_family.bufferInstanceShape = rtArrayBufferInstanceShape();
     g_family.pristineEpoch = protoMutationEpoch();
     g_family.pristine = true;
@@ -413,9 +408,9 @@ void ensureTypedArrayIntrinsics() {
 }
 
 // Re-verify the thirteen prototype shapes, the four getter slots, the
-// thirteen statics-box shapes and the twelve `extends` links. Called only
+// thirteen constructor shapes and the twelve `extends` links. Called only
 // when the epoch moved, which any add, delete, redefinition or prototype swap
-// on ANY object serving as a prototype does — the boxes are marked as such
+// on ANY object serving as a prototype does — the constructors are marked as such
 // in buildView exactly so that a `@@species` defined on one moves it — so the
 // common case is one compare against the latched epoch.
 bool reverifyPristine() {
@@ -427,14 +422,14 @@ bool reverifyPristine() {
     }
     ok = ok && proto->getSlot(g_family.iteratorSlot).rawBits() ==
                    g_family.iteratorValues.rawBits();
-    ok = ok && g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape ==
-                   g_family.ctorBoxPristineShape;
+    ok = ok && g_family.ctor.asObject<ObjectHeader>()->shape ==
+                   g_family.ctorPristineShape;
     for (size_t k = 0; ok && k < kKindCount; ++k) {
         const ViewIntrinsics& kind = g_views[k];
         const auto* ctor = kind.ctor.asObject<FunctionHeader>();
         ok = kind.proto.asObject<ObjectHeader>()->shape == kind.protoPristineShape &&
              ctor->parent.rawBits() == g_family.ctor.rawBits() &&
-             ctor->properties.asObject<ObjectHeader>()->shape == kind.ctorBoxPristineShape;
+             ctor->shape == kind.ctorPristineShape;
     }
     g_family.pristine = ok;
     g_family.pristineEpoch = protoMutationEpoch();
@@ -454,13 +449,13 @@ bool reverifyPristine() {
 void rtTypedArrayIntrinsicsHardened() {
     if (!g_family.proto.isObject()) return;
     g_family.protoPristineShape = g_family.proto.asObject<ObjectHeader>()->shape;
-    g_family.ctorBoxPristineShape =
-        g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    g_family.ctorPristineShape =
+        g_family.ctor.asObject<ObjectHeader>()->shape;
     for (size_t k = 0; k < kKindCount; ++k) {
         ViewIntrinsics& kind = g_views[k];
         kind.protoPristineShape = kind.proto.asObject<ObjectHeader>()->shape;
-        kind.ctorBoxPristineShape =
-            kind.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+        kind.ctorPristineShape =
+            kind.ctor.asObject<ObjectHeader>()->shape;
     }
     g_family.pristine = true;
     g_family.pristineEpoch = protoMutationEpoch();
@@ -490,7 +485,7 @@ Value speciesConstructor(Rooted<Value>& exemplar, Value defaultCtor) {
 
 // Is the exemplar's species its own kind's intrinsic, with no `Get`
 // performed? Its shape is the intrinsic instance shape (no own `constructor`
-// and the intrinsic prototype), the chain and the statics boxes are as built
+// and the intrinsic prototype), the chain and the constructors' statics are as built
 // (the epoch latch), and that prototype's `constructor` slot still holds the
 // intrinsic — a DATA property a program overwrites in place, no shape change
 // and no epoch bump, so it is the one value compared on every ask.

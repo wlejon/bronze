@@ -294,13 +294,12 @@ void ensureRegExpIntrinsics() {
     rtInstallRegExpSymbolMethods(proto);
 
     // 22.2.5: `escape` and the `@@species` accessor, ordinary own properties
-    // of the constructor's box, where a subclass reaches them by the chain
+    // of the constructor, where a subclass reaches them by the statics chain
     // `extends` builds.
     rtEnsureFunctionProperties(ctor);
     {
-        Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
         const NativeMethod statics[] = {{"escape", rtRegExpEscapeBody, 1, 1}};
-        rtDefineMethods(box, statics, std::size(statics));
+        rtDefineMethods(ctor, statics, std::size(statics));
         rtDefineSpeciesGetter(ctor);
     }
 

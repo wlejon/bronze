@@ -51,7 +51,21 @@ Shape* rtNewRootShape(Value proto, uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_
 // class per object — every one of them would be a shape no inline cache had
 // ever seen, and each would leak an immortal arena shape.
 Shape* rtRootShapeForPrototype(Value proto);
+// The same memo for a BARE root (Shape::createBareRoot): the shape an array or
+// a function takes when its named properties inherit through `proto` — an
+// array subclass instance's, a derived class constructor's.
+Shape* rtBareRootShapeForPrototype(Value proto);
 size_t rtUserPrototypeShapeCount();
+
+// The shapes the kinds that are no plain object start at (heap.h
+// carriesShape): an ordinary array's (array.h, also published into the TLS
+// block's `array_shape`) and an ordinary function's (fn.h), bare roots over
+// null; and the SENTINEL of a proxy and of a module namespace, which no cache
+// records (Shape::uncacheable).
+Shape* rtArrayShape();
+Shape* rtFunctionShape();
+Shape* rtProxyShape();
+Shape* rtNamespaceShape();
 
 // The one root shape every plain `{}` literal starts from. Per-literal root
 // shapes would give two identical literals unrelated hidden classes, so a site

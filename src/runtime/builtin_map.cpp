@@ -285,11 +285,11 @@ void buildKind(CollectionIntrinsics& out, bool isSet) {
 
     if (!isSet) {
         // 24.1.2.1 `Map.groupBy`, an ordinary own property of the constructor
-        // — in the box every function keeps its statics in, where a subclass
-        // reaches it by the chain `extends` builds between the boxes. The body
+        // — one of its statics, where a subclass reaches it by the statics
+        // chain `extends` builds. The body
         // is 7.3.35 in builtin_group_by.cpp, shared with `Object.groupBy`.
         rtEnsureFunctionProperties(ctor);
-        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+        Rooted<Value> props{ctor.get()};
         Rooted<Value> key{rtMakeString("groupBy")};
         Rooted<Value> fn{rtNativeFunction(rtMapGroupBy, 2, "groupBy", 2)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, nullptr,

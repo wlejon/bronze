@@ -579,7 +579,7 @@ void rtInstallNumberStatics(Rooted<Value>& fn) {
     if (g_numberStaticsInstalled) return;
     g_numberStaticsInstalled = true;
     rtEnsureFunctionProperties(fn);
-    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{fn.get()};
     // NON-ENUMERABLE, every one of them, because that is the attribute 21.1.2
     // gives all fifteen and it is the one this storage can express: a shape
     // transition carries `enumerable`, where `writable` and `configurable` are

@@ -14,7 +14,7 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
         // (a setter at that index): only a chain holding no index lets the
         // block take it directly.
         const bool chainClear = !rtArrayChainHoldsIndex(self);
-        if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined() &&
+        if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->isBare() &&
             chainClear) {
             // Appends: NUMBERS survives when every value is a Number.
             HeapValue* dst = arr->elementsKeepingNumbers() + arr->length;
@@ -33,7 +33,7 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
         // at `length`, so the write is the same element store arrayPush
         // makes. setElemSlow roots the array and the value across the
         // allocation, and throws the same RangeError at the size limit.
-        if (argc == 1 && arr->properties.isUndefined() && chainClear) {
+        if (argc == 1 && arr->isBare() && chainClear) {
             Rooted<Value> root{Value(thisBits)};
             Rooted<Value> val{Value(argv[0])};
             arr->setElemSlow(rtHeap(), arr->length, val);
@@ -79,7 +79,7 @@ extern "C" uint64_t bronze_array_pop(uint64_t env, uint64_t thisBits, uint32_t a
         ArrayHeader* arr = self.asObject<ArrayHeader>();
         // A last element that is a hole is read off the chain (rt_array_holes.cpp)
         // by the full algorithm below, when the chain could answer it.
-        if (arr->properties.isUndefined() &&
+        if (arr->isBare() &&
             (arr->length == 0 || arr->hasElem(arr->length - 1) || !rtArrayChainHoldsIndex(self))) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value last = arr->getElem(arr->length - 1);
@@ -139,7 +139,7 @@ extern "C" uint64_t bronze_array_shift(uint64_t env, uint64_t thisBits, uint32_t
         ArrayHeader* arr = self.asObject<ArrayHeader>();
         // Moving the block down is the specification's element-by-element walk
         // only when no hole would have read through to the chain.
-        if (arr->properties.isUndefined() && !rtArrayHolesSeeChain(self)) {
+        if (arr->isBare() && !rtArrayHolesSeeChain(self)) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value first = arr->getElem(0);
             // The hole is left behind the new head: NUMBERS survives.

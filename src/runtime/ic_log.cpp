@@ -88,7 +88,7 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Array) {
         auto* arr = reinterpret_cast<const ArrayHeader*>(hdr);
-        if (arr->properties.isObject()) return "array_shadowed_by_side_object";
+        if (!arr->isBare()) return "array_shadowed_by_own_named";
         if (!ic->cached_shape) return "ic_uninitialized";
         if (ic->isArrayMethod()) return "array_method_ic_hit_or_other";
         return "shape_mismatch_polymorphic";

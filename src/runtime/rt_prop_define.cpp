@@ -140,10 +140,10 @@ void bronze_prop_define(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, u
     }
     // An array literal's element (il.h kWriteLiteralElement) on the fresh
     // array, or a class field named by an index on an Array subclass: an own
-    // element, defined where it is with no chain asked. Only an array with no
-    // named-property box, so no integrity level can refuse it.
+    // element, defined where it is with no chain asked. Only an array at the
+    // bare array shape, so no integrity level can refuse it.
     if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
-        !objVal.asObject<ArrayHeader>()->properties.isObject()) {
+        objVal.asObject<ArrayHeader>()->isBare()) {
         const KeyInfo& ki = rtKeyInfo(keyIndex);
         if (ki.isElemIndex) {
             Rooted<Value> arr{objVal};

@@ -107,7 +107,7 @@ FieldFound lookupField(Value descVal, PropertyKey name, Value& out) {
         auto* holder = reinterpret_cast<ObjectHeader*>(hdr);
         PropertyInfo info;
         if (holder->shape != nullptr && holder->shape->lookupProperty(name, info)) {
-            if (info.accessor || !HeapKind::carriesShape(hdr->flags)) return FieldFound::Generic;
+            if (info.accessor || !HeapKind::shapeNamesPrototype(hdr->flags)) return FieldFound::Generic;
             out = holder->getSlot(info.slot);
             return FieldFound::Present;
         }
@@ -379,11 +379,11 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
         }
         case ObjectOwnKeys::Function: {
             // The three own properties that live in the HEADER rather than in
-            // the statics object, and so are invisible to the forward below:
+            // the function's shape, and so are invisible to the walk below:
             // `prototype` (10.2.4) and the `length`/`name` pair (10.2.10,
-            // 10.2.9). Answered first, because the statics object is where a
-            // `static` of the same name would be and there can be none — the
-            // write path refuses all three.
+            // 10.2.9). Answered first, because the shape is where a `static`
+            // of the same name would be and there can be none — the write
+            // path refuses all three.
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
                 const bool isProto = key == "prototype";
@@ -422,16 +422,13 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                     return out.get().rawBits();
                 }
             }
-            Value props = args[0].asObject<FunctionHeader>()->properties;
-            if (props.isUndefined() || !props.isObject()) {
-                return Value::fromUndefined().rawBits();
-            }
-            const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
-            return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
+            // Every other own property is a static, in the function's own
+            // shape: the ordinary walk below.
+            break;
         }
         case ObjectOwnKeys::Array: {
-            // Two own properties live in the header rather than in the side
-            // object: `length` (10.4.2.2: writable until `Object.freeze`,
+            // Two own properties live in the header rather than in the
+            // array's shape: `length` (10.4.2.2: writable until `Object.freeze`,
             // never enumerable or configurable) and each ELEMENT (defined by
             // CreateDataProperty, so all three attributes true until
             // `Object.seal` or `Object.freeze` takes the last two away — the
@@ -465,13 +462,9 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                     return out.get().rawBits();
                 }
             }
-            // Everything else is in the side object, an ordinary shape that
-            // answers with the ordinary walk below — through the same forward
-            // the function arm makes for its statics.
-            Value props = args[0].asObject<ArrayHeader>()->properties;
-            if (!props.isObject()) return Value::fromUndefined().rawBits();
-            const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
-            return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
+            // Everything else is in the array's own shape, which answers with
+            // the ordinary walk below — as the function arm's statics do.
+            break;
         }
         case ObjectOwnKeys::TypedArray: {
             // 10.4.5.1 [[GetOwnProperty]]: a numeric key is an element —

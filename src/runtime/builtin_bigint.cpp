@@ -281,7 +281,7 @@ Value rtBigIntConstructorObject() {
     }
 
     rtEnsureFunctionProperties(fn);
-    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{fn.get()};
     for (const NativeMethod& s : kBigIntStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
         Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};

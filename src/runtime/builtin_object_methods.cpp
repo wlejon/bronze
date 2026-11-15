@@ -54,16 +54,10 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     }
     ObjectHeader* holder = nullptr;
     HeapObjectHeader* hdr = self.get().asObject<HeapObjectHeader>();
-    if (HeapKind::carriesShape(hdr->flags)) {
+    // An array's and a function's symbol-keyed properties live beside their
+    // named ones, in their own shape.
+    if (HeapKind::holdsNamedProperties(hdr->flags)) {
         holder = reinterpret_cast<ObjectHeader*>(hdr);
-    } else if (hdr->flags == HeapKind::Function) {
-        Value props = self.get().asObject<FunctionHeader>()->properties;
-        if (props.isObject()) holder = props.asObject<ObjectHeader>();
-    } else if (hdr->flags == HeapKind::Array) {
-        // An array's symbol-keyed properties live beside its named ones, in
-        // the side object (rt_prop_write.cpp's symbol arm puts them there).
-        Value props = self.get().asObject<ArrayHeader>()->properties;
-        if (props.isObject()) holder = props.asObject<ObjectHeader>();
     }
     if (!holder || !holder->shape ||
         (!holder->shape->isDictionary() && !holder->shape->has_symbol_keys)) {

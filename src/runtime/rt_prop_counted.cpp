@@ -12,7 +12,6 @@
 namespace {
 
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-constexpr uint32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr uint64_t kOwnDataLimit = uint64_t{1} << 32;
 
 uint64_t load64(const uint8_t* p) {
@@ -27,9 +26,9 @@ extern "C" uint64_t bronze_prop_poly_scan(uint64_t objBits, uint64_t* site, uint
     if (counter) ++*counter;
     if ((objBits >> 48) != BRONZE_ABI_TAG_OBJECT) return 0;
     const auto* obj = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(objBits & kPayloadMask));
-    uint32_t headerLow;
-    std::memcpy(&headerLow, obj, sizeof headerLow);
-    if (headerLow != kPlainHeaderLow) return 0;
+    // No kind test: every object kind carries its shape word at the same
+    // offset (heap.h carriesShape), and a kind that does not carry one keeps
+    // a word there no entry ever names, so the shape compare is the guard.
     const uint64_t shape = load64(obj + BRONZE_ABI_OBJ_SHAPE_OFFSET);
     const auto* entries = reinterpret_cast<const uint8_t*>(site);
     for (uint32_t way = 1; way < BRONZE_ABI_IC_WAYS; ++way) {

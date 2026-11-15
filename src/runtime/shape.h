@@ -215,6 +215,14 @@ public:
     // `Object.getOwnPropertySymbols` can return `[]` immediately on symbol-free
     // non-dictionary objects without walking the chain or allocating a key list.
     bool has_symbol_keys{false};
+    // A SENTINEL root (createSentinel): the shape word of a kind whose
+    // properties no slot can answer — a proxy, a module namespace. Every
+    // cache fill refuses it (InlineCacheSite's install points, the
+    // megamorphic table, the computed-read cache), so the word at offset 8 of
+    // such an object matches no entry, and an inline cache hit needs no kind
+    // test to be sound. Never given a property: those kinds answer every key
+    // from their own dispatch before any shape is read.
+    bool uncacheable{false};
 
     // The slot-number split (bronze_abi.h BRONZE_ABI_OBJ_OVERFLOW_SLOT): a slot
     // below it is an inline Value, slot kOverflowSlot + i is Value i of the
@@ -289,11 +297,31 @@ public:
     static Shape* createRoot(NonMovingArena& arena, Value proto = Value::fromUndefined(),
                              uint32_t inlineSlots = kDefaultInlineSlots);
 
+    // A root whose objects have NO inline Values: every property it numbers
+    // is an overflow slot (placeSlot puts slot 0 at the split). The shape of
+    // an ARRAY and of a FUNCTION (array.h, fn.h), whose kind-specific fields
+    // follow the object prefix where a plain object's inline slots would be.
+    // Its `bare_header` is 0, which no header word is, so generated code's
+    // inline adds and `isBarePlain` never take an object at such a shape.
+    static Shape* createBareRoot(NonMovingArena& arena, Value proto);
+
+    // A per-kind SENTINEL (`uncacheable` above): a bare root over null that
+    // no cache records. One per kind and thread (rt_state.cpp).
+    static Shape* createSentinel(NonMovingArena& arena);
+
     // Give this (fresh, childless) shape `inlineSlots` inline Values.
     void setInlineSlots(uint32_t inlineSlots) noexcept {
         const uint32_t n = clampInlineSlots(inlineSlots);
         inline_slots = static_cast<uint8_t>(n);
         bare_header = bareHeaderFor(n);
+    }
+    // Give this (fresh, childless) shape the storage `from` describes — the
+    // same inline Values, bare ones (0) included, which `setInlineSlots`
+    // would clamp up: an object keeps its storage when it moves to a
+    // dictionary or a private root.
+    void copyInlineSlots(const Shape* from) noexcept {
+        inline_slots = from->inline_slots;
+        bare_header = from->bare_header;
     }
 
     // Mark `obj` as somebody's prototype, the one entry every route to a

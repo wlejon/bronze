@@ -187,7 +187,8 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
     return result;
 }
 
-// `is.plain_array` (il_op.h): an Array whose props word holds no object.
+// `is.plain_array` (il_op.h): an Array still at the thread's bare array shape
+// (no named property, no subclass prototype, no integrity level).
 Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
@@ -207,8 +208,9 @@ Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
     b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
 
     b.position_at_end(bb_arr);
-    Value* props = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    b.build_br(bb_merge, {b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits))});
+    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    Value* bare = tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF);
+    b.build_br(bb_merge, {b.build_eq(shape, bare)});
 
     b.position_at_end(bb_merge);
     return result;

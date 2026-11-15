@@ -40,10 +40,13 @@
 namespace bronze {
 
 ProxyHeader* ProxyHeader::create(Heap& heap, Rooted<Value>& target, Rooted<Value>& handler) {
+    Shape* sentinel = runtime::rtProxyShape();
     HeapObjectHeader* raw =
         heap.allocate(sizeof(ProxyHeader) - sizeof(HeapObjectHeader), Tag::Object);
     auto* proxy = reinterpret_cast<ProxyHeader*>(raw);
     proxy->header.flags = kFlags;
+    proxy->shape = sentinel;
+    proxy->overflow = Value::fromUndefined();
     proxy->target = target.get();
     proxy->handler = handler.get();
     // 10.5.14 ProxyCreate: [[Call]] is installed on the proxy if and only if

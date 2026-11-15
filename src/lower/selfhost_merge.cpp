@@ -15,10 +15,10 @@
 //     C(r): ...the rest of B...
 //
 // THE INVARIANT that makes the copy unobservable. `is.plain_array` holds only
-// for an Array with no named-property box, and such an array's [[Get]] of
+// for an Array at the bare array shape, and such an array's [[Get]] of
 // "map" answers the intrinsic Array.prototype.map: nothing can shadow it (an
 // own property, a subclass's or a replaced prototype, an integrity level all
-// give the array a box) and nothing can replace it (Array.prototype refuses
+// move the array off that shape) and nothing can replace it (Array.prototype refuses
 // every write and define, rt_prop_write.cpp). The intrinsic is the prebuilt
 // object's function compiled from the same library text by the same lowering
 // (src/selfhost/selfhost_library.h), so D runs the very algorithm S would have

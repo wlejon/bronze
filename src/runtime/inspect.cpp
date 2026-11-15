@@ -334,8 +334,8 @@ private:
         // elements as `key: value`, which is node's format for an array that
         // carries named properties. Ordinary arrays have none and are
         // unchanged.
-        if (arr->properties.isObject()) {
-            auto* props = arr->properties.asObject<ObjectHeader>();
+        if (!arr->isBare()) {
+            auto* props = arr->object();
             const PropertyKeyList keys =
                 props->shape ? props->shape->ownKeysInInsertionOrder()
                              : PropertyKeyList{};

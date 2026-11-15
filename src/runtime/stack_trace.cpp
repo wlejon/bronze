@@ -248,9 +248,7 @@ bool lookupProp(ObjectHeader* obj, std::string_view keyStr, Value& out) {
 uint32_t getStackTraceLimit() {
     Value ctor = rtErrorConstructor("Error");
     if (!ctor.isObject() || ctor.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return 10;
-    FunctionHeader* fn = ctor.asObject<FunctionHeader>();
-    if (!fn->properties.isObject()) return 10;
-    ObjectHeader* props = fn->properties.asObject<ObjectHeader>();
+    ObjectHeader* props = ctor.asObject<FunctionHeader>()->object();
     if (!props->shape) return 10;
     for (PropertyKey k : props->shape->ownKeysInInsertionOrder()) {
         if (k.isString() && keyIs(k.string(), "stackTraceLimit")) {

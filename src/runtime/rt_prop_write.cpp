@@ -174,7 +174,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // set stub counts comes here and skips the table, so MRU insertion shifts
     // the active shape into way 0 (bronze_abi_layout.h).
     const Shape* missShape = nullptr;
-    if (site && HeapKind::carriesShape(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
+    if (site && HeapKind::shapeNamesPrototype(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
         const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
         ic = site->findForSet(shape);
         if (!ic) {
@@ -195,7 +195,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             }
         }
     }
-    if (ic && ic->cached_shape && HeapKind::carriesShape(hdr->flags) &&
+    if (ic && ic->cached_shape && HeapKind::shapeNamesPrototype(hdr->flags) &&
         hdr->flags != TypedArrayHeader::kFlags) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
@@ -340,10 +340,9 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             Rooted<Value> fnRoot{objVal};
             Rooted<Value> val{valVal};
             rtPrepareFunctionOwnWrite(fnRoot);
-            Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
             SetRefusal refusal = SetRefusal::None;
-            propsRoot.get().asObject<ObjectHeader>()->setProp(
+            fnRoot.get().asObject<ObjectHeader>()->setProp(
                 rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
                 /*defineOwn=*/false, fnRoot.slot_ptr(), &refusal);
             rtReportSetRefusal(refusal, strict, keyStr);
@@ -413,7 +412,7 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
     }
     // A plain object for an instance element, the base CONSTRUCTOR for a
     // static one (`static m() { super.k = v; }`) — the OrdinarySet below
-    // steps onto a function's statics box itself.
+    // steps onto a function's statics itself.
     Value protoVal(protoBits);
     if (protoVal.isNull() || protoVal.isUndefined()) {
         rtThrowTypeError("Cannot set properties of " +
@@ -422,7 +421,7 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
         return;
     }
     if (!protoVal.isObject() ||
-        (!HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags) &&
+        (!HeapKind::shapeNamesPrototype(protoVal.asObject<HeapObjectHeader>()->flags) &&
          protoVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function)) {
         fatal("internal: super property write on a base whose prototype is not an object");
     }
@@ -460,7 +459,7 @@ void bronze_super_elem_set(uint64_t protoBits, uint64_t keyBits, uint64_t thisBi
 }
 
 // A class method, installed on a prototype (or, for a `static`, on the
-// constructor's own-property object). Not `bronze_prop_set`: ECMA-262 15.7.14
+// constructor itself). Not `bronze_prop_set`: ECMA-262 15.7.14
 // defines a method with `enumerable: false`, and an ordinary assignment
 // creates an enumerable property. Its own helper rather than a flag on the
 // setter because it has no inline cache — a class body runs once, so the site
@@ -484,9 +483,8 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
     if (hdr->flags == HeapKind::Function) {  // a `static` member: an own property of the function
         Rooted<Value> fnRoot{objVal};
         rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+        fnRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                           /*ic=*/nullptr,
                                                           /*enumerable=*/false,
                                                           /*defineOwn=*/true);
@@ -568,8 +566,7 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
         rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+        fnRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                         /*ic=*/nullptr, /*enumerable=*/false,
                                                         /*defineOwn=*/true);
         return;
@@ -614,8 +611,7 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
     if (hdr->flags == HeapKind::Function) {  // `static get k()`: an own property of the function
         Rooted<Value> fnRoot{objVal};
         rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
-        ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), fnRoot, key, getter, setter,
                                      enumerable);
         return;
     }
@@ -653,8 +649,7 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
         rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
-        ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), fnRoot, key, getter, setter,
                                      enumerable);
         return;
     }

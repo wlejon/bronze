@@ -189,7 +189,7 @@ Value slotValue(Value plain, uint32_t slot) noexcept {
 Value prototypeOf(Value obj) noexcept {
     if (!obj.isObject()) return Value::fromNull();
     auto* hdr = obj.asObject<HeapObjectHeader>();
-    if (!HeapKind::carriesShape(hdr->flags)) return Value::fromNull();
+    if (!HeapKind::shapeNamesPrototype(hdr->flags)) return Value::fromNull();
     const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
     if (!shape) return Value::fromNull();
     Value p = shape->prototypeValue();

@@ -36,7 +36,7 @@ ObjectHeader* requirePlainObject(Value v, const char* who) {
     // plain object has (typed_array.h), so a host's named expando on a view
     // is an ordinary own property of it — the same write a program's
     // `view.foo = 1` makes.
-    if (!v.isObject() || !HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
+    if (!v.isObject() || !HeapKind::shapeNamesPrototype(v.asObject<HeapObjectHeader>()->flags)) {
         fatal((std::string("embed: ") + who + " needs a plain object receiver").c_str());
     }
     return v.asObject<ObjectHeader>();
@@ -100,8 +100,8 @@ Value defineProperty(Value obj, std::string_view key, Value v, PropertyAttribute
     // here every raw pointer is re-derived through a root.
     Rooted<Value> keyRoot{runtime::rtMakeString(key)};
 
-    // A function receiver: the definition lands on the function's own-property
-    // object, exactly where bronze_method_def puts a class `static` — which is
+    // A function receiver: the definition lands in the function's own shape,
+    // exactly where bronze_method_def puts a class `static` — which is
     // what `URL.createObjectURL` from the host is. The three keys that are NOT
     // in that table are refused by name rather than silently shadowed there:
     // `name` and `length` are non-writable own properties the read path
@@ -115,8 +115,7 @@ Value defineProperty(Value obj, std::string_view key, Value v, PropertyAttribute
                       .c_str());
         }
         runtime::rtEnsureFunctionProperties(self);
-        Rooted<Value> propsRoot{self.get().asObject<FunctionHeader>()->properties};
-        defineOn(propsRoot, keyRoot, val, attrs, key);
+        defineOn(self, keyRoot, val, attrs, key);
         return self.get();
     }
 
@@ -125,9 +124,7 @@ Value defineProperty(Value obj, std::string_view key, Value v, PropertyAttribute
         if (key == "length") {
             fatal("embed: setProperty cannot define `length` on an array");
         }
-        ArrayHeader::ensureProperties(runtime::rtHeap(), runtime::rtArena(), self);
-        Rooted<Value> propsRoot{self.get().asObject<ArrayHeader>()->properties};
-        defineOn(propsRoot, keyRoot, val, attrs, key);
+        defineOn(self, keyRoot, val, attrs, key);
         return self.get();
     }
 

@@ -148,32 +148,41 @@ void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string
 // Its own file for the same reason the primitive one is: it is one receiver
 // kind, and it is the kind whose answer comes from four places in a fixed
 // order rather than from a shape and a slot. `site` is the read's inline-cache
-// site, which this may warm when the answer turns out to be an own data
-// property of the function's statics object — the one step of that order that
-// IS a shape and a slot.
+// site, which this may warm when the answer turns out to be one of the
+// function's statics — the one step of that order that IS a shape and a slot.
 uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                           struct InlineCacheSite* site);
 uint64_t rtFunctionMember(Value objVal, StringHeader* keyHeader,
                           struct InlineCacheSite* site);
 
-// May a shape-keyed entry describe this (function receiver, statics box) pair?
-// The refusals — intrinsic constructor, dictionary box — and why each
+// May a shape-keyed entry describe this function receiver's statics (`self` is
+// the function's own object prefix, FunctionHeader::object())? The refusals —
+// intrinsic constructor, dictionary shape — and why each
 // is a correctness condition are stated once, at the definition in
 // rt_prop_function.cpp. Asked by the read fill there and by the method-call
 // latch in rt_method_call.cpp; an ACCESSOR property is each caller's own gate,
 // since only the caller knows whether what it found is one.
-bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept;
+bool rtStaticsCacheable(Value fnVal, const ObjectHeader* self) noexcept;
+
+// The holder `depth` links up a function's statics chain: its shape root, which
+// `extends` sets to the base class, and on from there. A link may be a function
+// or an ordinary object (one a program put there with setPrototypeOf); any
+// other kind ends the chain (null). `crossedDictionary`, when given, is set and
+// null returned if a link past the receiver is a dictionary — an inline-cache
+// entry may not walk through one (ObjectHeader::cachedProtoHolder).
+ObjectHeader* rtStaticsAncestor(ObjectHeader* fnObj, uint32_t depth,
+                                bool* crossedDictionary = nullptr);
 
 // Whether the function arms of the read paths (the read stub's, and
 // rtFunctionCachedMember) serve this receiver: a function compiled from
 // source (BRONZE_ABI_FN_FLAG_NATIVE clear, so no intrinsic constructor, bound
-// function or host function, whose answers can come from ahead of the box)
+// function or host function, whose answers can come from ahead of its statics)
 // that has a `prototype` property (BRONZE_ABI_FN_FLAG_PROTOTYPE, so a write or
-// define of `prototype` goes to its slot and no box of it holds that key).
+// define of `prototype` goes to its slot and no statics shape holds that key).
 bool rtStaticsArmServes(Value fnVal) noexcept;
 
 // A function receiver's read answered from the site's ways against its
-// statics box's shape (InlineCache::describesForFunction), as the read stub's
+// own shape (InlineCache::describesForFunction), as the read stub's
 // function arm answers it; false when no way answers. May run a getter.
 bool rtFunctionCachedMember(Value fnVal, struct InlineCacheSite* site, uint32_t keyIndex,
                             uint64_t& out);
@@ -232,10 +241,10 @@ Value rtElemKeyAsString(Value idxVal);
 // step 5 asks it; nothing else can tell the two receivers apart.
 bool rtIsArgumentsObject(Value v);
 
-// The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
-// for a function — the side object its statics live in. Null for every receiver
-// with no shape, which the two directions report differently and so is not
-// decided here.
+// The object a receiver keeps SYMBOL-keyed properties on: itself, for every
+// kind whose shape lists its named properties (HeapKind::holdsNamedProperties).
+// Null for every other receiver, which the two directions report differently
+// and so is not decided here.
 struct ObjectHeader* rtSymbolKeyHolder(Value objVal);
 
 // ---- what a symbol key names, for the receivers with no prototype object

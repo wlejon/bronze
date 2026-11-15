@@ -412,7 +412,7 @@ typedef struct bronze_code_range {
  *    then 0, no size fits, and the fast path is dormant.
  *
  *  - plain_shape: the plain object root shape pointer for inline object
- *    creation.
+ *    creation; array_shape the same for an inline array.
  */
 
 #include "abi/bronze_abi_tls.h"

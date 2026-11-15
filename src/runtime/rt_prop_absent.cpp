@@ -48,7 +48,7 @@ void rtInstallAbsentEntry(InlineCacheSite* site, Value objVal, const std::string
     if (censusFillsSuppressed()) return;
     if (!objVal.isObject()) return;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
-    if (!HeapKind::carriesShape(hdr->flags)) return;
+    if (!HeapKind::shapeNamesPrototype(hdr->flags)) return;
 
     uint32_t index = 0;
     if (keyStr == "length" || rtKeyAsIndex(keyStr, index)) return;

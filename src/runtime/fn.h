@@ -16,8 +16,34 @@ namespace bronze {
 // can never leak into it — see the header for the sret-shift rationale.
 using NativeFunctionCode = bronze_fn_code;
 
+class Shape;
+struct ObjectHeader;
+
+namespace runtime {
+// The shape every function starts at: a bare root (shape.h createBareRoot)
+// over null, one per thread (rt_state.cpp).
+Shape* rtFunctionShape();
+}  // namespace runtime
+
+// A function object. It begins with the object prefix every object value has
+// (heap.h carriesShape) — the header, the shape word and the overflow block —
+// and its own fields follow where a plain object's inline slots would be.
 struct FunctionHeader {
     HeapObjectHeader header;
+    // This function's NAMED own properties — what `C.staticMethod = ...` and a
+    // class's `static` members are stored in — exactly as a plain object's
+    // are, in a BARE shape (no inline Values) and the overflow block. The
+    // header answers the rest of its own properties: `prototype` (below,
+    // materialised on demand), `name` and `length`.
+    //
+    // The shape's root is NOT the function's [[Prototype]] (heap.h
+    // shapeNamesPrototype; that is `parent` below): it names the chain its
+    // statics inherit through — null for an ordinary function, the BASE
+    // constructor for a class that `extends` one, which is what makes a static
+    // member of a base class visible on a derived one (rt_prop_function.cpp
+    // owns the order the two are asked in).
+    Shape* shape{nullptr};
+    HeapValue overflow;
     NativeFunctionCode code{nullptr};
     // The closure's captured environment, or undefined. A Value, not a raw
     // pointer, so the generic GC payload scan forwards it — as a `void*` it was
@@ -25,11 +51,11 @@ struct FunctionHeader {
     HeapValue env_record;
     // The flags word sits beside `code` and `env_record` on purpose: a direct
     // entry reads the three together (the word for its test, then the code and
-    // the environment), and an object of this header starts 8-aligned, so the
-    // first 32 bytes share the header's cache line five times in eight. At
-    // offset 64, after the other fields, it was always a second line, which a
-    // call of a cold closure (one closure per object, as a per-instance
-    // callback is) paid for on every call.
+    // the environment), and an object of this header starts 8-aligned, so
+    // the three words (24..48) share the header's cache line more often than
+    // not. After the other fields it was always a second line, which a call
+    // of a cold closure (one closure per object, as a per-instance callback
+    // is) paid for on every call.
     //
     // The BRONZE_ABI_FN_FLAG_* byte the compiler handed `create` — what the
     // SOURCE FORM decided about this object, which the header could not
@@ -82,17 +108,17 @@ struct FunctionHeader {
     // neighbours. The word is still scanned as a Value, which is why the
     // padding that remains is still written (create() zeroes all of it).
     bool prototype_readonly : 1 {false};
-    // Lockdown hardened this function while it had no statics box
-    // (integrity.cpp, rtHarden): it is frozen, and stays without a box so the
-    // boxless paths keep serving it (`f.call`, `f.length`; the method cache's
-    // BOX guard). The box is made frozen and hardened the first time anything
-    // asks for one (rtEnsureFunctionProperties), which is where a write to
-    // the function would go, so the write meets a frozen object. Shares
-    // prototype_readonly's byte.
-    bool harden_on_box : 1 {false};
+    // Lockdown hardened this function while it had no own statics
+    // (integrity.cpp, rtHarden): it is frozen, and stays at its shared shape
+    // so the statics-less paths keep serving it (`f.call`, `f.length`) and its
+    // reads stay cacheable without a private dictionary per intrinsic. The
+    // function is frozen and hardened for real the first time anything
+    // prepares it for an own write (rtEnsureFunctionProperties), so the write
+    // meets a frozen object. Shares prototype_readonly's byte.
+    bool harden_on_write : 1 {false};
     // Set once a GLOBAL CONSTRUCTOR's table statics (`Array.isArray`,
-    // `String.fromCharCode`) have been written into its statics box, and from
-    // then on the box is where they live: `rtGlobalConstructorMember` stops
+    // `String.fromCharCode`) have been written into its own statics, and from
+    // then on that is where they live: `rtGlobalConstructorMember` stops
     // answering them from the C table, so an assignment, a delete or a
     // defineProperty the program made is what a read sees. The table stays the
     // answer for every constructor the program never touched, which is all of
@@ -121,12 +147,6 @@ struct FunctionHeader {
     // never decorated should not pay for the object, and closures are created
     // in loops.
     HeapValue prototype;
-    // This function's OWN properties - what `C.staticMethod =...` and a class's
-    // `static` members are stored in - or undefined until one is written. An
-    // ordinary object, so it costs nothing until used and inherits through the
-    // shape's prototype, which is what makes a static member of a base class
-    // visible on a derived one.
-    HeapValue properties;
     // Root shape for objects `new`ed from this function; its prototype is
     // the object above. Non-moving, created with it, and reset if
     // `.prototype` is reassigned.
@@ -175,8 +195,9 @@ struct FunctionHeader {
     // derive it: 15.7.14 step 6 makes the BASE CONSTRUCTOR the derived class's
     // [[Prototype]], and `class D extends A` is the only syntax that produces
     // a function whose prototype is not its kind's default. Static inheritance
-    // itself does not need this — `bronze_class_extends` links the two
-    // statics OBJECTS, which is what makes `D.staticOfA()` resolve — so what
+    // itself does not need this — `bronze_class_extends` roots D's statics
+    // chain at A (the shape above), which is what makes `D.staticOfA()`
+    // resolve — so what
     // was missing was only the answer to `Object.getPrototypeOf(D)`, which
     // reported %Function.prototype% for every class in the program.
     //
@@ -218,6 +239,14 @@ struct FunctionHeader {
     }
 
     Value call(Value thisArg, uint32_t argc, Value* argv) const;
+
+    // The function as the object its prefix makes it, for the shape machinery.
+    ObjectHeader* object() noexcept { return reinterpret_cast<ObjectHeader*>(this); }
+    const ObjectHeader* object() const noexcept { return reinterpret_cast<const ObjectHeader*>(this); }
+    // Whether the function holds any named own property (a static) in its
+    // shape: a key on the shape chain, or a dictionary. A derived class whose
+    // statics chain is rooted at its base holds none until it is given one.
+    bool hasOwnStatics() const noexcept;
 };
 
 // The Math direct-dispatch guard in generated code loads the code pointer to
@@ -226,12 +255,14 @@ struct FunctionHeader {
 static_assert(offsetof(FunctionHeader, code) == BRONZE_ABI_FN_CODE_OFFSET);
 static_assert(HeapKind::Function == BRONZE_ABI_OBJ_FLAGS_FUNCTION);
 
-// The fields the inline `new` fast path reads (llvm_construct.cpp): the
-// closure environment and arity for the direct code call, the instance shape
-// for the allocation, and the vet byte that gates the whole path.
+// The object prefix, shared with every object value.
+static_assert(offsetof(FunctionHeader, shape) == BRONZE_ABI_OBJ_SHAPE_OFFSET);
+static_assert(offsetof(FunctionHeader, overflow) == BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+// The fields the inline `new` fast path reads: the closure environment and
+// arity for the direct code call, the instance shape for the allocation, and
+// the vet byte that gates the whole path.
 static_assert(offsetof(FunctionHeader, env_record) == BRONZE_ABI_FN_ENV_OFFSET);
 static_assert(offsetof(FunctionHeader, prototype) == BRONZE_ABI_FN_PROTOTYPE_OFFSET);
-static_assert(offsetof(FunctionHeader, properties) == BRONZE_ABI_FN_PROPERTIES_OFFSET);
 static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
 static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
 static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);
@@ -241,12 +272,12 @@ static_assert(offsetof(FunctionHeader, realm_slot_bytes) ==
               BRONZE_ABI_FN_FLAGS_WORD_OFFSET + BRONZE_ABI_FN_REALM_SHIFT / 8);
 static_assert(sizeof(FunctionHeader::realm_slot_bytes) * 8 == 64 - BRONZE_ABI_FN_REALM_SHIFT);
 // A direct entry's loads (the flags word, `code`, `env_record`) stay inside the
-// first 32 bytes, so with 8-byte alignment they share the header's cache line
-// five times in eight; past 64 they never did.
-static_assert(BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 8 <= 32 && BRONZE_ABI_FN_ENV_OFFSET + 8 <= 32);
-// The inline `Array.isArray` site reads this byte (codegen-brass
-// il2mir/il_is_array.cpp, kStaticsMaterializedOffset): a constructor-static
-// method-cache entry latched before the statics moved to the box carries no
+// first 48 bytes, right after the object prefix, so with 8-byte alignment they
+// share the header's cache line more often than not.
+static_assert(BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 8 <= 48 && BRONZE_ABI_FN_ENV_OFFSET + 8 <= 48);
+static_assert(sizeof(FunctionHeader) == BRONZE_ABI_FN_HEADER_BYTES);
+// The method cache reads this byte (rt_method_call.cpp): a constructor-static
+// method-cache entry latched before the statics were written down carries no
 // epoch and answers only while it is still zero, as methodIcHit's does.
 static_assert(offsetof(FunctionHeader, statics_materialized) == BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 4);
 

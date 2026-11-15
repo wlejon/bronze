@@ -54,8 +54,8 @@ uint64_t refuseInextensiblePrototype() {
 bool rtShapelessPrototypeOf(Value obj, Value& out) {
     if (!obj.isObject()) return false;
     const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
-    // A SUBCLASS instance stores its [[Prototype]] after all — on the box
-    // holding its ordinary half (runtime/native_base.h) — so it is asked
+    // A SUBCLASS instance stores its [[Prototype]] after all — at its shape's
+    // root (runtime/native_base.h) — so it is asked
     // FIRST, ahead of the fixed intrinsic answer below. Without this line
     // `Object.getPrototypeOf(new (class extends Array)())` would report
     // %Array.prototype% and skip the subclass's, which is the one link the
@@ -203,19 +203,15 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
 
             self.get().asObject<FunctionHeader>()->parent = proto.get();
 
-            // Link statics/properties prototype chain so derived constructor inherits base statics
+            // The statics chain follows, so the function inherits the new
+            // prototype's statics (a base constructor's) or properties: its
+            // shape is rerooted there, over a bare root as every function's
+            // is. Through setPrototype, which moves the epoch: the function
+            // may itself be a link of another's statics chain.
             rtEnsureFunctionProperties(self);
-            Rooted<Value> selfProps{self.get().asObject<FunctionHeader>()->properties};
-
-            if (proto.get().isObject() &&
-                proto.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-                rtEnsureFunctionProperties(proto);
-                Rooted<Value> protoProps{proto.get().asObject<FunctionHeader>()->properties};
-                Shape* newRoot = rtRootShapeForPrototype(protoProps.get());
-                ObjectHeader::setPrototype(rtArena(), selfProps, newRoot);
-            } else if (proto.get().isObject() || proto.get().isNull()) {
-                Shape* newRoot = rtRootShapeForPrototype(proto.get());
-                ObjectHeader::setPrototype(rtArena(), selfProps, newRoot);
+            if (proto.get().isObject() || proto.get().isNull()) {
+                Shape* newRoot = rtBareRootShapeForPrototype(proto.get());
+                ObjectHeader::setPrototype(rtArena(), self, newRoot);
             }
             return true;
         }
@@ -238,20 +234,19 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
 
             if (proto.get().isObject()) {
                 auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
-                if (HeapKind::carriesShape(protoHdr->flags)) {
+                if (HeapKind::shapeNamesPrototype(protoHdr->flags)) {
                     Shape::markObjectAsPrototype(rtArena(),
                                                  reinterpret_cast<ObjectHeader*>(protoHdr));
                 }
             }
 
-            Shape* newRoot = rtRootShapeForPrototype(proto.get());
-            if (!self.get().asObject<ArrayHeader>()->properties.isObject()) {
-                ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), newRoot);
-                box->header.flags = HeapKind::Plain;
-                self.get().asObject<ArrayHeader>()->properties = Value::fromObject(box);
+            // The array's shape is rerooted at the new prototype: a bare
+            // array (no named property) just takes the bare root over it.
+            Shape* newRoot = rtBareRootShapeForPrototype(proto.get());
+            if (self.get().asObject<ArrayHeader>()->isBare()) {
+                self.get().asObject<ArrayHeader>()->shape = newRoot;
             } else {
-                Rooted<Value> props{self.get().asObject<ArrayHeader>()->properties};
-                ObjectHeader::setPrototype(rtArena(), props, newRoot);
+                ObjectHeader::setPrototype(rtArena(), self, newRoot);
             }
             self.get().asObject<ArrayHeader>()->reserved |= ArrayHeader::kHasCustomPrototype;
             return true;

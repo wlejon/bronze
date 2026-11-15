@@ -49,6 +49,8 @@ InlineCache* rtMegaPropProbe(const Shape* shape, uint32_t keyIndex) noexcept {
 }
 
 void rtMegaPropFill(const InlineCacheSite* site, const Shape* shape, uint32_t keyIndex) noexcept {
+    // A sentinel shape (a proxy's, a namespace's) answers from no slot.
+    if (shape->uncacheable) return;
     for (const InlineCache& way : site->ways) {
         if (way.isRealShape() && way.cached_shape == shape) {
             record(way, shape, keyIndex);
@@ -58,6 +60,7 @@ void rtMegaPropFill(const InlineCacheSite* site, const Shape* shape, uint32_t ke
 }
 
 void rtMegaPropFillOwnSlot(Shape* shape, uint32_t keyIndex, uint32_t slot) noexcept {
+    if (shape->uncacheable) return;
     InlineCache way;
     way.fillLocal(shape, slot, /*depth=*/0);
     record(way, shape, keyIndex);

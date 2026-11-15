@@ -3,8 +3,8 @@
 //
 // The seam is the key, not the receiver. rt_prop.cpp dispatches a STRING key on
 // the receiver's kind, because each kind stores named properties somewhere
-// different. A symbol key stores the same way everywhere — one plain object,
-// found by `rtSymbolKeyHolder` — so the interesting question moves to the other
+// different. A symbol key stores the same way everywhere — the receiver's own
+// shape, found by `rtSymbolKeyHolder` — so the interesting question moves to the other
 // end: `@@toStringTag`, `@@species`, `@@iterator`, `@@hasInstance` and the five
 // string/regexp keys of 22.2.6 are properties of intrinsic PROTOTYPE OBJECTS
 // that bronze does not build, so for an array or a RegExp there is no object
@@ -123,7 +123,10 @@ static bool symbolKeyOnChain(Value objVal, SymbolHeader* sym) {
     for (uint32_t depth = 0; holder && depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
         PropertyInfo info;
         if (holder->shape && holder->shape->lookupProperty(key, info)) return true;
-        holder = holder->protoAncestor(1);
+        // A function's statics chain links base classes; anything else walks
+        // its shape's prototype links.
+        holder = holder->header.flags == HeapKind::Function ? rtStaticsAncestor(holder, 1)
+                                                            : holder->protoAncestor(1);
     }
     return false;
 }
@@ -175,18 +178,17 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         return Value::fromUndefined();
     }
     if (key.get().asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
-        // 20.2.3.6 is an own property of %Function.prototype%'s statics box
-        // (builtin_function.cpp), which a function's own box chain does not
-        // reach — the chain `extends` links runs through base classes'
-        // boxes to `Object.prototype`. So a function receiver reads it from
-        // that box here, after a `static [Symbol.hasInstance]` anywhere on
+        // 20.2.3.6 is one of %Function.prototype%'s own statics
+        // (builtin_function.cpp), which a function's own statics chain does
+        // not reach — the chain `extends` links runs through base classes
+        // only. So a function receiver reads it from %Function.prototype%
+        // here, after a `static [Symbol.hasInstance]` anywhere on
         // its own chain has had the ordinary walk's say.
         if (obj.get().isObject() &&
             obj.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
             !symbolKeyOnChain(obj.get(), rtSymbolHasInstance())) {
             handled = true;
-            Rooted<Value> fpBox{
-                rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+            Rooted<Value> fpBox{rtFunctionPrototypeObject()};
             return fpBox.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
                                                                  obj.slot_ptr());
         }
@@ -224,21 +226,12 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
     }
 }
 
-// The plain object a receiver keeps SYMBOL-keyed properties on: itself (a
-// plain object, or one of the shape-carrying byte-store kinds), or — for a
-// function / array — the side object its properties live in.
+// The object a receiver keeps SYMBOL-keyed properties on: itself, for every
+// kind whose own shape lists its named properties (HeapKind::holdsNamedProperties).
 ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     if (!objVal.isObject()) return nullptr;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (HeapKind::carriesShape(hdr->flags)) return reinterpret_cast<ObjectHeader*>(hdr);
-    if (hdr->flags == HeapKind::Function) {
-        Value props = objVal.asObject<FunctionHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    if (hdr->flags == HeapKind::Array) {
-        Value props = objVal.asObject<ArrayHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
+    if (HeapKind::holdsNamedProperties(hdr->flags)) return reinterpret_cast<ObjectHeader*>(hdr);
     return nullptr;
 }
 

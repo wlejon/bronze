@@ -180,9 +180,10 @@ public:
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 
-    // A plain object's payload and shape word, and whether it is one; a
-    // non-object reads a mapped block whose words refuse every way.
-    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
+    // A value's object payload and shape word (every object kind has one),
+    // and whether it is an object at all; a non-object reads its shape word
+    // off a mapped block, and `is_object` false refuses every way.
+    void receiver_shape(Builder& b, Value* obj, Value*& is_object, Value*& ptr, Value*& shape);
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
@@ -200,10 +201,10 @@ private:
     Value* way0_shape(Builder& b, const IcSite& site);
     Value* way0_slot_word(Builder& b, const IcSite& site);
     // Monomorphic way-0 guard on a pre-computed receiver shape: checks that
-    // `plain` holds, `shape` matches way 0 of `site`, and its slot word is an
+    // `is_object` holds, `shape` matches way 0 of `site`, and its slot word is an
     // own data slot. A write passes `number_store`, its value is a Number,
     // and then also hits a double slot's entry (whose slot word it masks).
-    void emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
+    void emit_mono_slot_guard(Builder& b, Value* shape, Value* is_object, const IcSite& site,
                               Value*& hit, Value*& slot_word, Value* number_store = nullptr);
 
     SpecSiteEmitter* spec_ = nullptr;

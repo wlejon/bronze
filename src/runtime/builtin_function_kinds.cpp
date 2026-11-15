@@ -227,13 +227,13 @@ bool rtFunctionKindInheritedMember(Rooted<Value>& obj, StringHeader* keyHeader,
         out = rtMakeString("");
         return true;
     }
-    // 20.2.3's members live in %Function.prototype%'s own property box, the
-    // one a function receiver reaches through rt_prop_function.cpp. `call`,
+    // 20.2.3's members are %Function.prototype%'s own statics, which a
+    // function receiver reaches through rt_prop_function.cpp. `call`,
     // `apply`, `bind` and `toString` are what land here; the receiver stays
     // this object, so `GeneratorFunction.prototype.toString()` is 20.2.3.5's
     // step-1 TypeError rather than a source text.
-    Rooted<Value> fpBox{rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
-    if (fpBox.get().isObject()) {
+    Rooted<Value> fpBox{rtFunctionPrototypeObject()};
+    {
         ObjectHeader* fpObj = fpBox.get().asObject<ObjectHeader>();
         PropertyInfo inherited;
         if (fpObj->shape && fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader),

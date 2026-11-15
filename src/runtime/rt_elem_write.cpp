@@ -183,7 +183,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                 // answer (object.h). So may an append at `length`: hazard clear,
                 // extensible, in block = setElem's arm (branch_on_array_store).
                 const bool clear = rtTls()->array_index_hazard == 0;
-                if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject() &&
+                if (idx < arr->length && idx < arr->capacity && arr->isBare() &&
                     (clear || !arr->elementsKeepingNumbers()[idx].isHole())) {
                     // In bounds, so NUMBERS survives a Number (runtime/array.h).
                     if (valBits > kNumberMaxBits) arr->forgetNumbers();
@@ -191,7 +191,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                     return;
                 }
                 if (clear && idx == arr->length && arr->head_offset + idx < arr->capacity &&
-                    !arr->properties.isObject()) {
+                    arr->isBare()) {
                     return arr->setElem(rtHeap(), idx, Value(valBits));
                 }
             } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {
@@ -309,25 +309,19 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             return;
         }
         Rooted<Value> recv{objVal};
-        // Rooted BEFORE the side-object build below, which allocates. The key
+        // Rooted BEFORE the statics materialization below, which allocates. The key
         // needs no root — a symbol lives in the arena and never moves — but the
         // VALUE is an ordinary heap value, and rooting it after the allocation
         // would root a pointer the collector had already moved. That is exactly
         // what it did: `f[sym] = "bare"` on a fresh function read back as an
         // unrelated string under BRONZE_GC_STRESS=1.
         Rooted<Value> val{Value(valBits)};
-        // A function's side object of statics is built on first demand, so a
-        // symbol-keyed write can be the demand — without this, `f[sym] = v` on
-        // a function that had never been given a static reached the "no shape"
-        // error below and the write was refused for a receiver that can hold
-        // one perfectly well.
+        // A function is readied for an own write first: a constructor's table
+        // statics move into its own slots, and a function lockdown deferred
+        // is frozen (rtPrepareFunctionOwnWrite).
         if (recv.get().isObject() &&
             recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
             rtPrepareFunctionOwnWrite(recv);
-        }
-        if (recv.get().isObject() &&
-            recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-            ArrayHeader::ensureProperties(rtHeap(), rtArena(), recv);
         }
         if (ObjectHeader* holder = rtSymbolKeyHolder(recv.get())) {
             Rooted<Value> holderRoot{Value::fromObject(holder)};
@@ -482,16 +476,15 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             return;
         }
         rtPrepareFunctionOwnWrite(fnRoot);
-        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         SetRefusal refusal = SetRefusal::None;
-        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+        fnRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                          /*ic=*/nullptr, /*enumerable=*/true,
                                                          /*defineOwn=*/false,
                                                          /*receiver=*/nullptr, &refusal);
         rtReportSetRefusal(refusal, strict, keyText);
         return;
     }
-    if (HeapKind::carriesShape(hdr->flags)) {
+    if (HeapKind::shapeNamesPrototype(hdr->flags)) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> val{Value(valBits)};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};

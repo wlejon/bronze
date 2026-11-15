@@ -105,7 +105,7 @@ Value iteratorMethodOf(Value v) {
         Rooted<Value> keyRoot{rtIteratorKey()};
         return rtGetWithReceiver(arrRoot, keyRoot, arrRoot);
     }
-    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
+    if (!HeapKind::shapeNamesPrototype(v.asObject<HeapObjectHeader>()->flags)) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};
@@ -168,7 +168,7 @@ void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
 // object (builtin_array_iterator.cpp), never read from %ArrayIteratorPrototype%.
 bool arrayIterationIntrinsic(Rooted<Value>& src) {
     const auto* arr = src.get().asObject<ArrayHeader>();
-    if (!(arr->reserved & ArrayHeader::kHasCustomPrototype) && !arr->properties.isObject()) return true;
+    if (!(arr->reserved & ArrayHeader::kHasCustomPrototype) && arr->isBare()) return true;
     const Value method = iteratorMethodOf(src.get());
     return method.isObject() && method.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
            method.asObject<FunctionHeader>()->code == rtArrayValuesBuiltin;
@@ -715,7 +715,7 @@ Value asyncIteratorMethodOf(Value v) {
     if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return proxyMethodOf(v, rtAsyncIteratorKey());
     }
-    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
+    if (!HeapKind::shapeNamesPrototype(v.asObject<HeapObjectHeader>()->flags)) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};

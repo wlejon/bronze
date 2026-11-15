@@ -145,8 +145,8 @@ Effects rawEffects(const Instruction& inst) {
         // A tag test, a kind byte, a length compare and the element block.
         case Op::IsDenseArray:
             return reading(Loc::Shapes | Loc::ArrayLen | Loc::Elements);
-        // The named-property box's presence and the prototype are what the
-        // test reads; a write that changes either is a transition.
+        // The array's shape word (bare or not) is what the
+        // test reads; a write that changes it is a transition.
         case Op::IsPlainArray:
             return reading(Loc::Shapes);
         // The kind is fixed when the view is made. With the pristine-length

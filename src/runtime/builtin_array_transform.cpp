@@ -54,9 +54,9 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     const uint32_t count = end > start ? end - start : 0;
     // A hole is copied as a hole unless the chain answers it (23.1.3.28 step
     // 15.b is HasProperty), which the generic walk asks.
-    if (isArray(self.get()) && !rtExoticPropertyBox(self.get()).isObject() &&
+    if (isArray(self.get()) && self.get().asObject<ArrayHeader>()->isBare() &&
         !rtArrayChainHoldsIndex(self.get())) {
-        // No named-property box, so the species is %Array% (rtArraySpeciesCreate
+        // At the bare array shape, so the species is %Array% (rtArraySpeciesCreate
         // says why) and the result is a plain array: made at its size and
         // filled by one copy.
         Rooted<Value> plain{Value::fromObject(ArrayHeader::create(rtHeap(), count ? count : 4))};
@@ -94,18 +94,18 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
 
-    // A receiver with no named-property box has %Array% for its species
+    // A receiver at the bare array shape has %Array% for its species
     // (rtArraySpeciesCreate says why), so `out` is a plain array, and an
     // array item whose holes the chain cannot answer is copied into it as
     // one run, holes as holes (23.1.3.2 step 5.c.iv skips an absent index
     // and still counts it).
-    const bool plainOut = isArray(self.get()) && !rtExoticPropertyBox(self.get()).isObject() &&
+    const bool plainOut = isArray(self.get()) && self.get().asObject<ArrayHeader>()->isBare() &&
                           isArray(out.get());
     uint32_t n = 0;
     auto appendItem = [&](Rooted<Value>& item) {
         if (rtIsConcatSpreadable(item)) {
             const uint32_t itemLen = isArray(item.get()) ? lengthOf(item.get()) : rtArrayLikeLength(item);
-            if (plainOut && isArray(item.get()) && !rtExoticPropertyBox(item.get()).isObject() &&
+            if (plainOut && isArray(item.get()) && item.get().asObject<ArrayHeader>()->isBare() &&
                 !rtArrayChainHoldsIndex(item.get()) && lengthOf(out.get()) == n) {
                 ArrayHeader::appendRange(rtHeap(), out, item, 0, itemLen, /*holesAsUndefined=*/false);
                 n += itemLen;

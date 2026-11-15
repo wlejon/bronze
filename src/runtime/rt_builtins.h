@@ -25,11 +25,16 @@
 
 namespace bronze::runtime {
 
-// A function's `.prototype` and its own-property object, created on first
-// demand: a function that is never used as a constructor and never given a
-// static member pays for neither. Both allocate, so both take the function
-// through a root and the caller must re-derive any raw pointer afterwards.
+// A function's `.prototype`, created on first demand: a function that is
+// never used as a constructor pays nothing for it. Allocates, so it takes the
+// function through a root and the caller must re-derive any raw pointer
+// afterwards.
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal);
+// Readies a function's own statics (its shape and overflow block, fn.h) for a
+// write: a function lockdown hardened while it had none (fn.h,
+// harden_on_write) is frozen and hardened for real here, so the write meets
+// what lockdown would have left. Nothing else to do — the storage is the
+// function's own — and it allocates nothing on the heap.
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal);
 Value rtGlobalThisObject();
 Value rtReflectNamespace();
@@ -234,7 +239,7 @@ void rtDefineToStringTag(Rooted<Value>& obj, const char* tag);
 // (C, Symbol.species)` describes it and a subclass reaches it through the
 // static chain `extends` builds — which is what makes `A[@@species]` answer
 // `A`. The intrinsics rt_prop_symbol.cpp still answers virtually are the
-// ones with no property box of their own to hold it.
+// ones with no shape of their own to hold it.
 void rtDefineSpeciesGetter(Rooted<Value>& ctor);
 
 // The intrinsics a function of a NON-ORDINARY form reports (27.3, 27.4, 27.7):
@@ -628,25 +633,26 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
 // same C tables the read above answers from — no interning, no allocation —
 // so the latch can ask it with raw pointers in hand. What makes the latched
 // entry sound is the read path's ORDER: the statics table is consulted first
-// on the function-receiver ladder, ahead even of the own-property box, until
+// on the function-receiver ladder, ahead even of the function's own shape, until
 // the program writes to that constructor's statics; from then on the latch
 // carries the prototype-mutation epoch, which every such write bumps.
 bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string& key,
                                       bronze_fn_code calleeCode) noexcept;
 
-// The statics half of that table, written into the constructor's `properties`
-// box so that a SUBCLASS reaches it by the ordinary chain walk rather than by
+// The statics half of that table, written into the constructor's own statics
+// so that a SUBCLASS reaches it by the ordinary chain walk rather than by
 // a code-pointer match it can never make — `class MyArr extends Array` must
 // reach `Array.of` (runtime/native_base.h) — and off the SAME `kCtors` entry
 // the read path answers from. False for a function that is not one of them.
 // Done once per constructor (FunctionHeader::statics_materialized); from then
-// on the box is where the statics live and the table no longer answers them.
+// on the function's own statics are where they live and the table no longer
+// answers them.
 bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
 
 // Every write the PROGRAM makes to a function's own properties — an
 // assignment, a delete, a defineProperty, a freeze — goes through here before
-// it touches the box: a global constructor's table statics are written into
-// its box first, so `Array.isArray = f` replaces the one a read would find,
+// it touches the statics: a global constructor's table statics are written
+// into them first, so `Array.isArray = f` replaces the one a read would find,
 // and the prototype-mutation epoch is bumped so a method-call entry latched
 // on the old one misses. For any other function it is
 // rtEnsureFunctionProperties.

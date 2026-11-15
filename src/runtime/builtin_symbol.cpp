@@ -269,7 +269,7 @@ Value rtSymbolFunction() {
         live->prototype = proto.get();
         live->instance_shape = rtRootShapeForPrototype(proto.get());
     }
-    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{fn.get()};
     // NON-ENUMERABLE, which 20.4.2 makes all sixteen own properties of `Symbol`
     // and bronze had wrong: `Object.keys(Symbol)` reported four names and
     // `for (k in Symbol)` visited them. `writable` and `configurable` stay true

@@ -43,7 +43,7 @@ Value namedProp(Value obj, StringHeader* key) {
         Rooted<Value> keyRoot{rtKeyAsValue(key)};
         return rtProxyGet(objRoot.get(), keyRoot.get(), objRoot.get());
     }
-    if (!HeapKind::carriesShape(kind)) return Value::fromUndefined();
+    if (!HeapKind::shapeNamesPrototype(kind)) return Value::fromUndefined();
     Rooted<Value> objRoot{obj};
     Rooted<Value> keyRoot{Value::fromString(key)};
     return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);

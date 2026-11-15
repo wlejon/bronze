@@ -663,13 +663,11 @@ uint64_t setterIgnoringPrototype(uint64_t thisBits, uint32_t argc, const uint64_
         return Value::fromUndefined().rawBits();
     }
     // Step 4: CreateDataPropertyOrThrow — a DEFINITION, so the write does not
-    // walk the chain back to this setter. A plain object's table is its own;
-    // a function's is its statics box.
-    Rooted<Value> holder{self.get()};
+    // walk the chain back to this setter. A plain object's table is its own,
+    // and so is a function's (its statics).
     const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
     if (kind == HeapKind::Function) {
         rtEnsureFunctionProperties(self);
-        holder.set(self.get().asObject<FunctionHeader>()->properties);
     } else if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         fatal((std::string("unsupported: defining ") + what +
                " on a receiver that is neither a plain object nor a function (the "
@@ -678,7 +676,7 @@ uint64_t setterIgnoringPrototype(uint64_t thisBits, uint32_t argc, const uint64_
                   .c_str());
     }
     SetRefusal refusal = SetRefusal::None;
-    holder.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value,
+    self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value,
                                                    /*ic=*/nullptr, /*enumerable=*/true,
                                                    /*defineOwn=*/true, /*receiver=*/nullptr,
                                                    &refusal);
@@ -782,7 +780,7 @@ Value rtIteratorConstructor(const std::string& name) {
     }
 
     rtEnsureFunctionProperties(fn);
-    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> props{fn.get()};
     Rooted<Value> key{rtMakeString("from")};
     Rooted<Value> from{rtNativeFunction(iteratorFrom, 1, "from", 1)};
     props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, from, nullptr,

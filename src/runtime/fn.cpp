@@ -13,25 +13,33 @@
 #include "runtime/exception.h"
 #include "runtime/realm.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 
 namespace bronze {
 
+bool FunctionHeader::hasOwnStatics() const noexcept {
+    return shape != nullptr && (shape->key.valid() || shape->isDictionary());
+}
+
 FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Value env_record,
                                        uint32_t arity, uint32_t function_flags) {
+    // The shape first: its first use builds the thread's function root, an
+    // arena node, so nothing about it moves.
+    Shape* shape = runtime::rtFunctionShape();
     size_t payload_bytes = sizeof(FunctionHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     // HERE, and not at the four call sites that used to do it after this
     // returns. `Heap::allocate` leaves `flags` zero, which reads as
-    // `HeapKind::Plain` — and the collector now takes a plain header at its
-    // word: it reads a `Shape*` at offset 8, which for this layout is the
-    // `code` pointer. The window was only ever as wide as the caller's next
-    // few lines; it is now not a window at all.
+    // `HeapKind::Plain`, and every reader that dispatches on the kind must
+    // see a function from the first word on. The window was only ever as wide
+    // as the caller's next few lines; it is now not a window at all.
     raw_hdr->flags = HeapKind::Function;
     auto* fn = reinterpret_cast<FunctionHeader*>(raw_hdr);
+    fn->shape = shape;
+    fn->overflow = Value::fromUndefined();
     fn->code = code;
     fn->env_record = env_record;
     fn->prototype = Value::fromUndefined();
-    fn->properties = Value::fromUndefined();
     fn->instance_shape = nullptr;
     fn->name = nullptr;
     fn->arity = arity;
@@ -57,7 +65,7 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // The byte whole first: its other six bits are padding the scan reads.
     std::memset(reinterpret_cast<uint8_t*>(fn) + BRONZE_ABI_FN_FLAGS_WORD_OFFSET + 3, 0, 1);
     fn->prototype_readonly = (function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0;
-    fn->harden_on_box = false;
+    fn->harden_on_write = false;
     fn->statics_materialized = 0;
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).

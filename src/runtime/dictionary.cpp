@@ -196,7 +196,7 @@ static Shape* createDictionaryShape(Shape* from) {
     dict->root = from->root;
     dict->dict = new Dictionary();
     // The object keeps its storage, and with it its inline capacity.
-    dict->setInlineSlots(from->inline_slots);
+    dict->copyInlineSlots(from);
     dict->dict->inlineSlots = from->inline_slots;
     dict->used_as_prototype = from->used_as_prototype;
     return dict;

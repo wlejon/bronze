@@ -348,6 +348,8 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     // receivers — but the entry is copied verbatim, so the assertion is worth
     // the branch rather than the trust.
     if (filled.isArrayMethod()) return;
+    // A sentinel shape (a proxy's, a namespace's) answers from no slot.
+    if (filled.cached_shape->uncacheable) return;
     // The key has to become immortal before an entry can name it, and for an
     // ABSENT key that is the whole risk: a present key is already a shape key
     // somewhere, an absent one need exist nowhere. `elemCacheInternKey`

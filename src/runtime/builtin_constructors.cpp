@@ -592,7 +592,7 @@ bool rtHasIteratorMethod(Rooted<Value>& src, Rooted<Value>* methodOut) {
     if (src.get().isObject()) {
         const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
         if (flags == HeapKind::Array &&
-            !src.get().asObject<ArrayHeader>()->properties.isObject()) {
+            src.get().asObject<ArrayHeader>()->isBare()) {
             return true;
         }
         if (flags == TypedArrayHeader::kFlags &&
@@ -747,11 +747,11 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
             out = rtArrayPrototypeObject();
             return true;
         }
-        // Once the program has written to this constructor's statics, the box
-        // holds them (rtInstallGlobalConstructorStatics) and is the answer:
+        // Once the program has written to this constructor's statics, its own
+        // slots hold them (rtInstallGlobalConstructorStatics) and are the answer:
         // the table would hand back `Array.isArray` after `Array.isArray = f`
-        // or after `delete Array.isArray`. (A name the program defined in the
-        // box is answered ahead of this whole function by rtFunctionMember, so
+        // or after `delete Array.isArray`. (A name the program defined there
+        // is answered ahead of this whole function by rtFunctionMember, so
         // a polyfill for a member bronze has not built is not diagnosed.)
         if (!fn.asObject<FunctionHeader>()->statics_materialized) {
             for (size_t i = 0; i < entry.staticCount; ++i) {
@@ -808,22 +808,20 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
     const bronze_fn_code code = ctor.get().asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code || entry.staticCount == 0) continue;
-        // Once only: after the first time the box is the statics' home and
+        // Once only: after the first time its own slots are the statics' home and
         // what the program wrote there since (an assignment, a delete) must
         // not be put back.
         if (ctor.get().asObject<FunctionHeader>()->statics_materialized) return true;
         rtEnsureFunctionProperties(ctor);
-        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
-        if (!props.get().isObject()) return false;
         for (size_t i = 0; i < entry.staticCount; ++i) {
             // The SAME interned function object the read path hands out, so
             // `Array.of === MyArr.of` however either was reached.
             const StaticFn& s = entry.statics[i];
             Rooted<Value> key{rtMakeString(s.name)};
             Rooted<Value> fn{rtNativeFunction(s.code, s.arity, s.name, s.length)};
-            props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
-                                                         /*ic=*/nullptr, /*enumerable=*/false,
-                                                         /*defineOwn=*/true);
+            ctor.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
+                                                        /*ic=*/nullptr, /*enumerable=*/false,
+                                                        /*defineOwn=*/true);
         }
         // `prototype` is deliberately NOT among them: it is the base's own
         // object and a subclass has one of its own, so copying it here would

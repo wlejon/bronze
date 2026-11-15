@@ -63,7 +63,7 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
 // A program's copy is reached only behind `is.plain_array` (il_op.h), which
 // holds only for a receiver whose [[Get]] of the method's key answers the
 // intrinsic function (Array.prototype refuses every change, rt_prop_write.cpp,
-// and an Array with no named-property box has nothing that could shadow it).
+// and an Array at the bare array shape has nothing that could shadow it).
 // So the copy runs exactly where a call would have entered the prebuilt
 // function with the same arguments, and it IS that function's algorithm.
 struct SelfHostLibrary {

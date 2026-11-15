@@ -304,7 +304,7 @@ std::string escapeRegExpPattern(const std::string& pattern) {
 }
 
 struct MatchPropsShapes {
-    Shape* nullRoot{nullptr};
+    Shape* arrayRoot{nullptr};
     Shape* match3{nullptr};
     Shape* matchWithIdx{nullptr};
     Shape* indices1{nullptr};
@@ -315,14 +315,14 @@ struct MatchPropsShapes {
     uint32_t idxGroupsSlot{0};
 };
 
-// Cached per-thread hidden classes for the null-prototype `properties` bucket of
-// match arrays (`index`, `input`, `groups`, optional `indices`) and `/d` index
-// arrays (`groups`), keyed on the current thread's null-prototype root shape so
-// thread-state teardown/recreation rebuilds cleanly.
+// Cached per-thread hidden classes for the named properties of match arrays
+// (`index`, `input`, `groups`, optional `indices`) and `/d` index arrays
+// (`groups`): transitions off the bare array shape, keyed on the current
+// thread's one so thread-state teardown/recreation rebuilds cleanly.
 const MatchPropsShapes& matchPropsShapes() {
     static thread_local MatchPropsShapes cached;
-    Shape* root = rtRootShapeForPrototype(Value::fromNull());
-    if (BRONZE_LIKELY(cached.nullRoot == root)) return cached;
+    Shape* root = rtArrayShape();
+    if (BRONZE_LIKELY(cached.arrayRoot == root)) return cached;
 
     NonMovingArena& arena = rtArena();
     auto internAscii = [&](std::string_view sv) {
@@ -333,7 +333,7 @@ const MatchPropsShapes& matchPropsShapes() {
     };
 
     MatchPropsShapes built;
-    built.nullRoot = root;
+    built.arrayRoot = root;
     Shape* s1 = root->addPropertyKey(arena, internAscii("index"), built.indexSlot,
                                      /*is_enumerable=*/true, /*is_accessor=*/false,
                                      /*is_writable=*/true, /*is_configurable=*/true,
@@ -381,18 +381,10 @@ Value buildMatchIndices(const regex::Pattern& pattern, const regex::MatchResult&
     // named property and the indices are the elements — the same shape the
     // match array itself has, and the order both enumerate in.
     const MatchPropsShapes& shapes = matchPropsShapes();
-    ObjectHeader* rawProps = ObjectHeader::create(heap, arena, shapes.indices1);
-    rawProps->header.flags = HeapKind::Plain;
-    Rooted<Value> propsRoot{Value::fromObject(rawProps)};
-    ObjectHeader* props = shapes.idxGroupsSlot >= ObjectHeader::kOverflowSlot
-                              ? ObjectHeader::ensureSlots(heap, propsRoot, shapes.idxGroupsSlot + 1)
-                              : rawProps;
+    array.get().asObject<ArrayHeader>()->forgetNumbers();
+    array.get().asObject<ArrayHeader>()->shape = shapes.indices1;
+    ObjectHeader* props = ObjectHeader::ensureSlots(heap, array, shapes.idxGroupsSlot + 1);
     props->rawSetSlot(shapes.idxGroupsSlot, groupsObject.get());
-    {
-        ArrayHeader* arr = array.get().asObject<ArrayHeader>();
-        arr->forgetNumbers();
-        arr->properties = propsRoot.get();
-    }
 
     const bool hasNamed = groupsObject.get().isObject();
     Rooted<Value> pair;
@@ -446,20 +438,12 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
     const MatchPropsShapes& shapes = matchPropsShapes();
     Shape* propsShape = hasIndices ? shapes.matchWithIdx : shapes.match3;
     const uint32_t maxSlot = hasIndices ? shapes.indicesSlot : shapes.groupsSlot;
-    ObjectHeader* rawProps = ObjectHeader::create(heap, arena, propsShape);
-    rawProps->header.flags = HeapKind::Plain;
-    Rooted<Value> propsRoot{Value::fromObject(rawProps)};
-    ObjectHeader* props = maxSlot >= ObjectHeader::kOverflowSlot
-                              ? ObjectHeader::ensureSlots(heap, propsRoot, maxSlot + 1)
-                              : rawProps;
+    array.get().asObject<ArrayHeader>()->forgetNumbers();
+    array.get().asObject<ArrayHeader>()->shape = propsShape;
+    ObjectHeader* props = ObjectHeader::ensureSlots(heap, array, maxSlot + 1);
     props->rawSetSlot(shapes.indexSlot, Value::fromDouble(static_cast<double>(match.start())));
     props->rawSetSlot(shapes.inputSlot, inputStr.get());
     props->rawSetSlot(shapes.groupsSlot, groupsObject.get());
-    {
-        ArrayHeader* arr = array.get().asObject<ArrayHeader>();
-        arr->forgetNumbers();
-        arr->properties = propsRoot.get();
-    }
 
     if (!groupsObject.get().isObject()) {
         for (uint32_t i = 0; i <= groups; ++i) {
@@ -498,7 +482,7 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
     // `indices` is the final named property and prints after `groups`.
     if (hasIndices) {
         Rooted<Value> indices{buildMatchIndices(pattern, match)};
-        propsRoot.get().asObject<ObjectHeader>()->rawSetSlot(shapes.indicesSlot, indices.get());
+        array.get().asObject<ArrayHeader>()->object()->rawSetSlot(shapes.indicesSlot, indices.get());
     }
     return array.get();
 }

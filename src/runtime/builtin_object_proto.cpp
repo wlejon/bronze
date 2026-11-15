@@ -207,13 +207,11 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
                 }
                 return true;
             }
-            Value props = self.get().asObject<FunctionHeader>()->properties;
-            if (!props.isObject()) return false;
-            // The statics object's OWN shape and not its chain: `extends` links
-            // it to the base class's statics, and a static a derived class
-            // INHERITS is not an own property of the derived constructor.
+            // The function's OWN shape and not its chain: `extends` roots it
+            // at the base class, and a static a derived class INHERITS is not
+            // an own property of the derived constructor.
             PropertyInfo info;
-            auto* holder = props.asObject<ObjectHeader>();
+            auto* holder = self.get().asObject<ObjectHeader>();
             if (!holder->shape || !holder->shape->lookupProperty(name, info)) return false;
             fillFromShape(holder, info, out);
             return true;
@@ -449,7 +447,7 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
             // whatever it said.
             nextVal = rtProxyGetPrototypeOf(walker.get());
             if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
-        } else if (!HeapKind::carriesShape(kind)) {
+        } else if (!HeapKind::shapeNamesPrototype(kind)) {
             // A function, an array or an exotic subclass instance names its
             // [[Prototype]] beside the value rather than in a shape, and it
             // may be an object a program holds — a class's parent, a kind's
@@ -798,11 +796,10 @@ uint64_t speciesGetter(uint64_t, uint64_t self, uint32_t, const uint64_t*) {
 
 void rtDefineSpeciesGetter(Rooted<Value>& ctor) {
     rtEnsureFunctionProperties(ctor);
-    Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
     Rooted<Value> key{Value::fromSymbol(rtSymbolSpecies())};
     Rooted<Value> getter{rtNativeFunction(speciesGetter, 0, "get [Symbol.species]", 0)};
     Rooted<Value> setter{Value::fromUndefined()};
-    ObjectHeader::defineAccessor(rtHeap(), rtArena(), box, key, getter, setter,
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), ctor, key, getter, setter,
                                  /*enumerable=*/false);
 }
 

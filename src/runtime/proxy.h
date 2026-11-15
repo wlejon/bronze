@@ -27,6 +27,12 @@ namespace bronze {
 // revocation.
 struct ProxyHeader {
     HeapObjectHeader header;
+    // The object prefix every object value has (heap.h carriesShape): the
+    // thread's proxy SENTINEL shape (rt_state.h rtProxyShape), which no cache
+    // records, and an overflow word that stays undefined. A proxy keeps no
+    // property of its own; every key is the handler's or the target's.
+    class Shape* shape{nullptr};
+    HeapValue overflow;
     HeapValue target;    // an object; NULL once revoked
     HeapValue handler;   // an object; NULL once revoked
     // 10.5.14: [[Call]] and [[Construct]] are present on the proxy exactly

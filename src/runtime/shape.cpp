@@ -21,6 +21,19 @@ namespace bronze {
 
 std::atomic<uint64_t> g_shapeTransitions{0};
 
+Shape* Shape::createBareRoot(NonMovingArena& arena, Value proto) {
+    Shape* root = createRoot(arena, proto);
+    root->inline_slots = 0;
+    root->bare_header = 0;
+    return root;
+}
+
+Shape* Shape::createSentinel(NonMovingArena& arena) {
+    Shape* root = createBareRoot(arena, Value::fromNull());
+    root->uncacheable = true;
+    return root;
+}
+
 Shape* Shape::createRoot(NonMovingArena& arena, Value proto, uint32_t inlineSlots) {
     Shape* root = arena.create<Shape>();
     root->prototype = proto;
@@ -36,19 +49,13 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto, uint32_t inlineSlot
     // epoch.
     if (proto.isObject()) {
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (HeapKind::carriesShape(hdr->flags)) {
+        if (HeapKind::shapeNamesPrototype(hdr->flags) || hdr->flags == HeapKind::Function) {
+            // A function answers a key from its statics, which live in its
+            // own shape, so the function itself is marked like an ordinary
+            // prototype: its index keys are scanned now and its adds trip the
+            // hazard from here on (object.h). %Function.prototype% is the
+            // prototype of intrinsics, which is why this is not a trip.
             markObjectAsPrototype(arena, reinterpret_cast<ObjectHeader*>(hdr));
-        } else if (hdr->flags == HeapKind::Function) {
-            // A function answers a key from its statics object, so that is
-            // what is marked: its index keys are scanned now and its adds trip
-            // the hazard from here on (object.h). %Function.prototype% is the
-            // prototype of intrinsics, which is why this is not a trip. A
-            // function with no statics object yet holds no key now, and one
-            // it is given later is not watched: the one gap, for a program
-            // that makes a function some array's prototype and then gives the
-            // function an index-named property.
-            const Value props = reinterpret_cast<FunctionHeader*>(hdr)->properties;
-            if (props.isObject()) markObjectAsPrototype(arena, props.asObject<ObjectHeader>());
         } else {
             // An array or a proxy on a chain answers indices through no shape
             // the add trip could watch (object.h).
@@ -126,7 +133,7 @@ void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     Shape* fresh = arena.create<Shape>();
     fresh->prototype = proto;
     // The object keeps its storage, so its new root keeps the capacity.
-    fresh->setInlineSlots(protoShape->inline_slots);
+    fresh->copyInlineSlots(protoShape);
     fresh->used_as_prototype = true;
     runtime::rtRegisterRootShape(fresh);
     runtime::noteShapeLeave(protoShape, fresh, ShapeLeave::BecomePrototype);

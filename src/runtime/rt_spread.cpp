@@ -106,21 +106,19 @@ StringHeader* calleeKey() {
 // `Object.keys`, spread and `JSON.stringify` all ask for own enumerable keys,
 // and console.log's array format skips accessors outright.
 void installArgumentsCallee(Rooted<Value>& args, Value calleeVal, bool strict) {
-    ArrayHeader::ensureProperties(rtHeap(), rtArena(), args);
-    Rooted<Value> props{args.get().asObject<ArrayHeader>()->properties};
     Rooted<Value> key{Value::fromString(calleeKey())};
     if (strict || !rtIsCallableValue(calleeVal)) {
         auto* code = strict ? &argumentsCalleePill : &argumentsCalleeCapturedPill;
         // 10.2.4.1: %ThrowTypeError% has `name` "" and `length` 0.
         Rooted<Value> pill{rtNativeFunction(reinterpret_cast<bronze_fn_code>(code), 0, "", 0)};
-        ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), args, key, pill, pill,
                                      /*enumerable=*/false);
     } else {
         Rooted<Value> val{calleeVal};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true,
-                                                      /*receiver=*/nullptr, /*refused=*/nullptr,
-                                                      /*writable=*/true, /*configurable=*/true);
+        args.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                     /*enumerable=*/false, /*defineOwn=*/true,
+                                                     /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                     /*writable=*/true, /*configurable=*/true);
     }
 }
 
@@ -213,7 +211,7 @@ void appendStringCodePoints(Rooted<Value>& out, Rooted<Value>& src) {
 // empty result.
 bool isPlainArraySource(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
-           !rtExoticPropertyBox(v).isObject();
+           v.asObject<ArrayHeader>()->isBare();
 }
 
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
@@ -221,7 +219,7 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
         appendStringCodePoints(out, src);
         return;
     }
-    // An array with no named-property box iterates as %Array.prototype.values%
+    // An array at the bare array shape iterates as %Array.prototype.values%
     // does and nothing else can (iterator_records.cpp: the prototype and the
     // array iterator are frozen), so its elements are copied, a hole read as
     // `undefined`.
@@ -354,7 +352,7 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
         return;
     }
     // An array target (`Object.assign(arr, ...)`) keeps an index in its
-    // block and a name in its side object; the computed write is the one
+    // block and a name in its own shape; the computed write is the one
     // path that knows which, and it reports its own refusals.
     if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
@@ -664,22 +662,20 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
         return;
     }
     // A FUNCTION's own enumerable keys are its statics, and they do live in a
-    // property table: the side object every function keeps them in. The three
+    // property table: the function's own shape. The three
     // that are not there — `prototype`, `length` and `name` — are
     // non-enumerable (10.2.4, 10.2.9, 10.2.10), so a spread would skip them
     // anyway. `Object.assign({}, fn)` and `{ ...fn }` are the same operation
     // and both used to abort the process on a perfectly ordinary receiver.
     if (srcVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        Value props = src.get().asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return;
-        Rooted<Value> propsRoot{props};
-        for (PropertyKey name : rtOwnKeysOrdered(propsRoot.get().asObject<ObjectHeader>())) {
+        if (!src.get().asObject<FunctionHeader>()->hasOwnStatics()) return;
+        for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
             if (stringTarget.get().isString() && !name.isSymbol() &&
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
                 return;
             }
             if (excludes(excluded, name)) continue;
-            copyProperty(target, propsRoot, name, mode);
+            copyProperty(target, src, name, mode);
         }
         return;
     }
@@ -687,7 +683,7 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
     // whose own keys are not in a shape. It is named rather than reported
     // empty, because "no properties" is a wrong answer about a receiver with
     // elements in it and not a missing one.
-    if (!HeapKind::carriesShape(srcVal.asObject<HeapObjectHeader>()->flags)) {
+    if (!HeapKind::shapeNamesPrototype(srcVal.asObject<HeapObjectHeader>()->flags)) {
         if (excluded) {
             rtThrowTypeError(std::string("object rest from ") + rtObjectKindName(srcVal) +
                              " is unsupported (its own keys are not in a property table a "

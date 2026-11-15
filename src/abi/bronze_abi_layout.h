@@ -117,12 +117,13 @@
  * arm that has not learned the flag refuses the entry (a nonzero depth). */
 #define BRONZE_ABI_IC_DEPTH_OBJECT_FLAG   0x08000000u
 /* A chain entry filled for a FUNCTION receiver (rt_prop_function.cpp): the
- * shape is the receiver's statics box's, and the holder `depth` links up is a
- * base class's statics box reached through `extends`, never %Object.prototype%
- * or above (a function's chain goes from its boxes to %Function.prototype%,
- * which a plain object's chain does not). Only the function arms of the read
- * paths take one; to every other consumer the flag makes the depth one no
- * walk reaches, so a plain receiver (which never has such a shape anyway)
+ * shape is the receiver's own, and the holder `depth` links up is a base
+ * class constructor reached through `extends` (a function's shape root names
+ * the chain its statics inherit through, not its [[Prototype]]), never
+ * %Object.prototype% or above (a function's chain goes from its statics to
+ * %Function.prototype%, which a plain object's chain does not). Only the
+ * function arms of the read paths take one; to every other consumer the flag
+ * makes the depth one no walk reaches, so any other receiver at the shape
  * misses. */
 #define BRONZE_ABI_IC_DEPTH_STATICS_FLAG  0x10000000u
 /* How many (shape -> answer) entries one property site holds, and the stride
@@ -274,17 +275,13 @@
  * swapped-in non-function still reaches the helper's TypeError. No heap word
  * lands in the entry at all, which is what makes the form GC-free.
  *
- * A FUNCTION receiver takes the SLOT form too, and word 0 is then its STATICS
- * BOX's shape rather than the receiver's — a function object has no shape word
- * at all. The words mean exactly what they mean above: a shape, and a slot in
- * the object that shape describes. Which object the slot is read from is
- * decided by the arm the LIVE receiver's flags select — the receiver itself
- * when Plain, the box at BRONZE_ABI_FN_PROPERTIES_OFFSET when Function — and
- * never by anything stored in the entry, so the two arms share word 0 and
- * word 2 without either misreading the other's. They cannot disagree about the
- * answer either: a shape is a key-to-slot map and nothing else, so every
- * object matching word 0 holds the site's key at that slot in itself. `this`
- * stays the receiver in both cases.
+ * A FUNCTION receiver takes the SLOT form too, against its own shape: a
+ * function begins with the object prefix (BRONZE_ABI_OBJ_SHAPE_OFFSET,
+ * BRONZE_ABI_OBJ_OVERFLOW_OFFSET) and its statics are slots of it, so the
+ * words mean exactly what they mean above: a shape, and a slot in the object
+ * that shape describes. A shape is a key-to-slot map and nothing else, so
+ * every object matching word 0 holds the site's key at that slot in itself,
+ * whatever its kind. `this` stays the receiver.
  *
  * That argument is the SLOT form's alone. A function receiver must never take
  * a DIRECT entry, because a DIRECT entry latched for a plain receiver was
@@ -316,17 +313,20 @@
  * and its second clause loads the u64 at `auxOffset` bytes from the
  * receiver's header and asks one of two questions, selected by bit 1:
  *
- *   bit 1 clear (BOX guard): the loaded Value must not be Object-tagged.
- *   `auxOffset` names the receiver's ordinary named-property box
- *   (ArrayHeader::properties / MapHeader::properties — runtime layouts,
- *   carried in the entry rather than baked into code). The box is the ONLY
- *   way such a receiver can answer a member with anything but the C table —
- *   an own named property (`a.push = f`) lives in it, and a subclass
- *   instance's [[Prototype]] chain hangs off it (runtime/native_base.h) —
- *   so a receiver carrying one takes the helper, which walks the box first
- *   exactly as the read path does. The table itself cannot change:
- *   decorating `Array.prototype` is a hard error by construction
- *   (rt_prop_write.cpp).
+ *   bit 1 clear (SHAPE guard): the loaded word must equal the thread's bare
+ *   shape for the kind, held in word BRONZE_ABI_METHOD_IC_AUX_WORD.
+ *   `auxOffset` names the receiver's shape word (BRONZE_ABI_OBJ_SHAPE_OFFSET).
+ *   An ARRAY latches runtime::rtArrayShape(), which it leaves the moment it
+ *   is given anything the C table cannot answer for — an own named property
+ *   (`a.push = f`), a subclass instance's prototype (runtime/native_base.h),
+ *   an integrity level — so a receiver at any other shape takes the helper,
+ *   which reads its named properties first exactly as the read path does.
+ *   The table itself cannot change: decorating `Array.prototype` is a hard
+ *   error by construction (rt_prop_write.cpp). A FUNCTION latches
+ *   runtime::rtFunctionShape() for a member of %Function.prototype%
+ *   (`f.call(...)`): at that shape it has no statics and no statics chain to
+ *   shadow the member, and the entry carries the prototype-mutation epoch,
+ *   which every write to %Function.prototype% moves.
  *
  *   bit 1 set (CODE guard): the loaded word must EQUAL word
  *   BRONZE_ABI_METHOD_IC_AUX_WORD of the site. Two latches use it:
@@ -334,9 +334,9 @@
  *   - a Function receiver whose callee is a global constructor's static
  *     (builtin_constructors.cpp's kCtors): `auxOffset` is the FunctionHeader
  *     code offset and the aux word is the constructor's own code pointer,
- *     the one identity a moving collector never rewrites. No box clause is
- *     needed at all, because the statics table is consulted FIRST on the
- *     function-receiver ladder, ahead even of the own-property box
+ *     the one identity a moving collector never rewrites. No statics clause
+ *     is needed at all, because the statics table is consulted FIRST on the
+ *     function-receiver ladder, ahead even of the function's own statics
  *     (rt_prop.cpp) — nothing can shadow it, so the answer is a pure
  *     function of (receiver code, key).
  *
@@ -345,7 +345,7 @@
  *     (BRONZE_ABI_OBJ_SHAPE_OFFSET) and the aux word the Shape* latched
  *     against, so the guard is the plain DIRECT form's own shape compare —
  *     with the plain form's depth >= 1 envelope — spelled for a receiver
- *     generated code's Plain arm does not take. A Shape is an immortal,
+ *     generated code's Plain arm did not take. A Shape is an immortal,
  *     non-moving arena allocation. A RegExp (`re.exec(s)`, `re.test(s)`)
  *     takes the same entry: its builtins are one link up its shape's chain.
  *
@@ -603,26 +603,34 @@
 
 /* HeapObjectHeader::flags, and the values that mean "a plain object" as
  * opposed to an array (1), a function (2), a typed-array view (3) or an
- * ArrayBuffer (4). All of them reach bronze_prop_get, so the fast path has
- * to discriminate on this before it believes anything else. */
+ * ArrayBuffer (4). Every object value of every kind begins with the shape word
+ * and the overflow block (BRONZE_ABI_OBJ_SHAPE_OFFSET /
+ * BRONZE_ABI_OBJ_OVERFLOW_OFFSET), so the property fast path compares the
+ * shape and needs no kind; the element paths and the inline allocations still
+ * name the kinds they handle. */
 #define BRONZE_ABI_OBJ_FLAGS_OFFSET      2
 #define BRONZE_ABI_OBJ_FLAGS_PLAIN       0
 #define BRONZE_ABI_OBJ_FLAGS_ARRAY       1
 #define BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY 3
 
-/* ArrayHeader field offsets */
-#define BRONZE_ABI_ARRAY_LENGTH_OFFSET   8
-#define BRONZE_ABI_ARRAY_CAPACITY_OFFSET 12
-#define BRONZE_ABI_ARRAY_HEAD_OFFSET     16
-#define BRONZE_ABI_ARRAY_ELEMS_OFFSET    24
-#define BRONZE_ABI_ARRAY_PROPS_OFFSET    32
+/* ArrayHeader field offsets (runtime/array.h). An array begins with the
+ * object prefix — the shape word at BRONZE_ABI_OBJ_SHAPE_OFFSET and the
+ * overflow block at BRONZE_ABI_OBJ_OVERFLOW_OFFSET, holding its named
+ * properties (a bare shape: no inline slots, every slot an overflow one) —
+ * and its own fields follow. An ordinary array's shape is the thread's
+ * `array_shape` (bronze_abi_tls.h). */
+#define BRONZE_ABI_ARRAY_LENGTH_OFFSET   24
+#define BRONZE_ABI_ARRAY_CAPACITY_OFFSET 28
+#define BRONZE_ABI_ARRAY_HEAD_OFFSET     32
+#define BRONZE_ABI_ARRAY_ELEMS_OFFSET    40
 /* ArrayHeader::reserved, a word of bits. NUMBERS (runtime/array.h says
  * exactly what it promises): every element below `length` is a Number in its
- * double form (bits <= BRONZE_ABI_NUMBER_MAX_BITS) and the array has no
- * properties object. Generated code that stores anything else into an
- * element, or a hole, clears it; bronze_array_claim_numbers is the only thing
- * that sets it. Bit 1 is the runtime's custom-prototype mark. */
-#define BRONZE_ABI_ARRAY_BITS_OFFSET     20
+ * double form (bits <= BRONZE_ABI_NUMBER_MAX_BITS). Generated code that
+ * stores anything else into an element, or a hole, clears it;
+ * bronze_array_claim_numbers is the only thing that sets it, and only on an
+ * array at the thread's array shape. Bit 1 is the runtime's custom-prototype
+ * mark. */
+#define BRONZE_ABI_ARRAY_BITS_OFFSET     36
 #define BRONZE_ABI_ARRAY_BIT_NUMBERS     2
 /* The longest array bronze_array_claim_numbers scans: a claim is made in
  * front of a kernel's constant-index reads, and a longer array is not one a
@@ -645,9 +653,10 @@
  * points at: a heap object of BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK kind whose
  * payload is `capacity` Values, HOLE-filled past `length`. An array literal of
  * a few elements is both objects bump-allocated from the inline window by
- * generated code (llvm_construct.cpp), laid out exactly as bronze_create_array
- * lays them out — including its capacity floor. */
-#define BRONZE_ABI_ARRAY_HEADER_BYTES    40
+ * generated code (il_alloc_lowering.cpp), laid out exactly as
+ * bronze_create_array lays them out — the thread's array shape, an undefined
+ * overflow word, and the capacity floor. */
+#define BRONZE_ABI_ARRAY_HEADER_BYTES    48
 #define BRONZE_ABI_ARRAY_MIN_CAPACITY    4
 #define BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK  18
 #define BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK 19
@@ -714,12 +723,18 @@
 #define BRONZE_ABI_BUF_DATA_OFFSET      80
 
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then the
- * object's inline Values. How many inline Values an object has is a fact of
- * its SHAPE (Shape::inline_slots, below), fixed when the object is allocated:
- * BRONZE_ABI_OBJ_INLINE_SLOTS for an ordinary `{}` and for every exotic
- * object (whose internal slots sit right after them at fixed offsets), and up
- * to BRONZE_ABI_OBJ_OVERFLOW_SLOT for an instance whose constructor's
- * predicted layout, or a literal's key count, asked for more.
+ * object's inline Values. EVERY object value begins with the first two words
+ * — a plain object, an array, a function, a typed array, an ArrayBuffer, a
+ * DataView, a RegExp, a module namespace, a proxy — so a property cache's
+ * shape compare needs no kind test. How many inline Values an object has is a
+ * fact of its SHAPE (Shape::inline_slots, below), fixed when the object is
+ * allocated: BRONZE_ABI_OBJ_INLINE_SLOTS for an ordinary `{}` and for the
+ * exotic objects that keep their internal slots behind them at fixed offsets
+ * (typed arrays, RegExps, Maps), zero for an ARRAY and a FUNCTION (a "bare"
+ * shape: their own fields follow the prefix, and every named property they
+ * have is an overflow slot), and up to BRONZE_ABI_OBJ_OVERFLOW_SLOT for an
+ * instance whose constructor's predicted layout, or a literal's key count,
+ * asked for more.
  *
  * SLOT NUMBERS do not depend on that count, which is what lets generated code
  * split inline from overflow with a constant: a slot below
@@ -862,10 +877,14 @@
  * size it allocates. */
 #define BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET 80
 
-/* FunctionHeader::code — the identity the Math direct-dispatch guard compares
- * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */
+/* FunctionHeader (runtime/fn.h). A function begins with the object prefix —
+ * the shape word and the overflow block, holding its statics (a bare shape:
+ * no inline slots) — and its own fields follow.
+ *
+ * FunctionHeader::code — the identity the Math direct-dispatch guard compares
+ * (see the bronze_math_* registry entries). Pinned in runtime/fn.h. */
 #define BRONZE_ABI_OBJ_FLAGS_FUNCTION    2
-#define BRONZE_ABI_FN_CODE_OFFSET        8
+#define BRONZE_ABI_FN_CODE_OFFSET        24
 
 /* The FunctionHeader fields the inline `new` fast path reads, and the vet
  * byte that gates it. `construct_vetted` is set by exactly one line in the
@@ -877,12 +896,13 @@
  * constructor. Reassigning `.prototype` swaps `instance_shape` in the same
  * write (rt_prop_write.cpp) and never nulls it, so the vetted fast path
  * reads whatever is current. Pinned in runtime/fn.h. */
-#define BRONZE_ABI_FN_ENV_OFFSET            16
-#define BRONZE_ABI_FN_PROTOTYPE_OFFSET      32
-#define BRONZE_ABI_FN_PROPERTIES_OFFSET     40
-#define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 48
-#define BRONZE_ABI_FN_ARITY_OFFSET          64
-#define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    25
+#define BRONZE_ABI_FN_ENV_OFFSET            32
+#define BRONZE_ABI_FN_PROTOTYPE_OFFSET      48
+#define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 56
+#define BRONZE_ABI_FN_ARITY_OFFSET          72
+#define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    41
+/* The whole FunctionHeader, header word included. */
+#define BRONZE_ABI_FN_HEADER_BYTES          88
 /* The u64 that holds `function_flags` in its low byte, `construct_vetted` in
  * the next, and the function's realm slot in its top three bytes: one load
  * answers a direct entry's whole test — the BRONZE_ABI_FN_FLAG_DIRECT_CALL
@@ -890,7 +910,7 @@
  * realm_slot. Right after the code and env words, so a direct entry's three
  * loads share the header's cache line as often as 8-byte alignment allows.
  * Pinned in runtime/fn.h. */
-#define BRONZE_ABI_FN_FLAGS_WORD_OFFSET     24
+#define BRONZE_ABI_FN_FLAGS_WORD_OFFSET     40
 #define BRONZE_ABI_FN_REALM_SHIFT           40
 
 /* Total bytes of a plain object with no internal slots and the default
@@ -921,7 +941,10 @@
 
 /* Every Object-tagged heap allocation has at least this many payload bytes,
  * which is what makes the fast path's unconditional load of the shape word
- * (offset 8..15) safe BEFORE the flags discrimination has passed. Pinned by
- * static_asserts over every Object-tagged header in rt_helpers.cpp. */
+ * (offset 8..15) safe before anything about the object is known. For every
+ * object value that word IS a shape (a sentinel one for a proxy or a module
+ * namespace, which no cache records); for the runtime's internal records it
+ * is a tagged Value, which no Shape* equals. Pinned by static_asserts over
+ * every Object-tagged header in rt_state.cpp. */
 #define BRONZE_ABI_OBJ_MIN_PAYLOAD       8
 

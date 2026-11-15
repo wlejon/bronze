@@ -41,14 +41,14 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 il::Function& ilFn, bool isAwait) {
     const std::string label = takePendingLabel();
 
-    // AN ARRAY IS WALKED BY INDEX. A plain array (`is.plain_array`: no
-    // named-property box, so its `[Symbol.iterator]` is %Array.prototype.values%
+    // AN ARRAY IS WALKED BY INDEX. A plain array (`is.plain_array`: the
+    // bare array shape, so its `[Symbol.iterator]` is %Array.prototype.values%
     // and that iterator's `next` the intrinsic, both frozen) is stepped as the
     // array iterator steps it — `index < length` asked again each time, then
     // Get(array, index) — with the index a value of the loop instead of a
     // field of an iteration record: no record is opened, the step is a compare
     // and the read an inline element load. The question is asked ONCE, where
-    // GetIterator would have read the method; a box the body gives the array
+    // GetIterator would have read the method; a named property the body gives the array
     // later changes nothing, as it would not for an iterator already made.
     // There is nothing to close: an array iterator has no `return`.
     // Everything else opens a record, in the same loop: each of the step and

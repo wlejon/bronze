@@ -20,15 +20,15 @@ namespace bronze::runtime {
 // the per-entry `writable` / `configurable` cover its properties. Everything
 // below is about the kinds that own storage a dictionary cannot describe.
 //
-// An ARRAY and a FUNCTION each already keep a side object for their NAMED
-// properties (`ArrayHeader::properties`, `FunctionHeader::properties`), and
-// freezing has to reach it anyway — a function's statics ARE its own
-// properties, and a match array's `index` and `input` are its. So the level
-// goes in THAT object's dictionary, and neither the array nor the function
-// grows a field: an array that is never frozen pays nothing, and the one load
-// the element write path gains is of a word already in the header's cache line.
-// What a dictionary entry cannot describe — an array's elements, a function's
-// `prototype` slot — is what `Dictionary::level` is for.
+// An ARRAY and a FUNCTION keep their NAMED properties in their own shape, as a
+// plain object does (heap.h carriesShape), and freezing has to reach them
+// anyway — a function's statics ARE its own properties, and a match array's
+// `index` and `input` are its. So the level goes in the receiver's own
+// dictionary, and neither the array nor the function grows a field: an array
+// that is never frozen pays nothing, and the one compare the element write path
+// gains is of its shape word, in the header's own cache line. What a dictionary
+// entry cannot describe — an array's elements, a function's `prototype` slot —
+// is what `Dictionary::level` is for.
 //
 // Deliberately NOT the heap object header. Its `flags` word is not a flags
 // word: it is the `HeapKind` registry (heap.h), read by three dozen equality
@@ -38,13 +38,12 @@ namespace bronze::runtime {
 // would dispatch a frozen array as an unknown kind, or a frozen plain object as
 // neither, which is the collision heap.h's registry exists to have named once.
 //
-// A Map, a Set, a typed array, an ArrayBuffer and a RegExp have no such side
-// object and so no level at all. Every operation that would set one on them is
-// a hard error by name (integrity.cpp), which is what makes the predicates'
-// answers for them TRUE rather than merely convenient: the only route to
+// A heap kind with no shape has no level at all. Every operation that would set
+// one on it is a hard error by name (integrity.cpp), which is what makes the
+// predicates' answers for it TRUE rather than merely convenient: the only route to
 // non-extensible is refused loudly, so "extensible" is a fact and not a guess.
 //
-// A MODULE NAMESPACE has no side object either and is nonetheless not refused,
+// A MODULE NAMESPACE has no level either and is nonetheless not refused,
 // because its state is decided by its KIND rather than by anything done to it.
 // 10.4.6.3 [[IsExtensible]] returns false unconditionally and 10.4.6.5 makes
 // every export non-configurable, so a namespace is non-extensible and sealed
@@ -61,8 +60,8 @@ Dictionary* rtIntegrityTable(Value obj);
 bool rtIsHardened(Value receiver);
 inline bool rtIsExtensible(Value obj) {
     const Dictionary* d = rtIntegrityTable(obj);
-    // No table: open, but for a function lockdown hardened without a box
-    // (fn.h, harden_on_box).
+    // No table: open, but for a function lockdown hardened without statics
+    // (fn.h, harden_on_write).
     if (!d) return !rtIsHardened(obj);
     return d->extensible;
 }
@@ -78,7 +77,7 @@ bool rtIsExtensibleOf(Rooted<Value>& obj);
 inline IntegrityLevel rtIntegrityLevel(Value obj) {
     const Dictionary* d = rtIntegrityTable(obj);
     if (d) return d->level;
-    // A function lockdown hardened without a box (fn.h, harden_on_box).
+    // A function lockdown hardened without statics (fn.h, harden_on_write).
     return rtIsHardened(obj) ? IntegrityLevel::Frozen : IntegrityLevel::Open;
 }
 
@@ -91,12 +90,13 @@ inline IntegrityLevel rtIntegrityLevel(Value obj) {
 SetRefusal rtArrayElementWriteRefusalSlow(Value arrVal, uint32_t index);
 
 // The same question, asked by every element write in the program — so the
-// answer for an array that has never met `Object.freeze` is one load and a
-// not-taken branch, off a field in the header's own cache line. That is the
-// storage decision above paying for itself: an array with no side object has
-// nowhere to have recorded a level, so there is nothing to consult.
+// answer for an array that has never met `Object.freeze` is one compare and a
+// not-taken branch, off the shape word in the header's own cache line. That is
+// the storage decision above paying for itself: an array still at the bare
+// array shape has no named property and so no dictionary to have recorded a
+// level in, so there is nothing to consult.
 inline SetRefusal rtArrayElementWriteRefusal(Value arrVal, uint32_t index) {
-    if (!arrVal.asObject<ArrayHeader>()->properties.isObject()) return SetRefusal::None;
+    if (arrVal.asObject<ArrayHeader>()->isBare()) return SetRefusal::None;
     return rtArrayElementWriteRefusalSlow(arrVal, index);
 }
 
@@ -117,6 +117,10 @@ void rtFreezeObject(Value receiver);
 // the intrinsics is one — is a fatal error naming it, because an intrinsic
 // lockdown could not record would be an intrinsic left mutable.
 void rtHarden(Value receiver);
+// rtHarden without the statics-less deferral: the receiver is frozen and its
+// table marked hardened now. What a deferred function takes the first time it
+// is readied for an own write (rtEnsureFunctionProperties).
+void rtHardenNow(Value receiver);
 bool rtIsHardened(Value receiver);
 
 // The six `Object` members that are SetIntegrityLevel and TestIntegrityLevel

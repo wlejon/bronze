@@ -109,7 +109,7 @@ bool rtObjectIsPlain(Value v) {
     // for every question about a SHAPE it is a plain object. A typed array's
     // elements are the one thing outside its shape, and the own-key walks
     // below list them by hand (`ObjectOwnKeys::TypedArray`).
-    return v.isObject() && HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags);
+    return v.isObject() && HeapKind::shapeNamesPrototype(v.asObject<HeapObjectHeader>()->flags);
 }
 
 namespace {
@@ -254,12 +254,9 @@ bool functionHasOwnKey(Rooted<Value>& fnVal, Value key) {
             return true;
         }
     }
-    // Everything else — a `static` member, a symbol-keyed one — is in the side
-    // object, which is an ordinary shape and answers with the ordinary walk.
-    Value props = fnVal.get().asObject<FunctionHeader>()->properties;
-    if (!props.isObject()) return false;
-    Rooted<Value> propsRoot{props};
-    return rtHasOwnPropertyNamed(propsRoot, key);
+    // Everything else — a `static` member, a symbol-keyed one — is in the
+    // function's own shape, which answers with the ordinary walk.
+    return rtHasOwnPropertyNamed(fnVal, key);
 }
 
 // 20.1.2.13 Object.hasOwn(O, P) — `hasOwnProperty` with the receiver moved into
@@ -424,16 +421,13 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
                 Rooted<Value> key{rtMakeString(builtinName)};
                 out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
             }
-            Value props = fn.get().asObject<FunctionHeader>()->properties;
-            if (props.isObject()) {
-                Rooted<Value> propsRoot{props};
-                const uint64_t call[1] = {propsRoot.get().rawBits()};
-                Rooted<Value> statics{Value(rtObjectGetOwnPropertyNames(0, 0, 1, call))};
-                const uint32_t count = statics.get().asObject<ArrayHeader>()->length;
-                for (uint32_t i = 0; i < count; ++i) {
-                    Rooted<Value> key{statics.get().asObject<ArrayHeader>()->getElem(i)};
-                    out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-                }
+            // The statics, off the function's own shape: arena keys, which
+            // never move, so the list survives the allocations below.
+            const StringKeyList statics = rtOwnStringKeysOrdered(
+                fn.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
+            for (StringHeader* k : statics) {
+                Rooted<Value> key{rtKeyAsValue(k)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
             }
             return out.get().rawBits();
         }
@@ -584,8 +578,7 @@ void ensureObjectIntrinsics() {
     for (const NamespaceFn& fn : kObjectFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
-        Rooted<Value> holder{ns.get().asObject<FunctionHeader>()->properties};
-        holder.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     // The prototype's own members come from builtin_object_proto.cpp, which owns
     // every function whose subject is `this` rather than an argument. They are

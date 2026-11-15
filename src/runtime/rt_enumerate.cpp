@@ -82,21 +82,35 @@ bool indexedLength(Value v, uint32_t& outLength) {
     return false;
 }
 
-// The plain object a receiver's named properties live on: itself, or — for a
-// function — its own-property object, which is where a static member is stored
-// and whose prototype `extends` linked to the base's. Null when the receiver
-// keeps no named properties at all.
+// The object a receiver's named properties live on: itself, for an ordinary
+// object or a function (whose statics are its own shape's). Null when the
+// receiver keeps no named properties this walk reads.
 ObjectHeader* namedPropertyHolder(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
-    if (HeapKind::carriesShape(hdr->flags)) {
+    if (HeapKind::shapeNamesPrototype(hdr->flags) || hdr->flags == HeapKind::Function) {
         return reinterpret_cast<ObjectHeader*>(hdr);
     }
-    if (hdr->flags == HeapKind::Function) {
-        Value props = v.asObject<FunctionHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
     return nullptr;
+}
+
+// The next link of the walk, of any kind: a function's is its statics root
+// (the base class, `extends` set it) and, where that ends, its [[Prototype]]
+// (`FunctionHeader::parent`, %Function.prototype% for an ordinary function);
+// any other holder's is its shape's root.
+Value rawNextLink(const ObjectHeader* holder) {
+    if (!holder->shape) return Value::fromNull();
+    const Value root = holder->shape->prototypeValue();
+    if (holder->header.flags == HeapKind::Function && !root.isObject()) {
+        return reinterpret_cast<const FunctionHeader*>(holder)->parent;
+    }
+    return root;
+}
+
+// Whether the walk reads a link's keys off its shape: an ordinary object or a
+// function.
+bool ordinaryLink(uint16_t kind) {
+    return HeapKind::shapeNamesPrototype(kind) || kind == HeapKind::Function;
 }
 
 // Is this key already in the first `count` elements of `list`? The string
@@ -120,12 +134,11 @@ bool listHasKey(Rooted<Value>& list, uint32_t count, Value key) {
 // takes the trap-driven walk instead.
 bool chainHasProxyLink(const ObjectHeader* holder) {
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
-        if (!holder->shape) return false;
-        const Value proto = holder->shape->prototypeValue();
+        const Value proto = rawNextLink(holder);
         if (!proto.isObject()) return false;
         const auto* hdr = proto.asObject<HeapObjectHeader>();
         if (hdr->flags == ProxyHeader::kFlags) return true;
-        if (!HeapKind::carriesShape(hdr->flags)) return false;
+        if (!ordinaryLink(hdr->flags)) return false;
         holder = reinterpret_cast<const ObjectHeader*>(hdr);
     }
     return false;
@@ -134,11 +147,10 @@ bool chainHasProxyLink(const ObjectHeader* holder) {
 // The next link of an ordinary level: its shape's prototype whatever kind it
 // is, because a Proxy there is a level of this walk rather than its end.
 Value nextLinkOf(ObjectHeader* holder) {
-    if (!holder->shape) return Value::fromNull();
-    const Value proto = holder->shape->prototypeValue();
+    const Value proto = rawNextLink(holder);
     if (!proto.isObject()) return Value::fromNull();
     const uint16_t kind = proto.asObject<HeapObjectHeader>()->flags;
-    if (kind == ProxyHeader::kFlags || HeapKind::carriesShape(kind)) return proto;
+    if (kind == ProxyHeader::kFlags || ordinaryLink(kind)) return proto;
     return Value::fromNull();
 }
 
@@ -170,7 +182,10 @@ void collectChainStringKeys(ObjectHeader* holder, StringKeyList& keys) {
             }
         }
         if (depth == kMaxPrototypeDepth) fatal("prototype chain too deep (a cycle?)");
-        holder = holder->protoAncestor(1);
+        const Value next = rawNextLink(holder);
+        holder = next.isObject() && ordinaryLink(next.asObject<HeapObjectHeader>()->flags)
+                     ? next.asObject<ObjectHeader>()
+                     : nullptr;
     }
 }
 
@@ -548,7 +563,7 @@ uint64_t forInKeys(uint64_t objBits) {
             {
                 const uint64_t call[1] = {src.get().rawBits()};
                 const Value proto(objectGetPrototypeOf(0, 0, 1, call));
-                if (proto.isObject() && HeapKind::carriesShape(proto.asObject<HeapObjectHeader>()->flags) &&
+                if (proto.isObject() && HeapKind::shapeNamesPrototype(proto.asObject<HeapObjectHeader>()->flags) &&
                     !chainHasProxyLink(proto.asObject<ObjectHeader>()) &&
                     proto.asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags) {
                     collectChainStringKeys(proto.asObject<ObjectHeader>(), inherited);
@@ -621,7 +636,10 @@ uint64_t forInKeys(uint64_t objBits) {
     // everything below.
     Shape* cacheShape = nullptr;
     const uint64_t epochNow = protoMutationEpoch();
-    if (holder->shape && holder->chainIsCacheable()) {
+    // Not for a function: its walk leaves the shape chain for its
+    // [[Prototype]] (rawNextLink), which chainIsCacheable does not vouch for.
+    if (holder->shape && holder->header.flags != HeapKind::Function &&
+        holder->chainIsCacheable()) {
         cacheShape = holder->shape;
         ArrayCache::Slot& cached = arrayCache().slots[ArrayCache::indexOf(cacheShape)];
         if (cached.shape == cacheShape && cached.epoch == epochNow) return cached.array.rawBits();

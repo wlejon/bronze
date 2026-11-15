@@ -353,7 +353,7 @@ void ensureErrorClasses() {
     {
         Rooted<Value> ctorRoot{g_errorClasses[0].constructor};
         rtEnsureFunctionProperties(ctorRoot);
-        Rooted<Value> props{ctorRoot.get().asObject<FunctionHeader>()->properties};
+        Rooted<Value> props{ctorRoot.get()};
 
         Rooted<Value> limitKey{rtMakeString("stackTraceLimit")};
         Rooted<Value> limitVal{Value::fromDouble(10.0)};

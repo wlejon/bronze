@@ -42,7 +42,9 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/ic_hot.h"
+#include "runtime/namespace.h"
 #include "runtime/promise.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
@@ -174,7 +176,13 @@ static void visitRootShapes(brass::gc::Tracer& t) {
     for (Shape* root : g_rootShapes) t.visit(prototypeSlot(root));
 }
 
-Shape* rtRootShapeForPrototype(Value proto) {
+static Shape* rootShapeForPrototype(Value proto, bool bare);
+
+Shape* rtRootShapeForPrototype(Value proto) { return rootShapeForPrototype(proto, false); }
+
+Shape* rtBareRootShapeForPrototype(Value proto) { return rootShapeForPrototype(proto, true); }
+
+static Shape* rootShapeForPrototype(Value proto, bool bare) {
     // Memoized, without permanently rooting user prototypes. User prototype
     // root shapes live in `g_userPrototypeShapes`, whose prototype slots a full
     // collection visits WEAKLY: a prototype stays alive while an object built
@@ -186,10 +194,14 @@ Shape* rtRootShapeForPrototype(Value proto) {
     // only through the shape, so it is shaded here.
     if (proto.isPointer()) (void)rtHeap();
     gcShadeEdge(proto);
+    // A bare root (an array's, a function's: no inline Values) and an
+    // ordinary one over the same prototype are different storage, so they
+    // are memoized apart.
+    const uint8_t inlineSlots = bare ? 0 : static_cast<uint8_t>(Shape::kDefaultInlineSlots);
     for (Shape* root : g_userPrototypeShapes) {
-        if (root->prototype.rawBits() == proto.rawBits()) return root;
+        if (root->prototype.rawBits() == proto.rawBits() && root->inline_slots == inlineSlots) return root;
     }
-    Shape* root = Shape::createRoot(rtArena(), proto);
+    Shape* root = bare ? Shape::createBareRoot(rtArena(), proto) : Shape::createRoot(rtArena(), proto);
     g_userPrototypeShapes.push_back(root);
     if (gcHoldsYoung(root->prototype)) {
         g_youngUserPrototypeShapes.add(static_cast<uint32_t>(g_userPrototypeShapes.size() - 1));
@@ -268,6 +280,40 @@ Shape* rtCurrentPlainObjectShape() {
     return g_plainObjectShape;
 }
 
+// The roots of the kinds that are no plain object, one each per thread: an
+// ordinary array's and an ordinary function's (bare roots over null, which
+// need no registration: null is no reference), and the SENTINELS of the kinds
+// no cache may record (Shape::uncacheable).
+static thread_local Shape* g_arrayShape = nullptr;
+static thread_local Shape* g_functionShape = nullptr;
+static thread_local Shape* g_proxyShape = nullptr;
+static thread_local Shape* g_namespaceShape = nullptr;
+
+Shape* rtArrayShape() {
+    if (!g_arrayShape) {
+        g_arrayShape = Shape::createBareRoot(rtArena(), Value::fromNull());
+        // Published for generated code's inline array allocation, as the
+        // plain root is (an arena node: immortal, non-moving).
+        bronze_tls_block_addr()->array_shape = reinterpret_cast<uint64_t>(g_arrayShape);
+    }
+    return g_arrayShape;
+}
+
+Shape* rtFunctionShape() {
+    if (!g_functionShape) g_functionShape = Shape::createBareRoot(rtArena(), Value::fromNull());
+    return g_functionShape;
+}
+
+Shape* rtProxyShape() {
+    if (!g_proxyShape) g_proxyShape = Shape::createSentinel(rtArena());
+    return g_proxyShape;
+}
+
+Shape* rtNamespaceShape() {
+    if (!g_namespaceShape) g_namespaceShape = Shape::createSentinel(rtArena());
+    return g_namespaceShape;
+}
+
 // The sized literal roots, by capacity; the default capacity's entry is
 // g_plainObjectShape. Mirrored into the TLS block's plain_shapes for the
 // inline allocation of a sized literal.
@@ -334,6 +380,18 @@ static_assert(sizeof(ArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_M
 static_assert(sizeof(FunctionHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(ProxyHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(ModuleNamespaceHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+// Every object value begins with the shape word and the overflow block, at
+// the offsets an ObjectHeader has them (heap.h carriesShape).
+static_assert(offsetof(ArrayHeader, shape) == offsetof(ObjectHeader, shape) &&
+              offsetof(ArrayHeader, overflow) == offsetof(ObjectHeader, overflow));
+static_assert(offsetof(FunctionHeader, shape) == offsetof(ObjectHeader, shape) &&
+              offsetof(FunctionHeader, overflow) == offsetof(ObjectHeader, overflow));
+static_assert(offsetof(ProxyHeader, shape) == offsetof(ObjectHeader, shape) &&
+              offsetof(ProxyHeader, overflow) == offsetof(ObjectHeader, overflow));
+static_assert(offsetof(ModuleNamespaceHeader, shape) == offsetof(ObjectHeader, shape) &&
+              offsetof(ModuleNamespaceHeader, overflow) == offsetof(ObjectHeader, overflow));
 
 // ---- Caches with heap Values ------------------------------------------------
 
@@ -907,6 +965,11 @@ void rtTeardownThreadState() {
     rtForgetPublishedCells();
     g_plainObjectShape = nullptr;
     bronze_tls_block_addr()->plain_shape = 0;
+    g_arrayShape = nullptr;
+    bronze_tls_block_addr()->array_shape = 0;
+    g_functionShape = nullptr;
+    g_proxyShape = nullptr;
+    g_namespaceShape = nullptr;
     for (uint32_t n = 0; n <= Shape::kOverflowSlot; ++n) {
         g_plainObjectShapes[n] = nullptr;
         bronze_tls_block_addr()->plain_shapes[n] = 0;

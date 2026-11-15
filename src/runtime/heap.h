@@ -117,21 +117,58 @@ enum : uint16_t {
     Count = 20,
 };
 
-// Does a header of this kind BEGIN with an `ObjectHeader` — a shape word, an
-// overflow word and the inline property slots — whatever it carries after
-// them? A plain object is the one kind with nothing after; a typed array, an
-// ArrayBuffer and a DataView (typed_array.h) and a RegExp (regexp.h) carry
-// their state behind the prefix, exactly so that the ordinary property
-// machinery — the shape walk, the inline caches, expandos, `Object.keys`,
-// [[Prototype]] — reads them as objects while the kind still names them for
-// the element paths and the matcher.
+// Does a header of this kind BEGIN with the object prefix — `{header, Shape*
+// shape @8, overflow block @16}` — whatever it carries after it? Every kind a
+// script can hold as an object value does: a plain object, an array, a
+// function, the byte-store family, a RegExp, a module namespace and a proxy.
+// Only the runtime's internal records (an environment, an iteration record)
+// and the slot and value blocks do not.
+//
+// That prefix is what lets an inline cache hit be one compare: the word at
+// offset 8 of ANY object value is a shape, and an entry naming that shape
+// names a slot every object at that shape holds the key in. A kind whose
+// properties no slot can answer (a proxy, a namespace) sits at a per-kind
+// SENTINEL shape (Shape::uncacheable) that no cache fill records, so it can
+// match no entry.
+inline constexpr bool carriesShape(uint16_t flags) noexcept {
+    return flags == Plain || flags == Array || flags == Function || flags == TypedArray ||
+           flags == ArrayBuffer || flags == DataView || flags == RegExp ||
+           flags == ModuleNamespace || flags == Proxy;
+}
+
+// Is this kind's shape the WHOLE of its ordinary property storage and its
+// [[Prototype]] — the shape's root names the object's prototype, and the
+// ordinary walk (`ObjectHeader::getProp`, the prototype-chain links an
+// inline cache crosses) answers for it? True for a plain object, the
+// byte-store family and a RegExp, which carry their internal state behind
+// the inline slots.
+//
+// Not for an ARRAY or a FUNCTION. Their shape holds their named own
+// properties (an array's expandos, a function's statics), but other own
+// properties come first from the header (an array's elements and `length`,
+// a function's `prototype`, `name` and `length`), and their root names the
+// chain those named properties inherit through, not the [[Prototype]]: null
+// for an ordinary array or function, the base constructor for a derived
+// class, the subclass prototype for an array subclass instance
+// (rt_prop_array.cpp, rt_prop_function.cpp own the ladders). Not for a proxy
+// or a namespace, whose shape is a sentinel.
 //
 // The two questions are different and every gate must ask the one it means:
-// "may I read this as an ObjectHeader" is this; "is this an ordinary object
-// and nothing more" keeps comparing against `Plain`.
-inline constexpr bool carriesShape(uint16_t flags) noexcept {
+// "is the word at offset 8 a shape" is carriesShape; "may the ordinary
+// property machinery read this as an object" is this one; "is this an
+// ordinary object and nothing more" keeps comparing against `Plain`.
+inline constexpr bool shapeNamesPrototype(uint16_t flags) noexcept {
     return flags == Plain || flags == TypedArray || flags == ArrayBuffer || flags == DataView ||
            flags == RegExp;
+}
+
+// Does this kind's own shape list its own NAMED properties (string and symbol
+// keyed, as a shape or dictionary lists them)? Every shape carrier but the two
+// sentinel kinds: the shapeNamesPrototype set, and an array and a function.
+// The question the own-key readers (getOwnPropertySymbols, the descriptor
+// paths, inspection) ask, which do not care what the root names.
+inline constexpr bool holdsNamedProperties(uint16_t flags) noexcept {
+    return shapeNamesPrototype(flags) || flags == Array || flags == Function;
 }
 }  // namespace HeapKind
 
@@ -142,9 +179,9 @@ enum class GcLayout : uint8_t {
     // a Cell.
     Auto,
     // A bronze object or block traced by its header: every Value word of it
-    // (for a kind that carries a shape, the words after the shape pointer; for
-    // an ArrayBuffer, its ordinary-object prefix only; for other RawBytes,
-    // nothing).
+    // (for a kind that carries a shape — every object value — the words after
+    // the shape pointer; for an ArrayBuffer, its ordinary-object prefix only;
+    // for other RawBytes, nothing).
     Cell,
     // No references at all.
     Leaf,

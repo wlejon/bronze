@@ -21,12 +21,7 @@ namespace {
 // the allocation.
 // What generated code's inline array literal (llvm_construct.cpp) writes has
 // to be exactly what `ArrayHeader::create` + `setCapacity` write.
-static_assert(sizeof(ArrayHeader) == BRONZE_ABI_ARRAY_HEADER_BYTES);
-static_assert(offsetof(ArrayHeader, length) == BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
-static_assert(offsetof(ArrayHeader, head_offset) == BRONZE_ABI_ARRAY_HEAD_OFFSET);
-static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
+// (array.h pins the field offsets and the header size.)
 static_assert(HeapKind::ValueBlock == BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK);
 static_assert(HeapKind::Array == BRONZE_ABI_OBJ_FLAGS_ARRAY);
 
@@ -61,16 +56,20 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
 }  // namespace
 
 ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
+    // The shape first: its first use builds the thread's array root, and it
+    // is an arena node, so nothing about it moves.
+    Shape* shape = runtime::rtArrayShape();
     size_t payload_bytes = sizeof(ArrayHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     raw_hdr->flags = HeapKind::Array;
     auto* arr = reinterpret_cast<ArrayHeader*>(raw_hdr);
+    arr->shape = shape;
+    arr->overflow = Value::fromUndefined();
     arr->length = 0;
     arr->capacity = 0;
     arr->head_offset = 0;
     arr->reserved = 0;
     arr->elements = Value::fromUndefined();
-    arr->properties = Value::fromUndefined();
 
     if (initial_capacity > 0) {
         Rooted<Value> self(Value::fromObject(arr));
@@ -78,34 +77,6 @@ ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
         arr = self.get().asObject<ArrayHeader>();
     }
     return arr;
-}
-
-ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
-                                            Rooted<Value>& self) {
-    if (self.get().asObject<ArrayHeader>()->properties.isObject()) {
-        return self.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
-    }
-    // A root shape with NO prototype, memoized so that every array's bucket
-    // shares one transition tree rather than minting a hidden class per match.
-    //
-    // Not `rtPlainObjectShape`, whose prototype is `Object.prototype`: this
-    // object is storage and not a link in the array's chain, and the property
-    // path reads it BEFORE the array's own members (rt_prop.cpp). With
-    // `Object.prototype` behind it the bucket answered every name that object
-    // carries, so a match array's `.constructor` was the `Object` namespace
-    // instead of `Array`, and `.valueOf` shadowed the array's own answer. An
-    // array reaches `Object.prototype` through `Array.prototype`, which is a
-    // separate gap; borrowing it here put the intrinsic in the wrong position
-    // rather than filling that gap.
-    ObjectHeader* props =
-        ObjectHeader::create(heap, arena, runtime::rtRootShapeForPrototype(Value::fromNull()));
-    props->header.flags = HeapKind::Plain;
-    // NUMBERS promises a read in bounds is a load from the block; an array
-    // with a properties object is one whose elements a define could have
-    // given attributes or accessors, so it promises nothing.
-    self.get().asObject<ArrayHeader>()->forgetNumbers();
-    self.get().asObject<ArrayHeader>()->properties = Value::fromObject(props);
-    return props;
 }
 
 void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength) {
@@ -139,7 +110,7 @@ void ArrayHeader::appendRange(Heap& heap, Rooted<Value>& self, Rooted<Value>& sr
     const uint32_t at = self.get().asObject<ArrayHeader>()->length;
     const bool numbers =
         src.get().asObject<ArrayHeader>()->elementsAreNumbers() &&
-        (at == 0 ? !self.get().asObject<ArrayHeader>()->properties.isPointer()
+        (at == 0 ? self.get().asObject<ArrayHeader>()->isBare()
                  : self.get().asObject<ArrayHeader>()->elementsAreNumbers());
     // Grows the block and leaves holes where the run goes; it allocates, so
     // every pointer is taken after it.
@@ -211,7 +182,7 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
 
 bool ArrayHeader::claimNumbers() noexcept {
     if (elementsAreNumbers()) return true;
-    if (!properties.isUndefined() || length > BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH) return false;
+    if (!isBare() || length > BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH) return false;
     if (length > 0 && !elements.isPointer()) return false;
     const Value* cur = std::as_const(*this).elementsData();
     for (uint32_t i = 0; i < length; ++i) {

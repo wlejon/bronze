@@ -117,7 +117,7 @@ static ReceiverRoute receiverRoute(Value target) {
     // ordinary chain, so it takes the plain route — for a NAME. A typed
     // array's numeric keys never reach its shape (10.4.5.4 answers them from
     // the elements), and `typedArrayNumericKey` below diverts those first.
-    if (HeapKind::carriesShape(kind)) return ReceiverRoute::Plain;
+    if (HeapKind::shapeNamesPrototype(kind)) return ReceiverRoute::Plain;
     switch (kind) {
         case HeapKind::Function: return ReceiverRoute::Function;
         case HeapKind::Proxy: return ReceiverRoute::Proxy;
@@ -305,16 +305,11 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
     }
 
     // The setter, run by the funnel with the receiver bound as `this`. A
-    // FUNCTION target keeps its writable properties in the statics object, and
-    // stepping onto it is what puts the receiver in front of `setProp`.
-    Rooted<Value> holder{target.get()};
-    if (receiverRoute(target.get()) == ReceiverRoute::Function) {
-        Value props = target.get().asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return SetRefusal::NoSetter;
-        holder.set(props);
-    }
+    // FUNCTION target keeps its writable properties in its own shape, so the
+    // ordinary write over it (its statics chain) is what puts the receiver in
+    // front of `setProp`.
     SetRefusal refusal = SetRefusal::None;
-    holder.get().asObject<ObjectHeader>()->setProp(
+    target.get().asObject<ObjectHeader>()->setProp(
         rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
         /*defineOwn=*/false, receiver.slot_ptr(), &refusal);
     return refusal;
@@ -345,19 +340,23 @@ static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
             return rtProxyGet(target.get(), key.get(), receiver.get()).rawBits();
         case ReceiverRoute::Function: {
             // A function's own `name`, `length` and `prototype` are data
-            // properties in the header, so only the statics object can hold an
-            // accessor — and reaching it directly is what makes the receiver
-            // arrive at `getProp`. It is created on demand, so a function that
-            // has never had a static has nothing to read and the target's own
-            // answer stands.
-            Value props = target.get().asObject<FunctionHeader>()->properties;
-            if (!props.isObject()) return bronze_elem_get(argv[0], argv[1]);
-            Rooted<Value> holder{props};
+            // properties in the header, so only its statics (own, or up the
+            // statics chain) can hold an accessor — and reading them off the
+            // holder is what makes the receiver arrive at `getProp`. A key no
+            // static holds is the target's own answer.
             key.set(rtToPropertyKey(key));
-            return holder.get()
-                .asObject<ObjectHeader>()
-                ->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr())
-                .rawBits();
+            const PropertyKey pkey = PropertyKey::fromValue(key.get());
+            ObjectHeader* fnObj = target.get().asObject<ObjectHeader>();
+            for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+                ObjectHeader* holder = depth == 0 ? fnObj : rtStaticsAncestor(fnObj, depth);
+                if (!holder) break;
+                PropertyInfo info;
+                if (holder->shape && holder->shape->lookupProperty(pkey, info)) {
+                    return holder->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr())
+                        .rawBits();
+                }
+            }
+            return bronze_elem_get(target.get().rawBits(), key.get().rawBits());
         }
         case ReceiverRoute::Plain:
             // No inline cache, for `bronze_super_get`'s reason: an entry

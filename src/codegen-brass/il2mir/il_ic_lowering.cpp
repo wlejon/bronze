@@ -14,13 +14,10 @@ constexpr int64_t kIcOwnDataLimit = int64_t{1} << 32;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-static_assert((kPlainHeaderLow & 1) == 1 && BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_STEP % 2 == 0,
-              "the TLS block stands in for a non-object only while no epoch reads as a header");
 
-// A non-object's header and shape words, for a module that runs in this
-// process: the zeroed block's header is no object's, so its reads refuse
-// every way.
+// A mapped block a non-object's shape is read through, for a module that runs
+// in this process: its word is never compared (the object test is), only
+// loaded.
 alignas(16) const uint64_t kNotAnObject[4] = {};
 } // namespace
 
@@ -83,11 +80,10 @@ Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t k
 
 Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
     // The bronze object model as the inline hit reads it (bronze_abi.h):
-    // a NaN-boxed Value whose tag is BRONZE_ABI_TAG_OBJECT, whose header
-    // word's low half is (flags << 16) | tag — so one i32 compare against
-    // the tag alone says "an object, and a PLAIN one" — the Shape* at
-    // BRONZE_ABI_OBJ_SHAPE_OFFSET, and the inline slots from
-    // BRONZE_ABI_OBJ_SLOTS_OFFSET. The site's way 0 is InlineCache: the
+    // a NaN-boxed Value whose tag is BRONZE_ABI_TAG_OBJECT, the Shape* at
+    // BRONZE_ABI_OBJ_SHAPE_OFFSET of EVERY object kind (heap.h carriesShape:
+    // a plain object, an array, a function, a proxy's sentinel alike, so no
+    // kind test), and the inline slots from BRONZE_ABI_OBJ_SLOTS_OFFSET. The site's way 0 is InlineCache: the
     // shape at 0 and the (depth << 32 | slot) word at 8, which is below
     // 2^32 exactly when the entry names an own data property — the
     // accessor, absent, f64 and depth bits all live in the high half, so the
@@ -96,9 +92,9 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // match proves is as large as the shape needs (slot_base).
     //
     // The guard is ONE branch, not a tag branch followed by a shape
-    // branch: the header and shape loads go through a base that a select
-    // steers at a mapped block when the value is not an object, so nothing
-    // is ever dereferenced through a non-pointer payload (receiver_shape).
+    // branch: the shape load goes through a base that a select steers at a
+    // mapped block when the value is not an object, so nothing is ever
+    // dereferenced through a non-pointer payload (receiver_shape).
     // A way-0 miss is `bronze_prop_get`, which answers from the site's
     // other ways and fills it.
     count_shape_turn(b, obj, site);
@@ -111,13 +107,13 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(bb_current);
-    Value* plain = nullptr;
+    Value* is_object = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
+    receiver_shape(b, obj, is_object, ptr, shape);
     Value* hit = nullptr;
     Value* slot_word = nullptr;
-    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
+    emit_mono_slot_guard(b, shape, is_object, site, hit, slot_word);
     if (spec_) {
         spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, key_tag(key_index));
     } else {
@@ -184,41 +180,40 @@ void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fas
 
 void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSite& site) {
     if (!site || !shape_turn_fn_ || slow_sites_.size() != 1) return;
-    // Zero for a receiver that is no plain object: the harvest reads the
-    // word as a shape's address.
-    Value* plain = nullptr;
+    // Zero for a receiver that is no object: the harvest reads the word as a
+    // shape's address.
+    Value* is_object = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
-    shape_turn_fn_(b, slow_sites_[0], b.build_select(plain, shape, b.build_iconst_i64(0)));
+    receiver_shape(b, obj, is_object, ptr, shape);
+    shape_turn_fn_(b, slow_sites_[0], b.build_select(is_object, shape, b.build_iconst_i64(0)));
 }
 
-void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape) {
+void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& is_object, Value*& ptr, Value*& shape) {
     // The payload is the Value with its object tag XORed away, which is below
     // 2^48 exactly when the tag was the object tag.
     ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
-    // A non-object reads through a mapped block whose header word is no
-    // object's, so the header compare alone refuses it and `is_obj` has the
-    // select for its one use, which the backend fuses with the compare.
-    // Compiled code has the TLS block in its pinned register, whose first
-    // word is the even proto epoch (bronze_abi.h); a module that runs in this
-    // process under the tiered pipeline (feedback-driven, where any receiver
-    // reaches here and the fast interpreter runs it too) uses a static zeroed
-    // block of this process instead.
+    // A non-object reads its shape word through a mapped block instead, and
+    // `is_object` — the guard's one kind fact, since every object's word at
+    // BRONZE_ABI_OBJ_SHAPE_OFFSET is a shape and an empty way (shape 0) or a
+    // sentinel shape matches no object's — refuses it.
+    // Compiled code has the TLS block in its pinned register; a module that
+    // runs in this process under the tiered pipeline (feedback-driven, where
+    // any receiver reaches here and the fast interpreter runs it too) uses a
+    // static zeroed block of this process instead.
     Value* not_object = in_process_
         ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
         : b.build_pinned_tls_read();
-    // Past a block that proved the value plain (PROVEN FACTS) both tests are
+    // Past a block that proved the value plain (PROVEN FACTS) the test is
     // the constant.
     Value* proven = proven_plain(b, obj);
-    Value* base = b.build_select(proven ? b.build_or(proven, is_obj) : is_obj, ptr, not_object);
-    plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
-    if (proven) plain = b.build_or(proven, plain);
+    is_object = proven ? b.build_or(proven, is_obj) : is_obj;
+    Value* base = b.build_select(is_object, ptr, not_object);
     shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
 }
 
-void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
+void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* is_object, const IcSite& site,
                                                   Value*& hit, Value*& slot_word, Value* number_store) {
     Value* cached_shape = way0_shape(b, site);
     Value* shape_match = b.build_eq(shape, cached_shape);
@@ -232,7 +227,7 @@ void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Valu
         own_data = b.build_or(own_data, b.build_and(dbl, number_store));
         slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
     }
-    hit = plain ? b.build_and(plain, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
+    hit = is_object ? b.build_and(is_object, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
 }
 
 // The base that, with slot_word * 8 + BRONZE_ABI_OBJ_SLOTS_OFFSET, addresses
@@ -293,14 +288,14 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Value* hit = nullptr;
     Value* ptr = nullptr;
     Value* slot_word = nullptr;
-    Value* plain = nullptr;
+    Value* is_object = nullptr;
     Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
+    receiver_shape(b, obj, is_object, ptr, shape);
     // A Number's store also hits a double slot's way (its bits are the
     // double's); anything else there misses to the helper, which converts an
     // Int32 box or generalizes the slot.
     Value* number_store = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word, number_store);
+    emit_mono_slot_guard(b, shape, is_object, site, hit, slot_word, number_store);
     // A write's tag is its key after '=', apart from the reads of it.
     const std::string tag = "=" + std::string(key_tag(key_index));
     if (spec_) {

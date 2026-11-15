@@ -2,7 +2,7 @@
 #define BRONZE_GLOBAL_STATICS_H
 
 // Which of the globals bronze provides keep their members in a real,
-// shape-indexed statics box — and which answer from a C table instead.
+// shape-indexed statics (the function's own shape) — and which answer from a C table instead.
 //
 // This is NOT part of the generated-code ABI; nothing here appears in a
 // signature generated code touches, and the ABI fingerprint hashes
@@ -40,7 +40,7 @@
 namespace bronze::abi {
 
 // Each name here is a provided global that IS a function object, whose
-// members are own data properties of its statics box, and which
+// members are own data properties on its own shape, and which
 // `rtIntrinsicConstructorName` does not refuse. Verified per entry by the
 // runtime test named above; `Object` is the one that pays for the mechanism.
 inline constexpr std::string_view kStaticsBoxGlobals[] = {

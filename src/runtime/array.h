@@ -13,8 +13,38 @@ namespace bronze {
 struct ObjectHeader;
 class Shape;
 
+namespace runtime {
+// The shape every array starts at: a bare root (no inline Values, shape.h
+// createBareRoot) over null, one per thread, published into the TLS block's
+// `array_shape` for generated code's inline array allocation (rt_state.cpp).
+Shape* rtArrayShape();
+}  // namespace runtime
+
+// An Array exotic object (ECMA-262 10.4.2). It begins with the object prefix
+// every object value has (heap.h carriesShape): the header, the shape word and
+// the overflow block, so `a.foo` is an ordinary shape-and-slot property and a
+// cache entry for one is the entry a plain object's would be. The array's own
+// fields follow the prefix where a plain object's inline slots would be — its
+// shape is a BARE one (no inline Values), so every named property it numbers
+// lives in the overflow block.
 struct ArrayHeader {
     HeapObjectHeader header;
+    // The array's NAMED properties — every own property that is neither an
+    // element nor `length` — exactly as a plain object's are: a match array's
+    // `index`, `input` and `groups` (ECMA-262 22.2.7.2 steps 16-28), an
+    // `arguments` object's `callee`, and anything a program assigned.
+    //
+    // The shape's root is NOT the array's [[Prototype]] (heap.h
+    // shapeNamesPrototype): it is null for an ordinary array, whose chain is
+    // %Array.prototype% answered beside the value (the method table,
+    // rt_prop.cpp), and the subclass prototype for a subclass instance or an
+    // array given one by `setPrototypeOf` (kHasCustomPrototype; runtime/
+    // native_base.h). The property path reads the named properties BEFORE the
+    // array's own members (rt_prop_array.cpp owns every rule about them). An
+    // ordinary array sits at runtime::rtArrayShape(), which is what `isBare`
+    // asks.
+    Shape* shape{nullptr};
+    HeapValue overflow;
     uint32_t length{0};
     uint32_t capacity{0};
     uint32_t head_offset{0};
@@ -25,27 +55,21 @@ struct ArrayHeader {
     // pointing at this header stays valid. (Inline elements would have to
     // move the array object itself, invalidating every reference to it.)
     HeapValue elements;
-    // Undefined, or a plain object holding this array's NAMED properties —
-    // every own property of the array that is neither an element nor `length`.
-    //
-    // An array is an object, so `a.foo = 1` is ordinary JavaScript and three.js
-    // writes one on the render path; the storage was already here for the
-    // runtime's own use, since a match array is an array of captures that also
-    // carries `index`, `input` and `groups` (ECMA-262 22.2.7.2 steps 16-28) and
-    // an `arguments` object carries `callee`. Created only when something writes
-    // one, so an ordinary array is the same size it was and the element path
-    // loads nothing extra.
-    //
-    // The object has a NULL prototype: it is storage, not a link in the array's
-    // chain, and the property path reads it before the array's own members
-    // (rt_prop_array.cpp owns every rule about what is in here).
-    HeapValue properties;
+
+    // The array as the object its prefix makes it, for the shape machinery.
+    ObjectHeader* object() noexcept { return reinterpret_cast<ObjectHeader*>(this); }
+    const ObjectHeader* object() const noexcept { return reinterpret_cast<const ObjectHeader*>(this); }
+
+    // An array with no named property, no prototype of its own and no
+    // integrity level recorded: still at the thread's array shape. What every
+    // fast path that answers from the elements and the method table alone asks
+    // (the method cache, the push/pop fast paths, the NUMBERS claim).
+    bool isBare() const { return shape == runtime::rtArrayShape(); }
 
     static constexpr uint32_t kHasCustomPrototype = 1;
     // NUMBERS: every element below `length` is a Number in its double form
-    // (`Value::isNumber()`: no hole, no Int32 box, nothing tagged) and the
-    // array has no named-properties object, so a constant-index read in bounds
-    // is a load of a Number. Generated code spends it to skip the per-element
+    // (`Value::isNumber()`: no hole, no Int32 box, nothing tagged), so a
+    // constant-index read in bounds is a load of a Number. Generated code spends it to skip the per-element
     // number tests of a kernel's reads (lower/guard_region.h, "NUMBER ARRAYS").
     //
     // SET only by `claimNumbers`, which scans, so the bit is never more than a
@@ -61,20 +85,16 @@ struct ArrayHeader {
     bool elementsAreNumbers() const noexcept { return (reserved & kElementsAreNumbers) != 0; }
     void forgetNumbers() noexcept { reserved &= ~kElementsAreNumbers; }
 
-    // Sets NUMBERS when it is true now: an array with no properties object
-    // whose every element below `length` is a Number. An Int32-boxed element
+    // Sets NUMBERS when it is true now: a bare array (isBare) whose every
+    // element below `length` is a Number. An Int32-boxed element
     // (what a bitwise operator produces) is rewritten to the same Number in
     // double form first — the same value, so nothing can tell — because the
     // bit is about the representation the reads assume. Arrays longer than
     // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH are not scanned. Returns the bit.
     bool claimNumbers() noexcept;
 
+    // An ordinary array, at runtime::rtArrayShape().
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
-
-    // The named-property object, created if this is the first one. Allocates,
-    // so the array arrives through a root and `this` must not be reused.
-    static ObjectHeader* ensureProperties(Heap& heap, NonMovingArena& arena,
-                                          Rooted<Value>& self);
 
     // `undefined` for an index past the end AND for a HOLE — the internal
     // sentinel is never user-visible, so reading a deleted element answers
@@ -212,11 +232,13 @@ struct ArrayHeader {
     }
 };
 
+static_assert(offsetof(ArrayHeader, shape) == BRONZE_ABI_OBJ_SHAPE_OFFSET);
+static_assert(offsetof(ArrayHeader, overflow) == BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
 static_assert(offsetof(ArrayHeader, length) == BRONZE_ABI_ARRAY_LENGTH_OFFSET);
 static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
 static_assert(offsetof(ArrayHeader, head_offset) == BRONZE_ABI_ARRAY_HEAD_OFFSET);
 static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
 static_assert(offsetof(ArrayHeader, reserved) == BRONZE_ABI_ARRAY_BITS_OFFSET);
+static_assert(sizeof(ArrayHeader) == BRONZE_ABI_ARRAY_HEADER_BYTES);
 
 }  // namespace bronze

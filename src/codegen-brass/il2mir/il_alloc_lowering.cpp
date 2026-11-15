@@ -65,7 +65,7 @@ constexpr size_t GC_HDR_BYTES = 8;
 
 // Allocation sizes (bronze_abi.h)
 constexpr size_t PLAIN_OBJECT_BYTES   = 56; // BRONZE_ABI_PLAIN_OBJECT_BYTES
-constexpr size_t ARRAY_HEADER_BYTES   = 40; // BRONZE_ABI_ARRAY_HEADER_BYTES
+constexpr size_t ARRAY_HEADER_BYTES   = BRONZE_ABI_ARRAY_HEADER_BYTES;
 constexpr size_t ARRAY_MIN_CAPACITY   = 4;  // BRONZE_ABI_ARRAY_MIN_CAPACITY
 constexpr size_t HDR_BYTES            = 8;  // BRONZE_ABI_HDR_BYTES
 
@@ -89,7 +89,12 @@ constexpr uint64_t VALUE_TAG_HOLE        = TAG_HOLE << VALUE_TAG_SHIFT;
 // Compile-time static assertions verifying Bronze ABI invariants
 static_assert(TLS_ALLOC_LIMIT_OFF == TLS_ALLOC_CURSOR_OFF + 8, "Bronze TLS alloc window is {cursor, limit}");
 static_assert(PLAIN_OBJECT_BYTES == 56, "Bronze plain object size must be 56 bytes");
-static_assert(ARRAY_HEADER_BYTES == 40, "Bronze array header size must be 40 bytes");
+static_assert(ARRAY_HEADER_BYTES == 48, "Bronze array header size must be 48 bytes");
+static_assert(BRONZE_ABI_OBJ_SHAPE_OFFSET == 8 && BRONZE_ABI_OBJ_OVERFLOW_OFFSET == 16 &&
+                  BRONZE_ABI_ARRAY_LENGTH_OFFSET == 24 && BRONZE_ABI_ARRAY_CAPACITY_OFFSET == 28 &&
+                  BRONZE_ABI_ARRAY_HEAD_OFFSET == 32 && BRONZE_ABI_ARRAY_BITS_OFFSET == 36 &&
+                  BRONZE_ABI_ARRAY_ELEMS_OFFSET == 40,
+              "the inline array allocation writes the header word by word");
 static_assert(ARRAY_MIN_CAPACITY == 4, "Bronze array min capacity must be 4");
 static_assert(HDR_BYTES == 8, "Bronze header bytes must be 8");
 static_assert(OBJ_FLAGS_PLAIN == 0, "Bronze HeapKind::Plain must be 0");
@@ -257,12 +262,16 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     size_t total_needed = GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES + elem_block_bytes;
 
     Value* tls_addr = bronze_tls_addr(b);
+    // The thread's bare array shape, zero until the runtime has made it
+    // (rtArrayShape publishes it): the fallback builds it.
+    Value* array_shape = b.build_load(Type::i64(), tls_addr, BRONZE_TLS_ARRAY_SHAPE_OFF);
+    Value* has_shape = b.build_ne(array_shape, b.build_iconst_i64(0));
     Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
     Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
 
     Value* new_cursor = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(total_needed)));
     Value* can_alloc = b.build_ule(new_cursor, cur_limit);
-    b.build_br_if(can_alloc, bb_fast, bb_fallback);
+    b.build_br_if(b.build_and(can_alloc, has_shape), bb_fast, bb_fallback);
 
     // Fast path
     b.position_at_end(bb_fast);
@@ -277,26 +286,29 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
         cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES)));
 
     // 1. ArrayHeader (at arr_ptr):
-    // Word 0 (offset 0): size=40, flags=HeapKind::Array (1), tag=Tag::Object (0xFFF1)
+    // Word 0 (offset 0): size=48, flags=HeapKind::Array (1), tag=Tag::Object (0xFFF1)
     constexpr uint64_t ARR_W0 = make_header_word(ARRAY_HEADER_BYTES, OBJ_FLAGS_ARRAY, TAG_OBJECT);
     b.build_store(Type::i64(), arr_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(ARR_W0)));
 
-    // Word 1 (offset 8): length (lower 32) = param_count, capacity (upper 32) = cap
-    uint64_t arr_w1 = static_cast<uint64_t>(param_count) | (static_cast<uint64_t>(cap) << 32);
-    b.build_store(Type::i64(), arr_ptr, 8, b.build_iconst_i64(static_cast<int64_t>(arr_w1)));
+    // Word 1 (offset 8): the bare array shape; word 2 (offset 16): the
+    // overflow block, undefined (ArrayHeader::create).
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, array_shape);
+    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET, undef_val);
 
-    // Word 2 (offset 16): head_offset=0, reserved=0
-    b.build_store(Type::i64(), arr_ptr, 16, b.build_iconst_i64(0));
+    // Word 3 (offset 24): length (lower 32) = param_count, capacity (upper 32) = cap
+    uint64_t arr_w3 = static_cast<uint64_t>(param_count) | (static_cast<uint64_t>(cap) << 32);
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET,
+                  b.build_iconst_i64(static_cast<int64_t>(arr_w3)));
 
-    // Word 3 (offset 24): elements = Tag::Object boxed elem_ptr
+    // Word 4 (offset 32): head_offset=0, reserved=0
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET, b.build_iconst_i64(0));
+
+    // Word 5 (offset 40): elements = Tag::Object boxed elem_ptr
     Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
     Value* masked_elem_ptr = b.build_and(elem_ptr, ptr_mask);
     Value* elem_val = b.build_or(masked_elem_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
-    b.build_store(Type::i64(), arr_ptr, 24, elem_val);
-
-    // Word 4 (offset 32): properties = Value::fromUndefined() (0xFFF6000000000000ULL)
-    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
-    b.build_store(Type::i64(), arr_ptr, 32, undef_val);
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET, elem_val);
 
     // 2. Elements Block (at elem_ptr):
     // Word 0 (offset 0): size=elem_block_bytes, flags=HeapKind::ValueBlock (19), tag=Tag::Object (0xFFF1)

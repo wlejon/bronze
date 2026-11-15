@@ -44,9 +44,12 @@ namespace bronze {
 ModuleNamespaceHeader* ModuleNamespaceHeader::create(Heap& heap, uint32_t count) {
     const size_t payload =
         sizeof(ModuleNamespaceHeader) - sizeof(HeapObjectHeader) + 2 * size_t(count) * sizeof(Value);
+    Shape* sentinel = runtime::rtNamespaceShape();
     HeapObjectHeader* raw = heap.allocate(payload, Tag::Object);
     auto* ns = reinterpret_cast<ModuleNamespaceHeader*>(raw);
     ns->header.flags = kFlags;
+    ns->shape = sentinel;
+    ns->overflow = Value::fromUndefined();
     ns->count = count;
     ns->reserved = 0;
     for (uint32_t i = 0; i < 2 * count; ++i) ns->entries()[i] = Value::fromUndefined();

@@ -43,21 +43,19 @@ namespace bronze::runtime {
 
 namespace {
 
-// The plain object a receiver keeps its NAMED properties in: itself, or a
-// function's side object of statics. Null when the receiver has nowhere for one
-// to be, which makes the delete a no-op that still answers true.
+// The object a receiver keeps its NAMED properties in: itself, for an ordinary
+// object or a function (its statics). Null when the receiver has nowhere for
+// one to be, which makes the delete a no-op that still answers true.
 ObjectHeader* namedPropertyOwner(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
-    if (HeapKind::carriesShape(hdr->flags)) return reinterpret_cast<ObjectHeader*>(hdr);
-    if (hdr->flags == HeapKind::Function) {
-        Value props = v.asObject<FunctionHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    if (HeapKind::shapeNamesPrototype(hdr->flags) || hdr->flags == HeapKind::Function) {
+        return reinterpret_cast<ObjectHeader*>(hdr);
     }
     return nullptr;
 }
 
-// A global constructor's table statics are written into its box before a
+// A global constructor's table statics are written into its own slots before a
 // delete looks there (rtPrepareFunctionOwnWrite), so `delete Array.isArray`
 // removes the one a read finds. Every other receiver is returned as is.
 // Allocates only on a constructor's first write, and the caller holds no raw

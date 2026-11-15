@@ -470,15 +470,15 @@ enum class Op : uint8_t {
     // instrument that could change control flow would be measuring itself.
     FeedbackRecord,
     // a: bool = is.plain_array b. Whether `b` is an Array exotic object with
-    // no named-property box: no own named property, no integrity level, the
+    // the bare array shape: no own named property, no integrity level, the
     // realm's Array.prototype as its [[Prototype]] (a subclass instance, a
-    // replaced prototype and every integrity level give an array a box,
+    // replaced prototype and every integrity level move an array off it,
     // runtime/array.h). Such an array's [[Get]] of an Array.prototype method
     // answers the intrinsic function, since Array.prototype refuses every
     // change (rt_prop_write.cpp). The guard of a call site's direct edge into
     // the program's copy of a self-hosted builtin (lower/selfhost_merge.cpp).
     // NOT a fact about the value: a write of a named property gives the
-    // array a box, so it is never merged, hoisted or carried across anything.
+    // array a new shape, so it is never merged, hoisted or carried across anything.
     // Header loads only: cannot throw, cannot collect.
     IsPlainArray,
 

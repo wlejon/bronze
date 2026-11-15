@@ -1,8 +1,8 @@
 // `Function` and `Function.prototype` — the Function global constructor and
 // its prototype object (ECMA-262 20.2), holder of `call`, `apply`, `bind`,
-// `toString`, `constructor` and `[Symbol.hasInstance]` as own properties of
-// its statics box, which is where every function object keeps its own named
-// properties and where the function-receiver read ladder ends
+// `toString`, `constructor` and `[Symbol.hasInstance]` as its own statics,
+// which is where every function object keeps its own named properties and
+// where the function-receiver read ladder ends
 // (rt_prop_function.cpp).
 //
 // `Function.prototype` is itself a callable function object (20.2.3) that
@@ -121,20 +121,19 @@ void ensureFunctionIntrinsics() {
     rtHeap().add_permanent_root(&g_functionPrototype);
     rtHeap().add_permanent_root(&g_functionConstructor);
 
-    // The members live in the prototype's own statics box, which is where
-    // every function object keeps its own named properties; every function
-    // receiver's read ladder ends at this box (rt_prop_function.cpp), so
+    // The members are the prototype's own statics, which is where every
+    // function object keeps its own named properties; every function
+    // receiver's read ladder ends at them (rt_prop_function.cpp), so
     // `f.call` finds the same slot `Object.getOwnPropertyDescriptor(
     // Function.prototype, "call")` describes.
     rtEnsureFunctionProperties(proto);
-    Rooted<Value> box{proto.get().asObject<FunctionHeader>()->properties};
     {
         // 20.2.3.1, a DEFINITION so it does not write through.
         Rooted<Value> key{rtMakeString("constructor")};
-        box.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
     }
-    rtDefineMethods(box, kFunctionMethods, std::size(kFunctionMethods));
+    rtDefineMethods(proto, kFunctionMethods, std::size(kFunctionMethods));
     // 20.2.3.6: { writable: false, enumerable: false, configurable: false },
     // the one member of the five that a program cannot replace — 7.3.22
     // OrdinaryHasInstance is what `instanceof` runs, and a non-writable hook
@@ -142,7 +141,7 @@ void ensureFunctionIntrinsics() {
     Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
     Rooted<Value> hasInstFn{
         rtNativeFunction(rtFunctionHasInstanceBuiltin, 1, "[Symbol.hasInstance]", 1)};
-    box.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), hasInstKey, hasInstFn,
+    proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), hasInstKey, hasInstFn,
                                                 /*ic=*/nullptr, /*enumerable=*/false,
                                                 /*defineOwn=*/true, /*receiver=*/nullptr,
                                                 /*refused=*/nullptr, /*writable=*/false,

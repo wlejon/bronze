@@ -108,8 +108,9 @@ bool refuseDefine(bool throwOnRefusal, const std::string& message) {
 // 28.1.3 returns false). `throwOnRefusal` chooses which of the two this call
 // is; the errors of the DECODE are raised by the decode, above this.
 //
-// `target` must already be the object that HOLDS the properties — a function's
-// statics box rather than the function — and `name` must already be interned.
+// `target` is the receiver itself, whose own shape holds the properties (a
+// function's statics, an array's named properties); `name` must already be
+// interned.
 static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
                                    const DecodedDescriptor& d, Rooted<Value>& value,
                                    Rooted<Value>& getter, Rooted<Value>& setter,
@@ -424,9 +425,7 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
         return true;
     }
 
-    Rooted<Value> holder{
-        Value::fromObject(ArrayHeader::ensureProperties(rtHeap(), rtArena(), self))};
-    return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
+    return applyDecodedDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
 }
 
 // 6.2.6.4 FromPropertyDescriptor over a DECODED descriptor: a fresh ordinary
@@ -557,7 +556,7 @@ static bool applyFunctionDescriptor(Rooted<Value>& self, PropertyKey name,
 }
 
 // 10.1.6.3, 10.4.2.1, 10.4.5.3 or 10.5.6, by the receiver's kind, over a table
-// the receiver keeps somewhere: a function's statics box, an array's three
+// the receiver keeps somewhere: a function's own shape, an array's three
 // stories above, a typed array's elements, a RegExp's `lastIndex`, a proxy's
 // `defineProperty` trap, everything else its own shape.
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
@@ -584,15 +583,13 @@ static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const Decoded
         Rooted<Value> desc{descriptorObjectOf(d, value, getter, setter)};
         return rtProxyDefineOwnProperty(self.get(), key.get(), desc.get(), throwOnRefusal);
     }
-    Rooted<Value> holder{self.get()};
     if (kind == HeapKind::Function) {
         bool answered = false;
         const bool ok = applyFunctionDescriptor(self, name, d, value, throwOnRefusal, answered);
         if (answered) return ok;
         rtPrepareFunctionOwnWrite(self);
-        holder.set(self.get().asObject<FunctionHeader>()->properties);
     }
-    return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
+    return applyDecodedDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
 }
 
 // 7.3.7 CreateDataPropertyOrThrow's general case (rt_prop_define.cpp takes the

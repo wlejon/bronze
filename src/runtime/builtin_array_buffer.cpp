@@ -44,14 +44,14 @@ namespace bronze::runtime {
 namespace {
 
 // The intrinsic and its witnesses: the shape `ArrayBuffer.prototype` was left
-// with, the slot its `constructor` sits in, and the constructor's box shape —
+// with, the slot its `constructor` sits in, and the constructor's own shape —
 // what `slice` compares to skip 7.3.22's two reads (rt_receivers.h).
 struct BufferIntrinsics {
     Value ctor = Value::fromUndefined();
     Value proto = Value::fromUndefined();
     Shape* instanceShape = nullptr;
     Shape* protoPristineShape = nullptr;
-    Shape* ctorBoxPristineShape = nullptr;
+    Shape* ctorPristineShape = nullptr;
     uint32_t constructorSlot = 0;
 };
 
@@ -248,8 +248,8 @@ Value bufferSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
         buf->object.shape == g_buffer.instanceShape &&
         proto->shape == g_buffer.protoPristineShape &&
         proto->getSlot(g_buffer.constructorSlot).rawBits() == g_buffer.ctor.rawBits() &&
-        g_buffer.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape ==
-            g_buffer.ctorBoxPristineShape;
+        g_buffer.ctor.asObject<ObjectHeader>()->shape ==
+            g_buffer.ctorPristineShape;
     if (pristine) return rtNewArrayBuffer(newLen);
 
     Rooted<Value> ctorKey{rtMakeString("constructor")};
@@ -368,15 +368,14 @@ void ensureArrayBufferIntrinsics() {
     rtDefineToStringTag(proto, "ArrayBuffer");
 
     // 25.1.5: `isView` and 25.1.5.3's `@@species` accessor, ordinary own
-    // properties of the constructor's box — where a subclass reaches them by
-    // the chain `extends` builds.
+    // properties of the constructor — where a subclass reaches them by the
+    // statics chain `extends` builds.
     rtEnsureFunctionProperties(ctor);
     {
-        Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
         const NativeMethod statics[] = {{"isView", arrayBufferIsView, 1, 1}};
-        rtDefineMethods(box, statics, std::size(statics));
+        rtDefineMethods(ctor, statics, std::size(statics));
         rtDefineSpeciesGetter(ctor);
-        g_buffer.ctorBoxPristineShape = box.get().asObject<ObjectHeader>()->shape;
+        g_buffer.ctorPristineShape = ctor.get().asObject<ObjectHeader>()->shape;
     }
 
     FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
@@ -397,8 +396,8 @@ void ensureArrayBufferIntrinsics() {
 void rtArrayBufferIntrinsicsHardened() {
     if (!g_buffer.proto.isObject()) return;
     g_buffer.protoPristineShape = g_buffer.proto.asObject<ObjectHeader>()->shape;
-    g_buffer.ctorBoxPristineShape =
-        g_buffer.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    g_buffer.ctorPristineShape =
+        g_buffer.ctor.asObject<ObjectHeader>()->shape;
 }
 
 Value rtArrayBufferConstructor(const std::string& name) {

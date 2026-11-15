@@ -35,6 +35,12 @@ namespace bronze {
 // exotic wrapper the linker's object literal is turned into.
 struct ModuleNamespaceHeader {
     HeapObjectHeader header;  // flags == kFlags
+    // The object prefix every object value has (heap.h carriesShape): the
+    // thread's namespace SENTINEL shape (rt_state.h rtNamespaceShape), which
+    // no cache records, and an overflow word that stays undefined. Every key
+    // is answered from the export pairs below.
+    class Shape* shape{nullptr};
+    HeapValue overflow;
     // How many exports, and therefore how many (name, getter) pairs follow.
     // Two 32-bit fields and not one 64-bit one for the reason ArrayHeader has
     // the same pair: the collector scans an object's payload as an array of

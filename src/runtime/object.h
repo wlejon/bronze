@@ -157,8 +157,10 @@ struct InlineCache {
     }
 
     // A function receiver's chain entry (BRONZE_ABI_IC_DEPTH_STATICS_FLAG):
-    // its depth, flags off, is staticsDepth(). realDepth() keeps the flag, so
-    // to every consumer that does not ask this the depth is one no chain has.
+    // a static inherited through `extends`, `staticsDepth()` links up the
+    // function's statics chain (its shape's root names the base constructor;
+    // fn.h). realDepth() keeps the flag, so to every consumer that does not
+    // ask this the depth is one no chain has.
     bool isStatics() const noexcept {
         return (cached_depth & BRONZE_ABI_IC_DEPTH_STATICS_FLAG) != 0;
     }
@@ -166,13 +168,13 @@ struct InlineCache {
         return realDepth() & ~BRONZE_ABI_IC_DEPTH_STATICS_FLAG;
     }
 
-    // What a FUNCTION receiver whose statics box has `boxShape` may take from
-    // this entry (rtFunctionCachedMember): an own data property or accessor of
-    // the box, which a shape describes for any object it is the shape of, or
-    // a statics chain entry while the epoch holds. Never an absent entry or a
-    // plain object's chain entry: a function's chain is not a plain object's.
-    bool describesForFunction(const Shape* boxShape) const noexcept {
-        if (!isRealShape() || isAbsent() || cached_shape != boxShape) return false;
+    // What a FUNCTION receiver at `fnShape` may take from this entry
+    // (rtFunctionCachedMember): an own data property or accessor, which a
+    // shape describes for any object it is the shape of, or a statics chain
+    // entry while the epoch holds. Never an absent entry or a plain object's
+    // chain entry: a function's chain is not a plain object's.
+    bool describesForFunction(const Shape* fnShape) const noexcept {
+        if (!isRealShape() || isAbsent() || cached_shape != fnShape) return false;
         if (realDepth() == 0) return true;
         return isStatics() && cached_epoch == protoMutationEpoch();
     }
@@ -310,7 +312,12 @@ struct InlineCacheSite {
     // plain one are rare; sites where the shift would have cost one is rarer
     // still, and the alternative is an arm that reads four ways on every
     // `arr.push`.
+    //
+    // Null for a SENTINEL shape (Shape::uncacheable): a proxy's or a
+    // namespace's shape word must match no entry, so none is ever made for
+    // it. Every install below refuses the same way.
     InlineCache* slotForInstall(const Shape* receiverShape) noexcept {
+        if (receiverShape == nullptr || receiverShape->uncacheable) return nullptr;
         constexpr uint32_t ways_n = BRONZE_ABI_IC_WAYS;
         for (uint32_t i = 0; i < ways_n; ++i) {
             if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
@@ -336,6 +343,7 @@ struct InlineCacheSite {
     // are occupied, MRU insertion shifts 2 <- 1 <- 0 and writes way 0 so hot
     // steady-state shapes displace cold warm-up shapes on relatch.
     InlineCache* slotForSetInstall(const Shape* receiverShape) noexcept {
+        if (receiverShape == nullptr || receiverShape->uncacheable) return nullptr;
         constexpr uint32_t ways_n = BRONZE_ABI_IC_SET_WAYS;
         for (uint32_t i = 0; i < ways_n; ++i) {
             if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
@@ -351,6 +359,7 @@ struct InlineCacheSite {
     // generated code's transition arm checks way 0 alone, so `nextShape` always
     // lands at way 0 without duplicating an existing way.
     InlineCache* slotForSetTransition(const Shape* nextShape) noexcept {
+        if (nextShape == nullptr || nextShape->uncacheable) return nullptr;
         if (ways[0].isRealShape() && ways[0].cached_shape == nextShape) return &ways[0];
         if (ways[1].isRealShape() && ways[1].cached_shape == nextShape) {
             ways[1] = ways[0];
@@ -474,9 +483,9 @@ struct ObjectHeader {
     //
     // `receiver` is what `this` is bound to if the property turns out to be an
     // accessor: the object itself for every ordinary read, which is why it
-    // defaults to null. A function's STATIC members live in a side object, so
-    // that one caller passes the constructor down and a static getter sees the
-    // class rather than the box its properties are kept in.
+    // defaults to null. A read that STARTS at a holder other than the
+    // receiver — `super.k`, an inherited static — passes the receiver down so
+    // a getter sees it rather than the holder.
     // `absentWitness`, when given, is set true exactly when the walk found the
     // key NOWHERE and reached the prototype chain's END — as opposed to
     // stopping at a link it could not continue through, which is not an answer
@@ -738,9 +747,10 @@ static_assert(offsetof(HeapObjectHeader, size) == BRONZE_ABI_HDR_SIZE_OFFSET);
 // The method-IC slot form reads an overflow block's Values at this offset
 // from the block's header — the same payload() computes.
 static_assert(sizeof(HeapObjectHeader) == BRONZE_ABI_HDR_BYTES);
-// Generated code inlines the plain-object check (llvm_prop.cpp), so this one
-// kind's number is part of the ABI and the registry in heap.h must agree with
-// it. The other kinds are runtime-internal and free to move.
+// Generated code writes and tests these kinds' numbers as literals (the
+// inline array allocation, the dense-array and typed-array element guards), so
+// they are part of the ABI and the registry in heap.h must agree with them.
+// The other kinds are runtime-internal and free to move.
 static_assert(HeapKind::Plain == BRONZE_ABI_OBJ_FLAGS_PLAIN);
 static_assert(HeapKind::Array == BRONZE_ABI_OBJ_FLAGS_ARRAY);
 static_assert(HeapKind::TypedArray == BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY);

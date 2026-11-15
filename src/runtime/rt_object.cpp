@@ -150,7 +150,7 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     if (fn->prototype.isObject()) {
         Rooted<Value> proto{fn->prototype};
         if (auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
-            HeapKind::carriesShape(protoHdr->flags)) {
+            HeapKind::shapeNamesPrototype(protoHdr->flags)) {
             Shape::markObjectAsPrototype(rtArena(), reinterpret_cast<ObjectHeader*>(protoHdr));
         }
         FunctionHeader* live = fnVal.get().asObject<FunctionHeader>();
@@ -171,17 +171,12 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
 
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
-    if (fn->properties.isObject()) return;
-    ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
-    props->header.flags = HeapKind::Plain;
-    fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
-    fn->properties = Value::fromObject(props);
-    // A function lockdown hardened boxless (fn.h, harden_on_box): its box is
-    // born frozen and hardened, so whatever asked for it in order to write
-    // finds what lockdown would have left.
-    if (fn->harden_on_box) {
-        fn->harden_on_box = false;
-        rtHarden(fnVal.get());
+    // A function lockdown hardened while it had no statics (fn.h,
+    // harden_on_write) is frozen now, so whatever asked in order to write finds
+    // what lockdown would have left.
+    if (fn->harden_on_write) {
+        fn->harden_on_write = false;
+        rtHardenNow(fnVal.get());
     }
 }
 
@@ -364,7 +359,7 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t le
 // `class D extends B` — the two prototype links a class sets up, and the only
 // runtime concept classes add. Instances: D.prototype's proto is B.prototype,
 // so an inherited method is found by the ordinary chain walk. Statics: D's
-// own-property object's proto is B's, so `D.staticOfB()` resolves the same way.
+// shape is rooted at B (fn.h), so `D.staticOfB()` resolves the same way.
 //
 // D.prototype is REPLACED rather than mutated, because the prototype lives on
 // the shape — which is also why this must run before any method is stored on
@@ -387,7 +382,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         // to the proxy ITSELF (step 6: it is the derived constructor's
         // [[Prototype]]), so an inherited static resolves through its traps;
         // none of the function-specific realization below applies, because
-        // the proxy has no prototype slot or statics box of its own.
+        // the proxy has no prototype slot or statics of its own.
         if (!base.get().asObject<ProxyHeader>()->constructible.asBool()) {
             rtThrowTypeError("a class can only extend another class or a constructor function");
             return;
@@ -403,11 +398,10 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
             rtNewRootShape(protoParent.get(), rtPrototypeInlineSlots(derived.get().asObject<FunctionHeader>())));
         proto->header.flags = HeapKind::Plain;
         Rooted<Value> protoRoot{Value::fromObject(proto)};
-        ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(base.get()));
-        props->header.flags = HeapKind::Plain;
+        Shape* staticsRoot = rtBareRootShapeForPrototype(base.get());
         FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
         fn->prototype = protoRoot.get();
-        fn->properties = Value::fromObject(props);
+        fn->shape = staticsRoot;
         fn->instance_shape = rtNewRootShape(protoRoot.get(), rtInstanceInlineSlots(fn));
         fn->parent = base.get();
         rtInstallPrototypeConstructor(derived);
@@ -432,10 +426,10 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     rtEnsureFunctionPrototype(base);
     rtEnsureFunctionProperties(base);
     // 15.7.14 step 6 makes the base constructor the derived one's
-    // [[Prototype]], and the box chain built below IS that link — so a base
-    // whose statics are answered beside the value has to write them into its
-    // box first, or `MyArr.of` is a silent `undefined`. Nothing to do for an
-    // ordinary class, and nothing to do twice (runtime/native_base.h).
+    // [[Prototype]], and the statics chain built below IS that link — so a
+    // base whose statics are answered beside the value has to write them into
+    // its own statics first, or `MyArr.of` is a silent `undefined`. Nothing to
+    // do for an ordinary class, and nothing to do twice (runtime/native_base.h).
     rtRealizeNativeStatics(base);
     // Which exotic object `new Derived()` must allocate, recorded on the
     // derived constructor rather than rediscovered by walking the chain at
@@ -458,18 +452,18 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     proto->header.flags = HeapKind::Plain;
     Rooted<Value> protoRoot{Value::fromObject(proto)};
 
-    Rooted<Value> baseProps{base.get().asObject<FunctionHeader>()->properties};
-    ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProps.get()));
-    props->header.flags = HeapKind::Plain;
+    // D's statics inherit through B itself: a bare root over the base
+    // constructor (fn.h), arena-only, so nothing here moves.
+    Shape* staticsRoot = rtBareRootShapeForPrototype(base.get());
 
     FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
     fn->prototype = protoRoot.get();
-    fn->properties = Value::fromObject(props);
+    fn->shape = staticsRoot;
     // After rtInheritNativeBase above: a class reaching a native base
     // allocates exotic objects, which keep the default inline slots.
     fn->instance_shape = rtNewRootShape(protoRoot.get(), rtInstanceInlineSlots(fn));
     // 15.7.14 step 6: the derived constructor's own [[Prototype]] IS the base
-    // constructor. The statics chain above is what makes an inherited static
+    // constructor. The statics root above is what makes an inherited static
     // RESOLVE; this is what makes `Object.getPrototypeOf(D)` say so, and the
     // two are separate facts — a program can read the link without ever
     // touching a static.
@@ -977,7 +971,7 @@ uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits, uint64_t*
     }
     if (cooked.get().isObject()) {
         Rooted<Value> keyRaw(Value::fromString(StringHeader::createFromUTF8(rtHeap(), "raw")));
-        ObjectHeader* props = ArrayHeader::ensureProperties(rtHeap(), rtArena(), cooked);
+        ObjectHeader* props = cooked.get().asObject<ArrayHeader>()->object();
         props->setProp(rtHeap(), rtArena(), keyRaw, raw, /*ic=*/nullptr, /*enumerable=*/false,
                        /*defineOwn=*/true);
         rtFreezeObject(cooked.get());

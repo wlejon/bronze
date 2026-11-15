@@ -92,7 +92,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
 
 // A NAME that no Array has: `v.x` and `v.r` of three.js's `setValueV3f`
 // asked of an array uniform (`ambientLightColor`), once each per material
-// refresh. An array without a named-property box answers a non-index,
+// refresh. An array at the bare array shape answers a non-index,
 // non-`length` key from two places only, `Array.prototype`'s C table (fixed:
 // the object is frozen, lockdown.h) and `Object.prototype`'s
 // own properties (its [[Prototype]] is null). So "absent" is a fact about the
@@ -127,7 +127,7 @@ static bool arrayAbsentHit(uint32_t keyIndex) {
     return protoShape && slot.objectProtoShape == protoShape;
 }
 
-// Called after the walk answered `undefined` for a box-less array: records the
+// Called after the walk answered `undefined` for a bare array: records the
 // absence only once each of the two places is proven not to hold the key —
 // no table method, no unbuilt member (which the walk refuses by name), and no
 // own property of `Object.prototype`, a data property holding `undefined` or
@@ -207,6 +207,12 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                 }
             }
         }
+        // Every object value's word at offset 8 is a shape (heap.h
+        // carriesShape), so the site's entries are asked of it with no kind
+        // test: an array's or a function's own named property hits as a plain
+        // object's does, and a proxy or a namespace sits at a sentinel shape
+        // no entry names. What the shape cannot answer — an array's elements
+        // and methods, a function's ladder — the kind arms below take.
         if (HeapKind::carriesShape(fastHdr->flags)) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             // `site` is the caller's own entry in its module's IC table, or
@@ -263,11 +269,14 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                     }
                 }
             }
-        } else if (fastHdr->flags == HeapKind::Array) {
-            if (ic && ic->isArrayMethod()) {
+        }
+        if (fastHdr->flags == HeapKind::Array) {
+            // Way 0 itself, not the shape scan's answer above: the array-method
+            // sentinel lives there and names no shape.
+            if (InlineCache* way0 = rtAsCache(icEntry); way0 && way0->isArrayMethod()) {
                 const auto* arr = reinterpret_cast<const ArrayHeader*>(fastHdr);
-                if (!arr->properties.isObject()) {
-                    return rtTls()->array_method_tbl[ic->cached_slot];
+                if (arr->isBare()) {
+                    return rtTls()->array_method_tbl[way0->cached_slot];
                 }
             }
             const KeyInfo& ki = rtKeyInfo(keyIndex);
@@ -277,7 +286,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
             }
-            if (!reinterpret_cast<const ArrayHeader*>(fastHdr)->properties.isObject()) {
+            if (reinterpret_cast<const ArrayHeader*>(fastHdr)->isBare()) {
                 if (arrayAbsentHit(keyIndex)) return BRONZE_ABI_UNDEFINED_BITS;
                 const uint64_t result =
                     propGetByName(objVal, &rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
@@ -287,9 +296,9 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         } else if (fastHdr->flags == HeapKind::Function) {
             // `prototype` of a function compiled from source that has one is
             // its slot, once made: no intrinsic table answers ahead of it and
-            // no box of it holds the key (rtStaticsArmServes). Else a static
-            // from the site's ways against the statics box's shape
-            // (rt_prop_function.cpp), which the ladder below would fill.
+            // no statics shape holds the key (rtStaticsArmServes). Else an
+            // inherited static from the site's ways against the function's
+            // shape (rt_prop_function.cpp), which the ladder below would fill.
             if (rtKeyInfo(keyIndex).isPrototype) {
                 const Value proto = reinterpret_cast<const FunctionHeader*>(fastHdr)->prototype;
                 if (proto.isObject() && rtStaticsArmServes(objVal)) return proto.rawBits();
@@ -339,13 +348,9 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
     const Shape* missShape = nullptr;
     if (site && objVal.isObject()) {
         const uint16_t recvFlags = objVal.asObject<HeapObjectHeader>()->flags;
-        if (HeapKind::carriesShape(recvFlags)) {
+        if (HeapKind::shapeNamesPrototype(recvFlags) ||
+            (recvFlags == HeapKind::Function && !rtKeyInfo(keyIndex).isPrototype)) {
             missShape = objVal.asObject<ObjectHeader>()->shape;
-        } else if (recvFlags == HeapKind::Function && !rtKeyInfo(keyIndex).isPrototype) {
-            const Value box = objVal.asObject<FunctionHeader>()->properties;
-            if (box.isObject() && box.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
-                missShape = box.asObject<ObjectHeader>()->shape;
-            }
         }
     }
     const uint64_t result = propGetByName(objVal, nullptr, rtKeyHeader(keyIndex), site);
@@ -356,7 +361,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
 // While harvesting: a read whose receiver the site's ways did not come to
 // hold (ic_harvest.h rtIcHarvestNoteUncached). Held means a plain object whose
 // shape a way names after the read (or a site whose four ways are in use, which
-// the harvest already marks `full`), or an Array without a named-property box
+// the harvest already marks `full`), or an Array at the bare array shape
 // at a site whose way 0 is the array-method sentinel. The receiver is
 // classified before the read, which may run a getter that moves it.
 static uint64_t propGetHarvested(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
@@ -369,7 +374,7 @@ static uint64_t propGetHarvested(uint64_t objBits, uint32_t keyIndex, uint64_t* 
             const Shape* shape = reinterpret_cast<const ObjectHeader*>(hdr)->shape;
             if (shape != nullptr && !shape->isDictionary()) plainShape = shape;
         } else if (hdr->flags == HeapKind::Array) {
-            bareArray = !reinterpret_cast<const ArrayHeader*>(hdr)->properties.isObject();
+            bareArray = reinterpret_cast<const ArrayHeader*>(hdr)->isBare();
         }
     }
     const uint64_t result = propGetHelperBody(objBits, keyIndex, icEntry);
@@ -457,13 +462,13 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
         // undefined, and reading the builtin for it would un-shadow a property
         // the program really created.
         //
-        // The same read continues UP the box's chain, which for a subclass
+        // The same read continues UP the shape's chain, which for a subclass
         // instance is `MySubArray.prototype` and everything above it — that is
-        // where an Array subclass's [[Prototype]] lives, since an array carries
-        // no shape of its own (runtime/native_base.h). An array with no box —
-        // every array a program has neither subclassed nor written a named
-        // property on — answers after one load, which is what keeps the method
-        // table below the only thing an ordinary `a.map` touches.
+        // where an Array subclass's shape is rooted (runtime/native_base.h).
+        // An array at the bare array shape — every array a program has
+        // neither subclassed nor written a named property on — answers after
+        // one compare, which is what keeps the method table below the only
+        // thing an ordinary `a.map` touches.
         if (Value own; rtExoticNamedRead(recv, keyHeader, own)) return own.rawBits();
         if (uint32_t methodId = rtArrayMethodId(keyStr); methodId != UINT32_MAX) {
             Value method = rtArrayMethodById(methodId);
@@ -472,7 +477,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
                 // nowhere else, and InlineCacheSite::slotForInstall keeps a
                 // sentinel it finds at way 0 from being shifted away.
                 if (ic && !censusFillsSuppressed() &&
-                    !recv.get().asObject<ArrayHeader>()->properties.isObject()) {
+                    recv.get().asObject<ArrayHeader>()->isBare()) {
                     ic->ways[0].fillArrayMethod(methodId);
                 }
                 return method.rawBits();
@@ -547,7 +552,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
     // guarantee for the computed path and lost it when that path was folded
     // into this one. The byte-store family (a view, a buffer, a DataView) opens
     // with an ObjectHeader and is read through it like any ordinary object.
-    if (!HeapKind::carriesShape(hdr->flags)) {
+    if (!HeapKind::shapeNamesPrototype(hdr->flags)) {
         const std::string& keyStr = keyText();
         char buf[128];
         std::snprintf(buf, sizeof(buf),
@@ -620,6 +625,28 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
     return result.rawBits();
 }
 
+// A static `super` read's statics walk: `key` on the base constructor `base`
+// or up its statics chain (rt_property.h rtStaticsAncestor), read off the
+// holder that owns it with `receiver` as `this`. False when no link holds it,
+// for the function member ladder to answer. Stops at %Object.prototype%,
+// whose members are the ladder's last step.
+static bool superStaticRead(Rooted<Value>& base, Rooted<Value>& key, Rooted<Value>& receiver,
+                            uint64_t& out) {
+    const uint64_t objProtoBits = rtObjectPrototype().rawBits();
+    const PropertyKey pkey = PropertyKey::fromValue(key.get());
+    ObjectHeader* fnObj = base.get().asObject<FunctionHeader>()->object();
+    for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        ObjectHeader* holder = depth == 0 ? fnObj : rtStaticsAncestor(fnObj, depth);
+        if (!holder || Value::fromObject(holder).rawBits() == objProtoBits) return false;
+        PropertyInfo info;
+        if (holder->shape && holder->shape->lookupProperty(pkey, info)) {
+            out = holder->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr()).rawBits();
+            return true;
+        }
+    }
+    return false;
+}
+
 // `super.k` — a read of the PARENT prototype's property, with `this` as the
 // receiver (ECMA-262 13.3.7.3, MakeSuperPropertyReference). For a method the
 // receiver makes no difference: the value is the same function object either
@@ -656,35 +683,20 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
     }
 
     // A STATIC element's `super.k`: the holder is the base CONSTRUCTOR, whose
-    // statics live in its property box and whose inherited statics live up
-    // that box's chain (`extends` links the boxes). A static found there runs
+    // statics are its own and whose inherited statics live up its statics
+    // chain (`extends` roots it at the next base). A static found there runs
     // with `this` as its receiver, the same as an instance read below; one
     // found nowhere on the chain is answered by the function member ladder —
     // an intrinsic's statics, `call`/`apply`/`bind`, `name` — on the holder's
     // own terms, which is what `super.of()` in a subclass of Array reaches.
     if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        Rooted<Value> props{protoVal.asObject<FunctionHeader>()->properties};
-        if (props.get().isObject()) {
-            const uint64_t objProtoBits = rtObjectPrototype().rawBits();
-            ObjectHeader* box = props.get().asObject<ObjectHeader>();
-            const PropertyKey pkey = PropertyKey::forString(keyHeader);
-            PropertyInfo info;
-            bool found = box->shape && box->shape->lookupProperty(pkey, info);
-            for (uint32_t depth = 1; !found && depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
-                ObjectHeader* ancestor = box->protoAncestor(depth);
-                if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
-                found = ancestor->shape && ancestor->shape->lookupProperty(pkey, info);
-            }
-            if (found) {
-                Rooted<Value> key(Value::fromString(keyHeader));
-                return box->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr()).rawBits();
-            }
-        }
+        Rooted<Value> key(Value::fromString(keyHeader));
+        if (uint64_t out = 0; superStaticRead(protoRoot, key, receiver, out)) return out;
         return rtFunctionMember(protoRoot.get(), rtKeyString(keyIndex), keyHeader, nullptr);
     }
 
     if (!protoVal.isObject() ||
-        !HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags)) {
+        !HeapKind::shapeNamesPrototype(protoVal.asObject<HeapObjectHeader>()->flags)) {
         fatal("internal: super property read on a base whose prototype is not an object");
     }
     Rooted<Value> key(Value::fromString(keyHeader));
@@ -714,22 +726,7 @@ uint64_t bronze_super_elem_get(uint64_t protoBits, uint64_t keyBits, uint64_t th
     }
 
     if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        Rooted<Value> props{protoVal.asObject<FunctionHeader>()->properties};
-        if (props.get().isObject()) {
-            const uint64_t objProtoBits = rtObjectPrototype().rawBits();
-            ObjectHeader* box = props.get().asObject<ObjectHeader>();
-            const PropertyKey pkey = PropertyKey::fromValue(keyRoot.get());
-            PropertyInfo info;
-            bool found = box->shape && box->shape->lookupProperty(pkey, info);
-            for (uint32_t depth = 1; !found && depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
-                ObjectHeader* ancestor = box->protoAncestor(depth);
-                if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
-                found = ancestor->shape && ancestor->shape->lookupProperty(pkey, info);
-            }
-            if (found) {
-                return box->getProp(rtHeap(), keyRoot, /*ic=*/nullptr, receiver.slot_ptr()).rawBits();
-            }
-        }
+        if (uint64_t out = 0; superStaticRead(protoRoot, keyRoot, receiver, out)) return out;
         if (keyRoot.get().isString()) {
             StringHeader* sh = keyRoot.get().asString<StringHeader>();
             return rtFunctionMember(protoRoot.get(), sh, nullptr);
@@ -738,7 +735,7 @@ uint64_t bronze_super_elem_get(uint64_t protoBits, uint64_t keyBits, uint64_t th
     }
 
     if (!protoVal.isObject() ||
-        !HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags)) {
+        !HeapKind::shapeNamesPrototype(protoVal.asObject<HeapObjectHeader>()->flags)) {
         return bronze_elem_get(protoRoot.get().rawBits(), keyRoot.get().rawBits());
     }
 
