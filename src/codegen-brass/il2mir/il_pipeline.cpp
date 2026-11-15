@@ -40,7 +40,6 @@ PassPipelineOptions pass_pipeline_options(const TranslatorOptions& options) {
     l.enable_loop_unswitch = options.enable_loop_unswitch;
     l.enable_jump_threading = options.enable_jump_threading;
     l.enable_trace_layout = options.enable_trace_layout;
-    l.enable_partial_escape = options.enable_partial_escape;
     l.enable_allocation_sinking = options.enable_allocation_sinking;
     l.enable_loop_fusion = options.enable_loop_fusion;
     l.enable_loop_distribution = options.enable_loop_distribution;

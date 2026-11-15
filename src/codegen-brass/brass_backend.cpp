@@ -315,7 +315,6 @@ void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bo
     options.enable_loop_fusion = true;
     options.enable_loop_distribution = true;
     options.enable_array_contraction = true;
-    options.enable_partial_escape = true;
     options.enable_allocation_sinking = true;
     // No FMA contraction, on any target: ECMA-262 Number arithmetic rounds
     // after every operation, and a fused a*b+c rounds once — a different

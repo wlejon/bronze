@@ -1,10 +1,11 @@
-// A read's inline cache test: the site's first two ways (an install fills way
-// 0 and moves the others down) are compared with the receiver's shape inline,
-// one compare and branch each. The way that names the shape answers here when
+// A read's inline cache test: each of the site's ways (an install fills way 0
+// and moves the others down) is compared with the receiver's shape inline,
+// one compare and branch each, so a site that meets as many shapes as it has
+// ways answers all of them here. The way that names the shape answers when
 // its entry is an own data slot (the slot), a negative entry while the
 // prototype epoch holds (`undefined`), or a data property one prototype link
 // up while the epoch holds (the holder's slot). Anything else, and every
-// shape neither way names, is the stub, which reads the same words.
+// shape no way names, is the stub, which reads the same words.
 //
 // Every read of an ahead-of-time build that has a site takes this form; which
 // shapes a site meets is the runtime's knowledge, in the ways, and nothing
@@ -34,8 +35,7 @@ constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 // The negative entry's word is the flag alone (InlineCache::fillAbsent).
 constexpr int64_t kAbsentWord = int64_t{BRONZE_ABI_IC_DEPTH_ABSENT_FLAG} << 32;
-constexpr int kInlineWays = 2;
-static_assert(BRONZE_ABI_IC_WAYS >= kInlineWays, "the inline test reads the site's own ways");
+constexpr int kInlineWays = BRONZE_ABI_IC_WAYS;
 }  // namespace
 
 Value* PropertyLoweringHelper::lower_prop_get_inline(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,

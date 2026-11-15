@@ -93,7 +93,6 @@ struct TranslatorOptions {
     bool enable_jump_threading = true;
     bool enable_trace_layout = true;
     bool run_escape_analysis = false;
-    bool enable_partial_escape = false;
     bool enable_allocation_sinking = false;
     bool dump_pea_stats = false;
     bool run_alias_analysis = false;
