@@ -65,7 +65,7 @@ std::vector<Lowerer::LoopParam> Lowerer::collectLoopParams(
                                             "loop on the entry edge)");
             continue;
         }
-        params.push_back(LoopParam{name, mergeParamType(loopStmt, name)});
+        params.push_back(LoopParam{name, il::Type::Dynamic});
     }
     return params;
 }
@@ -287,11 +287,8 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
         il::Type tElse = stateElseEnd.at(name).type;
         // Both edges into this join are already lowered, so when they agree
         // their common type is itself the proof that the parameter can have
-        // it — no inference needed, which is what keeps `--no-infer` from
-        // boxing an if/else that never changes a binding's type. When they
-        // disagree only a proof can license anything but `Dynamic`, and the
-        // proof is the analysis's type at this merge.
-        il::Type pType = (tThen == tElse) ? tThen : mergeParamType(*ifStmt, name);
+        // it. When they disagree the parameter is `Dynamic`.
+        il::Type pType = (tThen == tElse) ? tThen : il::Type::Dynamic;
         ilFn.blocks[bJoin].params.push_back({pId, pType});
         joinParamMap[name] = pId;
         joinParamType[name] = pType;

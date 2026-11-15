@@ -694,7 +694,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binar
     }
     auto rhs = lowerExpr(*bin->rhs, ilFn);
     if (!rhs) return std::nullopt;
-    Value stored = compound ? emitCompoundCombine(*current, *rhs, bin->op, provenNumber(*bin), ilFn)
+    Value stored = compound ? emitCompoundCombine(*current, *rhs, bin->op, ilFn)
                             : *rhs;
     // The setter's one parameter, already lowered; the invoke coerces it.
     if (!emitNativeInvoke(*setter, nullptr, self, {}, stored, ilFn)) return std::nullopt;

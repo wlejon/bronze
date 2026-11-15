@@ -68,81 +68,98 @@ const char* pinKindWord(types::PinKind kind) {
     return "number";
 }
 
-// A cyclic `extends` chain is a TypeError at run time and must not be an
-// infinite loop here — the same bound `FlowAnalyzer::pinnedField` uses, for
-// the same reason.
-constexpr uint32_t kMaxExtendsHops = 64;
-
 }  // namespace
 
-const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const std::string& key,
+// An IL function's name as the MANIFEST spells it: the module linker's
+// `modN.` prefix dropped, everything else kept. The pin's message exists to be
+// grepped for in the manifest, so it has to read back as a line of the file.
+std::string Lowerer::manifestOwnerName(const std::string& ilName) {
+    const auto dot = ilName.find('.');
+    if (dot == std::string::npos || dot < 4 || ilName.compare(0, 3, "mod") != 0) return ilName;
+    for (size_t i = 3; i < dot; ++i) {
+        if (ilName[i] < '0' || ilName[i] > '9') return ilName;
+    }
+    return ilName.substr(dot + 1);
+}
+
+// Give one function's IL skeleton the parameter and return types a `--pins`
+// SIGNATURE entry declares for it (types/pins.h, the `param` and `return`
+// forms). Returns false only after diagnosing. It only ever moves a slot from
+// `Dynamic` to `F64`.
+//
+// A refused POSITION is a hard error rather than a silent skip: a `param` entry
+// names one function and one parameter of it, so quietly compiling the boxed
+// version would hide the fact that the manifest is wrong.
+bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span span,
+                                 il::Function& fn) {
+    if (pins_ == nullptr) return true;
+
+    const size_t base = fn.firstSourceParam();
+    for (size_t i = 0; i < params.size() && i + base < fn.params.size(); ++i) {
+        const ast::Param& p = params[i];
+        if (p.name.empty() || !pins_->paramPinned(fn.name, p.name)) continue;
+        // The three positions the language may fill with a value the caller
+        // never wrote, and there is no `undefined` in an f64.
+        const char* why = p.isRest       ? "a rest parameter is an array, not a number"
+                          : p.pattern    ? "a destructuring pattern binds no single slot"
+                          : p.defaultValue ? "a parameter with a default is `undefined` on a "
+                                             "short call, which no f64 slot can hold"
+                                           : nullptr;
+        if (why != nullptr) {
+            diags_.error(span, "pin 'param " + fn.name + "(" + p.name +
+                                   "): number' cannot be honoured: " + std::string(why));
+            return false;
+        }
+        fn.params[i + base].type = il::Type::F64;
+        // The barrier's licence: this slot is f64 because a manifest said so.
+        fn.params[i + base].pinned = true;
+        fn.params[i + base].pinKeyIndex = getKeyConstantIndex(
+            "param " + Lowerer::manifestOwnerName(fn.name) + "(" + p.name + "): number");
+    }
+
+    if (pins_->returnPinned(fn.name)) {
+        // A generator's factory returns the GENERATOR OBJECT and an async
+        // function's the PROMISE, whatever the body returns — so a return pin
+        // on either is a claim about the wrong value.
+        if ((fn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) != 0) {
+            diags_.error(span, "pin 'return " + fn.name +
+                                   ": number' cannot be honoured: this function returns a "
+                                   "generator object or a promise, not its body's value");
+            return false;
+        }
+        if (fn.returnType == il::Type::Dynamic) {
+            fn.returnType = il::Type::F64;
+            fn.returnPinned = true;
+            fn.returnPinKeyIndex =
+                getKeyConstantIndex("return " + Lowerer::manifestOwnerName(fn.name) + ": number");
+        } else if (fn.returnType != il::Type::F64) {
+            diags_.error(span, "pin 'return " + fn.name +
+                                   ": number' cannot be honoured: the convention already types "
+                                   "this return " +
+                                   il::typeName(fn.returnType));
+            return false;
+        }
+    }
+    return true;
+}
+
+// The pin a store of `key` is held to. Only the key is known about the
+// receiver, so the manifest is asked by field name.
+const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& /*receiver*/, const std::string& key,
                                              std::string* pinTextOut) const {
-    if (pins_ == nullptr || inference_ == nullptr) return nullptr;
-    const types::Type recv = inferredType(receiver);
-    std::string name;
-    const types::ClassLayout* layout = nullptr;
-    if (recv.is(types::TypeKind::Object) && recv.shapeClass() != types::kNoShapeClass) {
-        layout = inference_->classLayouts.byShapeClass(recv.shapeClass());
-        name = layout != nullptr ? layout->name
-                                 : inference_->shapes.at(recv.shapeClass()).constructorName;
-    }
-    if (name.empty()) {
-        std::string matchedClass;
-        if (const types::PinKind* pin = pins_->lookupField(key, &matchedClass)) {
-            if (pinTextOut != nullptr) {
-                *pinTextOut = matchedClass + "." + key + ": " + pinKindWord(*pin);
-            }
-            return pin;
+    if (pins_ == nullptr) return nullptr;
+    std::string matchedClass;
+    if (const types::PinKind* pin = pins_->lookupField(key, &matchedClass)) {
+        if (pinTextOut != nullptr) {
+            *pinTextOut = matchedClass + "." + key + ": " + pinKindWord(*pin);
         }
-        return nullptr;
-    }
-    for (uint32_t hop = 0; hop < kMaxExtendsHops; ++hop) {
-        if (const types::PinKind* pin = pins_->lookup(name, key)) {
-            if (pinTextOut != nullptr) {
-                // The LAST dotted component, because the manifest matches on
-                // it and spells it that way — the linker's `mod3.` prefix is
-                // not in the file, and the message exists to be grepped for
-                // in the file.
-                const auto dot = name.rfind('.');
-                *pinTextOut = (dot == std::string::npos ? name : name.substr(dot + 1)) + "." +
-                              key + ": " + pinKindWord(*pin);
-            }
-            return pin;
-        }
-        if (layout == nullptr || layout->superName.empty()) return nullptr;
-        layout = inference_->classLayouts.byName(layout->superName);
-        if (layout == nullptr) return nullptr;
-        name = layout->name;
+        return pin;
     }
     return nullptr;
 }
 
-bool Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn,
-                                       bool pinned) {
-    if (!pinned ||
-        (elemKind & static_cast<uint32_t>(il::kElemKindMask)) !=
-            static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
-        return false;
-    }
-    // The NUMERIC half of `numeric-elements`, held one element at a time.
-    //
-    // The pin text names the kind rather than a (class, field) pair, and that
-    // is not laziness: the claim rides on the receiver's TYPE, so `const te =
-    // this.elements; te[0] = x` is a store through a local that no longer
-    // remembers which field it came from. The kind is what a reader greps the
-    // manifest for, and every entry of that kind is a candidate.
-    return emitPinGuard(val, "<numeric-elements element>: number", il::PinBarrier::Number,
-                        ilFn);
-}
-
 void Lowerer::emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,
                                   il::Function& ilFn) {
-    // The census sees the same six store paths the barrier does, and it sees
-    // them FIRST, because they are the same question asked in the two
-    // directions: "is this store held to a promise?" and "what promise would
-    // this store support?". One call here rather than six beside the barrier's
-    // callers, so a store path added later cannot get one and not the other.
-    emitCensusFieldRecord(receiver, key, val, ilFn);
     std::string pinText;
     const types::PinKind* pin = pinnedFieldAt(receiver, key, &pinText);
     if (pin == nullptr) return;

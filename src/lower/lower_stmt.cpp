@@ -185,84 +185,24 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
 
     std::string initNativeClass;
     if (varDecl->init) {
-        std::optional<Value> initVal;
-
-        // A binding initialised from a proven typed-array element, EVERY use
-        // of which the scan proves coercing, holds the read as an unboxed
-        // f64 — NaN standing for the out-of-bounds `undefined`, which those
-        // uses cannot tell apart. Uncaptured `const`/`let` only: an env cell
-        // or a try-crossing slot is read by code the scan's argument does
-        // not cover.
-        if (const auto elemKind = typedElemAccessKind(*varDecl->init);
-            elemKind && !varDecl->isVar && memoryNames_.count(varDecl->name) == 0 &&
-            typedElemBindingUsesCoerce(varDecl->name, varDecl)) {
-            initVal = lowerTypedElemRead(
-                static_cast<const ast::IndexAccess&>(*varDecl->init), *elemKind, ilFn);
-            if (!initVal) return false;
-            declType = il::Type::F64;
-        } else if (varDecl->isConst && memoryNames_.count(varDecl->name) == 0 &&
-                   dynamic_cast<const ast::MemberAccess*>(varDecl->init.get()) != nullptr &&
-                   mathAliasOnlyCalled(varDecl->name)) {
-            // `const cos = Math.cos` whose every use is a call lowered as the
-            // builtin's own op (lower_call.cpp): nothing reads the binding.
-            il::ValueId undefId = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = il::Op::ConstUndefined;
-            inst.type = il::Type::Dynamic;
-            inst.result = undefId;
-            emitInst(ilFn, inst);
-            initVal = Value{undefId, il::Type::Dynamic};
-        } else {
-            // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a
-            // binding takes the binding's name, which is what makes
-            // `const f = () => {}` report `f.name === "f"`.
-            initVal = lowerNamedEvaluation(*varDecl->init, sourceSpelling(varDecl->name), ilFn);
-            if (!initVal) return false;
-            declType = initVal->type;
-        }
+        // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a
+        // binding takes the binding's name, which is what makes
+        // `const f = () => {}` report `f.name === "f"`.
+        const std::optional<Value> initVal =
+            lowerNamedEvaluation(*varDecl->init, sourceSpelling(varDecl->name), ilFn);
+        if (!initVal) return false;
+        declType = initVal->type;
 
         // What the initialiser is known to be a handle of, noted against the
         // binding once it exists (below): a `new` of a native class, a native
         // returning one, or a copy of a binding already known.
         initNativeClass = initVal->nativeClass;
 
-        // A binding inference proved numeric holds an unboxed f64, so the
-        // arithmetic over it needs no unbox per use, the SSA joins it takes
-        // part in stay f64, and it carries no GC obligation at all — an f64
-        // gets no shadow-stack slot. The unbox here cannot fail: the proof says
-        // every value that reaches this initialiser is a number.
-        if (initVal->type == il::Type::Dynamic && provenNumber(*varDecl->init)) {
-            // An AUDITED field read is the one initialiser whose proof reaches
-            // the BITS and not only the lattice, so it converts with a bitcast
-            // and no test. Everything else keeps the checked unbox, which is
-            // ToNumber and stays correct however the `number` was arrived at.
-            initVal = provenFieldRead(*varDecl->init)
-                          ? emitRawUnbox(*initVal, ilFn)
-                          : unboxValueIfNeeded(*initVal, il::Type::F64, ilFn);
-            declType = il::Type::F64;
-        }
-
-        // The binding's type comes from the initialiser and the proof above;
-        // the annotation does not get to overrule either. Believing it makes
-        // `let s: number = "abc"` an `unbox.f64` of a boxed string. The claim
-        // is compared against what inference proved reaches this initialiser,
-        // and disagreement is a warning, not a cast.
-        checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
-                        inferredType(*varDecl->init));
         initId = initVal->id;
     }
 
     bool isInitialized = varDecl->init != nullptr;
     if (!varDecl->init) {
-        // `let x: number;` binds `undefined` at the declaration and may hold a
-        // number later, which is `number | undefined` — the exact case
-        // collapses to `Dynamic` because the lattice has no union types. So
-        // nothing is proven here, and the annotation is reported as unprovable
-        // rather than as contradicted by the `undefined` the declaration
-        // happens to bind: bronze did not look at the later writes at all, and
-        // saying "contradicts" would claim more than it knows.
-        checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
-                        types::Type::dynamic());
         if (!varDecl->isConst && declType == il::Type::Dynamic) {
             // JS: `let x;` / `var x;` binds undefined right here — the TDZ
             // ends at the declaration, not at the first assignment. Which is
@@ -317,17 +257,6 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         if (ilFn.returnPinned) {
             emitPinGuard(*val, keyStrings_[ilFn.returnPinKeyIndex], il::PinBarrier::Number, ilFn);
         }
-        // The census's `return` observation, in the same place and for the same
-        // reason: this is where the value the body produced is still what the
-        // body produced. Only a return the convention left Dynamic — one it
-        // already typed needs no entry and `applySignaturePins` would refuse
-        // the line anyway.
-        if (censusEnabled() && ilFn.returnType == il::Type::Dynamic && !ilFn.name.empty() &&
-            !ilFn.isGenerator &&
-            (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
-            emitCensusRecord(*val, "return " + manifestOwnerName(ilFn.name),
-                             il::CensusSite::Return, ilFn);
-        }
         if (ilFn.returnType == il::Type::Void) {
             ilFn.returnType = val->type;
         } else if (ilFn.returnType == il::Type::Dynamic) {
@@ -358,18 +287,6 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.operands = {val->id};
         emitInst(ilFn, inst);
     } else {
-        // A bare `return;` yields `undefined`, and there is no `undefined` in
-        // an f64: this function can never carry a `return <owner>: number`
-        // entry, whatever every other return of it produces. Refused by the
-        // SITE TABLE rather than by an observation, because a `return;` on a
-        // branch this run does not take is compiled all the same and the
-        // manifest has to be true of the program, not of the run.
-        if (censusEnabled() && ilFn.returnType == il::Type::Dynamic && !ilFn.name.empty() &&
-            !ilFn.isGenerator &&
-            (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
-            addCensusSite("return " + manifestOwnerName(ilFn.name), il::CensusSite::Return,
-                          /*refuses=*/true);
-        }
         if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
         il::Instruction inst;

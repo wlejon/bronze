@@ -6,9 +6,7 @@
 
 #include "ast/ast.h"
 #include "il/il.h"
-#include "lower/inline_guarded.h"
 #include "lower/lower_feedback.h"
-#include "opt/wpo/wpo.h"
 #include "support/diagnostics.h"
 #include "types/pins.h"
 #include "types/result.h"
@@ -37,52 +35,17 @@ namespace bronze::lower {
 // unresolved-name warning and runtime ReferenceError. Nullable like
 // `inference`, and independent of it — which set of names resolves is a
 // lowering-level fact, so `--no-infer` changes nothing about it.
-// `assumeNoBigInt` lets the whole-program scan (`bigIntMayReach`) decide how
-// arithmetic lowers: where the program's text mentions nothing that names or
-// builds a BigInt, `*`, `-`, `/` and `%` over a boxed operand produce an f64
-// instead of a boxed value, because with no BigInt in reach ToNumeric IS
-// ToNumber. An f64 result is not a GC root, and `planFrame` roots Dynamic
-// values and only those, so a chain of arithmetic keeps its intermediates in
-// registers instead of storing and reloading every one of them around every
-// instruction. Every ahead-of-time build passes true, a host boundary or not:
-// a BigInt a host hands to a program that never spells one meets ToNumber's
-// TypeError at the operator. False (the JIT's script-at-a-time compiles, the
-// self-hosted library, whose callers' values it cannot read) keeps the boxed
-// form whatever the text says.
-class InferStatsCollector;
 class NativeManifest;
 struct SelfHostLibrary;
 
-// The whole-program optimizer (src/opt/wpo/wpo.h) of an AOT build, which only
-// `bronze build` asks for: lowering then solves the module before the passes
-// that copy callee bodies, so the direct method targets the solve predicts
-// reach guarded inlining and typed entries, and again on its final IL for the
-// static-slot claims and polymorphic marks, which inlined copies then get in
-// their callers' contexts. Off, the IL is what it was without it; the JIT
-// never turns it on. `report` collects the `--wpo-stats` text.
-struct WholeProgramOptions {
-    bool on = false;
-    wpo::BuildOptions build;
-    std::string report;
-};
-
-// `pins` is the `--pins` manifest, or null. Lowering reads only its ENV-SLOT
-// entries: a captured binding has no name inference can key a side table on —
-// it has a (function, binding) pair and a record layout this pass invents — so
-// that half of the manifest is consumed here rather than there. The field
-// entries reach lowering already spent, as `provenFieldReads` and
-// `nullishNumberFieldReads` on the inference result.
+// `pins` is the `--pins` manifest, or null: its signature and field entries
+// are held to their promises by barriers (lower_pin.cpp).
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference = nullptr,
                                       const std::vector<std::string>* hostGlobals = nullptr,
                                       const SourceSet* sources = nullptr,
-                                      InferStatsCollector* stats = nullptr,
-                                      bool assumeNoBigInt = false,
                                       const types::PinManifest* pins = nullptr,
-                                      const std::string& censusOutPath = {},
                                       const NativeManifest* nativeManifest = nullptr,
-                                      const InlineGuardedOptions& inlineGuarded = {},
-                                      WholeProgramOptions* wholeProgram = nullptr,
                                       const FeedbackOptions* feedback = nullptr,
                                       bool selfHost = false,
                                       const SelfHostLibrary* selfHostLibrary = nullptr);
@@ -90,10 +53,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
 // THE SELF-HOSTED LIBRARY AS PROGRAM CODE (selfhost_merge.cpp). The
 // self-hosted builtins (src/selfhost) are a prebuilt object every runtime
 // links; an ahead-of-time program ALSO compiles the ones it can reach as its
-// own functions, so that a site such as `arr.map(f)` calls (and the inliner
-// copies in) the builtin's body and, inside it, the callback's. This is the
-// library lowered for that: the self-host dialect's IL before the final
-// passes, which the program's own final passes then run over with it.
+// own functions, so that a site such as `arr.map(f)` calls the builtin's body
+// as one of the program's. This is the library lowered for that: the
+// self-host dialect's IL before the end of lowering, which the program's own
+// lowering then finishes with it.
 //
 // One implementation: the prebuilt object and this IL are the same text
 // through the same lowering (src/selfhost/selfhost_library.h owns the text).
@@ -131,24 +94,15 @@ std::optional<SelfHostLibrary> lowerSelfHostLibrary(const ast::Module& astModule
 // THE AHEAD-OF-TIME FRONT END, for every compile whose output is kept:
 // `bronze build` and the evaluator's module builds (eval::buildModule, what a
 // host compiles an installed app's scripts with). What such a compile always
-// does, the whole-program optimizer and guarded inlining, is decided here and
-// nowhere else: the two callers fill in what they have and cannot differ in
-// what runs. (They did: the optimizer ran for `bronze build` alone for as long
-// as the module build called lowerModule itself.) The JIT calls lowerModule.
+// does is decided here and nowhere else: the two callers fill in what they
+// have and cannot differ in what runs. The JIT calls lowerModule.
 struct AheadOfTimeOptions {
     // The host's global names, or null for a program with no host.
     const std::vector<std::string>* hostGlobals = nullptr;
     const types::PinManifest* pins = nullptr;
     const NativeManifest* nativeManifest = nullptr;
-    std::string censusOutPath;
-    // A profile to record or to read (lower_feedback.h), or null.
+    // A profile to record (lower_feedback.h), or null.
     const FeedbackOptions* feedback = nullptr;
-    InferStatsCollector* inferStats = nullptr;
-    // `--wpo-stats[=<filter>]`: the census, written to `wpoReport`.
-    bool wpoStats = false;
-    bool wpoStatsPerSite = false;
-    std::string wpoStatsFilter;
-    std::string* wpoReport = nullptr;
     // The self-hosted builtins' compile (src/selfhost; lower_selfhost.cpp):
     // `$Name(...)` intrinsics, no global reads, `$Builtin` registrations.
     bool selfHost = false;
@@ -164,8 +118,7 @@ std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, Diagnos
 // The kind a TypeScript annotation claims, as the lattice states it: `number`,
 // an array type, a class's instances (an object), an alias followed to what
 // it names. `Dynamic` when the annotation claims no one kind — a union of
-// two, an interface, or a name no declaration answers. The claim is only ever
-// compared with a proof (lower_annotation.cpp); it types nothing.
+// two, an interface, or a name no declaration answers. It types nothing.
 types::Type annotationHint(const ast::TypeNode& type);
 
 }  // namespace bronze::lower

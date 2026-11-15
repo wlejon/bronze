@@ -8,19 +8,11 @@
 
 namespace bronze::lower {
 
-// The closure-parameter plan is made for THIS body and consumed while THIS body
-// is lowered, so it lives in a frame that opens and closes here. Keyed by node
-// address, it must not survive the nodes it names — a class constructor's body
-// is a copy that dies with `lowerClass`, and an entry outliving that copy is
-// later answered for whatever the allocator puts at the same address. See the
-// note on `provenClosureParams_`.
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator, bool isAsync) {
     bool oldUserFn = inUserFunction_;
     inUserFunction_ = true;
-    provenClosureParams_.emplace_back();
-    fnParamFactsStack_.emplace_back();
     // A generator or async function lowers as the COROUTINE BODY it is, whole
     // and in one piece, and is then split into that body and the stub the
     // function's callers reach (lower_generator.cpp).
@@ -36,8 +28,6 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator);
     if (ok && coro_) splitCoroutineBody(ilFn, coro_->kind);
     coro_ = std::move(outerCoro);
-    fnParamFactsStack_.pop_back();
-    provenClosureParams_.pop_back();
     inUserFunction_ = oldUserFn;
     return ok;
 }
@@ -45,17 +35,6 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
 bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator) {
-    // Bodies lower one at a time (the state resets below assume it), so a
-    // plain pointer is the whole bookkeeping the typed-element binding scan
-    // needs.
-    currentBodyStmts_ = &body;
-    // Which of this body's own nested declarations have parameters every call
-    // site proves to be Numbers (lower_scope.cpp). Decided BEFORE any statement
-    // of the body is lowered, because the first thing lowering does with a
-    // `function f() {}` statement is build `f`'s IL skeleton — parameter types
-    // and all — and the whole point of the plan is to be part of it.
-    planClosureParamNumbers(params, body);
-    planFunctionParamFacts(params, body);
     ilFn.blocks.push_back(il::Block{.id = 0});
     ilFn.isStrict = strictCode_;
     ilFn.isGenerator = isGenerator;
@@ -68,7 +47,6 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     jumpStack_.clear();
     scopeHasEnv_.clear();
     immutableEnvCache_.clear();
-    cachedTypedElemGet_.reset();
     currentStmtSpan_ = Span{};
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
     for (auto& n : ast::getAssignedNames(body)) {
@@ -254,19 +232,6 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                 }
             }
 
-            // A body that can REACH its end returns `undefined` there, and a
-            // pinned return is refused by the arm below when it does — so a
-            // census entry for this function would be a manifest that does not
-            // compile. Refused by the site table, which is the only way a
-            // static fact reaches a dynamic instrument: reachability is a
-            // property of the program, and no run can be asked about it.
-            if (censusEnabled() && reachable && ilFn.returnType == il::Type::Dynamic &&
-                !ilFn.name.empty() && !ilFn.isGenerator &&
-                (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
-                addCensusSite("return " + manifestOwnerName(ilFn.name), il::CensusSite::Return,
-                              /*refuses=*/true);
-            }
-
             il::Instruction retInst;
             retInst.op = il::Op::Ret;
             if (ilFn.returnType == il::Type::Void) {
@@ -324,23 +289,10 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     return true;
 }
 
-// The return annotation is deliberately not passed down: it is a hint, and the
-// callers apply it — `lower()` and `lowerClosure` both check it against the
-// proof BEFORE the body is lowered, because the IL return type is part of the
-// calling convention.
+// The return annotation is deliberately not passed down: it is a hint, and it
+// types nothing.
 bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
-    const FnParamFacts* outerFacts = currentFnParamFacts_;
-    currentFnParamFacts_ = nullptr;
-    if (!fnParamFactsStack_.empty()) {
-        const auto it = fnParamFactsStack_.front().find(&fnDecl);
-        if (it != fnParamFactsStack_.front().end()) {
-            currentFnParamFacts_ = &it->second;
-        }
-    }
-    const bool ok =
-        lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator, fnDecl.isAsync);
-    currentFnParamFacts_ = outerFacts;
-    return ok;
+    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator, fnDecl.isAsync);
 }
 
 }  // namespace bronze::lower

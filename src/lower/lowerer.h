@@ -7,16 +7,12 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <deque>
 #include <vector>
 
 #include "ast/ast.h"
 #include "ast/clone.h"
 #include "il/il.h"
-#include "lower/bigint_reach.h"
 #include "lower/derived_ctor_plan.h"
-#include "lower/direct_method_table.h"
-#include "lower/infer_stats.h"
 #include "lower/lower.h"
 #include "lower/lowerer_state.h"
 #include "support/diagnostics.h"
@@ -43,9 +39,7 @@ public:
     using VarState = lower::VarState;
     using VarStateMap = lower::VarStateMap;
     using ExprJoin = lower::ExprJoin;
-    using StaticSlotSite = lower::StaticSlotSite;
     using CoroContext = lower::CoroContext;
-    using ProvenParamPlan = lower::ProvenParamPlan;
     using LoopParam = lower::LoopParam;
     using PatternTarget = lower::PatternTarget;
     using PatternRef = lower::PatternRef;
@@ -53,26 +47,16 @@ public:
     using PrivateElement = lower::PrivateElement;
     using ChainExit = lower::ChainExit;
     using ChainMiss = lower::ChainMiss;
-    using InlineFrame = lower::InlineFrame;
-    using CachedTypedElemGet = lower::CachedTypedElemGet;
 
     Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
             const types::InferenceResult* inference,
             const std::vector<std::string>* hostGlobals = nullptr,
             const SourceSet* sources = nullptr,
-            InferStatsCollector* stats = nullptr,
-            bool assumeNoBigInt = false,
             const types::PinManifest* pins = nullptr,
-            const std::string& censusOutPath = {},
             const NativeManifest* nativeManifest = nullptr);
 
     std::optional<il::Module> lower();
-    // Whether lower() compiles resolved method calls' bodies in place
-    // (inline_guarded.h, inlineGuardedEnabled).
-    void setInlineGuarded(bool on) { inlineGuarded_ = on; }
-    // The whole-program optimizer's two runs (lower.h WholeProgramOptions).
-    void setWholeProgram(WholeProgramOptions* options) { wholeProgram_ = options; }
-    // The type-feedback instrument and the profile read back (lower_feedback.h).
+    // The type-feedback instrument (lower_feedback.h).
     void setFeedback(const FeedbackOptions* options) { feedback_ = options; }
     // Compile the self-hosted builtins (lower_selfhost.cpp, src/selfhost):
     // `$Name(...)` calls are intrinsics, no global may be read, and each
@@ -83,17 +67,10 @@ public:
     // The library's builtins as lower.h SelfHostLibrary lists them, read off
     // a module lower() returned in library-only mode.
     std::vector<SelfHostLibrary::Builtin> selfHostBuiltinTable(const il::Module& module) const;
-    // The `--feedback-in` profile, or null: what a pass that specializes on
-    // observed types asks (docs/type-feedback.md, "Consumers").
-    const spec::TypeProfile* feedbackProfile() const {
-        return feedback_ != nullptr ? feedback_->profile : nullptr;
-    }
 
 private:
-    // The IL -> IL passes after lowering, and the type-feedback plan read
-    // around them (lower_final_passes.cpp).
+    // What the finished module is stamped with (lower_final_passes.cpp).
     bool finishIlPasses();
-    bool runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec::FeedbackPlan* plan, bool probe);
 
     const ast::Module& astModule_;
     DiagnosticSink& diags_;
@@ -108,10 +85,6 @@ private:
     uint32_t icSiteCounter_ = 0;
     uint32_t anonFnCounter_ = 0;
 
-    // --- Direct method-call edge (direct_method_table.h) ---
-    DirectMethodTable directMethods_;
-    bool inlineGuarded_ = false;
-    WholeProgramOptions* wholeProgram_ = nullptr;
     const FeedbackOptions* feedback_ = nullptr;
 
     // --- The self-hosted builtins (lower_selfhost.cpp) ---
@@ -143,20 +116,8 @@ private:
     // `is.plain_array` into a direct call of it and the original call.
     bool mergeSelfHostLibrary();
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
-    // Dynamic calls whose callee the static call plan names though the call
-    // was lowered before the function was (a recursive call, a call of a
-    // sibling declared further down), by the call's span (file, begin, end):
-    // the function the closure is. Spent by the final passes.
-    std::map<std::tuple<uint16_t, uint32_t, uint32_t>, uint32_t> stableClosureCalls_;
-    // The class name inference gives `receiver`'s object type, or empty.
-    std::unordered_map<std::string, std::string> fieldClassGuesses() const;
-    std::string receiverClassName(const ast::Expr& receiver);
-    // Whether inference typed `receiver` a dense JS Array.
-    bool receiverIsArray(const ast::Expr& receiver);
-    void recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
-                              const std::string& method);
 
-    uint32_t staticSiteCounter_ = 0;
+
     uint32_t templateSiteCounter_ = 0;
 
     std::vector<VarBinding> varBindings_;
@@ -183,7 +144,6 @@ private:
     // the enclosing function's set comes back without a copy of it (at the
     // top level of a large module, thousands of names per closure).
     std::vector<std::vector<std::string>> assignedNamesUndo_;
-    std::optional<CachedTypedElemGet> cachedTypedElemGet_;
     bool inUserFunction_ = false;
     il::ValueId currentEnv(il::Function& ilFn);
     il::ValueId currentThisValue_ = il::kNoValue;
@@ -212,119 +172,16 @@ private:
     int32_t strictFlag() const { return strictCode_ ? 1 : 0; }
     std::unordered_set<std::string> capturedNames_;
     std::unordered_set<std::string> memoryNames_;
-    mutable std::unordered_set<std::string> assumedNumericIdents_;
     size_t functionEnvBase_ = 0;
     size_t functionEnvScope_ = SIZE_MAX;
     std::vector<std::string> moduleEnvSlots_;
     size_t moduleEnvScope_ = SIZE_MAX;
     bool segmentTopLevel_ = false;
 
-    // --- lower_infer.cpp: what inference proved ---
-    static il::Type ilTypeOf(types::Type t);
-    const ast::Node* inferenceNode(const ast::Node& n) const;
-    const ast::Expr& inferenceExpr(const ast::Expr& e) const;
-    const ast::Stmt& inferenceStmt(const ast::Stmt& s) const;
-    std::vector<const ast::CloneOrigins*> cloneOrigins_;
-
-    types::Type inferredType(const ast::Expr& expr) const;
-    bool provenNumber(const ast::Expr& expr) const;
-    bool functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const;
-    bool pristineMathCall(const ast::Expr& call) const;
-    // `Math.PI` and the other 21.3.1 constants on the proven builtin: their value.
-    std::optional<double> pristineConstant(const ast::MemberAccess& mem) const;
-    // The `Math` member a call through a `const` alias of it reaches
-    // (`const cos = Math.cos; cos(x)`), or null.
-    const std::string* pristineMathAliasCall(const ast::Expr& call) const;
-    // Whether every mention of `name` in the body being lowered (nested
-    // functions included) is the callee of a call `pristineMathAliasCall`
-    // answers for: the alias is then never read, and its initializer — a
-    // read of the pristine builtin, which has no effect — need not run.
-    bool mathAliasOnlyCalled(const std::string& name) const;
-    // The one-argument `Math` member a call lowers to as a single f64 op
-    // (lower_call.cpp), directly or through an alias, or nullopt when the call
-    // takes the generic path.
-    std::optional<il::MathUnaryFn> mathUnaryCallFn(const ast::Call& call) const;
-
-    // --- lower_typed_elem.cpp: proven typed-array element access ---
-    std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e, bool coercing = false) const;
-    uint32_t typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elemKind) const;
-    bool provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess& site, int depth) const;
-    std::optional<std::pair<int64_t, int64_t>> evalIndexInterval(
-        const ast::Expr& e, const ast::Node& site, int depth,
-        std::string* outBoundedArrayName = nullptr) const;
-    bool provenArrayOrTypedArray(const ast::Expr& e) const;
-    bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
-    // Stronger than binaryCoercesOperand: the operand's value reaches the
-    // operator ONLY through ToNumeric, so a plain array element may be read as
-    // its ToNumber (lower_typed_elem.cpp has the argument).
-    bool binaryToNumericOperand(ast::BinaryOp op, const ast::Expr& other) const;
-    bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
-    // `plainElemToNumeric`: the position is a ToNumeric one (see
-    // binaryToNumericOperand), not merely one where `undefined` and NaN agree.
-    std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn,
-                                              bool* outDeferredUnbox = nullptr,
-                                              bool allowUnprovenLengthUnbox = true,
-                                              bool plainElemToNumeric = true);
-    std::optional<Value> lowerTypedElemRead(const ast::IndexAccess& idx, uint32_t elemKind,
-                                            il::Function& ilFn);
-    std::optional<Value> lowerTypedElemAssign(const ast::Binary* bin,
-                                              const ast::IndexAccess& idxAccess,
-                                              uint32_t elemKind, il::Function& ilFn);
-    bool definitelyNumericOperand(const ast::Expr& e, int depth) const;
-    bool typedElemBindingUsesCoerce(const std::string& name, const ast::VarDecl* self) const;
-    void emitTypedElemSet(Value objBoxed, Value idxF64, Value valF64, uint32_t elemKind,
-                          il::Function& ilFn);
-    const std::vector<ast::StmtPtr>* currentBodyStmts_ = nullptr;
-    bool typedElemDisabled_ = false;
-    std::vector<ProvenParamPlan> provenClosureParams_;
-    // A deque, not a vector: currentFnParamFacts_ points into one plan while a
-    // nested body pushes the next, and a vector that grows copies its maps
-    // (MSVC's unordered_map move is not noexcept), leaving the pointer to freed
-    // nodes. A deque's push_back and pop_back never move the other elements.
-    std::deque<FnParamFactsPlan> fnParamFactsStack_;
-    const FnParamFacts* currentFnParamFacts_ = nullptr;
-    bool moduleBufferDetachFree_ = true;
-    void initModuleBufferDetachFree();
-    void planFunctionParamFacts(const std::vector<ast::Param>& params,
-                                const std::vector<ast::StmtPtr>& stmts);
-    bool numericArithDisabled_ = false;
-    bool provenFieldRead(const ast::Expr& e) const;
-    Value emitRawUnbox(Value boxed, il::Function& ilFn);
-    bool nullishNumberFieldRead(const ast::Expr& e) const;
-    Value emitNullishUnbox(Value boxed, il::Function& ilFn);
-    void buildClassFamilyTable();
-    bool classFamilyTableBuilt_ = false;
-    void buildSlotReprTable();
-    std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
-                                                  const std::string& key, bool forWrite);
-    void stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver);
-    // lower_key_owner_guess.cpp: the family a key's sole owning class subtree
-    // names, guessed for a receiver read out of another class's field.
-    types::ShapeClassId keyOwnerGuessAt(const ast::Expr& receiver, const std::string& key);
-    types::ShapeClassId keyOwnerFamily(const std::string& key);
-    std::unordered_map<std::string, types::ShapeClassId> keyOwnerCache_;
-    void reportClassLayouts();
-    il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
-    const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
-    types::Type provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const;
-    types::Type provenReturnType(uint32_t moduleFnIndex) const;
-    types::Type provenClosureReturn(const ast::Node& site) const;
-    bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
-                              il::Function& fn);
+    // --- --pins signature entries (lower_pin.cpp) ---
     bool applySignaturePins(const std::vector<ast::Param>& params, Span span, il::Function& fn);
-    // Compares an annotation's hint with what inference proved and warns when
-    // they disagree (lower_annotation.cpp). Never an error: an annotation
-    // bronze cannot read hints nothing.
-    void checkAnnotation(const ast::TypeNodePtr& ann, Span span, const std::string& name,
-                         types::Type proven);
-    std::string propBailReason(const ast::Expr& expr) const;
-    void recordPropertySite(uint16_t fileId, PropSiteVerdict verdict,
-                            const std::string& bailReason = "");
-    void recordCall(uint16_t fileId, bool isNative, const std::string& bailReason = "");
-    void recordElementOp(uint16_t fileId, bool isNative, const std::string& bailReason = "");
 
     const SourceSet* sources_ = nullptr;
-    InferStatsCollector* stats_ = nullptr;
 
     // --- lower_generator.cpp: coroutine bodies ---
     std::optional<CoroContext> coro_;
@@ -379,8 +236,7 @@ private:
     bool currentBlockIsTerminated(const il::Function& ilFn) const;
     Value boxValueIfNeeded(Value val, il::Function& ilFn);
     Value unboxValueIfNeeded(Value val, il::Type targetType, il::Function& ilFn);
-    Value emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp, bool provenNumeric,
-                              il::Function& ilFn);
+    Value emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp, il::Function& ilFn);
     Value coerceToType(Value val, il::Type target, il::Function& ilFn);
     Value lowerCondition(const ast::Expr& expr, il::Function& ilFn);
     Value lowerConditionFromVal(Value val, il::Function& ilFn);
@@ -430,10 +286,6 @@ private:
     bool envSlotIsLexical(uint32_t depth, uint32_t index) const;
     bool envSlotDefiniteInit(uint32_t depth, uint32_t index) const;
     SlotImmutability envSlotImmutability(uint32_t depth, uint32_t index) const;
-    bool envSlotIsF64(uint32_t depth, uint32_t index) const;
-    void planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
-                                const std::vector<const ast::Stmt*>& body,
-                                const il::Function& ilFn, EnvScopeInfo& info) const;
     void emitImmutableAssign(const std::string& name, il::Function& ilFn);
 
     // --- --pins write barriers (lower_pin.cpp) ---
@@ -444,21 +296,9 @@ private:
                                         std::string* pinTextOut) const;
     void emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,
                              il::Function& ilFn);
-    bool emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn,
-                                  bool pinned = true);
-
-    // --- Pin census (lower_census.cpp) ---
-    bool censusEnabled() const { return !censusOutPath_.empty(); }
     static std::string manifestOwnerName(const std::string& ilName);
-    std::string censusOutPath_;
-    void emitCensusRecord(Value val, const std::string& target, il::CensusSite kind,
-                          il::Function& ilFn);
-    void addCensusSite(const std::string& target, il::CensusSite kind, bool refuses);
-    void emitCensusFieldRecord(const ast::Expr& receiver, const std::string& key, Value val,
-                               il::Function& ilFn);
-    std::string censusFieldOwner(const ast::Expr& receiver, bool* opaque) const;
-    void refuseAmbiguousCensusOwners();
-    std::vector<std::pair<std::string, il::CensusSite>> censusSignatureOwners_;
+
+    // --- Bindings and records (lower_scope.cpp) ---
     void openLexicalBindings(size_t scopeIndex, const std::vector<std::string>& lexicalNames,
                              const std::vector<std::string>& definiteNames,
                              const std::vector<std::string>& constNames,
@@ -469,7 +309,7 @@ private:
     bool refuseConstAssignment(const VarBinding& b, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
 
-    // --- Static call plan & closure parameters (lower_static_call_plan.cpp, lower_closure_param_proof.cpp) ---
+    // --- Static call plan (lower_static_call_plan.cpp) ---
     void planStableFunctionSlots(const std::vector<const ast::Stmt*>& stmts,
                                  const std::vector<ast::Param>* params, EnvScopeInfo& info) const;
     void planStableFunctionSlots(const std::vector<ast::StmtPtr>& stmts,
@@ -479,14 +319,9 @@ private:
                                  const std::vector<ast::Param>* params, EnvScopeInfo& info);
     static void planScopeRebinds(const std::vector<ast::StmtPtr>& stmts,
                                  const std::vector<ast::Param>* params, EnvScopeInfo& info);
-    void planClosureParamNumbers(const std::vector<ast::Param>& params,
-                                 const std::vector<ast::StmtPtr>& stmts);
-    void applyProvenClosureParams(const ast::Node& site, const std::vector<ast::Param>& params,
-                                  il::Function& fn) const;
     bool findStableFunctionSlot(const std::string& name, size_t& scopeIndex, uint32_t& slot) const;
     bool findStableFunctionCallee(const std::string& name, uint32_t& envHops,
                                   uint32_t& fnIndex) const;
-    void noteCallBeforeStableFunction(const std::string& name, const Span& span);
     std::optional<Value> lowerDirectCall(const ast::Call* call, uint32_t calleeIdx,
                                          il::ValueId envBase, uint32_t envHops,
                                          il::Function& ilFn);
@@ -720,10 +555,6 @@ private:
                                                       const ast::MemberAccess& callee,
                                                       il::Function& ilFn);
 
-    // --- lower_keyed_field_store.cpp: `o[k] = v` split into named field stores ---
-    bool emitKeyedFieldStore(const ast::IndexAccess& idxAccess, Value objBoxed, Value keyBoxed,
-                             Value storedBoxed, il::Function& ilFn);
-
     // --- lower_expr_binary.cpp: binary operators ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerAddChain(const ast::Binary* bin, il::Function& ilFn);
@@ -735,9 +566,8 @@ private:
                                        il::Function& ilFn);
     std::optional<Value> lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,
                                          il::Function& ilFn);
-    Value emitToInt32(Value val, il::Function& ilFn, bool provenSafeInt = false);
-    Value emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn,
-                      bool lhsSafeInt = false, bool rhsSafeInt = false);
+    Value emitToInt32(Value val, il::Function& ilFn);
+    Value emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn);
     Value emitPow(Value lhs, Value rhs, il::Function& ilFn);
     Value emitLogicalNot(Value boolVal, il::Function& ilFn);
     static std::optional<il::Op> bitwiseOpFor(ast::BinaryOp op);
@@ -765,28 +595,6 @@ private:
                                        il::Function& ilFn);
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,
                                    bool onSpine = false);
-
-    // --- lower_module_inline.cpp: module literal method inlining ---
-    bool tryLowerModuleLiteralInline(const ast::Call& call, const ast::MemberAccess& mem,
-                                     bool onSpine, il::Function& ilFn, std::optional<Value>& out);
-    std::optional<Value> emitInlinedMethod(const std::string& binding, const std::string& key,
-                                           const types::ModuleLiteralInline& method,
-                                           Value receiver, const std::vector<Value>& args,
-                                           il::Function& ilFn);
-    std::optional<Value> emitInlineGuard(const types::ModuleLiteralInline& method, size_t guard,
-                                         const std::string& key, const InlineFrame& frame,
-                                         const std::vector<Value>& args, il::Function& ilFn);
-    std::optional<Value> emitInlineExpr(const ast::Expr& expr, const InlineFrame& frame,
-                                        il::Function& ilFn);
-    Value emitInlinePropGet(Value receiver, const std::string& key, il::Function& ilFn);
-    Value emitInlineMethodCall(Value receiver, const std::string& key,
-                               const std::vector<Value>& args, il::Function& ilFn);
-    std::optional<Value> emitInlineSelect(Value cond,
-                                          const std::function<std::optional<Value>()>& thenArm,
-                                          const std::function<std::optional<Value>()>& elseArm,
-                                          il::Function& ilFn);
-    std::vector<std::pair<std::string, std::string>> inlineStack_;
-    std::map<std::string, uint32_t> inlinedLiteralSites_;
 };
 
 }  // namespace bronze::lower

@@ -145,32 +145,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     }
     // A closure's parameters and return are always the uniform dynamic
     // convention, and an annotation cannot change that.
-    //
-    // A closure PARAMETER has no proof and cannot have one: a signature is
-    // inferred by joining over every call site, which is sound only for a name
-    // whose callers this compilation can enumerate, and a closure is reached
-    // through a function value — signature specialization excludes it by
-    // construction. So the proof handed to the check is `dynamic`, which is the
-    // honest report of "nothing was observed here", and every parameter
-    // annotation on a closure is discarded with a warning saying so.
     for (const auto& param : params) {
         newFn.params.push_back(
             {param.pattern ? "__pattern" + std::to_string(newFn.params.size()) : param.name,
              il::Type::Dynamic});
-        checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic());
     }
     applyParamShape(params, newFn);
-    // The RETURN is different in kind: what a body returns is a fact about
-    // the body alone, and inference joins every `return` in it — so a return
-    // annotation on a closure CAN agree with a proof, where a parameter
-    // annotation cannot (that needs escape analysis). It buys nothing at the
-    // IL level: the return type above stays dynamic, because that is the
-    // calling convention and no annotation may widen it.
-    //
-    // Reported on `fnName`, which for an anonymous function expression is
-    // the synthesized `__anon_fn_N` — deliberately, because that is the name
-    // it has in the IL dump and the span already points at the source.
-    checkAnnotation(returnTypeAnn, span, fnName, provenClosureReturn(site));
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
     // `span` is the SITE's, and for a class that is the whole `class C {...}`
     // rather than the constructor's own text — which is exactly what
@@ -234,8 +214,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerEntryEnvValue = entryEnvValue_;
     auto outerImmutableEnvCache = std::move(immutableEnvCache_);
     assignedNamesUndo_.emplace_back();
-    auto outerCachedTypedElemGet = cachedTypedElemGet_;
-    cachedTypedElemGet_.reset();
     auto outerThisValue = currentThisValue_;
     auto outerIsArrow = currentFunctionIsArrow_;
     currentFunctionIsArrow_ = isArrow;
@@ -260,18 +238,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // like a `var` the callee declared.
     auto outerVarNames = std::move(functionVarNames_);
     functionVarNames_.clear();
-    // The typed-element binding scan asks about the body being lowered NOW;
-    // lowerFunctionBody points it at the nested body, so the outer pointer
-    // comes back with everything else here.
-    const auto* outerBodyStmts = currentBodyStmts_;
-    const FnParamFacts* outerFnParamFacts = currentFnParamFacts_;
-    currentFnParamFacts_ = nullptr;
-    if (siteFnDecl != nullptr && !fnParamFactsStack_.empty()) {
-        const auto it = fnParamFactsStack_.back().find(siteFnDecl);
-        if (it != fnParamFactsStack_.back().end()) {
-            currentFnParamFacts_ = &it->second;
-        }
-    }
 
     // A `FunctionDecl` site is always the ordinary form — there is no syntax
     // for a declaration that is a method or an arrow — so only the expression
@@ -283,13 +249,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // type is part of the calling convention a recursive call already reads.
     // A failure still puts the enclosing state back, below.
     const bool pinsOk = applySignaturePins(params, span, newFn);
-    // And the proof, which since stage E4 covers the case a pin used to be the
-    // only answer for: a nested declaration whose every call site this
-    // compilation can enumerate (`planClosureParamNumbers`). After the pins, so
-    // that the manifest's error reporting still owns a position it cannot
-    // honour; both only ever move a slot from Dynamic to F64, so the order
-    // decides nothing else.
-    if (pinsOk) applyProvenClosureParams(site, params, newFn);
     const bool bodyOk = pinsOk && lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     // The name's record is visible to the BODY and to nothing else — 15.2.5
     // creates it around the closure, not in the scope that wrote the
@@ -318,15 +277,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     immutableEnvCache_ = std::move(outerImmutableEnvCache);
     for (const std::string& name : assignedNamesUndo_.back()) assignedNames_.erase(name);
     assignedNamesUndo_.pop_back();
-    cachedTypedElemGet_ = outerCachedTypedElemGet;
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;
     derivedCtorThis_ = outerDerivedCtorThis;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
     functionVarNames_ = std::move(outerVarNames);
-    currentBodyStmts_ = outerBodyStmts;
-    currentFnParamFacts_ = outerFnParamFacts;
     if (!bodyOk) {
         if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);
         return std::nullopt;

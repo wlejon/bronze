@@ -358,7 +358,7 @@ std::optional<Lowerer::Value> Lowerer::lowerPrivateAssignment(const ast::Binary*
     }
     auto rhsVal = lowerExpr(*bin->rhs, ilFn);
     if (!rhsVal) return std::nullopt;
-    Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, provenNumber(*bin), ilFn)
+    Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                           : *rhsVal;
     Value storedBoxed = boxValueIfNeeded(stored, ilFn);
     if (!lowerPrivateWrite(*mem, objBoxed, storedBoxed, ilFn)) return std::nullopt;

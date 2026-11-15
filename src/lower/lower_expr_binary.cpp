@@ -22,7 +22,7 @@ namespace bronze::lower {
 // every bitwise operator — including one that is already an int32, where the
 // backend recognizes it and emits nothing, which is what keeps a chain like
 // `(a | 0) & 3` from converting twice.
-Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn, bool provenSafeInt) {
+Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn) {
     if (val.type == il::Type::I32) return val;
     if (val.type == il::Type::F64 && currentBlockIdx_ < ilFn.blocks.size()) {
         auto& insts = ilFn.blocks[currentBlockIdx_].instructions;
@@ -36,22 +36,6 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn, bool provenSa
             insts.back().immI32 = imm;
             return Value{val.id, il::Type::I32};
         }
-        if (!provenSafeInt) {
-            for (size_t i = insts.size(); i > 0 && insts.size() - i <= 4; --i) {
-                const auto& prev = insts[i - 1];
-                if (prev.result != val.id) continue;
-                if (prev.op == il::Op::ElemGetTyped) {
-                    const uint32_t rawKind =
-                        static_cast<uint32_t>(prev.immI32) & static_cast<uint32_t>(il::kElemKindMask);
-                    const bool inBounds =
-                        (prev.immI32 & static_cast<int32_t>(il::kElemFlagProvenInBounds)) != 0;
-                    if (inBounds && rawKind <= 6) {
-                        provenSafeInt = true;
-                    }
-                }
-                break;
-            }
-        }
     }
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
@@ -61,7 +45,6 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn, bool provenSa
     // conversion can throw: 7.1.6 step 1 is ToNumber, and for a BOXED operand
     // that reaches a user `valueOf` and the Symbol TypeError.
     inst.boxType = val.type;
-    inst.rawUnbox = (val.type == il::Type::F64 && provenSafeInt);
     inst.result = res;
     inst.operands = {val.id};
     emitInst(ilFn, inst);
@@ -76,14 +59,12 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn, bool provenSa
 // would meet a block parameter inference typed `number` and fail to coerce —
 // the two runs of the oracle suite would disagree about a program's types. The
 // int32 is an intermediate of the operator and never escapes it.
-Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn,
-                                    bool lhsSafeInt, bool rhsSafeInt) {
+Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn) {
     // A boxed operand keeps its box and the operator becomes the dynamic form.
     // ToInt32 is the NUMBER half of 13.15.3 only: on two BigInts these
     // operators are defined over the whole values, and converting first would
     // silently truncate `(1n << 64n) & mask` to 32 bits.
-    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
-        numericArithDisabled_) {
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
         Value lb = boxValueIfNeeded(lhs, ilFn);
         Value rb = boxValueIfNeeded(rhs, ilFn);
         il::ValueId dres = ilFn.valueCount++;
@@ -95,8 +76,8 @@ Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Functio
         emitInst(ilFn, dinst);
         return Value{dres, il::Type::Dynamic};
     }
-    Value l = emitToInt32(lhs, ilFn, lhsSafeInt);
-    Value r = emitToInt32(rhs, ilFn, rhsSafeInt);
+    Value l = emitToInt32(lhs, ilFn);
+    Value r = emitToInt32(rhs, ilFn);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = op;
@@ -125,8 +106,7 @@ std::optional<il::Op> Lowerer::bitwiseOpFor(ast::BinaryOp op) {
 // `a ** b`: ToNumber on both operands, then the one exponentiation
 // algorithm the runtime owns (rt_operator.cpp), which `Math.pow` shares.
 Lowerer::Value Lowerer::emitPow(Value lhs, Value rhs, il::Function& ilFn) {
-    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
-        numericArithDisabled_) {
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
         Value lb = boxValueIfNeeded(lhs, ilFn);
         Value rb = boxValueIfNeeded(rhs, ilFn);
         il::ValueId dres = ilFn.valueCount++;
@@ -244,20 +224,7 @@ std::optional<Lowerer::Value> Lowerer::lowerRelational(ast::BinaryOp op, Value l
     auto isNumeric = [](il::Type t) {
         return t == il::Type::F64 || t == il::Type::I32 || t == il::Type::Bool;
     };
-    // One side a number and the other boxed: with no BigInt able to reach the
-    // module (numericArithDisabled_), IsLessThan is a number compare after
-    // ToNumber of the boxed side. Step 1's ToPrimitive takes the NUMBER hint,
-    // step 3 needs both sides strings, which a number never is, and step 4's
-    // ToNumeric is ToNumber for anything but a BigInt; the left operand's
-    // ToPrimitive runs first only when it is the boxed one, so there is one
-    // conversion either way. The checked unbox is that ToNumber (a Symbol's
-    // TypeError, undefined's NaN, which the ordered compares answer false
-    // for), and the guarded-region pass hoists it out of a loop as one test,
-    // as `i < n` over a captured `n` wants.
-    const bool numberAndBoxed = (isNumeric(lhs.type) && rhs.type == il::Type::Dynamic) ||
-                                (lhs.type == il::Type::Dynamic && isNumeric(rhs.type));
-    const bool provenNumeric =
-        (isNumeric(lhs.type) && isNumeric(rhs.type)) || (numberAndBoxed && !numericArithDisabled_);
+    const bool provenNumeric = isNumeric(lhs.type) && isNumeric(rhs.type);
 
     il::Op ilOp;
     switch (op) {
@@ -345,41 +312,16 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
         if (auto chain = lowerAddChain(bin, ilFn)) return chain;
     }
 
-    // An operand this operator coerces on every branch may be a proven
-    // typed-array element read, in which case it lowers straight to an
-    // unboxed f64 (lower_typed_elem.cpp has the argument). Same evaluation,
-    // same order — only the instruction differs.
-    const bool lhsCoerces = binaryCoercesOperand(bin->op, *bin->rhs);
-    const bool rhsCoerces = binaryCoercesOperand(bin->op, *bin->lhs);
-    const bool allowLenUnbox = bin->op != ast::BinaryOp::Add;
-    bool lhsDeferUnbox = false;
-    bool rhsDeferUnbox = false;
-    auto lhsOpt = lhsCoerces
-                      ? lowerCoercingOperand(*bin->lhs, ilFn, &lhsDeferUnbox, allowLenUnbox,
-                                             binaryToNumericOperand(bin->op, *bin->rhs))
-                      : lowerExpr(*bin->lhs, ilFn);
+    auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
     if (!lhsOpt) return std::nullopt;
-    auto rhsOpt = rhsCoerces
-                      ? lowerCoercingOperand(*bin->rhs, ilFn, &rhsDeferUnbox, allowLenUnbox,
-                                             binaryToNumericOperand(bin->op, *bin->lhs))
-                      : lowerExpr(*bin->rhs, ilFn);
+    auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
     if (!rhsOpt) return std::nullopt;
 
     Value lhs = *lhsOpt;
     Value rhs = *rhsOpt;
-    if (lhsDeferUnbox) {
-        lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-    }
-    if (rhsDeferUnbox) {
-        rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-    }
 
     if (const auto bitOp = bitwiseOpFor(bin->op)) {
-        const bool lhsSafe =
-            lhs.type == il::Type::F64 && evalIndexInterval(*bin->lhs, *bin, 4).has_value();
-        const bool rhsSafe =
-            rhs.type == il::Type::F64 && evalIndexInterval(*bin->rhs, *bin, 4).has_value();
-        return emitBitwise(*bitOp, lhs, rhs, ilFn, lhsSafe, rhsSafe);
+        return emitBitwise(*bitOp, lhs, rhs, ilFn);
     }
     if (bin->op == ast::BinaryOp::Exp) {
         return emitPow(lhs, rhs, ilFn);
@@ -402,20 +344,10 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     if (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::StrictEq ||
         bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe) {
         if (auto nullish = lowerNullishEquality(*bin, lhs, rhs, ilFn)) return nullish;
-        if ((lhs.type == il::Type::F64 || provenNumber(*bin->lhs)) &&
-            (rhs.type == il::Type::F64 || provenNumber(*bin->rhs))) {
-            lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-        }
         return lowerEquality(bin->op, lhs, rhs, ilFn);
     }
     if (bin->op == ast::BinaryOp::Less || bin->op == ast::BinaryOp::Greater ||
         bin->op == ast::BinaryOp::LessEqual || bin->op == ast::BinaryOp::GreaterEqual) {
-        if ((lhs.type == il::Type::F64 || provenNumber(*bin->lhs)) &&
-            (rhs.type == il::Type::F64 || provenNumber(*bin->rhs))) {
-            lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-        }
         return lowerRelational(bin->op, lhs, rhs, ilFn);
     }
 
@@ -471,23 +403,7 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     // TypeError. The relational operators do NOT belong here — they left
     // through lowerRelational above, because ToNumeric is only one of their
     // two branches.
-    // With no BigInt anywhere in the program, ToNumeric IS ToNumber and the
-    // BigInt arm of 13.15.3 is dead code: `a * b` is exactly
-    // `ToNumber(a) * ToNumber(b)`, which is this operand pair unboxed and a
-    // native f64 multiply. Taking that road rather than the boxed one is worth
-    // far more than the two conversions it saves, because an f64 result is not
-    // a GC root: `planFrame` roots Dynamic values and only those, and a
-    // rooted value is stored to its slot after its defining instruction and
-    // reloaded before every use. A chain like `a*b + c*d` over dynamic operands
-    // keeps every intermediate in a register under this arm and spills all of
-    // them under the other.
-    //
-    // `unboxValueIfNeeded` emits the two conversions in source order, which is
-    // the order 13.15.3 evaluates them in — a `valueOf` on the left runs before
-    // one on the right, as it must.
-    const bool numericArith = !numericArithDisabled_ && resType == il::Type::F64;
-    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
-        !numericArith) {
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
         lhs = boxValueIfNeeded(lhs, ilFn);
         rhs = boxValueIfNeeded(rhs, ilFn);
         resType = il::Type::Dynamic;

@@ -56,8 +56,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.operands = {objBoxed.id};
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
-            getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
-            stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             Value curVal{curId, il::Type::Dynamic};
 
@@ -91,7 +89,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = keyIdx;
             setInst.icIndex = icSiteCounter_++;
-            stampStaticSlot(setInst, *mem->object);
             setInst.immI32 = strictFlag();
             emitInst(ilFn, setInst);
             auto stateRhs = snapshotVarStates();
@@ -154,27 +151,13 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.operands = {objBoxed.id};
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
-            getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
-            stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             curVal = Value{cur, il::Type::Dynamic};
-            if (provenFieldRead(*mem) &&
-                (bin->op != ast::BinaryOp::PlusAssign || provenNumber(*bin))) {
-                curVal = emitRawUnbox(*curVal, ilFn);
-            } else if (nullishNumberFieldRead(*mem) &&
-                       (bin->op != ast::BinaryOp::PlusAssign || provenNumber(*bin))) {
-                curVal = emitNullishUnbox(*curVal, ilFn);
-            }
         }
 
-        const bool rhsCoerces =
-            bin->op != ast::BinaryOp::Assign && binaryCoercesOperand(bin->op, *bin->lhs);
-        auto rhsVal = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn, nullptr, true,
-                                                        binaryToNumericOperand(bin->op, *bin->lhs))
-                                 : lowerExpr(*bin->rhs, ilFn);
+        auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
-        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
-                                                   provenNumber(*bin), ilFn)
+        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                               : *rhsVal;
         emitPinFieldBarrier(*mem->object, mem->property, stored, ilFn);
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
@@ -186,7 +169,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         inst.operands = {objBoxed.id, storedBoxed.id};
         inst.keyIndex = keyIdx;
         inst.icIndex = icSiteCounter_++;
-        stampStaticSlot(inst, *mem->object);
         // The reference this write goes through is strict exactly when the
         // code that wrote it is (13.15.2 PutValue step 6.d), and that is the
         // only thing that decides whether a refused Set throws.
@@ -195,28 +177,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get())) {
-        // A proven typed-array element store, when the operator's read half
-        // (if it has one) is coerced by its own combine: plain `=`, the
-        // always-numeric compounds, and `+=` against a definitely numeric
-        // RHS. The logical assigns are excluded — they may RETURN the read
-        // raw — and take the ordinary path below.
-        const types::Type recvType = inferredType(*idxAccess->object);
-        const bool isPinnedOrTyped = recvType.is(types::TypeKind::TypedArray) ||
-                                     recvType.arrayElementsPinned();
-        const bool isNumericRhs = definitelyNumericOperand(*bin->rhs, 8);
-        const bool allowPlain = isPinnedOrTyped || isNumericRhs;
-        if (const auto elemKind = typedElemAccessKind(*bin->lhs, allowPlain)) {
-            // A compound into a PLAIN array reads an element that may be a
-            // string or an object, so its read half goes native only where the
-            // combine is ToNumeric on every branch — never `+=`, which
-            // concatenates a string element whatever the RHS is.
-            const bool admissible =
-                bin->op == ast::BinaryOp::Assign
-                    ? allowPlain
-                : isPinnedOrTyped ? typedElemCompoundAdmissible(bin->op, *bin->rhs)
-                                  : isNumericRhs && binaryToNumericOperand(bin->op, *bin->rhs);
-            if (admissible) return lowerTypedElemAssign(bin, *idxAccess, *elemKind, ilFn);
-        }
         auto objVal = lowerExpr(*idxAccess->object, ilFn);
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -242,11 +202,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.operands = {objBoxed.id};
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
-                getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
-                stampStaticSlot(getInst, *idxAccess->object);
             } else {
-                const bool native = provenArrayOrTypedArray(*idxAccess->object);
-                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
                 getInst.operands = {objBoxed.id, idxBoxed->id};
             }
@@ -287,10 +243,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 setInst.operands = {objBoxed.id, storedBoxed.id};
                 setInst.keyIndex = *literalKey;
                 setInst.icIndex = icSiteCounter_++;
-                stampStaticSlot(setInst, *idxAccess->object);
             } else {
-                const bool native = provenArrayOrTypedArray(*idxAccess->object);
-                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 setInst.op = il::Op::ElemSet;
                 setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
             }
@@ -358,11 +311,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.operands = {objBoxed.id};
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
-                getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
-                stampStaticSlot(getInst, *idxAccess->object);
             } else {
-                const bool native = provenArrayOrTypedArray(*idxAccess->object);
-                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
                 getInst.operands = {objBoxed.id, idxBoxed->id};
             }
@@ -374,17 +323,12 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
-        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
-                                                   provenNumber(*bin), ilFn)
+        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                               : *rhsVal;
         if (literalKey) {
             emitPinFieldBarrier(*idxAccess->object, keyStrings_[*literalKey], stored, ilFn);
         }
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
-        if (!literalKey && !curVal &&
-            emitKeyedFieldStore(*idxAccess, objBoxed, *idxBoxed, storedBoxed, ilFn)) {
-            return storedBoxed;
-        }
 
         il::Instruction setInst;
         if (literalKey) {
@@ -392,10 +336,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
-            stampStaticSlot(setInst, *idxAccess->object);
         } else {
-            const bool native = provenArrayOrTypedArray(*idxAccess->object);
-            recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
             setInst.op = il::Op::ElemSet;
             setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
         }
@@ -452,8 +393,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
-        auto stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
-                                                     provenNumber(*bin), ilFn)
+        auto stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                                : *rhsVal;
         auto storedBoxed = boxValueIfNeeded(stored, ilFn);
 
@@ -554,9 +494,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             bool rhsReaches = !currentBlockIsTerminated(ilFn);
             size_t rhsEndBlockIdx = currentBlockIdx_;
 
-            il::Type joinType = (curVal.type == rhsStored.type)
-                                    ? curVal.type
-                                    : (provenNumber(*bin) ? il::Type::F64 : il::Type::Dynamic);
+            il::Type joinType = (curVal.type == rhsStored.type) ? curVal.type : il::Type::Dynamic;
             il::ValueId resParamId = ilFn.valueCount++;
             ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
             ExprJoin join = makeExprJoin(stateEntry, stateRhs, bJoin, ilFn);
@@ -615,16 +553,11 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                              : emitEnvGet(depth, index, ilFn);
         }
 
-        const bool rhsCoerces = compound && binaryCoercesOperand(bin->op, *bin->lhs);
-        auto rhsVal = compound ? (rhsCoerces ? lowerCoercingOperand(
-                                                   *bin->rhs, ilFn, nullptr, true,
-                                                   binaryToNumericOperand(bin->op, *bin->lhs))
-                                             : lowerExpr(*bin->rhs, ilFn))
+        auto rhsVal = compound ? lowerExpr(*bin->rhs, ilFn)
                                : lowerNamedEvaluation(*bin->rhs, sourceSpelling(ident->name), ilFn);
         if (!rhsVal) return std::nullopt;
 
-        Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
-                                                      provenNumber(*bin), ilFn)
+        Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                                 : *rhsVal;
         if (isLocal) {
             if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {

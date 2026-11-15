@@ -546,18 +546,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
         }
     }
 
-    // Nothing to evaluate: the base is the builtin Math or Number, whose read
-    // has no effect, and the property is a constant that cannot change.
-    if (const std::optional<double> k = pristineConstant(*mem)) {
-        il::Instruction inst;
-        inst.op = il::Op::ConstF64;
-        inst.type = il::Type::F64;
-        inst.result = ilFn.valueCount++;
-        inst.immF64 = *k;
-        emitInst(ilFn, inst);
-        return Value{inst.result, il::Type::F64};
-    }
-
     // `arguments.length` where the parameter may hold the count itself.
     if (mem->property == "length" && !mem->isPrivate) {
         if (const std::optional<Value> args = countedArguments(*mem->object, ilFn)) {
@@ -702,14 +690,12 @@ Lowerer::Value Lowerer::emitMemberRead(const ast::MemberAccess& memRef, Value ob
     inst.operands = {objBoxed.id};
     inst.keyIndex = keyIdx;
     inst.icIndex = icIdx;
-    inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
     Span propSpan = {
         static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
         mem->span.end,
         mem->span.file
     };
     inst.span = propSpan;
-    stampStaticSlot(inst, *mem->object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
@@ -742,18 +728,6 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
         return emitIndexRead(*idxAccess, lazyArgumentsList(*args, ilFn), ilFn);
     }
 
-    // Here the read's value is used as it is (`a[i] === undefined`, `return
-    // a[i]`), not coerced, so the f64 form, which reads an invalid index as
-    // NaN, is exact only where every index is proven a valid one.
-    if (const auto kind = typedElemAccessKind(*idxAccess)) {
-        const bool plain = (*kind & static_cast<uint32_t>(il::kElemKindMask)) ==
-                           static_cast<uint32_t>(il::kElemKindPlainArrayF64);
-        if (plain || (typedElemProofFlags(*idxAccess, *kind) &
-                      static_cast<uint32_t>(il::kElemFlagProvenInBounds)) != 0) {
-            return lowerTypedElemRead(*idxAccess, *kind, ilFn);
-        }
-    }
-
     auto objVal = lowerChainBase(*idxAccess->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -776,8 +750,6 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     }
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
-        const bool native = provenArrayOrTypedArray(*idxAccess.object);
-        recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
         auto indexVal = lowerExpr(*idxAccess.index, ilFn);
         if (!indexVal) return std::nullopt;
         auto idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
@@ -800,9 +772,7 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     inst.operands = {objBoxed.id};
     inst.keyIndex = *literalKey;
     inst.icIndex = icIdx;
-    inst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
     inst.span = idxAccess.index ? idxAccess.index->span : idxAccess.span;
-    stampStaticSlot(inst, *idxAccess.object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }

@@ -204,9 +204,6 @@ il::BlockId Lowerer::createBlock(il::Function& ilFn) {
 }
 
 void Lowerer::setCurrentBlock(size_t blockIdx) {
-    if (currentBlockIdx_ != blockIdx) {
-        cachedTypedElemGet_.reset();
-    }
     currentBlockIdx_ = blockIdx;
 }
 
@@ -216,18 +213,6 @@ void Lowerer::emitInst(il::Function& ilFn, const il::Instruction& inst) {
     }
     auto& placed = ilFn.blocks[currentBlockIdx_].instructions.emplace_back(inst);
     if (placed.span.begin == 0 && placed.span.end == 0) placed.span = currentStmtSpan_;
-
-    if (cachedTypedElemGet_.has_value()) {
-        const auto op = inst.op;
-        if (op == il::Op::ElemSetTyped || op == il::Op::ElemSet ||
-            op == il::Op::PropSet || op == il::Op::SuperSet ||
-            op == il::Op::Call || op == il::Op::DynamicCall ||
-            op == il::Op::MethodCall || op == il::Op::Construct ||
-            op == il::Op::EnvSet || op == il::Op::ModuleEnvSet ||
-            il::isTerminator(op) || il::canThrow(inst) || il::canCollect(inst)) {
-            cachedTypedElemGet_.reset();
-        }
-    }
 }
 
 bool Lowerer::currentBlockIsTerminated(const il::Function& ilFn) const {
@@ -298,14 +283,12 @@ Lowerer::Value Lowerer::unboxValueIfNeeded(Value val, il::Type targetType, il::F
 // BigInt operand takes the other branch, so `x -= 2n` threw out of the unbox
 // while `x - 2n` next to it was exact.
 //
-// `+=` needs the extra proof the other four do not: JS `+` concatenates as
-// soon as either side is a string, so it routes through the dynamic add unless
-// inference *proved* the result is a Number. Unproven is the dynamic path,
-// never the numeric one — unboxing a string pointer as a double is a
+// `+=` always routes through the dynamic add: JS `+` concatenates as soon as
+// either side is a string, and unboxing a string pointer as a double is a
 // miscompile, not a pessimisation.
 Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp,
-                                            bool provenNumeric, il::Function& ilFn) {
-    if (binOp == ast::BinaryOp::PlusAssign && !provenNumeric) {
+                                            il::Function& ilFn) {
+    if (binOp == ast::BinaryOp::PlusAssign) {
         Value l = boxValueIfNeeded(cur, ilFn);
         Value r = boxValueIfNeeded(rhs, ilFn);
         il::ValueId res = ilFn.valueCount++;
@@ -331,7 +314,6 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
     }
     il::Op op = il::Op::Sub;
     switch (binOp) {
-        case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
         case ast::BinaryOp::MinusAssign: op = il::Op::Sub; break;
         case ast::BinaryOp::StarAssign: op = il::Op::Mul; break;
         case ast::BinaryOp::SlashAssign: op = il::Op::Div; break;
@@ -343,9 +325,8 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
     // The same fork `lowerBinary` makes, and stated the same way round: a
     // BOXED operand keeps its box and the instruction becomes the dynamic
     // form, whose helper owns ToNumeric, the BigInt algorithm and the mixing
-    // TypeError. Only two proven-numeric operands may be unboxed.
-    if ((cur.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
-        numericArithDisabled_) {
+    // TypeError. Only two numeric operands are combined unboxed.
+    if (cur.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
         Value l = boxValueIfNeeded(cur, ilFn);
         Value r = boxValueIfNeeded(rhs, ilFn);
         il::ValueId res = ilFn.valueCount++;

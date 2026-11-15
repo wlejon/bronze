@@ -1,5 +1,4 @@
 #include "lower/lower.h"
-#include "lower/transition_runs.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -9,16 +8,6 @@
 
 #include "ast/assigned.h"
 #include "ast/queries.h"
-#include "lower/guard_region.h"
-#include "lower/layout_facts.h"
-#include "lower/typed_loop_version.h"
-#include "lower/inline_small.h"
-#include "lower/inline_guarded.h"
-#include "lower/own_callee_calls.h"
-#include "lower/typed_entry.h"
-#include "lower/loop_prop_analysis.h"
-#include "lower/loop_prop_hoist.h"
-#include "lower/read_cse.h"
 #include "lower/lowerer.h"
 #include "support/timings.h"
 
@@ -28,36 +17,21 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
                  const types::InferenceResult* inference,
                  const std::vector<std::string>* hostGlobals,
                  const SourceSet* sources,
-                 InferStatsCollector* stats,
-                 bool assumeNoBigInt,
                  const types::PinManifest* pins,
-                 const std::string& censusOutPath,
                  const NativeManifest* nativeManifest)
     : astModule_(astModule), diags_(diags), inference_(inference),
-      pins_(pins), sources_(sources), stats_(stats),
+      pins_(pins), sources_(sources),
       nativeManifest_(nativeManifest) {
-    censusOutPath_ = censusOutPath;
     if (hostGlobals) {
         hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
     }
     if (nativeManifest_) {
         initNativeManifestGlobals();
     }
-    if (stats_ && sources_) stats_->setSourceSet(sources_);
-    typedElemDisabled_ = hostGlobals_.count("Float64Array") != 0 ||
-                         hostGlobals_.count("Float32Array") != 0;
-    numericArithDisabled_ =
-        !assumeNoBigInt ||
-        bigIntMayReach(astModule, hostGlobals ? *hostGlobals
-                                              : std::vector<std::string>{});
-    initModuleBufferDetachFree();
 }
 
 std::optional<il::Module> Lowerer::lower() {
     ilModule_.name = astModule_.name;
-    fnParamFactsStack_.clear();
-    fnParamFactsStack_.emplace_back();
-    planFunctionParamFacts({}, astModule_.body);
     if (selfHost_ && !planSelfHostBuiltins()) return std::nullopt;
 
     std::vector<const ast::Stmt*> topLevelStmts;
@@ -108,21 +82,8 @@ std::optional<il::Module> Lowerer::lower() {
             fn.nameKeyIndex = getKeyConstantIndex(sourceSpelling(fnDecl->name));
             fn.returnType = il::Type::Void;
             // The module function index: the position among the top-level
-            // declarations, which is exactly how inference numbers them.
+            // declarations.
             const uint32_t moduleFnIndex = static_cast<uint32_t>(ilModule_.functions.size());
-            if (!applyProvenSignature(*fnDecl, moduleFnIndex, fn)) return std::nullopt;
-            // Now the hints, against the proof that just typed the signature.
-            // Source order — parameters left to right, then the return —
-            // and the enclosing loop is in source order too, so the warning
-            // stream is deterministic.
-            for (size_t i = 0; i < fnDecl->params.size(); ++i) {
-                checkAnnotation(fnDecl->params[i].typeAnnotation, fnDecl->span,
-                                fnDecl->params[i].name, provenParamType(moduleFnIndex, i));
-            }
-            // A return annotation is reported on the function's own name:
-            // there is no other name for the position.
-            checkAnnotation(fnDecl->returnType, fnDecl->span, fnDecl->name,
-                            provenReturnType(moduleFnIndex));
             // Every module function's return type is settled here, before
             // ANY body is lowered, because it is part of the calling
             // convention: `lowerCall` reads it off this entry, and for
@@ -132,11 +93,9 @@ std::optional<il::Module> Lowerer::lower() {
             // "returns nothing" — and the caller emits `ret` of a value
             // that does not exist, which the IL verifier rejects.
             //
-            // Inference may already have pinned something better (an f64
-            // return for a direct-callable function). What is left is a
-            // function whose callers are unknown, and the sound convention
-            // for those is the uniform dynamic one: `dynamic` if the body
-            // can return a value at all, `void` if it demonstrably cannot.
+            // The sound convention is the uniform dynamic one: `dynamic` if
+            // the body can return a value at all, `void` if it demonstrably
+            // cannot.
             // That also retires first-return-wins, which was a live
             // miscompile of its own — `return 1; ... return "s"` unboxed a
             // string pointer as a double.
@@ -171,23 +130,6 @@ std::optional<il::Module> Lowerer::lower() {
             // Last, because a pin is a promise about a convention every proof
             // and every convention statement above has already had its say on.
             if (!applySignaturePins(fnDecl->params, fnDecl->span, fn)) return std::nullopt;
-            if (!fnParamFactsStack_.empty()) {
-                const auto factsIt = fnParamFactsStack_.back().find(fnDecl);
-                if (factsIt != fnParamFactsStack_.back().end()) {
-                    const size_t base = fn.firstSourceParam();
-                    for (size_t i = 0;
-                         i < fnDecl->params.size() && i + base < fn.params.size(); ++i) {
-                        if (fn.params[i + base].type == il::Type::F64 &&
-                            !fn.params[i + base].pinned) {
-                            const auto cIt =
-                                factsIt->second.constIntParams.find(fnDecl->params[i].name);
-                            if (cIt != factsIt->second.constIntParams.end()) {
-                                fn.params[i + base].knownConstInt = cIt->second;
-                            }
-                        }
-                    }
-                }
-            }
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;
@@ -294,8 +236,6 @@ std::optional<il::Module> Lowerer::lower() {
         currentEnvValue_ = il::kNoValue;
         entryEnvValue_ = il::kNoValue;
         immutableEnvCache_.clear();
-        cachedTypedElemGet_.reset();
-        currentBodyStmts_ = &astModule_.body;
         assignedNames_.clear();
         for (const auto* s : topLevelStmts) {
             if (s) for (auto& n : ast::getAssignedNames(*s)) assignedNames_.insert(std::move(n));
@@ -363,15 +303,6 @@ std::optional<il::Module> Lowerer::lower() {
     // Every import is known only now, so the entry's first instruction — the
     // bind of the table the sites call through — goes in last.
     emitNativeBindPrologue();
-    // The census's one WHOLE-MODULE pass, and it must run before the key
-    // constants are frozen because it can add rows (lower_census.cpp): a
-    // `param`/`return` owner spelling that would govern two different IL
-    // functions is refused, and the set of IL function names is not complete
-    // until every body is lowered.
-    ilModule_.censusOutPath = censusOutPath_;
-    refuseAmbiguousCensusOwners();
-    // BEFORE the key pool is snapshotted: it interns the field names it emits.
-    buildSlotReprTable();
     ilModule_.keyConstants.resize(keyConstants_.size());
     for (const auto& entry : keyConstants_) {
         ilModule_.keyConstants[entry.second] = entry.first;
@@ -380,15 +311,6 @@ std::optional<il::Module> Lowerer::lower() {
     // exactly this many IC entries as a global array in the object file.
     ilModule_.icSiteCount = icSiteCounter_;
     ilModule_.templateSiteCount = templateSiteCounter_;
-    ilModule_.staticSiteCount = staticSiteCounter_;
-    // The one pass that needs the module WHOLE: a method-call site and the
-    // class body that answers it are lowered in the opposite order to the one
-    // resolution wants (direct_method_table.h).
-    directMethods_.setFieldClassGuesses(fieldClassGuesses());
-    directMethods_.resolve(ilModule_);
-    directMethods_.resolveConstructs(ilModule_);
-    directMethods_.markOwnCalleeSites(ilModule_);
-    reportClassLayouts();
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative
     // is a remap, and the only file that can be present without a function in
@@ -407,10 +329,9 @@ std::optional<il::Module> Lowerer::lower() {
             ilModule_.sourceFiles.emplace_back(ec ? path : absPath.string());
         }
     }
-    // The IL -> IL passes, LAST (lower_final_passes.cpp): they read the
-    // finished module, and everything above is frozen before they copy code.
-    // The library's reachable builtins join the module first, so every
-    // final pass treats them as the program's own functions.
+    // The end of lowering, LAST (lower_final_passes.cpp): it reads the
+    // finished module. The library's reachable builtins join the module
+    // first, as the program's own functions.
     if (selfHostLibrary_ != nullptr && !mergeSelfHostLibrary()) return std::nullopt;
     if (!libraryOnly_ && !finishIlPasses()) return std::nullopt;
     if (selfHost_ && !finishSelfHost()) return std::nullopt;
@@ -512,13 +433,8 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     info.slotIsLexical.assign(slots.size(), false);
     info.slotIsDefiniteInit.assign(slots.size(), false);
     info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
-    info.slotIsF64.assign(slots.size(), false);
-    // Which of the slots hold Numbers, decided once, here, because this is
-    // where the layout is fixed and every reader of the record — the body and
-    // every closure written in it — is lowered after it.
-    planEnvSlotNumberTypes(params, body, ilFn, info);
-    // And which of them hold a function declaration nothing can rebind — the
-    // static call plan, lower_scope.cpp.
+    // Which of them hold a function declaration nothing can rebind — the
+    // static call plan, lower_static_call_plan.cpp.
     planStableFunctionSlots(body, &params, info);
     planScopeRebinds(body, &params, info);
     // No source assigns the binding state, so the rebind plan cannot see the
@@ -742,19 +658,11 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::InferenceResult* inference,
                                       const std::vector<std::string>* hostGlobals,
                                       const SourceSet* sources,
-                                      InferStatsCollector* stats,
-                                      bool assumeNoBigInt,
                                       const types::PinManifest* pins,
-                                      const std::string& censusOutPath,
                                       const NativeManifest* nativeManifest,
-                                      const InlineGuardedOptions& inlineGuarded,
-                                      WholeProgramOptions* wholeProgram,
                                       const FeedbackOptions* feedback, bool selfHost,
                                       const SelfHostLibrary* selfHostLibrary) {
-    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
-                    assumeNoBigInt, pins, censusOutPath, nativeManifest);
-    lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
-    lowerer.setWholeProgram(wholeProgram);
+    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, pins, nativeManifest);
     lowerer.setFeedback(feedback);
     lowerer.setSelfHost(selfHost);
     lowerer.setSelfHostLibrary(selfHost ? nullptr : selfHostLibrary);
@@ -765,8 +673,8 @@ std::optional<SelfHostLibrary> lowerSelfHostLibrary(const ast::Module& astModule
                                                     const types::InferenceResult* inference,
                                                     const SourceSet* sources) {
     // As the prebuilt object's compile lowers it (src/selfhost/selfhost_build.cpp),
-    // up to the final passes.
-    Lowerer lowerer(astModule, diags, inference, nullptr, sources, nullptr, /*assumeNoBigInt=*/false);
+    // up to the end of lowering.
+    Lowerer lowerer(astModule, diags, inference, nullptr, sources);
     lowerer.setSelfHost(true);
     lowerer.setLibraryOnly(true);
     auto module = lowerer.lower();
@@ -784,19 +692,10 @@ std::optional<SelfHostLibrary> lowerSelfHostLibrary(const ast::Module& astModule
 std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, DiagnosticSink& diags,
                                            const types::InferenceResult* inference, const SourceSet* sources,
                                            const AheadOfTimeOptions& options) {
-    WholeProgramOptions wholeProgram;
-    wholeProgram.on = true;
-    if (options.hostGlobals) wholeProgram.build.hostGlobals = *options.hostGlobals;
-    wholeProgram.build.stats = options.wpoStats;
-    wholeProgram.build.perSite = options.wpoStatsPerSite;
-    wholeProgram.build.filter = options.wpoStatsFilter;
-    auto lowered = lowerModule(astModule, diags, inference,
-                               options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
-                               sources, options.inferStats, /*assumeNoBigInt=*/!options.selfHost, options.pins,
-                               options.censusOutPath, options.nativeManifest, InlineGuardedOptions{/*on=*/true},
-                               &wholeProgram, options.feedback, options.selfHost, options.selfHostLibrary);
-    if (options.wpoReport) *options.wpoReport = std::move(wholeProgram.report);
-    return lowered;
+    return lowerModule(astModule, diags, inference,
+                       options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
+                       sources, options.pins, options.nativeManifest, options.feedback, options.selfHost,
+                       options.selfHostLibrary);
 }
 
 }  // namespace bronze::lower

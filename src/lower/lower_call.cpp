@@ -72,9 +72,7 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
         }
         const il::Type paramType = calleeFn.params[i + base].type;
         const bool isPinned = calleeFn.params[i + base].pinned;
-        auto argVal = (paramType == il::Type::F64 && !isPinned)
-                          ? lowerCoercingOperand(*call->args[i], ilFn)
-                          : lowerExpr(*call->args[i], ilFn);
+        auto argVal = lowerExpr(*call->args[i], ilFn);
         if (!argVal) return std::nullopt;
         // The `--pins` barrier for `param <owner>(<p>): number`, at the CALL
         // SITE, because a pinned parameter has no boxed store to put one on:
@@ -277,90 +275,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         // thirty-six field reads (lower_define_props.cpp). Nullopt is "not a
         // call it takes", and the general lowering below is what it falls to.
         if (auto defined = lowerDefinePropertiesLiteral(call, *mem, ilFn)) return defined;
-
-        // A method of a certified module-scope object literal, whose body the
-        // site runs instead of calling (lower_module_inline.cpp). Asked before
-        // the receiver is lowered, because the inline lowers it itself — once,
-        // where the call would have.
-        std::optional<Value> inlined;
-        if (tryLowerModuleLiteralInline(*call, *mem, onSpine, ilFn, inlined)) return inlined;
-    }
-
-    // `Math.sqrt(x)` and its bit-exact siblings on the PROVEN pristine
-    // builtin, with one machine-number argument: one f64 instruction — no
-    // global read, no property load, no callee guards, no boxing. The proof
-    // (`pristineMathCalls`) is what licenses skipping the evaluation of
-    // `Math.<fn>` itself; the function list is `il::MathUnaryFn`'s, so the
-    // dynamic path the other mode takes cannot differ in any output bit.
-    //
-    // A call through a `const` alias (`const cos = Math.cos; cos(x)`, three.js's
-    // setFromEuler) is the same call: the alias is a local the call need not
-    // read, and `this` is undefined, which no member of 21.3 looks at.
-    if (const std::optional<il::MathUnaryFn> mathFn = mathUnaryCallFn(*call)) {
-        // Every argument is evaluated before the first is converted, as for
-        // the call it replaces: the builtin's own steps run ToNumber(y) and
-        // then ToNumber(x) (21.3.2.8), after the argument list is built.
-        std::vector<Value> args;
-        for (const auto& a : call->args) {
-            auto argVal = lowerCoercingOperand(*a, ilFn);
-            if (!argVal) return std::nullopt;
-            args.push_back(*argVal);
-        }
-        std::vector<il::ValueId> operands;
-        for (const Value& v : args) operands.push_back(unboxValueIfNeeded(v, il::Type::F64, ilFn).id);
-        recordCall(call->span.file, true, "");
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::MathUnary;
-        inst.type = il::Type::F64;
-        inst.result = res;
-        inst.operands = std::move(operands);
-        inst.immI32 = static_cast<int32_t>(*mathFn);
-        emitInst(ilFn, inst);
-        return Value{res, il::Type::F64};
-    }
-
-    // `Math.imul(a, b)` on the PROVEN pristine builtin: 32-bit integer
-    // multiplication without global lookup, property walk, or IC dispatch.
-    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
-        mathMem != nullptr && !mathMem->optional && !call->optional &&
-        pristineMathCall(*call) && call->args.size() == 2 &&
-        mathMem->property == "imul" &&
-        !dynamic_cast<const ast::SpreadElement*>(call->args[0].get()) &&
-        !dynamic_cast<const ast::SpreadElement*>(call->args[1].get())) {
-        auto a0 = lowerExpr(*call->args[0], ilFn);
-        if (!a0) return std::nullopt;
-        auto a1 = lowerExpr(*call->args[1], ilFn);
-        if (!a1) return std::nullopt;
-        Value l = emitToInt32(*a0, ilFn);
-        Value r = emitToInt32(*a1, ilFn);
-        recordCall(call->span.file, true, "");
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::MathImul;
-        inst.type = il::Type::F64;
-        inst.result = res;
-        inst.operands = {l.id, r.id};
-        emitInst(ilFn, inst);
-        return Value{res, il::Type::F64};
-    }
-
-    // `Math.random()` on the PROVEN pristine builtin, with no arguments: one
-    // call to the runtime's generator (il_op.h, math.random) in place of the
-    // global read, the method-call cache and the native-call entry, which were
-    // all but a few of its ~470 instructions. With arguments it stays a call,
-    // since they are still evaluated.
-    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
-        mathMem != nullptr && !mathMem->optional && !call->optional && call->args.empty() &&
-        mathMem->property == "random" && pristineMathCall(*call)) {
-        recordCall(call->span.file, true, "");
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::MathRandom;
-        inst.type = il::Type::F64;
-        inst.result = res;
-        emitInst(ilFn, inst);
-        return Value{res, il::Type::F64};
     }
 
     // A spread argument means the argument count is not known here, and a
@@ -395,7 +309,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments &&
                 !ilModule_.functions[it->second].needsEnv &&
                 directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
-                recordCall(call->span.file, true, "");
                 return lowerDirectCall(call, it->second, il::kNoValue, 0, ilFn);
             }
         } else {
@@ -412,10 +325,8 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 findStableFunctionCallee(calleeIdent->name, envHops, stableFn) &&
                 !ilModule_.functions[stableFn].needsArguments &&
                 directCallShapeFits(ilModule_.functions[stableFn], call->args.size())) {
-                recordCall(call->span.file, true, "");
                 return lowerDirectCall(call, stableFn, currentEnv(ilFn), envHops, ilFn);
             }
-            noteCallBeforeStableFunction(calleeIdent->name, call->callee->span);
         }
     }
 
@@ -425,7 +336,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // different objects: the function is found on the PARENT prototype, and it
     // runs on the current receiver.
     if (const auto* superMem = dynamic_cast<const ast::SuperMember*>(call->callee.get())) {
-        recordCall(call->span.file, false, "callee is super member");
         auto fnVal = lowerSuperMember(superMem, ilFn);
         if (!fnVal) return std::nullopt;
         auto thisVal = lowerThisValue(call->span, ilFn);
@@ -446,7 +356,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         // evaluated once and is the receiver. What differs is only where the
         // callee is found.
         if (mem->isPrivate) {
-            recordCall(call->span.file, false, "callee is a private member");
             auto fnVal = lowerPrivateRead(*mem, thisArgVal, ilFn);
             if (!fnVal) return std::nullopt;
             calleeVal = boxValueIfNeeded(*fnVal, ilFn);
@@ -462,28 +371,23 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.operands = {thisArgVal.id};
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            recordCall(call->span.file, false, "callee is method / property access");
-            inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             Span propSpan = {
                 static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
                 mem->span.end,
                 mem->span.file
             };
             inst.span = propSpan;
-            stampStaticSlot(inst, *mem->object);
             emitInst(ilFn, inst);
             calleeVal = Value{getRes, il::Type::Dynamic};
         } else {
             // Direct method call IC path:
             uint32_t keyIdx = getKeyConstantIndex(mem->property);
             uint32_t icIdx = icSiteCounter_++;
-            recordCall(call->span.file, true, "");
 
             il::ValueId callRes = ilFn.valueCount++;
             il::Instruction inst;
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             Span propSpan = {
                 static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
                 mem->span.end,
@@ -509,11 +413,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 }
                 inst.op = il::Op::MethodCall;
                 inst.operands = std::move(argVals);
-                if (receiverIsArray(*mem->object)) inst.immI32 |= il::Instruction::kMethodRecvArray;
-                // Only the fixed-operand form can name a callee: a spread's
-                // argument count is a runtime fact and a direct edge's operand
-                // list is its parameter list.
-                recordMethodCallSite(inst, *mem->object, mem->property);
             }
             emitInst(ilFn, inst);
             return Value{callRes, il::Type::Dynamic};
@@ -525,7 +424,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         // `lowerIndexAccess` here would evaluate `o` twice, and passing no
         // receiver at all (which is what this branch used to fall through to)
         // made `v[Symbol.iterator]()` run with `this` undefined.
-        recordCall(call->span.file, false, "callee is computed / index access");
         auto objVal = lowerChainBase(*idx->object, ilFn, onSpine);
         if (!objVal) return std::nullopt;
         thisArgVal = boxValueIfNeeded(*objVal, ilFn);
@@ -533,33 +431,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         auto fnVal = emitIndexRead(*idx, thisArgVal, ilFn);
         if (!fnVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*fnVal, ilFn);
-    } else if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-        if (hasSpread) {
-            recordCall(call->span.file, false, "call has spread argument");
-        } else if (spreadArgs) {
-            recordCall(call->span.file, false, "call passes more than 16 arguments");
-        } else if (call->optional) {
-            recordCall(call->span.file, false, "optional call (?.)");
-        } else {
-            uint32_t shadowDepth = 0;
-            uint32_t shadowIndex = 0;
-            auto envIt = activeVarMap_.find(calleeIdent->name);
-            if (envIt != activeVarMap_.end() ||
-                findEnclosingEnvVar(calleeIdent->name, shadowDepth, shadowIndex)) {
-                recordCall(call->span.file, false, "callee is local or captured variable");
-            } else {
-                auto it = functionIndices_.find(calleeIdent->name);
-                if (it == functionIndices_.end()) {
-                    recordCall(call->span.file, false, "callee not a module function");
-                } else if (ilModule_.functions[it->second].needsArguments) {
-                    recordCall(call->span.file, false, "callee uses arguments object");
-                } else if (!directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
-                    recordCall(call->span.file, false, "callee arity mismatch");
-                } else {
-                    recordCall(call->span.file, false, "callee is dynamic");
-                }
-            }
-        }
+    } else if (dynamic_cast<const ast::Ident*>(call->callee.get()) != nullptr) {
         auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
         if (!cVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*cVal, ilFn);
@@ -572,7 +444,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         emitInst(ilFn, undefInst);
         thisArgVal = Value{undefRes, il::Type::Dynamic};
     } else {
-        recordCall(call->span.file, false, "callee is an expression");
         auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
         if (!cVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*cVal, ilFn);

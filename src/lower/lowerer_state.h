@@ -101,31 +101,6 @@ struct EnvScopeInfo {
     // is the binding's own and the strictness of the assigning code never
     // enters into it.
     std::vector<SlotImmutability> slotImmutable;
-    // Which slots hold a Number at every read (lower_scope.cpp
-    // `planEnvSlotNumberTypes`). The record itself is unchanged — a canonical
-    // double IS a Value by NaN-box construction and the collector already walks
-    // past one — so what this marks is that the READ may stop testing.
-    std::vector<bool> slotIsF64;
-    // Which of those slots owe their `slotIsF64` to a `--pins` PROMISE rather
-    // than to the fixpoint's proof — the ones `planEnvSlotNumberTypes` re-admits
-    // in its pin arm. Only these get a write barrier: a slot the fixpoint
-    // proved has had every write to it audited already, and checking it again
-    // would tax a program that made no promise at all. The pin's manifest line
-    // is `slotPinText`, held as TEXT rather than as a key index because the
-    // planner that fills it is const and interning a key is not.
-    std::vector<bool> slotIsPinned;
-    std::vector<std::string> slotPinText;
-    // The PIN CENSUS candidates (`--census`, src/runtime/pin_census.h): slots
-    // with the binding STRUCTURE an env-slot pin needs that the fixpoint could
-    // not type. Exactly the set the five `function WebGLState.<slot>: number`
-    // lines of bench/pins/env-slot-kernel.pins were written by hand for — and
-    // exactly the complement of `slotIsF64`, so a census can never propose a
-    // slot the proof already owns (stage E4's HANDOFF (c)).
-    //
-    // `slotCensusText` is the entry the site would support, kind and all
-    // decided at exit, held as text for the reason `slotPinText` is.
-    std::vector<bool> slotIsCensus;
-    std::vector<std::string> slotCensusText;
     // The native class (lower_native.cpp) of a `const` slot whose initializer
     // the lowering saw make a handle of it — `const agent = new
     // bro.ai.AIAgent()` captured by a closure. Only `const`: a slot written
@@ -149,10 +124,6 @@ struct EnvScopeInfo {
     // which every caller can reach by counting parent links.
     std::vector<bool> slotIsStableFn;
     std::vector<uint32_t> slotFnIndex;
-    // The calls of a stable slot's name lowered while its `slotFnIndex` was
-    // still unknown, by slot (lower_static_call_plan.cpp,
-    // `noteCallBeforeStableFunction`).
-    std::vector<std::pair<uint32_t, Span>> callsBeforeStableFn;
     // Every name anything in this scope's WHOLE lexical reach can rebind
     // (`getDeeplyReboundNames` over the scope's statements) — the question a
     // reader in a nested function has to ask before it hoists a load of one
@@ -183,17 +154,6 @@ struct ExprJoin {
     std::unordered_map<std::string, il::Type> paramType;
 };
 
-struct StaticSlotSite {
-    uint32_t slot = 0;
-    uint32_t cellIndex = 0;
-    uint32_t familyLo = il::Instruction::kNoFamily;
-    uint32_t familySpan = 0;
-    // The receiver's class was GUESSED (a parameter's callers, a key's owner, an
-    // identity the interprocedural pass guessed), not proven: the guard may
-    // miss on a receiver of any kind. il::Instruction::staticSlotGuessed.
-    bool guessed = false;
-};
-
 // The body being lowered is a COROUTINE (a generator, an async function, an
 // async generator, or a top level that awaits): its suspensions are
 // `coro.suspend` instructions, and everything live across one stays in SSA —
@@ -204,20 +164,6 @@ struct CoroContext {
     bool isGenerator() const { return kind != BRONZE_ABI_CORO_ASYNC; }
     bool isAsyncGenerator() const { return kind == BRONZE_ABI_CORO_ASYNC_GENERATOR; }
 };
-
-// What `planClosureParamNumbers` proved for ONE function body, keyed by the
-// declaration node. A nested declaration appears in exactly one enclosing
-// statement list, so a frame holds one entry per function.
-using ProvenParamPlan = std::unordered_map<const ast::FunctionDecl*, std::vector<bool>>;
-
-struct FnParamFacts {
-    std::unordered_map<std::string, int64_t> constIntParams;
-    std::unordered_map<std::string, std::pair<int64_t, int64_t>> intParamBounds;
-    std::unordered_map<std::string, int64_t> minTypedArrayLenParams;
-    std::unordered_map<std::string, int64_t> maxTypedArrayLenParams;
-    std::unordered_map<std::string, int64_t> exactTypedArrayLenParams;
-};
-using FnParamFactsPlan = std::unordered_map<const ast::FunctionDecl*, FnParamFacts>;
 
 // One loop variable and the type every block parameter standing for it takes —
 // header, exit, and the update/condition join alike, because the analysis
@@ -296,27 +242,6 @@ struct ChainExit {
 // the operand produced a Reference Record and a chain that stopped early
 // produced none.
 enum class ChainMiss { Undefined, True };
-
-// What `this` and the parameters mean while a certified module-literal method's
-// body is being emitted at its call site. `receiver` is the value the SITE read
-// for the binding, so the dead-zone check that read carries is the one the body
-// runs under.
-struct InlineFrame {
-    const std::string* binding = nullptr;
-    LowererValue receiver;
-    std::map<std::string, LowererValue> params;
-};
-
-struct CachedTypedElemGet {
-    size_t blockIdx = 0;
-    il::ValueId objId = il::kNoValue;
-    il::ValueId idxId = il::kNoValue;
-    uint32_t elemKind = 0;
-    LowererValue val;
-};
-
-// Operators whose EVERY operand goes through ToNumeric on every branch.
-bool alwaysCoercingBinary(ast::BinaryOp op);
 
 // The BRONZE_ABI_FN_FLAG_* byte for a function the source wrote.
 uint32_t functionObjectFlags(ast::FunctionKind kind, bool isGenerator, bool isAsync);

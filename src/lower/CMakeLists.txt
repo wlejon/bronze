@@ -1,50 +1,16 @@
 bronze_add_module(lower
-    SOURCES lower.cpp lower_infer.cpp lower_annotation.cpp infer_stats.cpp lower_util.cpp lower_stmt.cpp
-            lower_scope.cpp lower_closure.cpp lower_env_slot_number.cpp
-            lower_static_call_plan.cpp lower_closure_param_proof.cpp
+    SOURCES lower.cpp lower_annotation.cpp lower_util.cpp lower_stmt.cpp
+            lower_scope.cpp lower_closure.cpp
+            lower_static_call_plan.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_assign.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
-            lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp lower_typed_elem_loop_sanitize.cpp bigint_reach.cpp
-            lower_concat_chain.cpp lower_define_props.cpp lower_keyed_field_store.cpp lower_key_owner_guess.cpp
-            guard_region_cfg.cpp guard_region_select.cpp guard_region_apply.cpp guard_region_build.cpp guard_region_reenter.cpp guard_region_ssa.cpp own_callee_calls.cpp
-            guard_region_runs.cpp guard_region_shapes.cpp guard_region_ic.cpp guard_region_numbers.cpp guard_region_feedback.cpp typed_loop_version.cpp typed_body_version.cpp typed_body_version_emit.cpp typed_loop_index_proof.cpp typed_loop_uses.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp loop_prop_effects.cpp read_cse.cpp fresh_literals.cpp fresh_instances.cpp quiet_loop_hoist.cpp elem_reread.cpp guarded_load_fold.cpp loop_truth_hoist.cpp truth_join_threading.cpp layout_facts.cpp inline_small.cpp inline_small_module.cpp inline_guarded.cpp inline_guarded_emit.cpp transition_runs.cpp
-            lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp direct_method_guess.cpp
-            lower_pattern.cpp lower_pin.cpp lower_census.cpp lower_feedback.cpp lower_final_passes.cpp function_placement.cpp native_manifest.cpp lower_native.cpp
+            lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp
+            lower_concat_chain.cpp lower_define_props.cpp
+            lower_object.cpp lower_call.cpp
+            lower_pattern.cpp lower_pin.cpp lower_feedback.cpp lower_final_passes.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp lower_async.cpp
-            lower_segment.cpp lower_function.cpp lower_selfhost.cpp selfhost_merge.cpp typed_entry.cpp typed_entry_fold.cpp
-    DEPS ast il support types json wpo spec
-    TEST_SOURCES ../../tests/lower/lower_test.cpp ../../tests/lower/lower_jumps_test.cpp
-                 ../../tests/lower/lower_try_test.cpp ../../tests/lower/lower_infer_test.cpp
-                 ../../tests/lower/lower_annotation_test.cpp
-                 ../../tests/lower/lower_scope_test.cpp
-                 ../../tests/lower/lower_for_env_test.cpp
-                 ../../tests/lower/lower_generator_test.cpp
-                 ../../tests/lower/lower_loop_exit_test.cpp
-                 ../../tests/lower/lower_unresolved_test.cpp
-                 ../../tests/lower/lower_strict_test.cpp
-                 ../../tests/lower/lower_env_slot_test.cpp
-                 ../../tests/lower/lower_direct_method_test.cpp
-                 ../../tests/lower/lower_fn_recv_test.cpp
-                 ../../tests/lower/lower_stable_closure_call_test.cpp
-                 ../../tests/lower/lower_closure_param_test.cpp
-                 ../../tests/lower/guard_region_test.cpp
-                 ../../tests/lower/guard_region_entry_test.cpp
-                 ../../tests/lower/guard_region_placement_test.cpp
-                 ../../tests/lower/guard_region_fallback_test.cpp
-                 ../../tests/lower/guard_region_run_test.cpp
-                 ../../tests/lower/guard_region_shape_test.cpp
-                 ../../tests/lower/guard_region_ic_test.cpp
-                 ../../tests/lower/loop_prop_hoist_test.cpp
-                 ../../tests/lower/read_cse_test.cpp
-                 ../../tests/lower/loop_truth_hoist_test.cpp
-                 ../../tests/lower/typed_entry_test.cpp
-                 ../../tests/lower/typed_body_version_test.cpp
-                 ../../tests/lower/inline_guarded_test.cpp
-                 ../../tests/lower/function_placement_test.cpp
-    # Test-only: the fixtures need a lexer and parser to produce an AST.
-    # `bronze::lower` itself consumes an AST it is handed and includes
-    # neither (see the note on TEST_DEPS in cmake/bronze_module.cmake).
-    TEST_DEPS lex parse
+            lower_segment.cpp lower_function.cpp lower_selfhost.cpp selfhost_merge.cpp
+    DEPS ast il support types json
 )
 
 # GCC 13's -Wmaybe-uninitialized cannot see through std::optional's engaged

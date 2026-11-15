@@ -109,8 +109,6 @@ std::optional<Lowerer::Value> Lowerer::lowerTernary(const ast::Ternary* tern,
     il::Type joinType = il::Type::Dynamic;
     if (thenValOpt->type == elseValOpt->type) {
         joinType = thenValOpt->type;
-    } else if (provenNumber(*tern)) {
-        joinType = il::Type::F64;
     }
 
     il::Instruction brInst;
@@ -169,7 +167,7 @@ std::optional<Lowerer::Value> Lowerer::lowerLogical(const ast::Binary* bin, il::
     size_t rhsEndBlockIdx = currentBlockIdx_;
 
     il::Type joinType =
-        ((lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64) || provenNumber(*bin))
+        (lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64)
             ? il::Type::F64
             : il::Type::Dynamic;
 
@@ -250,7 +248,7 @@ std::optional<Lowerer::Value> Lowerer::lowerNullish(const ast::Binary* bin, il::
     bool rhsReaches = !currentBlockIsTerminated(ilFn);
     size_t rhsEndBlockIdx = currentBlockIdx_;
 
-    il::Type joinType = provenNumber(*bin) ? il::Type::F64 : il::Type::Dynamic;
+    il::Type joinType = il::Type::Dynamic;
 
     il::ValueId resParamId = ilFn.valueCount++;
     ilFn.blocks[bJoin].params.push_back({resParamId, joinType});

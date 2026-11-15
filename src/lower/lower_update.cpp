@@ -32,11 +32,11 @@ bool isPrefix(ast::UnaryOp op) {
 // about what the old value was — and, for a postfix update, about what the
 // expression yields.
 //
-// A proven-numeric operand is unboxed and the whole update stays in f64s. A
-// BOXED one keeps its box: ToNumeric answers with a Number *or a BigInt*, and
+// A typed operand is unboxed and the whole update stays in f64s. A BOXED one
+// keeps its box: ToNumeric answers with a Number *or a BigInt*, and
 // `unbox.f64` is ToNumber, which refuses the second.
 Lowerer::Value Lowerer::emitUpdateOld(Value oldVal, il::Function& ilFn) {
-    if (oldVal.type != il::Type::Dynamic || !numericArithDisabled_) {
+    if (oldVal.type != il::Type::Dynamic) {
         return unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
     }
     il::ValueId res = ilFn.valueCount++;
@@ -155,17 +155,9 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     getInst.operands = {objBoxed.id};
     getInst.keyIndex = keyIdx;
     getInst.icIndex = icSiteCounter_++;
-    getInst.icFnRecv = functionBindingReceiver(*mem.object, keyIdx);
-    stampStaticSlot(getInst, *mem.object);
     emitInst(ilFn, getInst);
 
-    Value curVal{cur, il::Type::Dynamic};
-    if (provenFieldRead(mem)) {
-        curVal = emitRawUnbox(curVal, ilFn);
-    } else if (nullishNumberFieldRead(mem)) {
-        curVal = emitNullishUnbox(curVal, ilFn);
-    }
-    Value numOld = emitUpdateOld(curVal, ilFn);
+    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
     // `o.x++` is ToNumERIC, not ToNumber: a BigInt operand yields a BigInt, so
     // an update is a store a `number` pin can be contradicted by.
@@ -179,7 +171,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.operands = {objBoxed.id, storedBoxed.id};
     setInst.keyIndex = keyIdx;
     setInst.icIndex = icSiteCounter_++;
-    stampStaticSlot(setInst, *mem.object);
     setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
@@ -191,37 +182,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
 // lowering the index twice would make `a[i++]++` increment `i` twice.
 std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& idxAccess,
                                                         ast::UnaryOp op, il::Function& ilFn) {
-    // A proven typed-array element: the whole update stays in f64s. The
-    // ToNumeric of the old value (13.4.2.1 step 2) is exactly what
-    // elem.get.typed already computes — its element is always a Number and
-    // its `undefined` is answered as NaN — and the postfix yield is that
-    // numeric, so no observable difference survives even out of bounds.
-    if (const auto elemKind = typedElemAccessKind(idxAccess, true)) {
-        auto objVal = lowerExpr(*idxAccess.object, ilFn);
-        if (!objVal) return std::nullopt;
-        Value objBoxed = boxValueIfNeeded(*objVal, ilFn);
-        auto indexVal = lowerExpr(*idxAccess.index, ilFn);
-        if (!indexVal) return std::nullopt;
-        Value idxF64 = unboxValueIfNeeded(*indexVal, il::Type::F64, ilFn);
-
-        const uint32_t fullKind = *elemKind | typedElemProofFlags(idxAccess, *elemKind);
-        recordElementOp(idxAccess.span.file, true, "");
-        il::ValueId cur = ilFn.valueCount++;
-        il::Instruction getInst;
-        getInst.op = il::Op::ElemGetTyped;
-        getInst.type = il::Type::F64;
-        getInst.result = cur;
-        getInst.operands = {objBoxed.id, idxF64.id};
-        getInst.immI32 = static_cast<int32_t>(fullKind);
-        emitInst(ilFn, getInst);
-
-        Value numOld{cur, il::Type::F64};
-        Value newVal = emitUpdateStep(numOld, op, ilFn);
-        const types::Type recv = inferredType(*idxAccess.object);
-        emitPinnedElementBarrier(*elemKind, newVal, ilFn, recv.arrayElementsPinned());
-        emitTypedElemSet(objBoxed, idxF64, newVal, fullKind, ilFn);
-        return isPrefix(op) ? newVal : numOld;
-    }
     auto objVal = lowerExpr(*idxAccess.object, ilFn);
     if (!objVal) return std::nullopt;
     Value objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -245,38 +205,31 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         getInst.operands = {objBoxed.id};
         getInst.keyIndex = *literalKey;
         getInst.icIndex = icSiteCounter_++;
-            getInst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
-            stampStaticSlot(getInst, *idxAccess.object);
-        } else {
-            const bool native = provenArrayOrTypedArray(*idxAccess.object);
-            recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
-            getInst.op = il::Op::ElemGet;
-            getInst.operands = {objBoxed.id, idxBoxed->id};
-        }
-        getInst.type = il::Type::Dynamic;
-        getInst.result = cur;
-        emitInst(ilFn, getInst);
+    } else {
+        getInst.op = il::Op::ElemGet;
+        getInst.operands = {objBoxed.id, idxBoxed->id};
+    }
+    getInst.type = il::Type::Dynamic;
+    getInst.result = cur;
+    emitInst(ilFn, getInst);
 
-        Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
-        Value newVal = emitUpdateStep(numOld, op, ilFn);
-        if (literalKey) {
-            emitPinFieldBarrier(*idxAccess.object, keyStrings_[*literalKey], newVal, ilFn);
-        }
-        Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
+    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
+    Value newVal = emitUpdateStep(numOld, op, ilFn);
+    if (literalKey) {
+        emitPinFieldBarrier(*idxAccess.object, keyStrings_[*literalKey], newVal, ilFn);
+    }
+    Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 
-        il::Instruction setInst;
-        if (literalKey) {
-            setInst.op = il::Op::PropSet;
-            setInst.operands = {objBoxed.id, storedBoxed.id};
-            setInst.keyIndex = *literalKey;
-            setInst.icIndex = icSiteCounter_++;
-            stampStaticSlot(setInst, *idxAccess.object);
-        } else {
-            const bool native = provenArrayOrTypedArray(*idxAccess.object);
-            recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
-            setInst.op = il::Op::ElemSet;
-            setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
-        }
+    il::Instruction setInst;
+    if (literalKey) {
+        setInst.op = il::Op::PropSet;
+        setInst.operands = {objBoxed.id, storedBoxed.id};
+        setInst.keyIndex = *literalKey;
+        setInst.icIndex = icSiteCounter_++;
+    } else {
+        setInst.op = il::Op::ElemSet;
+        setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
+    }
     setInst.type = il::Type::Void;
     setInst.result = il::kNoValue;
     setInst.immI32 = strictFlag();

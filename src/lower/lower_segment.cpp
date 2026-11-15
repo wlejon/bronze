@@ -60,7 +60,6 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
         functionEnvBase_ = 0;
         functionEnvScope_ = moduleEnvScope_;
         immutableEnvCache_.clear();
-        cachedTypedElemGet_.reset();
         // The module record, loaded the way every module function loads it.
         currentEnvValue_ =
             moduleEnvScope_ != SIZE_MAX ? emitModuleEnvGet(segFn) : il::kNoValue;

@@ -107,19 +107,13 @@ bool mayLeaveBlock(const ast::Expr& e) {
     return scan.splits;
 }
 
-// Is this operand a String on its face — a literal, or something inference
-// typed? A spine with one of these in it produces a String from that operand
-// on, by 13.15.3's own rule, so it is a spine that allocates an intermediate
-// per `+` and is the one this lowering is for.
-//
-// The test is on the OPERANDS and not on the spine's own inferred type, because
-// the answer has to be the same with and without inference for the shapes that
-// matter: a `'-'` between two array reads is a String literal in both modes,
-// where the spine's type is `string` in one and `dynamic` in the other.
-bool looksLikeStringOperand(const ast::Expr& e, types::Type inferred) {
+// Is this operand a String on its face — a string or template literal? A spine
+// with one of these in it produces a String from that operand on, by 13.15.3's
+// own rule, so it is a spine that allocates an intermediate per `+` and is the
+// one this lowering is for.
+bool looksLikeStringOperand(const ast::Expr& e) {
     if (dynamic_cast<const ast::StringLit*>(&e) != nullptr) return true;
-    if (dynamic_cast<const ast::TemplateLit*>(&e) != nullptr) return true;
-    return inferred.kind() == types::TypeKind::String;
+    return dynamic_cast<const ast::TemplateLit*>(&e) != nullptr;
 }
 
 // The operands of a left-associative `+` spine, in source order. Only the LEFT
@@ -159,7 +153,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAddChain(const ast::Binary* bin,
     // 13.15.3 will certainly take its String branch.
     bool anyString = false;
     for (const ast::Expr* operand : operands) {
-        if (looksLikeStringOperand(*operand, inferredType(*operand))) {
+        if (looksLikeStringOperand(*operand)) {
             anyString = true;
             break;
         }

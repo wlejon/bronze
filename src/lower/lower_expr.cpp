@@ -520,15 +520,6 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             if (currentEnvValue_ != il::kNoValue &&
                 findEnclosingEnvVar(ident->name, depth, index)) {
                 Value cell = emitEnvGet(depth, index, ilFn);
-                // A cell inference proved numeric reads back as an unboxed
-                // f64 — the same licence lowerVarDecl's initialiser unbox
-                // runs on, applied at the read because the SLOT still holds
-                // the box (closures share it and writes go through env.set).
-                // Without this every arithmetic use of a captured constant
-                // drags the whole expression onto the boxed path.
-                if (cell.type == il::Type::Dynamic && provenNumber(*ident)) {
-                    cell = unboxValueIfNeeded(cell, il::Type::F64, ilFn);
-                }
                 if (nativeManifest_) {
                     cell.nativeClass = capturedConstNativeClass(ident->name);
                 }
@@ -599,12 +590,6 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             return std::nullopt;
         }
         Value bound = readBinding(b, ilFn);
-        // Same rule as the enclosing-environment read above: a proven-number
-        // binding that lives in an env slot comes back boxed, and the proof
-        // is what lets the read hand its consumers an f64 instead.
-        if (bound.type == il::Type::Dynamic && provenNumber(*ident)) {
-            bound = unboxValueIfNeeded(bound, il::Type::F64, ilFn);
-        }
         if (nativeManifest_) {
             auto itCls = varNativeClasses_.find(it->second);
             if (itCls != varNativeClasses_.end()) {

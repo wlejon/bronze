@@ -1,61 +1,27 @@
-// The IL -> IL passes at the end of lowering, and the type-feedback
-// specialization that reads a profile around them (opt/spec/feedback_plan.h).
+// The end of lowering: what the finished module is stamped with before it is
+// handed on.
 //
-// They run LAST: they read the finished module and hand out no module-global
-// identity of their own, so everything lowering did before them — inline-cache
+// It runs LAST: it reads the finished module and hands out no module-global
+// identity of its own, so everything lowering did before it — inline-cache
 // indices, static-slot cells, template sites, the census table — is already
-// frozen and a copied instruction shares the site the original named. It is
-// also why `bronze il` shows the transformed IL: `lowerModule` is the single
-// funnel both `runIl` and `runBuild` come through.
+// frozen. It is also why `bronze il` shows the final IL: `lowerModule` is the
+// single funnel both `runIl` and `runBuild` come through.
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <map>
-#include <memory>
-#include <optional>
-#include <set>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
-#include "il/il_pin.h"
-#include "lower/elem_reread.h"
-#include "lower/fresh_instances.h"
-#include "lower/fresh_literals.h"
-#include "lower/function_placement.h"
-#include "lower/guard_region.h"
-#include "lower/guard_region_cfg.h"
-#include "lower/guarded_load_fold.h"
-#include "lower/inline_guarded.h"
-#include "lower/inline_small.h"
-#include "lower/layout_facts.h"
-#include "lower/loop_prop_analysis.h"
-#include "lower/loop_prop_hoist.h"
-#include "lower/loop_truth_hoist.h"
-#include "lower/lower_feedback.h"
-#include "lower/lowerer.h"
-#include "lower/own_callee_calls.h"
-#include "lower/quiet_loop_hoist.h"
-#include "lower/read_cse.h"
-#include "lower/transition_runs.h"
-#include "lower/truth_join_threading.h"
-#include "lower/typed_entry.h"
-#include "lower/typed_body_version.h"
-#include "lower/typed_loop_version.h"
-#include "opt/spec/feedback_plan.h"
 #include "il/feedback_site.h"
 #include "il/print.h"
-#include "opt/wpo/wpo.h"
+#include "lower/lowerer.h"
 
 namespace bronze::lower {
 
 namespace {
 
 // BRONZE_FINAL_IL_DUMP=<substr>[,...]: the final IL of every function whose
-// name contains one of them, after the last pass, on stderr. A diagnostic.
+// name contains one of them, on stderr. A diagnostic.
 void dumpFinalIl(const il::Module& mod) {
     const char* spec = std::getenv("BRONZE_FINAL_IL_DUMP");
     if (spec == nullptr || *spec == 0) return;
@@ -78,337 +44,13 @@ void dumpFinalIl(const il::Module& mod) {
 
 }  // namespace
 
-// With a `--feedback-in` profile the passes run twice. First on a copy of the
-// module: its final IL is the recorded build's, whose keys the profile names,
-// so that is where the profile is read (planFeedback). Then on the module,
-// spending what the plan says at the points each claim has to be made.
 bool Lowerer::finishIlPasses() {
-    std::optional<spec::FeedbackPlan> plan;
-    if (const spec::TypeProfile* profile = feedbackProfile()) {
-        il::Module probe = ilModule_;
-        DiagnosticSink probeDiags;
-        if (!runFinalPasses(probe, probeDiags, nullptr, /*probe=*/true)) {
-            for (const auto& d : probeDiags.all()) diags_.error(d.span, d.message);
-            return false;
-        }
-        plan = spec::planFeedback(probe, *profile, ilModule_.functions.size());
-    }
-    return runFinalPasses(ilModule_, diags_, plan ? &*plan : nullptr, /*probe=*/false);
-}
-
-bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec::FeedbackPlan* plan, bool probe) {
-    // The probe's whole-program solves report nothing: their census is the
-    // real run's to print.
-    const bool wholeProgram = wholeProgram_ != nullptr && wholeProgram_->on;
-    wpo::BuildOptions build;
-    if (wholeProgram) build = wholeProgram_->build;
-    if (probe) build.stats = build.perSite = false;
-    std::string scratch;
-    std::string& report = wholeProgram && !probe ? wholeProgram_->report : scratch;
-    spec::FeedbackApplyStats feedbackStats;
-    // First: the probe, the plain build and the build on its harvest all
-    // start here from one module, so they number the slow sites alike.
+    il::Module& mod = ilModule_;
+    // The slow sites, numbered on the finished module.
     il::numberSlowSites(mod);
-    // After the lowering's own families (lowering is over, and their ids are
-    // in its claims) and before any claim of this run.
-    if (plan != nullptr) spec::addProfiledFamilies(mod, *plan);
-    // The keys whose slots may hold plain objects only (feedback_plan.h), before
-    // the guarded regions and the layout facts, which leave their stores
-    // uncovered.
-    if (plan != nullptr && !probe) spec::applyFeedbackObjectKeys(mod, *plan);
-
-    // The predicted direct targets first, so that every pass below that
-    // copies or specializes a callee reads them as it reads lowering's. A
-    // profile's direct targets (B) right after, for the sites the prediction
-    // left without one.
-    OwnCallees ownCallees;
-    OwnCallees predictedAccessors;
-    ClosureGuesses polyMethods;
-    ClosureGuesses polyOwnCallees;
-    if (wholeProgram) report += wpo::predictDirectTargets(mod, build, &ownCallees, &predictedAccessors);
-    if (plan != nullptr) {
-        spec::applyFeedbackDirectMethods(mod, *plan, ownCallees, &feedbackStats, &polyMethods, &polyOwnCallees);
-    }
-    // The closure calls split on their callee's code: the ones a profile saw
-    // one callee at (B), and the ones the static call plan names
-    // (`stableClosureCalls_`: a recursive call, a call of a function declared
-    // further down its scope).
-    {
-        std::set<spec::SpanKey> offered;
-        const uint32_t split = applyClosureCalls(mod, [&](const il::Instruction& call) -> uint32_t {
-            if (plan != nullptr) {
-                const uint32_t target = spec::profiledClosureTarget(mod, *plan, call);
-                if (target != UINT32_MAX) {
-                    offered.insert(spec::spanKey(call.span));
-                    return target;
-                }
-            }
-            const auto it = stableClosureCalls_.find({call.span.file, call.span.begin, call.span.end});
-            if (it == stableClosureCalls_.end() || it->second >= mod.functions.size()) return UINT32_MAX;
-            // A sloppy function's `this` is the global object when the call
-            // passes undefined, which its generic entry supplies and the
-            // direct one does not.
-            const il::Function& callee = mod.functions[it->second];
-            return callee.needsThis && !callee.isStrict ? UINT32_MAX : it->second;
-        });
-        if (plan != nullptr) {
-            feedbackStats.closureCalls = split;
-            for (const spec::SpanKey& k : offered) {
-                feedbackStats.closureExecutions += plan->dynamicCallees.at(k).total;
-            }
-        }
-    }
-    inlineSmallFunctions(mod, &directMethods_);
-    sanitizeLoopInBoundsProofs(mod);
-    hoistLoopInvariantProps(mod, &directMethods_);
-    eliminateRepeatedReads(mod);
-    foldInlinedCallers(mod, removeUnheldLiterals(mod));
-    hoistLoopInvariantTruths(mod);
-    GuardRegionStats stats;
-    // The loops that make instances of a known class wait for the inliner
-    // (guard_region.h, `deferred`).
-    std::vector<uint32_t> deferredLoops;
-    applyGuardedRegions(mod, &stats, nullptr, nullptr, nullptr, inlineGuarded_ ? &deferredLoops : nullptr);
-    if (!probe) guardRegionStatsReport(stats);
-    // After the regions, so that a region's fast copy, whose element
-    // reads already stand behind `is.number`, is the loop it versions.
-    ColdBlocks coldLoops;
-    applyTypedLoopVersions(mod, &coldLoops);
-    // The loop-free bodies the loop pass leaves, over views they are handed.
-    applyTypedBodyVersions(mod, &coldLoops);
-    applyTypedEntries(mod, nullptr);
-    // Last, so a body is copied as it is finished: its guarded regions
-    // formed, a typed site's entry built and folded. Copied first, the
-    // caller's regions could not form across it (they start at a
-    // function's entry or a loop header, and an inlined body is neither),
-    // and a typed site would lose its unboxed entry for a generic body.
-    directMethods_.resolveAccessors(mod);
-    if (!predictedAccessors.empty()) directMethods_.applyPredictedAccessors(mod, predictedAccessors);
-    // A profile's accessor targets (F), for the sites the class guess left
-    // without one, where that guess is stamped: right before the inliner,
-    // which copies a getter's or setter's body in behind its cell.
-    if (plan != nullptr) {
-        spec::applyFeedbackAccessors(
-            mod, *plan,
-            [&](const std::string& proto, const std::string& key, bool setter) {
-                return directMethods_.accessorOfShownClass(mod, proto, key, setter);
-            },
-            &feedbackStats);
-    }
-    std::unordered_set<uint32_t> inlinedOwnIcs;
-    std::vector<uint32_t> inlinedInto;
-    if (inlineGuarded_) {
-        ClosureGuesses guesses = directMethods_.closureGuesses(mod);
-        for (const auto& [ic, target] : ownCallees) guesses[ic] = {target};
-        for (const auto& [ic, targets] : polyMethods) {
-            (void)targets;
-            guesses.erase(ic);
-        }
-        for (const auto& [ic, targets] : polyOwnCallees) {
-            (void)targets;
-            guesses.erase(ic);
-        }
-        inlineGuardedMethods(mod, diags, &inlinedInto, &guesses, &coldLoops,
-                             polyMethods.empty() ? nullptr : &polyMethods,
-                             polyOwnCallees.empty() ? nullptr : &polyOwnCallees, &inlinedOwnIcs);
-        if (diags.hasErrors()) return false;
-        // An inlined method body's guard gets cell pairs of its own
-        // (runtime/accessor_cell.cpp, `bronze_method_cell_publish`), shared
-        // by every copy of the guard: one pair per receiver shape the
-        // profile's run called the guessed callee on at the site (a method
-        // of a base class called on three subclasses takes three), or per
-        // class that inherits the callee where no run was seen, at least
-        // one and at most il::kMaxMethodGuardShapes. The count
-        // rides the guard's immI32. Cell 0 is "none", so it is never handed
-        // out here.
-        {
-            std::unordered_map<uint32_t, std::vector<const std::string*>> namesOf;
-            if (plan != nullptr) {
-                for (const auto& [name, index] : plan->callees) namesOf[index].push_back(&name);
-            }
-            const auto shapesSeen = [&](uint32_t ic, uint32_t callee) -> uint32_t {
-                uint32_t n = 0;
-                const auto site = plan != nullptr ? plan->methodReceiversByIc.find(ic)
-                                                  : decltype(plan->methodReceiversByIc.end()){};
-                // A site no run was seen at: the classes that inherit the
-                // callee, each taken for one shape.
-                if (plan == nullptr || site == plan->methodReceiversByIc.end()) {
-                    return directMethods_.inheritingClasses(callee);
-                }
-                const auto names = namesOf.find(callee);
-                if (names == namesOf.end()) return n;
-                for (const std::string* name : names->second) {
-                    const auto seen = site->second.find(*name);
-                    if (seen != site->second.end()) n += seen->second;
-                }
-                return n;
-            };
-            std::map<std::pair<uint32_t, uint32_t>, std::pair<uint32_t, int32_t>> cellOf;
-            for (uint32_t f : inlinedInto) {
-                for (il::Block& blk : mod.functions[f].blocks) {
-                    for (il::Instruction& inst : blk.instructions) {
-                        if (inst.op != il::Op::MethodIcIs || inst.staticCellIndex != 0) continue;
-                        auto cell = cellOf.find({inst.icIndex, inst.calleeIndex});
-                        if (cell == cellOf.end()) {
-                            if (mod.staticSiteCount == 0) mod.staticSiteCount = 1;
-                            const int32_t shapes = static_cast<int32_t>(std::clamp<uint32_t>(
-                                shapesSeen(inst.icIndex, inst.calleeIndex), 1, il::kMaxMethodGuardShapes));
-                            cell = cellOf.emplace(std::pair{inst.icIndex, inst.calleeIndex},
-                                                  std::pair{mod.staticSiteCount, shapes}).first;
-                            mod.staticSiteCount += 2 * static_cast<uint32_t>(shapes);
-                        }
-                        inst.staticCellIndex = cell->second.first;
-                        inst.immI32 = cell->second.second;
-                    }
-                }
-            }
-        }
-        foldInlinedCallers(mod, inlinedInto);
-        // The literals a method body copied into its caller left unheld.
-        foldInlinedCallers(mod, removeUnheldLiterals(mod));
-    }
-    for (uint32_t ic : inlinedOwnIcs) ownCallees.erase(ic);
-    // The own-slot calls inlining left: a direct entry behind the slot's
-    // closure's code word.
-    const uint32_t ownCalls = applyOwnCalleeCalls(mod, ownCallees);
-    if (wholeProgram && build.stats) {
-        report += "wpo-own: own-slot calls entered directly " + std::to_string(ownCalls) + "\n";
-    }
-    // A profile's guarded regions (D), on what inlining finished: the values
-    // the run saw only as Numbers, carried as doubles behind one guard
-    // (guard_region.h, "PROFILE-GUIDED REGIONS"). Before the claims, whose
-    // sites this run's copies would otherwise share a cell with.
-    if (plan != nullptr) {
-        RegionFeedback regionFeedback;
-        regionFeedback.operand = [plan](const il::Instruction& inst, uint32_t operand) {
-            OperandFeedback out;
-            const auto it = plan->values.find(spec::valueKey(inst, operand));
-            if (it == plan->values.end()) return out;
-            out.executions = it->second.total;
-            if (it->second.numbers != it->second.total) {
-                out.verdict = OperandFeedback::Other;
-            } else if (it->second.total >= spec::kMinExecutions) {
-                out.verdict = OperandFeedback::Number;
-            }
-            return out;
-        };
-        regionFeedback.entries = [plan](const il::Function& fn) -> uint64_t {
-            const auto it = plan->entries.find(fn.name);
-            return it == plan->entries.end() ? 0 : it->second;
-        };
-        GuardRegionStats feedbackRegions;
-        applyGuardedRegions(mod, &feedbackRegions, &regionFeedback);
-        guardRegionStatsReport(feedbackRegions, "guard-fb");
-    }
-    // The claims after inlining: they hand out static cells of their own,
-    // one per site, so an inlined copy is claimed in its caller's context.
-    if (wholeProgram) report += wpo::optimizeForBuild(mod, build);
-    // A profile's claims (A) on the property sites the prediction left
-    // unclaimed, and its number hints (C), before the layout facts spend
-    // the claims.
-    std::unordered_set<uint32_t> missedClaims;
-    if (plan != nullptr) spec::applyFeedbackClaimsAndHints(mod, *plan, &feedbackStats, &missedClaims);
-    if (plan != nullptr) {
-        mod.missedClaimIcs = missedClaims;
-        mod.slowCold = plan->slowCold;
-        const auto mixed = [&](const std::unordered_map<uint32_t, spec::NameCounts>& sites) {
-            for (const auto& [ic, names] : sites) {
-                if (names.counts.size() != 1 || names.counts.count("*other*") != 0) mod.mixedIcs.insert(ic);
-            }
-        };
-        mixed(plan->shapesByIc);
-        mixed(plan->methodsByIc);
-        mixed(plan->methodShapesByIc);
-    }
-    // The loops inlined bodies brought (guard_region.h, `only`), after the
-    // claims: a copy shares its site's cell with the original, as it shares
-    // the site's cache, and the fast copy's static sites can then be shape
-    // tests that leave it; with a profile, each one the run did not see miss
-    // (guard_region.h, "SHAPE GUARDS"). These loops come back to their fast
-    // copy ("RE-ENTRY").
-    if (inlineGuarded_) {
-        GuardRegionStats inlinedRegions;
-        applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto, plan != nullptr ? &missedClaims : nullptr);
-        if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
-        // The deferred loops that run left without a region, as the first
-        // run would have taken them.
-        if (!deferredLoops.empty()) {
-            GuardRegionStats lateRegions;
-            applyGuardedRegions(mod, &lateRegions, nullptr, &deferredLoops, nullptr, nullptr, /*plain=*/true);
-            if (!probe) guardRegionStatsReport(lateRegions, "guard-late");
-        }
-    }
-    // One cell per shape in the functions that will have resume twins
-    // (feedback_plan.h, `applyFeedbackLayoutCells`): the hot ones, as the
-    // placement at the end of this function finds them again. Before the
-    // fold and the layout facts, which join tests that ask one thing.
-    if (plan != nullptr && !probe) {
-        planFunctionPlacement(mod, plan);
-        std::vector<uint8_t> hot(mod.functions.size(), 0);
-        for (uint32_t f : mod.hotFunctions) {
-            if (f < hot.size()) hot[f] = 1;
-        }
-        const uint32_t layoutSites =
-            spec::applyFeedbackLayoutCells(mod, *plan, hot, missedClaims, [](const il::Function& fn) {
-                return [cfg = std::make_shared<const Cfg>(buildCfg(fn))](il::BlockId a, il::BlockId b) {
-                    return cfg->dominates(a, b);
-                };
-            });
-        if (wholeProgram && build.stats) {
-            report += "feedback-layout: sites and tests on a layout cell " + std::to_string(layoutSites) + " (" +
-                      std::to_string(mod.layoutCells.size()) + " cells)\n";
-        }
-    }
-    // The loads the regions left bare (guarded_load_fold.h).
-    foldGuardedLoads(mod);
-    // After every pass that copies instructions: a copied run would share
-    // its cells with the original (transition_runs.h).
-    markTransitionRuns(mod);
-    assignDefineAddCells(mod);
-    // The instances the fast copies make and keep nowhere, which the runs
-    // just marked let them do without (fresh_instances.h).
-    sinkFreshInstances(mod);
-    // The exits the typed bodies left in front of their reads, now that every
-    // read that will have a claim has it.
-    resolveReadExits(mod);
-    if (wholeProgram) {
-        // After the claims, which it spends: a receiver's guard asked once
-        // answers its later sites across calls (layout_facts.h).
-        LayoutFactStats layoutStats;
-        std::string layoutPerFn;
-        applyLayoutFacts(mod, &layoutStats, build.perSite ? build.filter : std::string{}, &layoutPerFn);
-        if (build.stats) report += layoutFactReport(layoutStats) + layoutPerFn;
-    }
-    if (plan != nullptr && wholeProgram && build.stats) report += spec::feedbackReport(*plan, feedbackStats);
-    // The harvest identity (il.h icLayoutDigest), before the threading below,
-    // which the probe does not run: a plain build's digest is the one a later
-    // build's probe computes here. A build that spent a profile says so, and
-    // its caches are not harvested (docs/type-feedback.md, "Harvest").
+    // The harvest identity (il.h icLayoutDigest).
     mod.icLayoutDigest = il::icLayoutDigest(mod);
-    if (plan != nullptr && !probe) {
-        mod.feedbackApplied = plan->stats.matchedFunctions != 0 || plan->stats.harvestSites != 0;
-    }
-    // Last: control flow only, after every pass that reads or copies a site.
-    // Not in the probe, nor in a build a profile is recorded from: a profile
-    // numbers its sites in the order the final IL has them, and the probe is
-    // read against it as the recorded build had it, so both stay unthreaded.
-    const bool recording = feedback_ != nullptr && !feedback_->outPath.empty();
-    if (!probe && !recording) {
-        threadTruthJoins(mod);
-        // The element reads a claimed named read stands between
-        // (elem_reread.h), on the control flow the threading left.
-        eliminateRepeatedElementReads(mod);
-        // What a call-free loop of a fast copy asks on every trip, asked in
-        // front of it (quiet_loop_hoist.h).
-        hoistQuietLoops(mod);
-    }
-    // Where each function goes in the text (function_placement.h): from the
-    // profile when there is one, last of all, as the module now stands.
-    if (!probe) {
-        const PlacementStats placement = planFunctionPlacement(mod, plan);
-        if (wholeProgram && build.stats) report += placementReport(placement);
-    }
-    if (!probe) dumpFinalIl(mod);
+    dumpFinalIl(mod);
     return true;
 }
 

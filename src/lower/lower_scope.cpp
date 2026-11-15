@@ -150,12 +150,6 @@ SlotImmutability Lowerer::envSlotImmutability(uint32_t depth, uint32_t index) co
     return scope.slotImmutable[index];
 }
 
-bool Lowerer::envSlotIsF64(uint32_t depth, uint32_t index) const {
-    if (depth >= envScopes_.size()) return false;
-    const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
-    return index < scope.slotIsF64.size() && scope.slotIsF64[index];
-}
-
 // Every read of an environment slot passes through here, so this is the one
 // place 9.1.1.1.6's check has to be decided. A lexical slot gets the checked
 // form UNCONDITIONALLY — not only where lowering can see a read above the
@@ -227,40 +221,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
         emitInst(ilFn, inst);
     }
 
-    // A slot the number proof claimed (lower_env_slot_number.cpp): the load is
-    // the one it always was and the
-    // value that comes back is a double by bitcast. Unboxed HERE and not only
-    // in coercing positions, which is where the field seam draws the line —
-    // because what a captured flag is used for is `!==` and `<` against another
-    // one, and those are not coercing positions. The cost is the canonicalizing
-    // box on the way back out of a slot read that ends up boxed anyway; the
-    // buy is that a comparison of two slots is an fcmp instead of two dynamic
-    // guards and a helper.
-    //
-    // After the instruction, never folded into it: the TDZ form throws, and the
-    // marker is not a double.
     Value val{res, il::Type::Dynamic};
-    if (envSlotIsF64(depth, index)) {
-        if (isHoistableImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
-            il::ValueId unboxRes = ilFn.valueCount++;
-            il::Instruction unboxInst;
-            unboxInst.op = il::Op::Unbox;
-            unboxInst.type = il::Type::F64;
-            unboxInst.rawUnbox = true;
-            unboxInst.result = unboxRes;
-            unboxInst.operands = {res};
-            auto& b0 = ilFn.blocks[0];
-            if (!b0.instructions.empty() && il::isTerminator(b0.instructions.back().op)) {
-                b0.instructions.insert(b0.instructions.end() - 1, unboxInst);
-            } else {
-                b0.instructions.push_back(unboxInst);
-            }
-            val = Value{unboxRes, il::Type::F64};
-        } else {
-            val = emitRawUnbox(val, ilFn);
-        }
-    }
-
     if (isHoistableImmutable) {
         immutableEnvCache_[key] = val;
     }
@@ -356,27 +317,6 @@ void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function
         }
         return;
     }
-    // The `--pins` barrier for `function <fn>.<binding>: number`, and it is
-    // keyed on the SLOT rather than on the record: stage E3 merges a callee's
-    // frame region into its caller's, so a "frame" holds the slots of several
-    // logical scopes and a barrier that asked about the frame would let a
-    // frameless callee's write through. The depth/index pair the scope plan
-    // resolved is the logical slot, and it is what this asks about.
-    //
-    // Only the PINNED slots (lowerer_state.h, `slotIsPinned`). A slot the
-    // fixpoint typed has had every write to it audited already.
-    {
-        const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
-        if (index < scope.slotIsPinned.size() && scope.slotIsPinned[index]) {
-            emitPinGuard(val, scope.slotPinText[index], il::PinBarrier::Number, ilFn);
-        }
-        // The census's env-slot observation, on the same slot key and for the
-        // same reason: the record is not the unit, the logical slot is.
-        if (index < scope.slotIsCensus.size() && scope.slotIsCensus[index]) {
-            const std::string target = scope.slotCensusText[index];
-            emitCensusRecord(val, target, il::CensusSite::EnvSlot, ilFn);
-        }
-    }
     Value boxed = boxValueIfNeeded(val, ilFn);
     il::Instruction inst;
     inst.op = il::Op::EnvSet;
@@ -413,12 +353,9 @@ Lowerer::Value Lowerer::readBinding(const VarBinding& b, il::Function& ilFn) {
         const bool definite =
             b.envSlot >= scope.slotIsLexical.size() || !scope.slotIsLexical[b.envSlot] ||
             (b.envSlot < scope.slotIsDefiniteInit.size() && scope.slotIsDefiniteInit[b.envSlot]);
-        const bool pinnedOrCensus =
-            (b.envSlot < scope.slotIsPinned.size() && scope.slotIsPinned[b.envSlot]) ||
-            (b.envSlot < scope.slotIsCensus.size() && scope.slotIsCensus[b.envSlot]);
         const bool immutable =
             scope.rebindsKnown && !scope.deeplyAssigned.contains(b.name);
-        if (definite && !pinnedOrCensus && immutable) {
+        if (definite && immutable) {
             return Value{b.valueId, b.type};
         }
     }

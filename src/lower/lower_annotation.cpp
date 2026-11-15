@@ -1,13 +1,11 @@
 // TypeScript type annotations: the hint each one gives, read off the type
-// tree the parser built, and the check of that hint against what inference
-// proved.
+// tree the parser built.
 
 #include <string>
 #include <string_view>
 
 #include "ast/type.h"
 #include "lower/lower.h"
-#include "lower/lowerer.h"
 
 namespace bronze::lower {
 namespace {
@@ -171,29 +169,5 @@ types::Type hintOf(const ast::TypeNode& type, int depth) {
 }  // namespace
 
 types::Type annotationHint(const ast::TypeNode& type) { return hintOf(type, 0); }
-
-// A TS annotation is an untrusted optimization hint.
-//
-// Note what it does NOT do: it does not return a type. The caller has already
-// chosen its IL type from what inference proved; this only decides whether to
-// say something about the annotation.
-void Lowerer::checkAnnotation(const ast::TypeNodePtr& ann, Span span, const std::string& name,
-                              types::Type proven) {
-    if (!ann) return;
-    const types::Type claim = annotationHint(*ann);
-    if (claim.is(types::TypeKind::Dynamic)) return;
-    if (claim.kind() == proven.kind()) return;
-    if (inference_ == nullptr) return;
-
-    const std::string text = ast::printType(*ann);
-    const std::string observed = types::typeKindName(proven.kind());
-    if (proven.is(types::TypeKind::Dynamic) || proven.is(types::TypeKind::Never)) {
-        diags_.warning(span, "annotation '" + text + "' on '" + name +
-                                 "' is not provable; ignoring (inferred: " + observed + ")");
-    } else {
-        diags_.warning(span, "annotation '" + text + "' on '" + name +
-                                 "' contradicts inferred " + observed);
-    }
-}
 
 }  // namespace bronze::lower

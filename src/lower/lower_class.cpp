@@ -88,24 +88,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // step 2 / 8.4.5), without a binding of that name inside the class.
     const std::string shownName = name.empty() ? inferredName : sourceSpelling(name);
 
-    // The heritage link, recorded before any method is, because a class that
-    // declares NO instance method of its own still inherits every one of its
-    // base's — and a site calling one of those is exactly the site that needs
-    // the walk. Recording the link only alongside a method would lose the edge
-    // for a subclass that adds fields and nothing else.
-    // A heritage that is an expression (`extends mixin(Base)`) has no name; it
-    // is recorded under one no class declares, so the table cannot take the
-    // class for a root.
-    // The base by its binding: the module linker renames the heritage
-    // expression with the rest of an imported file (`mod2.ViewContainer`) and
-    // leaves `superName` at the parser's local spelling (`ViewContainer`),
-    // which names no class here, so every walk up from a class of an
-    // imported file stopped at it (types/method_ident.cpp reads it the same
-    // way).
-    std::string heritage = superName;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(superClass)) heritage = id->name;
-    directMethods_.recordClassSuper(name, hasSuper && heritage.empty() ? "<extends expression>" : heritage);
-    directMethods_.recordClassShownName(name, shownName);
 
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's
@@ -174,21 +156,15 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     std::vector<ast::StmtPtr> fieldStmts = buildFieldInitStatements(methods, privateElements, span);
 
     // The copy is what lets the field initializers be spliced in without
-    // editing the tree inference read, and the map is what stops that costing
-    // every proof about the body: the constructor's own statements are copied
-    // WITH origins, because the copy is evaluated exactly where the original
-    // was. The field statements carry none — they are synthesized here, and
-    // their initializer subtrees were copied out of a scope that is not this
-    // one (ast/clone.h).
-    ast::CloneOrigins ctorOrigins;
+    // editing the tree the parser built.
     std::vector<ast::StmtPtr> ctorBody;
     std::vector<ast::StmtPtr> atSuperFields;
     if (fieldStmts.empty()) {
-        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
     } else if (!hasSuper) {
         // Base class: fields run at the start of constructor
         for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
-        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
     } else {
         // Derived class: the fields run when super(...) returns. A body that
         // calls it exactly once, as a statement of its own, gets them spliced
@@ -200,7 +176,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         const bool splice = shape.superCalls == 1 && shape.topLevelSuperStatement;
         bool inserted = false;
         for (const auto& s : ctor->fn->body) {
-            ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
+            ctorBody.push_back(ast::cloneStmt(*s));
             if (splice && !inserted) {
                 if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s.get())) {
                     if (dynamic_cast<const ast::SuperCall*>(es->expr.get())) {
@@ -223,11 +199,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // 15.7.14 step 15: the constructor's `name` is the CLASS's name, not the
     // parser's synthesized `constructor`, and its `length` is the constructor's
     // own parameter list.
-    //
-    // The map is live for exactly as long as the copy it describes: pointer
-    // keys into a vector that dies with this call, so an entry that outlived it
-    // could be answered for a node the allocator later put at the same address.
-    cloneOrigins_.push_back(&ctorOrigins);
     // A derived constructor's receiver is rebindable — `super()` decides it —
     // and the prologue of the closure lowered next is what makes it so.
     pendingDerivedCtor_ = hasSuper;
@@ -245,11 +216,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     derivedFieldStmts_ = outerFields;
     pendingDerivedCtor_ = false;
     pendingSuperState_ = false;
-    cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
     ilModule_.functions[lastClosureFnIndex_].displayName = shownName.empty() ? "<anonymous>" : shownName;
     ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_CONSTRUCTOR;
-    if (!hasSuper) directMethods_.recordClassConstructor(name, lastClosureFnIndex_);
     if (const uint32_t cap = classInstanceInlineSlots(name); cap != 0) {
         ilModule_.functions[lastClosureFnIndex_].fnFlags |= cap << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT;
     }
@@ -330,12 +299,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                                      /*enumerable=*/false, ilFn)) {
                     return std::nullopt;
                 }
-                // The accessor half of the direct edge; a static one is the
-                // constructor's, never an instance read's.
-                if (!m.isStatic) {
-                    directMethods_.recordClassAccessor(name, m.name, m.accessor == ast::AccessorKind::Setter,
-                                                       lastClosureFnIndex_);
-                }
             }
             continue;
         }
@@ -379,14 +342,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             computedInst.operands = {homeObject, keyBoxed->id, fnVal->id};
             emitInst(ilFn, computedInst);
             continue;
-        }
-
-        // The definition half of the direct method-call edge
-        // (direct_method_table.h). Instance methods only: a static one is not
-        // reached as `recv.<name>`, and the accessor, private and computed-key
-        // forms have all `continue`d above.
-        if (!m.isStatic) {
-            directMethods_.recordClassMethod(name, heritage, m.name, lastClosureFnIndex_);
         }
 
         il::Instruction setInst;
