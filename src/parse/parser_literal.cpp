@@ -608,7 +608,9 @@ ExprPtr Parser::parseObjectLit() {
             // want an IdentifierReference: `{ x }` and `{ x = 1 }` evaluate
             // the name, and no binding is spelled `return`.
             const Token& nameTok = advance();
-            const bool reserved = nameTok.kind != TokenKind::Identifier;
+            // (`of` has a token of its own for `for (x of y)` and is an
+            // ordinary binding name everywhere else: `{ of }` is shorthand.)
+            const bool reserved = nameTok.kind != TokenKind::Identifier && nameTok.kind != TokenKind::KwOf;
             prop.key = std::string(nameTok.text);
             if (!reserved && (prop.key == "get" || prop.key == "set") &&
                 (isIdentifierName(peek().kind) || check(TokenKind::StringLiteral) ||
