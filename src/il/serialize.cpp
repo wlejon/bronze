@@ -85,6 +85,7 @@ struct FunctionMirror {
     uint32_t sourceEnd;
     std::string displayName;
     uint32_t descFlags;
+    uint32_t speculatedFrom;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };
@@ -111,11 +112,18 @@ struct ModuleMirror {
     uint64_t icLayoutDigest;
     std::string harvestOutPath;
     std::vector<Module::NativeImport> nativeImports;
+    std::vector<Module::ShapeCell> shapeCells;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
     std::vector<std::string> sourceFiles;
     std::vector<LineTable> lineTables;
 };
+struct ShapeCellMirror {
+    std::string key;
+};
+static_assert(sizeof(Module::ShapeCell) == sizeof(ShapeCellMirror),
+              "il::Module::ShapeCell changed: update il/serialize.cpp and bump kFormatVersion");
+
 static_assert(sizeof(Module) == sizeof(ModuleMirror),
               "il::Module changed: update il/serialize.cpp and bump kFormatVersion");
 
@@ -233,7 +241,7 @@ public:
     }
     Type type() {
         const uint8_t t = u8();
-        if (t > static_cast<uint8_t>(Type::Dynamic)) fail("bad type");
+        if (t > static_cast<uint8_t>(Type::Ptr)) fail("bad type");
         return static_cast<Type>(t);
     }
 
@@ -331,7 +339,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
 
 void readInstruction(Reader& r, Instruction& inst) {
     const uint8_t op = r.u8();
-    if (op > static_cast<uint8_t>(Op::IsPlainArray)) r.fail("bad op");
+    if (op > static_cast<uint8_t>(kLastOp)) r.fail("bad op");
     inst.op = static_cast<Op>(op);
     inst.type = r.type();
     const uint64_t m = r.var();
@@ -444,6 +452,7 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(fn.sourceEnd);
     w.str(fn.displayName);
     w.var(fn.descFlags);
+    w.var(static_cast<uint32_t>(fn.speculatedFrom + 1u));  // kNotSpeculated wraps to 0
     w.var(fn.valueCount);
     w.var(fn.blocks.size());
     for (const auto& b : fn.blocks) writeBlock(w, b);
@@ -487,6 +496,7 @@ void readFunction(Reader& r, Function& fn) {
     fn.sourceEnd = r.u32();
     fn.displayName = r.str();
     fn.descFlags = r.u32();
+    fn.speculatedFrom = r.u32() - 1u;
     fn.valueCount = r.u32();
     fn.blocks.resize(r.count());
     for (auto& b : fn.blocks) {
@@ -524,6 +534,8 @@ std::string serializeModule(const Module& module) {
         w.var(n.functionIndex);
         w.var(n.bufferReturnKind);
     }
+    w.var(module.shapeCells.size());
+    for (const auto& c : module.shapeCells) w.str(c.key);
     w.var(module.sourceFiles.size());
     for (const auto& f : module.sourceFiles) w.str(f);
     w.var(module.functions.size());
@@ -563,6 +575,8 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         n.functionIndex = r.u32();
         n.bufferReturnKind = r.u32();
     }
+    out.shapeCells.resize(r.count());
+    for (auto& c : out.shapeCells) c.key = r.str();
     out.sourceFiles.resize(r.count());
     for (auto& f : out.sourceFiles) f = r.str();
     const size_t fnCount = r.count();

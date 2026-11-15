@@ -13,6 +13,7 @@ const char* typeName(Type t) {
         case Type::F64: return "f64";
         case Type::Str: return "str";
         case Type::Dynamic: return "dynamic";
+        case Type::Ptr: return "ptr";
     }
     return "?";
 }
@@ -149,6 +150,28 @@ const char* opName(Op op) {
         case Op::IsTypedArray: return "is.typed_array";
         case Op::IsPlainArray: return "is.plain_array";
         case Op::ObjectLitProto: return "object.proto";
+        case Op::ResumePoint: return "resume.point";
+        case Op::Leave: return "leave";
+        case Op::LoadShape: return "load.shape";
+        case Op::ShapeCell: return "shape.cell";
+        case Op::PtrEq: return "ptr.eq";
+        case Op::IsObject: return "is.object";
+        case Op::SlotLoad: return "slot.load";
+        case Op::SlotStore: return "slot.store";
+        case Op::IsI32: return "is.i32";
+        case Op::UnboxI32: return "unbox.i32.unchecked";
+        case Op::UnboxF64: return "unbox.f64.unchecked";
+        case Op::I32ToF64: return "i32.to_f64";
+        case Op::AddWouldOvf: return "add.would_ovf";
+        case Op::SubWouldOvf: return "sub.would_ovf";
+        case Op::MulWouldOvf: return "mul.would_ovf";
+        case Op::FnCodeIs: return "fn.code_is";
+        case Op::FnEnv: return "fn.env";
+        case Op::ArrayLength: return "array.length";
+        case Op::ElemLoad: return "elem.load";
+        case Op::ElemStore: return "elem.store";
+        case Op::InBounds: return "in.bounds";
+        case Op::IsHole: return "is.hole";
     }
     return "?";
 }

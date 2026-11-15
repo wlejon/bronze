@@ -37,6 +37,11 @@ enum class Type : uint8_t {
     F64,
     Str,      // native string (representation decided in)
     Dynamic,  // boundary-only boxed value; using it is an explicit opt-in
+    // A raw 64-bit word that is NOT a Value and not a GC root: a shape word
+    // (`load.shape`, `shape.cell`). Only `ptr.eq` consumes one. Shapes are
+    // immortal, so a ptr held across a collection stays valid; it must never
+    // be boxed, stored or passed to a call.
+    Ptr,
 };
 const char* typeName(Type t);
 
@@ -117,9 +122,9 @@ struct Instruction {
     BlockTarget elseTarget;          // Branch else-target
 };
 
-// Whether this instruction can throw, so that control may leave the block at
-// it for the block's handler. Defined in effects.cpp, beside `isTerminator`,
-// because both are one-line facts about the op table.
+// Whether this non-terminator can throw, so that the backend emits an
+// exception test after it. Defined in effects.cpp as a reader of the effect
+// table (il/effects.h), which is what every pass asks instead.
 bool canThrow(const Instruction& inst);
 
 // Whether running this instruction can move a heap object: it allocates, or it
@@ -339,6 +344,13 @@ struct Function {
     uint32_t adaptArity() const {
         return needsArguments ? 0u : static_cast<uint32_t>(callerParamCount());
     }
+    // A SPECULATED function S: the index in Module::functions of the generic
+    // function G it was cloned from, which every `leave` in S resumes. G
+    // itself, and every function lowering makes, is kNotSpeculated. A
+    // speculated function holds no `resume.point`; a generic one no `leave`.
+    static constexpr uint32_t kNotSpeculated = UINT32_MAX;
+    uint32_t speculatedFrom = kNotSpeculated;
+    bool isSpeculated() const { return speculatedFrom != kNotSpeculated; }
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
@@ -411,6 +423,17 @@ struct Module {
         uint32_t bufferReturnKind = UINT32_MAX;
     };
     std::vector<NativeImport> nativeImports;
+    // THE LAYOUT CELLS `shape.cell <n>` reads: one shape word per entry, which
+    // the module's loader fills once, before any code runs, by resolving
+    // `key` — the shape's name as the harvest spells it (opt/spec/profile.h,
+    // the `shapes` rows) — against the shapes the runtime has made. The key
+    // is all a loader needs: a shape it cannot resolve leaves the cell
+    // holding a word no object carries, so every test against it fails and
+    // the speculated code leaves. Keys are unique within the table.
+    struct ShapeCell {
+        std::string key;
+    };
+    std::vector<ShapeCell> shapeCells;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

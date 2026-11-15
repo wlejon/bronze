@@ -17,6 +17,8 @@ enum class Op : uint8_t {
     // there is no unboxed BigInt anywhere in the IL, which is exactly what
     // keeps a typed f64 path from ever meeting one.
     ConstBigInt,    // a: dynamic = const.bigint <key_const_index>
+    // At type i32 (speculated code only) the add, sub and mul below are
+    // WRAPPING two's-complement and stand behind an `*.would_ovf` guard.
     Add,        // a = add b, c        (numeric, operands same type)
     // A `+` spine of three or more operands as an ACCUMULATOR: each IS the
     // `add` it replaces, at the same point, so 13.15.3's order is untouched, and
@@ -479,7 +481,143 @@ enum class Op : uint8_t {
     // array a box, so it is never merged, hoisted or carried across anything.
     // Header loads only: cannot throw, cannot collect.
     IsPlainArray,
+
+    // ---- speculation: leaving a speculated function ---------------------
+    // A function S speculated from a generic function G (il.h
+    // `Function::speculatedFrom`) tests its assumptions with ORDINARY
+    // branches. The edge that sees an assumption fail goes to a cold exit
+    // block, which may do exit-only work (box a value, re-create an object
+    // whose allocation S removed) and ends in `leave`, handing the frame's
+    // state to G at a marked point. There is no guard instruction with a
+    // hidden edge: what S knows, it knows from branch edges (opt/core
+    // edge_facts.h), and every pass reads one effect model (il/effects.h).
+    //
+    // `resume.point <id>, %s0, %s1, ...` marks the place in G a `leave` may
+    // resume at, in front of the instruction resumption continues with.
+    // `immI32` is the id, unique within G (handed out dense from 0; one that
+    // nothing names may be deleted, so density is not an invariant).
+    // The operands are the STATE: every value live there that G's code from
+    // this point on needs, in a fixed order a `leave` matches positionally.
+    // No result, no effects of its own, but it is an ENTRY into G: no
+    // instruction, pure ones included, may be moved across it while a
+    // `leave` names it (Effects::barrier), because a resumption arrives here
+    // with only the state in hand. Never in a speculated function.
+    ResumePoint,
+    // `leave @G, <id>, %s0, %s1, ...`: terminator. Leaves S for G's
+    // `resume.point <id>` with the operands as its state, which match that
+    // point's operands in count and in type, one for one. `calleeIndex` is
+    // G's index in Module::functions and must be S's `speculatedFrom`.
+    // No successors: what runs next is G's, and S never sees it again.
+    Leave,
+
+    // ---- speculation: the low-level forms S is written in -------------
+    // Each is one machine-level step with no fallback. The UNCHECKED ones are
+    // legal only where a dominating branch edge established their
+    // precondition (named on each); the verifier cannot check a dominance fact
+    // cheaply and does not try, so a precondition broken by a pass is a wrong
+    // read and not a diagnostic. Those carry Effects::guarded: no pass may
+    // hoist one above the branch that licensed it.
+    //
+    // a: ptr = load.shape %obj. The shape word at BRONZE_ABI_OBJ_SHAPE_OFFSET
+    // (every object kind carries one there). %obj is dynamic and must be an
+    // object (`is.object` true edge, or a fact implying it). Reads `Shapes`.
+    LoadShape,
+    // a: ptr = shape.cell <n>. The shape the module's layout cell `n` holds
+    // (Module::shapeCells, `immI32` = n): a word filled once when the module
+    // is loaded, from the harvest's name for it, and never written again —
+    // so the read is pure. A cell the loader could not resolve holds a word
+    // no object carries, so every compare against it fails and S leaves.
+    ShapeCell,
+    // a: bool = ptr.eq %a, %b. Both ptr. `ptr.eq (load.shape x), (shape.cell n)`
+    // is the shape test edge_facts recognises.
+    PtrEq,
+    // a: bool = is.object %v. The tag test: %v (dynamic) is a heap object
+    // reference (BRONZE_ABI_TAG_OBJECT), so `load.shape` is legal on it.
+    // Functions and arrays are objects. Total, pure.
+    IsObject,
+    // a: dynamic = slot.load %obj, <slot>. Named-property slot `immI32`: below
+    // BRONZE_ABI_OBJ_OVERFLOW_SLOT the inline Value at that index, at or above
+    // it Value (slot - OVERFLOW_SLOT) of the overflow block; the backend picks
+    // the form from the constant. Unchecked: %obj's shape is known (a shape
+    // fact) and that shape places a data property at `slot`. Reads `Slots`.
+    SlotLoad,
+    // slot.store %obj, <slot>, %v. The store form of `slot.load`, write barrier
+    // included. Writes an EXISTING slot: it never transitions the shape, so it
+    // writes `Slots` and not `Shapes` (a transition is still a generic
+    // `prop.set`, or a later dedicated op).
+    SlotStore,
+    // a: bool = is.i32 %v. %v (dynamic) is a Number whose value is an int32:
+    // whatever its box (the Int32 tag, or a double that is integral, in range
+    // and not -0). Total, pure. The F64 test is the existing `is.number`
+    // (the double box: bits <= BRONZE_ABI_NUMBER_MAX_BITS), so there is no
+    // separate `is.f64`.
+    IsI32,
+    // a: i32 = unbox.i32.unchecked %v. The int32 a dynamic %v holds.
+    // Unchecked: legal only on `is.i32`'s true edge. Unlike `unbox.i32`
+    // (checked, an ordinary conversion) it never calls. Pure: on a value of
+    // another tag it computes a wrong number and touches no memory.
+    UnboxI32,
+    // a: f64 = unbox.f64.unchecked %v. The double a dynamic %v holds.
+    // Unchecked: legal only on `is.number`'s true edge — NOT `is.i32`'s, whose
+    // value may sit in the Int32 box, which `is.number` does not count. Not
+    // ToNumber: `unbox.f64` stays the checked conversion.
+    UnboxF64,
+    // a: f64 = i32.to_f64 %i. Exact; pure.
+    I32ToF64,
+    // Overflow-checked int32 arithmetic is a GUARD CONDITION in front of the
+    // plain typed op: `c: bool = add.would_ovf %a, %b; br %c, bExit, bFast`,
+    // and on the fast edge `s: i32 = add %a, %b`. `add`/`sub`/`mul` typed i32
+    // wrap two's-complement; they are only correct as JS arithmetic where the
+    // matching *.would_ovf answered false. One result per instruction is the
+    // IL's rule, and this keeps it without a flags pseudo-value.
+    //
+    // a: bool = add.would_ovf %a, %b   (both i32): a + b is outside int32.
+    AddWouldOvf,
+    // a: bool = sub.would_ovf %a, %b   (both i32): a - b is outside int32.
+    SubWouldOvf,
+    // a: bool = mul.would_ovf %a, %b   (both i32): a * b is not EXACTLY an
+    // int32 Number — outside the range, OR -0 (a zero product with a negative
+    // operand), which an i32 cannot represent.
+    MulWouldOvf,
+    // a: bool = fn.code_is %callee, @f. Whether dynamic %callee is a function
+    // object whose code is module function `calleeIndex` — the identity test
+    // that licenses a direct `call @f`. Total (it includes the object and
+    // function-kind test): false for anything else. A function's code never
+    // changes, so the fact never dies. Pure.
+    FnCodeIs,
+    // a: dynamic = fn.env %callee. The environment record the closure %callee
+    // captured, for a direct call to a `needsEnv` function. Unchecked: legal
+    // only on a `fn.code_is` true edge. The captured record is fixed when the
+    // closure is made, so the read depends on no location.
+    FnEnv,
+    // a: i32 = array.length %arr. The dense array's length word. Unchecked:
+    // %arr is an Array (`is.dense_array` or `is.plain_array` true edge).
+    // Reads `ArrayLen`.
+    ArrayLength,
+    // a: dynamic = elem.load %arr, %i. Element %i (i32) of the array's element
+    // block, as stored: a hole reads as the HOLE value, never `undefined`, and
+    // no prototype is asked — so pair it with `is.hole`. Unchecked: %arr is an
+    // Array and %i is in bounds (`in.bounds %i, %len` with %len its
+    // `array.length`). Reads `Elements`.
+    ElemLoad,
+    // elem.store %arr, %i, %v. Stores %v (dynamic, never the hole) into the
+    // element block at %i (i32), write barrier included. Unchecked as
+    // `elem.load` is; it never grows the array, so it writes `Elements` and
+    // not `ArrayLen`.
+    ElemStore,
+    // a: bool = in.bounds %i, %len. Both i32; the UNSIGNED compare
+    // `(uint32)i < (uint32)len`, so a negative index is out. Pure.
+    InBounds,
+    // a: bool = is.hole %v. %v (dynamic) is the array-hole value
+    // (BRONZE_ABI_HOLE_BITS), which only `elem.load` can produce. Pure.
+    IsHole,
+    // Typed-array element loads and stores are not here: they need the view's
+    // byte offset, buffer indirection and nine element kinds, which do not
+    // fall out of the forms above. A later chunk adds them.
 };
+
+// The last op, for the serializer's range check.
+inline constexpr Op kLastOp = Op::IsHole;
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).
 inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;

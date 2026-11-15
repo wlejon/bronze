@@ -98,6 +98,75 @@ static bool verifyConcatChain(const Function& fn, DiagnosticSink& diags) {
     return true;
 }
 
+// The fixed signatures of the speculation forms (il_op.h): operand types,
+// result type, and whether `immI32` must be non-negative. `resume.point` and
+// `leave` take any state and are checked on their own. Returns nullptr for
+// every other op.
+struct SpecSignature {
+    uint8_t count;
+    Type operands[3];
+    Type result;
+    bool nonNegativeImm;
+};
+
+static const SpecSignature* specSignature(Op op) {
+    static const SpecSignature kLoadShape{1, {Type::Dynamic}, Type::Ptr, false};
+    static const SpecSignature kShapeCell{0, {}, Type::Ptr, true};
+    static const SpecSignature kPtrEq{2, {Type::Ptr, Type::Ptr}, Type::Bool, false};
+    static const SpecSignature kDynTest{1, {Type::Dynamic}, Type::Bool, false};
+    static const SpecSignature kSlotLoad{1, {Type::Dynamic}, Type::Dynamic, true};
+    static const SpecSignature kSlotStore{2, {Type::Dynamic, Type::Dynamic}, Type::Void, true};
+    static const SpecSignature kUnboxI32{1, {Type::Dynamic}, Type::I32, false};
+    static const SpecSignature kUnboxF64{1, {Type::Dynamic}, Type::F64, false};
+    static const SpecSignature kI32ToF64{1, {Type::I32}, Type::F64, false};
+    static const SpecSignature kI32Test{2, {Type::I32, Type::I32}, Type::Bool, false};
+    static const SpecSignature kFnEnv{1, {Type::Dynamic}, Type::Dynamic, false};
+    static const SpecSignature kArrayLength{1, {Type::Dynamic}, Type::I32, false};
+    static const SpecSignature kElemLoad{2, {Type::Dynamic, Type::I32}, Type::Dynamic, false};
+    static const SpecSignature kElemStore{3, {Type::Dynamic, Type::I32, Type::Dynamic}, Type::Void, false};
+    switch (op) {
+        case Op::LoadShape: return &kLoadShape;
+        case Op::ShapeCell: return &kShapeCell;
+        case Op::PtrEq: return &kPtrEq;
+        case Op::IsObject:
+        case Op::IsI32:
+        case Op::IsHole:
+        case Op::FnCodeIs:
+            return &kDynTest;
+        case Op::SlotLoad: return &kSlotLoad;
+        case Op::SlotStore: return &kSlotStore;
+        case Op::UnboxI32: return &kUnboxI32;
+        case Op::UnboxF64: return &kUnboxF64;
+        case Op::I32ToF64: return &kI32ToF64;
+        case Op::AddWouldOvf:
+        case Op::SubWouldOvf:
+        case Op::MulWouldOvf:
+        case Op::InBounds:
+            return &kI32Test;
+        case Op::FnEnv: return &kFnEnv;
+        case Op::ArrayLength: return &kArrayLength;
+        case Op::ElemLoad: return &kElemLoad;
+        case Op::ElemStore: return &kElemStore;
+        default: return nullptr;
+    }
+}
+
+// Every value's type, by id: parameters, block parameters and results.
+static std::vector<Type> valueTypes(const Function& fn) {
+    std::vector<Type> types(fn.valueCount, Type::Void);
+    auto set = [&](ValueId id, Type t) {
+        if (id < types.size()) types[id] = t;
+    };
+    for (size_t i = 0; i < fn.params.size(); ++i) set(static_cast<ValueId>(i), fn.params[i].type);
+    for (const auto& block : fn.blocks) {
+        for (const auto& p : block.params) set(p.id, p.type);
+        for (const auto& inst : block.instructions) {
+            if (inst.result != kNoValue) set(inst.result, inst.type);
+        }
+    }
+    return types;
+}
+
 bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     if (fn.blocks.empty()) {
         diags.error(Span{}, "Function " + fn.name + " has no blocks");
@@ -381,6 +450,10 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         return true;
     };
 
+    // Resume ids seen so far: each names one point in G, so a second would
+    // make a `leave` ambiguous.
+    std::unordered_set<int32_t> resumeIds;
+
     // 3. Verify instructions and terminators
     for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
         const auto& block = fn.blocks[bIdx];
@@ -407,6 +480,55 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
 
             for (ValueId opId : inst.operands) {
                 if (!checkUse(opId, bIdx, iIdx)) return false;
+            }
+            // The speculation forms have fixed signatures; what they assume
+            // about their operands beyond the type (a dominating test) is not
+            // checked here, by design (il_op.h).
+            if (const SpecSignature* sig = specSignature(inst.op)) {
+                bool ok = inst.operands.size() == sig->count && inst.type == sig->result &&
+                          (inst.result != kNoValue) == (sig->result != Type::Void) &&
+                          (!sig->nonNegativeImm || inst.immI32 >= 0);
+                for (size_t i = 0; ok && i < sig->count; ++i) {
+                    ok = definedTypes[inst.operands[i]] == sig->operands[i];
+                }
+                if (!ok) {
+                    std::string want = "(";
+                    for (size_t i = 0; i < sig->count; ++i) {
+                        want += (i ? ", " : "") + std::string(typeName(sig->operands[i]));
+                    }
+                    want += ") -> " + std::string(typeName(sig->result));
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " in b" +
+                                            std::to_string(bIdx) + " does not have the form " + want +
+                                            (sig->nonNegativeImm ? " with a non-negative immediate" : ""));
+                    return false;
+                }
+            }
+            if (inst.op == Op::ResumePoint) {
+                if (fn.isSpeculated()) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": resume.point in a speculated function; only the generic "
+                                            "function it leaves to has resume points");
+                    return false;
+                }
+                if (inst.result != kNoValue || inst.immI32 < 0 ||
+                    !resumeIds.insert(inst.immI32).second) {
+                    diags.error(Span{}, "Function " + fn.name + ": resume.point " +
+                                            std::to_string(inst.immI32) +
+                                            " is negative, has a result or repeats an id");
+                    return false;
+                }
+                for (ValueId v : inst.operands) {
+                    if (definedTypes[v] == Type::Void) {
+                        diags.error(Span{}, "Function " + fn.name + ": resume.point " +
+                                                std::to_string(inst.immI32) + " carries a void value");
+                        return false;
+                    }
+                }
+            }
+            if (inst.op == Op::Leave && !fn.isSpeculated()) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        ": leave in a function that was not speculated from another");
+                return false;
             }
             if (inst.op == Op::IsPlainArray && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
                 diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " takes one operand and is a bool");
@@ -650,6 +772,91 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             " operands for " +
                                             std::to_string(callee.params.size()) + " parameters");
                     return false;
+                }
+            }
+        }
+    }
+
+    // Speculation: a speculated function names a real generic one, every
+    // `leave` resumes a point that function has, with state of the same
+    // shape; every shape cell and code identity names something that exists.
+    {
+        std::unordered_set<std::string> keys;
+        for (const auto& cell : module.shapeCells) {
+            if (!keys.insert(cell.key).second) {
+                diags.error(Span{}, "shape cell \"" + cell.key + "\" appears twice in the table");
+                return false;
+            }
+        }
+    }
+    for (const auto& fn : module.functions) {
+        if (fn.isSpeculated()) {
+            if (fn.speculatedFrom >= module.functions.size() ||
+                module.functions[fn.speculatedFrom].isExternal ||
+                module.functions[fn.speculatedFrom].isSpeculated()) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        " is speculated from a function index that is out of range, "
+                                        "external or itself speculated");
+                return false;
+            }
+        }
+        std::vector<Type> ownTypes;
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == Op::ShapeCell &&
+                    static_cast<uint32_t>(inst.immI32) >= module.shapeCells.size()) {
+                    diags.error(Span{}, "Function " + fn.name + ": shape.cell " +
+                                            std::to_string(inst.immI32) + " is past the module's " +
+                                            std::to_string(module.shapeCells.size()) + " cells");
+                    return false;
+                }
+                if (inst.op == Op::FnCodeIs && inst.calleeIndex >= module.functions.size()) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": fn.code_is names an out-of-range function index");
+                    return false;
+                }
+                if (inst.op != Op::Leave) continue;
+                if (inst.calleeIndex != fn.speculatedFrom) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": leave names a function other than the one it was "
+                                            "speculated from");
+                    return false;
+                }
+                const Function& generic = module.functions[inst.calleeIndex];
+                const Instruction* point = nullptr;
+                for (const auto& gb : generic.blocks) {
+                    for (const auto& gi : gb.instructions) {
+                        if (gi.op == Op::ResumePoint && gi.immI32 == inst.immI32) point = &gi;
+                    }
+                }
+                if (point == nullptr) {
+                    diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name +
+                                            " names resume point " + std::to_string(inst.immI32) +
+                                            ", which it does not have");
+                    return false;
+                }
+                if (point->operands.size() != inst.operands.size()) {
+                    diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name + ", " +
+                                            std::to_string(inst.immI32) + " carries " +
+                                            std::to_string(inst.operands.size()) +
+                                            " state values for " +
+                                            std::to_string(point->operands.size()));
+                    return false;
+                }
+                if (ownTypes.empty()) ownTypes = valueTypes(fn);
+                const std::vector<Type> genericTypes = valueTypes(generic);
+                for (size_t i = 0; i < inst.operands.size(); ++i) {
+                    const ValueId mine = inst.operands[i];
+                    const ValueId theirs = point->operands[i];
+                    const Type a = mine < ownTypes.size() ? ownTypes[mine] : Type::Void;
+                    const Type b = theirs < genericTypes.size() ? genericTypes[theirs] : Type::Void;
+                    if (a != b || a == Type::Void) {
+                        diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name +
+                                                ", " + std::to_string(inst.immI32) + " state " +
+                                                std::to_string(i) + " is " + typeName(a) +
+                                                " where the resume point has " + typeName(b));
+                        return false;
+                    }
                 }
             }
         }

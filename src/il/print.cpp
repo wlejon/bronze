@@ -66,6 +66,15 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         }
         out += "}\n";
     }
+    // The layout cells before any body, for the reason the import table is:
+    // a `shape.cell 3` is only readable next to what cell 3 is.
+    if (!module.shapeCells.empty()) {
+        out += "shape-cells {\n";
+        for (size_t i = 0; i < module.shapeCells.size(); ++i) {
+            out += "  [" + std::to_string(i) + "] \"" + module.shapeCells[i].key + "\"\n";
+        }
+        out += "}\n";
+    }
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
         if (!fn.isExternal) continue;
@@ -87,6 +96,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         out += ") -> ";
         out += typeName(fn.returnType);
         if (fn.isExported) out += " export";
+        if (fn.isSpeculated()) out += " speculated @" + getFnName(fn.speculatedFrom);
         out += " {\n";
         for (const auto& block : fn.blocks) {
             out += "  b" + std::to_string(block.id);
@@ -647,6 +657,42 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     case Op::ModuleEnvGet:
                         out += "module.env.get";
+                        break;
+                    // The resume id, then the state in its fixed order: the
+                    // order IS the contract a `leave` matches against.
+                    case Op::ResumePoint:
+                        out += "resume.point " + std::to_string(inst.immI32);
+                        for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
+                        break;
+                    case Op::Leave:
+                        out += "leave @" + getFnName(inst.calleeIndex) + ", " +
+                               std::to_string(inst.immI32);
+                        for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
+                        break;
+                    // The cell's KEY beside its number: which shape a test
+                    // compares against is the content of the test.
+                    case Op::ShapeCell:
+                        out += "shape.cell " + std::to_string(inst.immI32);
+                        if (inst.immI32 >= 0 &&
+                            static_cast<size_t>(inst.immI32) < module.shapeCells.size()) {
+                            out += " \"" + module.shapeCells[inst.immI32].key + "\"";
+                        }
+                        break;
+                    case Op::SlotLoad:
+                        out += "slot.load %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::SlotStore:
+                        out += "slot.store %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.immI32) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::FnCodeIs:
+                        out += "fn.code_is %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", @" + getFnName(inst.calleeIndex);
                         break;
                     case Op::Print:
                     case Op::PrintErr:

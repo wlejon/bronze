@@ -50,7 +50,9 @@ namespace bronze::il {
 //     an instruction, no copy class on a block, no typed origin or inline
 //     frames on a function, no class families, layout cells, slot-repr lists,
 //     feedbackApplied or function placement on a module.
-inline constexpr uint32_t kFormatVersion = 37;
+// 38: the speculation ops (il_op.h, resume.point .. is.hole), Type::Ptr,
+//     Function::speculatedFrom and Module::shapeCells.
+inline constexpr uint32_t kFormatVersion = 38;
 
 std::string serializeModule(const Module& module);
 

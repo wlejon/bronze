@@ -1,50 +1,132 @@
 // What an instruction DOES, as opposed to what it is called.
 //
-// Three predicates the backend reads before it emits anything: whether an
-// instruction ends a block, whether it can throw, and whether it can move a
-// heap object. None of them is a question about text; `il.h` declares them
-// next to the printer's names. They mark where control can leave a run of
-// instructions sideways and the point a receiver proof has to give up its
-// derived pointer, which is a different subject from the spelling of an op.
+// The effect table (effects.h) and the predicates the backend reads before it
+// emits anything: whether an instruction ends a block, whether it can throw,
+// and whether it can move a heap object. `canThrow` and `canCollect` are thin
+// readers of the table now; they keep the answers they always gave for every
+// op that existed before it, so the backend's exception tests and receiver
+// proofs are unchanged.
 //
-// Both `canThrow` and `canCollect` are written the SAFE WAY ROUND: the
-// enumerated cases are the ones that provably cannot, and everything else can.
-// An op added tomorrow is treated as a throw point or a collection point
-// rather than a missed unwind or a dangling pointer.
+// Written the SAFE WAY ROUND: the enumerated cases are the ones known to do
+// less, and everything else does everything. An op added tomorrow is a throw
+// point, a collection point and a write of the whole heap rather than a missed
+// unwind, a dangling pointer or a stale load.
 
-#include "il/print.h"
+#include "il/effects.h"
+
 
 namespace bronze::il {
 
 bool isTerminator(Op op) {
-    return op == Op::Ret || op == Op::Jump || op == Op::Branch || op == Op::Throw;
+    return op == Op::Ret || op == Op::Jump || op == Op::Branch || op == Op::Throw ||
+           op == Op::Leave;
 }
 
-// Can this instruction throw? The passes that move or merge code (the
-// guarded-region pass, lower_util's run splitting) must not carry an
-// instruction across one that answers yes, so the list is written the safe
-// way round: the cases below are the ones that provably cannot, and
-// everything else does.
-//
-// It is a property of the INSTRUCTION and not of the op because `add` is two
-// operations: f64 arithmetic, which cannot throw, and `bronze_dynamic_add`,
-// which reaches ToPrimitive.
-bool canThrow(const Instruction& inst) {
+Effects everythingEffects() {
+    Effects e;
+    e.reads = LocSet::all();
+    e.writes = LocSet::all();
+    e.throws = true;
+    e.collects = true;
+    e.callsUnknown = true;
+    e.allocates = true;
+    // User code can print, so its order against `print` is observable.
+    e.observableOrder = true;
+    return e;
+}
+
+namespace {
+
+Effects none() { return Effects{}; }
+
+// A read of `r` and nothing else.
+Effects reading(LocSet r) {
+    Effects e;
+    e.reads = r;
+    return e;
+}
+
+// A fresh heap object: nothing existing is read or written, and nothing can
+// have seen it before, so an unused one is dead.
+Effects allocation() {
+    Effects e;
+    e.allocates = true;
+    e.collects = true;
+    return e;
+}
+
+// Ops the old `canCollect` answered conservatively: they reach a runtime path
+// the receiver proof never vouched for, so they keep counting as collection
+// points even where the honest answer is likely no. Tightening one is a
+// separate, measured change.
+Effects heapOp(LocSet r, LocSet w) {
+    Effects e;
+    e.reads = r;
+    e.writes = w;
+    e.collects = true;
+    return e;
+}
+
+// The speculation forms (il_op.h): one machine step under a precondition a
+// dominating branch established.
+Effects guardedOp(LocSet r, LocSet w) {
+    Effects e;
+    e.reads = r;
+    e.writes = w;
+    e.guarded = true;
+    return e;
+}
+
+// Throws (a TypeError or ReferenceError it allocates) and touches `r`/`w`.
+Effects throwing(LocSet r, LocSet w) {
+    Effects e;
+    e.reads = r;
+    e.writes = w;
+    e.throws = true;
+    e.collects = true;
+    return e;
+}
+
+// Before the derived flags: the effects proper.
+Effects rawEffects(const Instruction& inst) {
     switch (inst.op) {
-        // Constants and pure arithmetic: no call at all.
+        // Machine constants: a bit pattern, materialised inline.
         case Op::ConstF64:
         case Op::ConstI32:
         case Op::ConstBool:
         case Op::ConstUndefined:
         case Op::ConstNull:
-        // The literal is a parse and an allocation, and a failure to allocate
-        // is fatal rather than catchable.
+            return none();
+        // Parses and allocates; a failure to allocate is fatal, not a throw.
         case Op::ConstBigInt:
+            return allocation();
+
+        // Two operations under one name each: on machine numbers one
+        // instruction, on boxed operands 13.15.3 and the ToPrimitive ladder
+        // behind it (user code, a mixing TypeError, a RangeError for 0n). The
+        // result type says which.
+        case Op::Add:
+        case Op::Neg:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Mod:
+        case Op::Pow:
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::UShr:
+            return inst.type == Type::Dynamic ? everythingEffects() : none();
+        // 7.1.6 step 1 is ToNumber: a boxed operand reaches user code.
+        case Op::ToInt32:
+            return inst.boxType == Type::Dynamic ? everythingEffects() : none();
+
+        // Register compares and total predicates on operands in hand. `===` on
+        // two strings reads their text, which is immutable.
         case Op::CmpLt:
         case Op::CmpGt:
-        // The ordered compares are machine instructions on two numbers, like
-        // the two above them. Their boxed siblings — rel.lt and friends — are
-        // NOT here: those reach ToPrimitive.
         case Op::CmpLe:
         case Op::CmpGe:
         case Op::CmpEq:
@@ -52,232 +134,235 @@ bool canThrow(const Instruction& inst) {
         case Op::NumTruthy:
         case Op::StrictEq:
         case Op::IsNullish:
-        // One unsigned compare against a constant.
         case Op::IsNumber:
-        // A tag test, a kind byte, a length compare and a null check on the
-        // element block.
+            return none();
+        // The answer is one of eleven immortal strings, but the table is built
+        // lazily by the first `typeof` the process runs, which interns.
+        case Op::TypeOf: {
+            Effects e = allocation();
+            return e;
+        }
+        // A tag test, a kind byte, a length compare and the element block.
         case Op::IsDenseArray:
-        case Op::TypeOf:
+            return reading(Loc::Shapes | Loc::ArrayLen | Loc::Elements);
+        // The named-property box's presence and the prototype are what the
+        // test reads; a write that changes either is a transition.
+        case Op::IsPlainArray:
+            return reading(Loc::Shapes);
+        // The kind is fixed when the view is made. With the pristine-length
+        // bit it also reads the instance shape and the prototype epoch.
+        case Op::IsTypedArray:
+            return (inst.immI32 & kTypedArrayPristineLength) != 0
+                       ? reading(Loc::Shapes | Loc::Heap)
+                       : none();
+
+        // Boxing a number, bool or int is a bitcast. A STRING box mints the
+        // key's Value (bronze_box_str_key), which allocates.
         case Op::Box:
-        // The type-feedback recorder (src/runtime/type_feedback.h) is an
-        // INSTRUMENT: it records a tag and returns. An instrument that could
-        // change control flow would be one whose readings are about itself,
-        // so it never raises and the backend emits no exception test after
-        // it.
-        case Op::FeedbackRecord:
-        // Allocation and the environment: they can collect, and a failure to
-        // allocate is fatal rather than catchable (there is no `RangeError:
-        // out of memory` in bronze, and inventing one would let a program
-        // continue past a heap that could not grow).
+            return inst.boxType == Type::Str ? allocation() : none();
+        // `unbox.f64` is ToNumber (7.1.4), which runs ToPrimitive. `unbox.bool`
+        // is ToBoolean, which is total; `unbox.i32` reads a number already
+        // tested for.
+        case Op::Unbox:
+            return inst.type == Type::F64 ? everythingEffects() : none();
+
+        // Control. A jump or branch does nothing but pick an edge. Leaving the
+        // function hands the whole heap to whoever is next, so `ret`, `throw`
+        // and `leave` read everything: a store before one is never dead. They
+        // count as collection points because there is nothing after them for
+        // a receiver proof to be good for, so the conservative answer is free.
+        case Op::Jump:
+        case Op::Branch:
+            return none();
+        case Op::Ret: {
+            Effects e = reading(LocSet::all());
+            e.collects = true;
+            return e;
+        }
+        case Op::Throw: {
+            Effects e = reading(LocSet::all());
+            e.throws = true;
+            e.collects = true;
+            return e;
+        }
+        case Op::Leave: {
+            Effects e = reading(LocSet::all());
+            e.collects = true;
+            e.observableOrder = true;
+            return e;
+        }
+        // An entry into G: resumption arrives here with the heap as S left it
+        // and only the state values in hand. It reads everything (a store in
+        // front of it is seen by the code after it) and nothing may cross it.
+        case Op::ResumePoint: {
+            Effects e = reading(LocSet::all());
+            e.observableOrder = true;
+            e.barrier = true;
+            return e;
+        }
+
+        // The pending exception: read and cleared.
+        case Op::ExcTake:
+            return heapOp(Loc::Heap, Loc::Heap);
+
+        // Allocation. A failure to allocate is fatal rather than catchable.
         case Op::CreateObject:
-        // Reads the frame header's resume word. `coro.start` and
-        // `coro.suspend` are NOT here: the first runs the body and the second
-        // hands control to whoever resumes it next, and both reach user code.
-        case Op::CoroMode:
-        case Op::ModuleNamespace:
         case Op::CreateArray:
         case Op::CreateFunction:
-        case Op::FunctionRef:
         case Op::EnvCreate:
+        case Op::PrivateNew:
+        // Mints or loads the function object of a module function.
+        case Op::FunctionRef:
+            return allocation();
+        // Built from the getters object's own properties, read without calls.
+        case Op::ModuleNamespace: {
+            Effects e = allocation();
+            e.reads = Loc::Slots | Loc::Shapes | Loc::Heap;
+            return e;
+        }
+
+        // The frame header's resume word.
+        case Op::CoroMode:
+            return heapOp(Loc::Heap, LocSet::none());
+        // Reads NewTargetScope::current(); refuses outside a constructor scope.
+        case Op::GetNewTarget:
+            return throwing(Loc::Heap, LocSet::none());
+        // One aligned load from the module's template-slot table.
+        case Op::TemplateCached:
+            return reading(Loc::Heap);
+
+        // The environment. env.get.tdz raises 9.1.1.1.6's ReferenceError.
         case Op::EnvGet:
+            return heapOp(Loc::EnvSlots, LocSet::none());
         case Op::EnvSet:
         case Op::EnvInitTdz:
-        case Op::ModuleEnvSet:
+            return heapOp(LocSet::none(), Loc::EnvSlots);
+        case Op::EnvGetTdz:
+            return throwing(Loc::EnvSlots, LocSet::none());
         case Op::ModuleEnvGet:
-        // Minting a private name's table is an allocation and nothing else.
-        // The other five private ops CAN throw and are not here — `#x in o`
-        // included, because 13.10.1 step 6 refuses a non-object right operand
-        // before it ever asks about the element.
-        case Op::PrivateNew:
+            return heapOp(Loc::ModuleEnv, LocSet::none());
+        case Op::ModuleEnvSet:
+            return heapOp(LocSet::none(), Loc::ModuleEnv);
+        // A global binding read; a miss is `undefined`, never a getter call.
         case Op::GlobalGet:
-        // console.log never runs user code: inspect does not call a getter.
+            return heapOp(Loc::Globals, LocSet::none());
+
+        // The private-element tables (6.2.12): every access but the mint
+        // brand-checks and raises a TypeError on a receiver without the
+        // element, and `#x in o` refuses a non-object.
+        case Op::PrivateHas:
+        case Op::PrivateGet:
+            return throwing(Loc::PrivateFields, LocSet::none());
+        case Op::PrivateAdd:
+        case Op::PrivateSet:
+            return throwing(Loc::PrivateFields, Loc::PrivateFields);
+        case Op::PrivateMisuse:
+            return throwing(LocSet::none(), LocSet::none());
+
+        // A `--pins` write barrier raises. The branching forms leave for the
+        // handler on their own arm (canThrow below keeps the backend's answer
+        // for that); the field form tests the slot's array.
+        case Op::PinGuard: {
+            const bool field = static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
+            Effects e;
+            e.throws = true;
+            e.collects = field;
+            if (field) e.reads = Loc::Shapes | Loc::ArrayLen | Loc::Elements;
+            return e;
+        }
+
+        // console.log never runs user code (inspect calls no getter), but it
+        // reads whatever it formats, and its order is the program's output.
         case Op::Print:
         case Op::PrintErr:
         case Op::PrintSpread:
-        case Op::PrintSpreadErr:
-        case Op::ExcTake:
-        // A use of its operands and nothing else.
-        case Op::KeepAlive:
-        // Header loads off the receiver, guarded by its tag.
-        case Op::IsTypedArray:
-        case Op::IsPlainArray:
-        // One aligned load from the module's own template-slot table, at an
-        // address the compiler already proved in range.
-        case Op::TemplateCached:
-            return false;
-        // The `+`-chain accumulator. `begin` and `append` ARE 13.15.3 over a
-        // boxed pair — every reason `add` can throw, they can, ToPrimitive on a
-        // fresh operand included. `end` clears a bit and reads nothing, but it
-        // is not on the cannot-throw list above: an accumulator only exists on
-        // the boxed path, so `end` is always Dynamic and the answer below is
-        // the honest one either way. Leaving it conservative costs one pending
-        // check per chain and keeps the family reading as one thing.
-        case Op::ConcatBegin:
-        case Op::ConcatAppend:
-        case Op::ConcatEnd:
-        case Op::Add:
-        // The rest of the arithmetic and bitwise family, for the same reason
-        // `add` is here: each is TWO operations. On machine numbers it is one
-        // instruction that cannot fail; on BOXED operands it is 13.15.3, which
-        // reaches ToPrimitive, refuses a mixed BigInt/Number pair by TypeError
-        // and divides by 0n by RangeError.
-        case Op::Neg:
-        case Op::Sub:
-        case Op::Mul:
-        case Op::Div:
-        case Op::Mod:
-        case Op::Pow:
-        case Op::BitAnd:
-        case Op::BitOr:
-        case Op::BitXor:
-        case Op::Shl:
-        case Op::Shr:
-        case Op::UShr:
-            return inst.type == Type::Dynamic;
-        // `bitnot` exists ONLY in its boxed form, so it has no cannot-throw
-        // half to test for.
-        case Op::BitNot:
-            return true;
-        // A `--pins` write barrier RAISES, but the branching forms raise and
-        // LEAVE: the violating arm calls bronze_pin_violation and branches to
-        // the block's handler itself, so there is no returning path for a cell
-        // test to catch and no reason to emit one (llvm_pin.h). The
-        // `numeric-elements` FIELD form is a plain call that returns on both
-        // outcomes, and it keeps the ordinary check.
-        case Op::PinGuard:
-            return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
-        case Op::Unbox:
-            // `unbox.f64` is ToNumber (7.1.4) — generated code's only numeric
-            // coercion — and ToNumber runs ToPrimitive on an object and throws
-            // for a Symbol. `unbox.bool` is ToBoolean, which is total, and
-            // `unbox.i32` reads a number it has already tested for; neither
-            // calls anything.
-            return inst.type == Type::F64;
-        case Op::ToInt32:
-            // Same conversion under a different name: 7.1.6 step 1 is ToNumber,
-            // so `{} | 0` and `sym | 0` reach user code and the TypeError. Only
-            // a BOXED operand does — `boxType` carries the operand's type here,
-            // and an f64 or i32 one is a machine conversion with no call in it,
-            // which is what keeps a proven-numeric bitwise chain branch-free.
-            return inst.boxType == Type::Dynamic;
+        case Op::PrintSpreadErr: {
+            Effects e = reading(LocSet::all());
+            e.collects = true;
+            e.observableOrder = true;
+            return e;
+        }
+        // A use of its operands up to here, after the native call it guards;
+        // kept in order with that call.
+        case Op::KeepAlive: {
+            Effects e;
+            e.observableOrder = true;
+            return e;
+        }
+        // The type-feedback instrument: records a tag from immortal memory and
+        // returns. Its order is what the profile reads.
+        case Op::FeedbackRecord: {
+            Effects e;
+            e.observableOrder = true;
+            return e;
+        }
+
+        // ---- the speculation forms (il_op.h) ----------------------------
+        case Op::ShapeCell:   // filled once at load, never written after
+        case Op::PtrEq:
+        case Op::IsObject:
+        case Op::IsI32:
+        case Op::UnboxI32:    // garbage, not a fault, off its guard
+        case Op::UnboxF64:
+        case Op::I32ToF64:
+        case Op::AddWouldOvf:
+        case Op::SubWouldOvf:
+        case Op::MulWouldOvf:
+        case Op::FnCodeIs:    // a function's code never changes
+        case Op::InBounds:
+        case Op::IsHole:
+            return none();
+        case Op::LoadShape:
+            return guardedOp(Loc::Shapes, LocSet::none());
+        case Op::SlotLoad:
+            return guardedOp(Loc::Slots, LocSet::none());
+        case Op::SlotStore:
+            return guardedOp(LocSet::none(), Loc::Slots);
+        // The captured record is fixed when the closure is made.
+        case Op::FnEnv:
+            return guardedOp(LocSet::none(), LocSet::none());
+        case Op::ArrayLength:
+            return guardedOp(Loc::ArrayLen, LocSet::none());
+        case Op::ElemLoad:
+            return guardedOp(Loc::Elements, LocSet::none());
+        case Op::ElemStore:
+            return guardedOp(LocSet::none(), Loc::Elements);
+
+        // Every call, every generic property, element and iterator operation,
+        // every coercion that reaches ToPrimitive, every definition that can
+        // meet a proxy or a setter, and anything added after this was written.
         default:
-            return !isTerminator(inst.op);
+            return everythingEffects();
     }
 }
 
-bool canCollect(const Instruction& inst) {
-    switch (inst.op) {
-        // Machine constants: a bit pattern, materialised inline. `const.bigint`
-        // is NOT here — it parses and allocates.
-        case Op::ConstF64:
-        case Op::ConstI32:
-        case Op::ConstBool:
-        case Op::ConstUndefined:
-        case Op::ConstNull:
-        // The number compares and the two total predicates: register work on
-        // operands already in hand. Their boxed siblings (`rel.lt` and friends,
-        // `loose.eq`) reach ToPrimitive and are absent for that reason.
-        case Op::CmpLt:
-        case Op::CmpGt:
-        case Op::CmpLe:
-        case Op::CmpGe:
-        case Op::CmpEq:
-        case Op::CmpNe:
-        case Op::NumTruthy:
-        case Op::StrictEq:
-        case Op::IsNullish:
-        // Reads bits already in a register and compares them against a
-        // constant: no allocation, no user code, nothing for a receiver proof
-        // to have to give up its derived pointer for.
-        case Op::IsNumber:
-        // Four loads off the receiver's own header and a compare each. It
-        // allocates nothing and runs nothing, which is what lets it stand
-        // inside a receiver proof's run without ending it.
-        case Op::IsDenseArray:
-        // `typeof` is NOT here, though its answer is one of eleven immortal
-        // strings and reading a tag allocates nothing. The table is built
-        // LAZILY, on the first `typeof` the process runs
-        // (runtime/rt_operator.cpp, `typeofString`): that one call interns
-        // eight strings, and interning allocates. One `typeof` in a program is
-        // therefore a collection point, and which one it is is not a static
-        // fact — so every one of them is.
-        //
-        // One aligned load from the module's own template-slot table.
-        case Op::TemplateCached:
-        // A use of its operands that emits no code.
-        case Op::KeepAlive:
-        // The type-feedback recorder classifies a tag and names a shape or a
-        // callee from immortal shape and string memory; it allocates only in
-        // its own C++ tables, never on the JS heap. It runs after every pass
-        // that asks this (lower/lower_feedback.cpp), and says so anyway so a
-        // backend reading it keeps a receiver proof across one.
-        case Op::FeedbackRecord:
-        // Tag tests and loads, no allocation.
-        case Op::IsTypedArray:
-        case Op::IsPlainArray:
-        // The two control transfers that stay inside the function. A `jump`
-        // writes its arguments into the target's block parameters and a `br`
-        // picks between two of them; neither allocates and neither can reach
-        // user code, so a receiver proof made before one is still a valid
-        // derived pointer after it. This matters because a run may span a
-        // straight-line CHAIN of blocks (llvm_recv_proof.h), and the terminator
-        // is the instruction between one member and the next — before chains,
-        // every run ended at its block anyway and this answer cost nothing.
-        //
-        // `ret` and `throw` are NOT here. They leave the function, so there is
-        // nothing after them for a proof to be good for, and the conservative
-        // answer is free.
-        case Op::Jump:
-        case Op::Branch:
-            return false;
-        // Boxing a number, a bool or an int is a bitcast and a select
-        // (llvm_ops.cpp). A STRING box is not boxing at all — it mints the
-        // key's Value through bronze_box_str_key — so it stays a barrier.
-        case Op::Box:
-            return inst.boxType == Type::Str;
-        // The `+`-chain accumulator, which allocates the accumulator itself and
-        // reaches ToPrimitive on every operand after the first pair — so both
-        // reasons `add` collects are live here. `end` allocates nothing, and is
-        // grouped with the other two for the reason `canThrow` gives.
-        case Op::ConcatBegin:
-        case Op::ConcatAppend:
-        case Op::ConcatEnd:
-        // Two operations under one name, exactly as `canThrow` reads them: on
-        // machine numbers one instruction, on boxed operands 13.15.3 and the
-        // whole ToPrimitive ladder behind it. The type is what says which.
-        case Op::Add:
-        case Op::Neg:
-        case Op::Sub:
-        case Op::Mul:
-        case Op::Div:
-        case Op::Mod:
-        case Op::Pow:
-        case Op::BitAnd:
-        case Op::BitOr:
-        case Op::BitXor:
-        case Op::Shl:
-        case Op::Shr:
-        case Op::UShr:
-            return inst.type == Type::Dynamic;
-        // ToNumber is 7.1.4 and calls. Same split `canThrow` makes.
-        case Op::Unbox:
-            return inst.type == Type::F64;
-        case Op::ToInt32:
-            return inst.boxType == Type::Dynamic;
-        // The pin barrier's branching forms are one unsigned compare against a
-        // constant on the path that continues; the TypeError they mint is on
-        // the arm that LEAVES for the handler and never comes back, so nothing
-        // a proof holds is stale after one. That is what lets a run of element
-        // reads span the barrier a `numeric-elements` manifest puts between
-        // every store and the next read. The FIELD form is a call that returns.
-        case Op::PinGuard:
-            return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
-        // Everything else — every call, every property access, every
-        // allocation, and anything added after this was written.
-        default:
-            return true;
-    }
+}  // namespace
+
+Effects effectsOf(const Instruction& inst) {
+    Effects e = rawEffects(inst);
+    if (e.callsUnknown) e = everythingEffects();
+    e.pure = e.reads.empty() && e.writes.empty() && !e.throws && !e.collects && !e.allocates &&
+             !e.observableOrder && !e.guarded && !e.barrier;
+    e.removableIfUnused = e.writes.empty() && !e.throws && !e.callsUnknown && !e.observableOrder &&
+                          !e.barrier && !isTerminator(inst.op);
+    return e;
 }
+
+// Whether a NON-TERMINATOR can throw, so that the backend emits an exception
+// test after it. A terminator's way out is its own (a `throw` branches to the
+// handler itself), so the answer for one is no. The pin barrier's branching
+// forms raise and LEAVE on their own arm (llvm_pin.h): there is no returning
+// path for a test to catch, so they answer no as well, although the effect
+// table — which a CFG reads for its handler edges — says they throw.
+bool canThrow(const Instruction& inst) {
+    if (isTerminator(inst.op)) return false;
+    if (inst.op == Op::PinGuard) {
+        return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
+    }
+    return effectsOf(inst).throws;
+}
+
+bool canCollect(const Instruction& inst) { return effectsOf(inst).collects; }
 
 // Written the safe way round too: the ops that read the scope are named, and a
 // function the lowering marks a generator, an async function or a coroutine
