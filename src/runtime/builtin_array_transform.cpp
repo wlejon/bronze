@@ -94,10 +94,23 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
 
+    // A receiver with no named-property box has %Array% for its species
+    // (rtArraySpeciesCreate says why), so `out` is a plain array, and an
+    // array item whose holes the chain cannot answer is copied into it as
+    // one run, holes as holes (23.1.3.2 step 5.c.iv skips an absent index
+    // and still counts it).
+    const bool plainOut = isArray(self.get()) && !rtExoticPropertyBox(self.get()).isObject() &&
+                          isArray(out.get());
     uint32_t n = 0;
     auto appendItem = [&](Rooted<Value>& item) {
         if (rtIsConcatSpreadable(item)) {
             const uint32_t itemLen = isArray(item.get()) ? lengthOf(item.get()) : rtArrayLikeLength(item);
+            if (plainOut && isArray(item.get()) && !rtExoticPropertyBox(item.get()).isObject() &&
+                !rtArrayChainHoldsIndex(item.get()) && lengthOf(out.get()) == n) {
+                ArrayHeader::appendRange(rtHeap(), out, item, 0, itemLen, /*holesAsUndefined=*/false);
+                n += itemLen;
+                return;
+            }
             for (uint32_t i = 0; i < itemLen; ++i) {
                 if (rtArrayLikeHasElement(item, i)) {
                     Rooted<Value> elem{rtArrayLikeGetElement(item, i)};

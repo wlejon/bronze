@@ -382,18 +382,14 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
             }
             ArrayHeader* arr = self.get().asObject<ArrayHeader>();
             HeapValue* data = arr->elementsData();
-            for (uint32_t i = moveCount; i > 0; --i) {
-                data[start + insertCount + i - 1] = data[start + deleteCount + i - 1];
-            }
+            gcCopyValues(arr->elementsBlock(), data + start + insertCount, data + start + deleteCount, moveCount);
         } else if (newLen < len) {
             if (moveCount > 0 && !requireWritableElements(self.get(), "splice")) {
                 return Value::fromUndefined().rawBits();
             }
             ArrayHeader* arr = self.get().asObject<ArrayHeader>();
             HeapValue* data = arr->elementsData();
-            for (uint32_t i = 0; i < moveCount; ++i) {
-                data[start + insertCount + i] = data[start + deleteCount + i];
-            }
+            gcCopyValues(arr->elementsBlock(), data + start + insertCount, data + start + deleteCount, moveCount);
             if (!requireConfigurableElements(self.get(), "splice")) {
                 return Value::fromUndefined().rawBits();
             }
