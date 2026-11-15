@@ -685,7 +685,7 @@ static uint64_t concatStringAndNumber(Value strVal, double num, bool strFirst) {
     if (sLen == 0) {
         return rtMakeString(std::string_view(buf, numLen)).rawBits();
     }
-    if (s->isLatin1()) {
+    if (s->isLatin1() && sLen + numLen < StringHeader::kViewMinLength) {
         const uint32_t totalLen = sLen + static_cast<uint32_t>(numLen);
         if (s->isArena()) {
             StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, totalLen);
@@ -748,7 +748,8 @@ uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
         // collected, so neither needs a root and the texts are copied straight
         // across (as bronze_concat_begin starts a chain).
         const uint64_t total = static_cast<uint64_t>(sA->length) + sB->length;
-        if (sA->isLatin1() && sB->isLatin1() && !sA->isBuilder() && !sB->isBuilder() && total < (uint64_t{1} << 31)) {
+        if (sA->isLatin1() && sB->isLatin1() && !sA->isBuilder() && !sB->isBuilder() &&
+            total < StringHeader::kViewMinLength) {
             if (HeapObjectHeader* h =
                     rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(total) + 1, Tag::String)) {
                 auto* out = reinterpret_cast<StringHeader*>(h);

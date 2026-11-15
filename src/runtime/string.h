@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string_view>
+#include <utility>
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -34,6 +35,23 @@ struct StringHeader {
     // the heap.
     static constexpr uint16_t kArenaFlag = 1U << 1;
     bool isArena() const noexcept { return (header.flags & kArenaFlag) != 0; }
+    // A VIEW: a string whose text is the first `length` units of another
+    // string, its buffer, held as the one Value after `flags` (and traced:
+    // a view is the only string allocated as a Cell). It is what `s + x`
+    // answers once the text is long (`concat`), so that a loop which keeps
+    // appending to one string extends the buffer in place instead of copying
+    // everything it has built so far. A buffer is reachable only through its
+    // views and is written only past its own `length`, so a view's text never
+    // changes. A view carries its own length, encoding bit and cached hash;
+    // only the units are elsewhere, and both data accessors below follow the
+    // reference. There is no terminator at a view's `length`.
+    static constexpr uint16_t kViewFlag = 1U << 2;
+    bool isView() const noexcept { return (header.flags & kViewFlag) != 0; }
+    // The string that holds the units: the buffer of a view, else this one.
+    const StringHeader* storage() const noexcept {
+        if (!isView()) return this;
+        return reinterpret_cast<const Value*>(this + 1)->asString<StringHeader>();
+    }
 
     static StringHeader* createLatin1(Heap& heap, const char* str, uint32_t len);
     static StringHeader* createUTF16(Heap& heap, const uint16_t* str, uint32_t len);
@@ -79,17 +97,17 @@ struct StringHeader {
     bool isUTF16() const noexcept { return (flags & kUTF16Flag) != 0; }
 
     const char* latin1Data() const noexcept {
-        return reinterpret_cast<const char*>(this + 1);
+        return reinterpret_cast<const char*>(storage() + 1);
     }
     char* latin1Data() noexcept {
-        return reinterpret_cast<char*>(this + 1);
+        return const_cast<char*>(std::as_const(*this).latin1Data());
     }
 
     const uint16_t* utf16Data() const noexcept {
-        return reinterpret_cast<const uint16_t*>(this + 1);
+        return reinterpret_cast<const uint16_t*>(storage() + 1);
     }
     uint16_t* utf16Data() noexcept {
-        return reinterpret_cast<uint16_t*>(this + 1);
+        return const_cast<uint16_t*>(std::as_const(*this).utf16Data());
     }
 
     uint32_t getLength() const noexcept { return length; }
@@ -115,7 +133,12 @@ struct StringHeader {
     bool lessThan(const StringHeader& other) const noexcept;
     uint32_t hash() const noexcept;
 
+    // `a + b` of two strings. A result of kViewMinLength units or more is a
+    // view: appended in place when `a` is a view that ends where its buffer's
+    // text does and the buffer has the room, else copied into a new buffer
+    // with room to grow.
     static Value concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b);
+    static constexpr uint32_t kViewMinLength = 256;
 
     // ---- the `+`-chain accumulator (bronze_concat_* in the ABI registry) ----
     //

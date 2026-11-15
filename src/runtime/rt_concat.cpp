@@ -91,7 +91,14 @@ static uint64_t concatIntoBuilder(Rooted<Value>& a, Rooted<Value>& b, uint32_t r
     Heap& heap = rtHeap();
     const StringHeader* left = a.get().asString<StringHeader>();
     if (!left->isBuilder()) {
-        const uint32_t seed = left->length + b.get().asString<StringHeader>()->length;
+        const uint64_t seed64 = static_cast<uint64_t>(left->length) + b.get().asString<StringHeader>()->length;
+        // A long left operand is not copied into an accumulator of this chain:
+        // it is appended to as a view (StringHeader::concat), in place when it
+        // is the string a loop keeps extending, and so is every later piece.
+        if (seed64 >= StringHeader::kViewMinLength) {
+            return StringHeader::concat(heap, a, b).rawBits();
+        }
+        const uint32_t seed = static_cast<uint32_t>(seed64);
         StringHeader::startBuilder(heap, a, builderCapacityFor(seed, remaining));
     }
     StringHeader::appendToBuilder(heap, a, b);
@@ -149,7 +156,7 @@ uint64_t bronze_concat_begin(uint64_t aBits, uint64_t bBits, uint32_t remaining)
         const StringHeader* a = aVal.asString<StringHeader>();
         const StringHeader* b = bVal.asString<StringHeader>();
         const uint64_t seed = static_cast<uint64_t>(a->length) + b->length;
-        if (a->isLatin1() && b->isLatin1() && !a->isBuilder() && seed < (uint64_t{1} << 31)) {
+        if (a->isLatin1() && b->isLatin1() && !a->isBuilder() && seed < StringHeader::kViewMinLength) {
             const uint32_t cap = builderCapacityFor(static_cast<uint32_t>(seed), remaining);
             if (HeapObjectHeader* h = rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(cap) + 1,
                                                            Tag::String)) {
@@ -224,7 +231,7 @@ uint64_t bronze_concat_strings(const uint64_t* pieces, uint32_t count) {
         plain = plain && s->isLatin1() && !s->isBuilder();
         total += s->length;
     }
-    if (plain && total < (uint64_t{1} << 31)) {
+    if (plain && total < StringHeader::kViewMinLength) {
         if (HeapObjectHeader* h =
                 rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(total) + 1, Tag::String)) {
             auto* out = reinterpret_cast<StringHeader*>(h);

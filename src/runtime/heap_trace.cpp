@@ -90,6 +90,9 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
         if (h->flags != HeapKind::ArrayBuffer) return {0, 0, false};
         return {kFirstValueWord, std::min(words, kPrefixWords), true};
     }
+    // The one string that is a Cell is a view (string.h): its buffer follows
+    // the length and flags.
+    if (h->tag == static_cast<uint16_t>(Tag::String)) return {2, words, false};
     if (h->tag != static_cast<uint16_t>(Tag::Object)) return {0, 0, false};
     // A kind that carries a shape begins with an ObjectHeader; every word
     // after the shape pointer is a Value (a typed array's packed length words

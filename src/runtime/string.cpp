@@ -17,7 +17,7 @@ size_t unitBytes(const StringHeader* s) {
 
 struct ArenaStringHash {
     size_t operator()(const StringHeader* s) const noexcept {
-        const auto* p = reinterpret_cast<const unsigned char*>(s + 1);
+        const auto* p = reinterpret_cast<const unsigned char*>(s->storage() + 1);
         uint64_t h = 1469598103934665603ull ^ (s->isUTF16() ? 1u : 0u);
         for (size_t i = 0, n = unitBytes(s); i < n; ++i) h = (h ^ p[i]) * 1099511628211ull;
         return static_cast<size_t>(h);
@@ -27,7 +27,7 @@ struct ArenaStringHash {
 struct ArenaStringEq {
     bool operator()(const StringHeader* a, const StringHeader* b) const noexcept {
         return a->isUTF16() == b->isUTF16() && a->length == b->length &&
-               std::memcmp(a + 1, b + 1, unitBytes(a)) == 0;
+               std::memcmp(a->storage() + 1, b->storage() + 1, unitBytes(a)) == 0;
     }
 };
 
@@ -318,6 +318,69 @@ uint32_t StringHeader::hash() const noexcept {
     return cached_hash;
 }
 
+static void copyUnitsInto(StringHeader* dst, uint32_t at, const StringHeader* src);
+
+namespace {
+
+// A view of the first `length` units of the buffer `buf` holds.
+Value makeView(Heap& heap, Rooted<Value>& buf, uint32_t length) {
+    HeapObjectHeader* h =
+        heap.allocate(2 * sizeof(uint32_t) + sizeof(Value), Tag::String, GcLayout::Cell);
+    auto* v = reinterpret_cast<StringHeader*>(h);
+    v->header.flags = StringHeader::kViewFlag;
+    v->length = length;
+    v->flags = buf.get().asString<StringHeader>()->flags & StringHeader::kUTF16Flag;
+    auto* slot = reinterpret_cast<Value*>(v + 1);
+    *slot = buf.get();
+    gcWriteBarrier(slot, buf.get());
+    return Value::fromString(v);
+}
+
+// `a + b` as a view (StringHeader::concat's long case).
+Value concatView(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
+    const StringHeader* sA = a.get().asString<StringHeader>();
+    const StringHeader* sB = b.get().asString<StringHeader>();
+    const uint32_t lenA = sA->length;
+    const uint32_t lenB = sB->length;
+    const uint32_t total = lenA + lenB;
+    const bool utf16 = sA->isUTF16() || sB->isUTF16();
+
+    // `a` ends where its buffer's text ends, so the units after it are free:
+    // nothing else reads them, since every other view of this buffer is no
+    // longer than `a`.
+    if (sA->isView()) {
+        auto* buf = const_cast<StringHeader*>(sA->storage());
+        if (buf->length == lenA && buf->isUTF16() == utf16 && buf->capacity() >= total) {
+            copyUnitsInto(buf, lenA, sB);
+            buf->length = total;
+            Rooted<Value> bufRoot{Value::fromString(buf)};
+            return makeView(heap, bufRoot, total);
+        }
+    }
+
+    // A new buffer. Its room doubles each time one fills, so a string built
+    // by n appends is copied O(log n) times; the first buffer of a string
+    // (`a` was no view) gets room for a few more pieces like `b`, at most
+    // what it already holds, so one `long + long` does not reserve twice its
+    // size on the chance that it is the start of a loop.
+    uint64_t cap = static_cast<uint64_t>(total) * 2;
+    if (!sA->isView()) {
+        uint64_t room = static_cast<uint64_t>(lenB) * 8;
+        if (room < 64) room = 64;
+        if (room > total) room = total;
+        cap = total + room;
+    }
+    if (cap > UINT32_MAX - 1) cap = UINT32_MAX - 1;
+    StringHeader* buf = StringHeader::createBuilder(heap, utf16, total, static_cast<uint32_t>(cap));
+    buf->sealBuilder();
+    copyUnitsInto(buf, 0, a.get().asString<StringHeader>());
+    copyUnitsInto(buf, lenA, b.get().asString<StringHeader>());
+    Rooted<Value> bufRoot{Value::fromString(buf)};
+    return makeView(heap, bufRoot, total);
+}
+
+}  // namespace
+
 Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     if (!a.get().isString() || !b.get().isString()) {
         std::cerr << "Hard runtime error: Invalid string concat arguments" << std::endl;
@@ -331,7 +394,13 @@ Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     uint32_t lenB = sB->length;
     if (lenA == 0 && !sB->isBuilder()) return b.get();
     if (lenB == 0 && !sA->isBuilder()) return a.get();
+    if (lenB > UINT32_MAX - lenA) {
+        std::cerr << "Hard runtime error: string concatenation length overflows 2^32"
+                  << std::endl;
+        std::abort();
+    }
     uint32_t totalLen = lenA + lenB;
+    if (totalLen >= kViewMinLength) return concatView(heap, a, b);
 
     bool bothLatin1 = sA->isLatin1() && sB->isLatin1();
 
@@ -486,8 +555,10 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     const size_t term = src->isUTF16() ? sizeof(uint16_t) : 1;
     const size_t total = sizeof(StringHeader) + units + term;
     void* mem = arena.allocate(total, alignof(StringHeader));
-    std::memcpy(mem, src, sizeof(StringHeader) + units);
+    std::memcpy(mem, src, sizeof(StringHeader));
+    std::memcpy(static_cast<StringHeader*>(mem) + 1, src->storage() + 1, units);
     auto* out = static_cast<StringHeader*>(mem);
+    out->header.flags = 0;
     if (out->isUTF16()) {
         out->utf16Data()[out->length] = 0;
     } else {
@@ -497,8 +568,7 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     // gone and the builder mark must not survive into it: an arena string that
     // still claimed to be an appendable builder would offer room that this
     // allocation does not have.
-    out->sealBuilder();
-    out->header.flags = static_cast<uint16_t>(out->header.flags | kArenaFlag);
+    out->header.flags = kArenaFlag;
     out->header.size = static_cast<uint32_t>(total);
     out->hash();
     table->strings.insert(out);
@@ -514,7 +584,12 @@ StringHeader* StringHeader::copyToOld(Heap& heap, Rooted<Value>& src) {
     const StringHeader* from = src.get().asString<StringHeader>();
     out->length = from->length;
     out->flags = from->flags;
-    std::memcpy(out + 1, from + 1, payload - sizeof(uint32_t) * 2);
+    std::memcpy(out + 1, from->storage() + 1, units);
+    if (utf16) {
+        out->utf16Data()[out->length] = 0;
+    } else {
+        out->latin1Data()[out->length] = '\0';
+    }
     return out;
 }
 
