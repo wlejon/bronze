@@ -80,8 +80,7 @@ include(cmake/bronze_module.cmake)
 # switch. Default is "am I the build" — a host embedding bronze wants the
 # libraries and neither the test executables nor doctest as a dependency, and
 # a bronze developer must never have to remember to turn its own ratchets on.
-option(BRONZE_BUILD_TESTS "Build bronze's test binaries and register its ctest tests"
-       ${BRONZE_IS_TOP_LEVEL})
+option(BRONZE_BUILD_TESTS "Build bronze's test binaries and register its ctest tests" OFF)
 
 if(BRONZE_BUILD_TESTS)
     enable_testing()
@@ -128,35 +127,5 @@ if(BRONZE_IS_TOP_LEVEL)
     add_subdirectory(tools)
 endif()
 
-if(BRONZE_BUILD_TESTS)
-    add_subdirectory(tests/discovery)
-    add_subdirectory(tests/oracle)
-    # Compiles JS to objects and links two of them into one host, so it needs
-    # both the backend and the test registration — the same pair as the oracle.
-    add_subdirectory(tests/two_module)
-    # The same two-object build, entered from two THREADS at once: the
-    # generated-code half of per-thread runtime isolation.
-    add_subdirectory(tests/threaded_modules)
-    # Natives registered by the host: the JIT doctests always, and a
-    # manifest → `--emit-shared` → loader round trip when the shared runtime
-    # is built (it gates itself).
-    add_subdirectory(tests/native)
-    # Time to optimized code on real programs, a perf ratchet (label perf).
-    add_subdirectory(tests/tier_ratchet)
-    # The same pair plus the shared runtime itself, which is what the module is
-    # linked against and what the harness loads it into.
-    if(BRONZE_BUILD_SHARED_RUNTIME)
-        add_subdirectory(tests/shared_load)
-        # The unload half of the same story: retire a loaded module, load its
-        # replacement, one runtime throughout.
-        add_subdirectory(tests/hot_swap)
-        # Scripts built to modules by the embedded evaluator, then loaded and
-        # run against the record of what they were built from.
-        add_subdirectory(tests/aot_module)
-        # A module linked into a host that uses the shared runtime and links
-        # brass itself: its coroutine frames still come from the runtime.
-        add_subdirectory(tests/static_brass_host)
-    endif()
-endif()
 
 

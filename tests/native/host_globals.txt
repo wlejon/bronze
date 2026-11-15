@@ -1,3 +1,0 @@
-# The one plain host global tests/native/mod.js reads. The natives' namespace
-# root (`nt`) is not listed: `bronze build` adds it from the manifest.
-hostTick
