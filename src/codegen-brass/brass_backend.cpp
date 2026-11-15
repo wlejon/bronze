@@ -361,17 +361,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     options.template_site_count = module.templateSiteCount;
-    options.static_site_count = module.staticSiteCount;
-    options.class_family_count = static_cast<uint32_t>(module.classFamilies.size());
-    options.slot_repr_fields = module.slotReprFields;
-    options.slot_repr_object_fields = module.slotReprObjectFields;
-    for (const auto& cls : module.classFamilies) {
-        uint64_t objects = 0;
-        for (size_t i = 0; i < cls.fields.size() && i < 64; ++i) {
-            if (cls.fields[i].object) objects |= uint64_t{1} << i;
-        }
-        options.class_family_object_slots.push_back(objects);
-    }
     // One image, any number of threads: every writable table is addressed
     // through the calling thread's delta (bronze_abi.h,
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
@@ -380,21 +369,9 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.build_threads = buildThreads_;
     options.lazy_bodies = lazyBodies_ && !optimize;
     options.spec_feedback = specFeedback_;
-    options.spec_profile = specProfile_;
-    options.direct_js_calls = directJsCalls_;
-    // Guards that exit into resume twins: x64's backend only, in an image, and
-    // only on a profile, whose missed claims say which sites not to trust.
+    // Guards that exit into resume twins: x64's backend only, in an image
+    // built on a profile.
     options.twin_exits = directJsCalls_ && optimize && target_.is_x64() && module.feedbackApplied;
-    for (const auto& lc : module.layoutCells) {
-        il2mir::LayoutCell& cell = options.layout_cells[lc.cell];
-        cell.key_count = lc.keyCount;
-        for (const auto& p : lc.pairs) cell.pairs.push_back({p.keyIndex, p.slot, p.write, p.number, p.object});
-    }
-    if (options.twin_exits) {
-        options.missed_claim_ics = module.missedClaimIcs;
-        options.mixed_ics = module.mixedIcs;
-        options.slow_cold = module.slowCold;
-    }
     options.slow_site_count = module.slowSiteCount;
     // An image whose caches a harvest may read counts its slow arms too: one
     // built on no profile, in an object (an in-process tier has no harvest).
@@ -416,14 +393,9 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();
     options.method_ic_sites = methodIcSites;
 
-    std::vector<bool> hot(module.functions.size(), false);
-    for (uint32_t f : module.hotFunctions) {
-        if (f < hot.size()) hot[f] = true;
-    }
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
         il2mir::FunctionMeta meta;
-        meta.hot = hot[i];
         meta.needs_env = fn.needsEnv;
         meta.needs_this = fn.needsThis;
         meta.needs_arguments = fn.needsArguments;
@@ -546,7 +518,6 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // the module-wide `__brass_stack_maps` blob would be a second copy.
     compiler.set_emit_stack_map_symbol(false);
     compiler.set_threads(buildThreads_);
-    compiler.set_placement(codegen::functionPlacement(module, uniqueNames, entrySymbol_));
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
     mirMod.reset();
     timer.mark("brass compile");

@@ -22,11 +22,6 @@ static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWri
               "the array literal element write mode is one number on both sides");
 static_assert(il2mir::kDefineWriteMode == static_cast<uint32_t>(il::kWriteDefine),
               "the backend's define mode must be the IL's");
-static_assert(il2mir::kTruthBool == il::Instruction::kTruthBool &&
-                  il2mir::kTruthObject == il::Instruction::kTruthObject &&
-                  il2mir::kTruthUndefined == il::Instruction::kTruthUndefined &&
-                  il2mir::kTruthNull == il::Instruction::kTruthNull,
-              "il2mir's truthiness hint kinds mirror il.h");
 
 namespace {
 
@@ -53,16 +48,6 @@ struct LowerContext {
     const il::Module& module;
     const std::vector<std::string>& uniqueNames;
     const std::vector<LineTable>& lineTables;
-    // A build made to be harvested (`bronze build --harvest-out`) runs every
-    // named read and write through its cache: a site with a slot of its own
-    // (a class family's, the whole-program stamps') answers its hits with a
-    // guard that never touches the cache, and the harvest would say of it
-    // only what missed the guard. Such a site is lowered here as if it had
-    // no slot; the build is slower by those guards and says what each met.
-    // A site with a direct target keeps its stamps: the accessor it calls
-    // is named under their guard and under nothing else.
-    bool cacheEvidence() const noexcept { return !module.harvestOutPath.empty() && !module.feedbackApplied; }
-
     const std::string& fnName(size_t idx) const noexcept {
         if (idx < uniqueNames.size() && !uniqueNames[idx].empty()) {
             return uniqueNames[idx];
@@ -87,8 +72,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
     il2mir::BronzeInstruction out;
     out.result_id = (inst.result != il::kNoValue) ? inst.result : UINT32_MAX;
     out.result_type = mapType(inst.type);
-    out.number_hint = inst.numberHint;
-    out.truth_hint = inst.truthHint;
 
     if (inst.op != il::Op::GlobalGet) {
         out.operands = inst.operands;
@@ -108,7 +91,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         out.column = lc.column;
         out.file = inst.span.file;
     }
-    out.inline_frame = inst.inlineFrame;
     out.slow_site = inst.slowSite;
 
     switch (inst.op) {
@@ -157,14 +139,12 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::ToInt32:
             out.op = il2mir::BronzeOp::ToInt32;
-            out.raw_unbox = inst.rawUnbox;
             break;
 
         // --- Bitwise Operations ---
         case il::Op::BitAnd: out.op = il2mir::BronzeOp::BitAnd; break;
         case il::Op::BitOr: out.op = il2mir::BronzeOp::BitOr; break;
         case il::Op::BitXor: out.op = il2mir::BronzeOp::BitXor; break;
-        case il::Op::MathImul: out.op = il2mir::BronzeOp::MathImul; break;
         case il::Op::Shl: out.op = il2mir::BronzeOp::Shl; break;
         case il::Op::Shr: out.op = il2mir::BronzeOp::Shr; break;
         case il::Op::UShr: out.op = il2mir::BronzeOp::UShr; break;
@@ -201,12 +181,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::IsTypedArray;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
         case il::Op::IsPlainArray: out.op = il2mir::BronzeOp::IsPlainArray; break;
-        case il::Op::IsNumberArray:
-            out.op = il2mir::BronzeOp::IsNumberArray;
-            out.imm_i64 = inst.immI32;
-            break;
 
         // --- Control Flow & Call Termination ---
         case il::Op::Ret: out.op = il2mir::BronzeOp::Ret; break;
@@ -225,7 +200,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::Box;
             out.box_type = mapType(inst.boxType);
             out.index = inst.keyIndex;
-            out.raw_box = inst.rawBox;
             if (inst.operands.empty()) {
                 out.string_literal = 'k';
                 out.string_literal += std::to_string(inst.keyIndex);
@@ -233,31 +207,14 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::Unbox:
             out.op = il2mir::BronzeOp::Unbox;
-            out.raw_unbox = inst.rawUnbox;
-            out.nullish_unbox = inst.nullishUnbox;
             break;
 
         // --- Properties & Elements ---
         case il::Op::PropGet:
             out.op = il2mir::BronzeOp::PropGet;
             out.index = inst.keyIndex;
-            out.imm_i64 = inst.immI32;  // il_pin.h kPropGetArrayLength
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_fn_recv = inst.icFnRecv;
-            if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
-                out.static_slot = inst.staticSlot;
-                out.static_cell = inst.staticCellIndex;
-                out.static_regrow = inst.staticRegrow;
-                out.family_lo = inst.familyLo;
-                out.family_span = inst.familySpan;
-                out.is_family = inst.familyLo != il::Instruction::kNoFamily;
-                out.shape_guarded = inst.shapeGuarded;
-            }
-            out.number_bits = inst.numberBits;
-            if (inst.directTarget != il::Instruction::kNoDirectTarget) {
-                out.callee_name = ctx.fnName(inst.directTarget);
-            }
             break;
         case il::Op::SuperGet:
             out.op = il2mir::BronzeOp::SuperGet;
@@ -270,44 +227,21 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::PropSet:
             if (il::isDefineWrite(inst)) {
-                // A definition keeps only what its own lowering consumes: the
-                // key, its cache entry, and a transition run it may stand in
-                // (a run's publish refuses any chain that could tell a define
-                // from an assignment). Never a static slot or an accessor
-                // target, which describe an ASSIGNMENT's answer — the verifier
-                // refuses a define that carries either (il/verifier.cpp).
+                // A definition keeps the key and its cache entry.
                 out.op = il2mir::BronzeOp::PropDefine;
                 out.imm_i64 = il2mir::kDefineWriteMode;
                 out.index = inst.keyIndex;
                 out.depth = inst.icIndex;
                 out.ic_index = inst.icIndex;
-                out.run_cell = inst.transitionRunCell;
-                out.run_length = inst.transitionRunLength;
-                out.run_slot = inst.transitionRunSlot;
                 break;
             }
             out.op = il2mir::BronzeOp::PropSet;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_fn_recv = inst.icFnRecv;
-            if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
-                out.static_slot = inst.staticSlot;
-                out.static_cell = inst.staticCellIndex;
-                out.static_regrow = inst.staticRegrow;
-                out.family_lo = inst.familyLo;
-                out.family_span = inst.familySpan;
-                out.shape_guarded = inst.shapeGuarded;
-            }
             out.imm_i64 = inst.immI32;
-            out.run_cell = inst.transitionRunCell;
-            out.run_length = inst.transitionRunLength;
-            out.run_slot = inst.transitionRunSlot;
-            if (inst.directTarget != il::Instruction::kNoDirectTarget) {
-                out.callee_name = ctx.fnName(inst.directTarget);
-            }
             break;
-        // The element flags (il_pin.h) in imm_i64; an elem.set's mode in index.
+        // An elem.set's mode in index.
         case il::Op::ElemGet:
             out.op = il2mir::BronzeOp::ElemGet;
             out.imm_i64 = inst.immI32;
@@ -316,35 +250,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il::isDefineWrite(inst) ? il2mir::BronzeOp::ElemDefine : il2mir::BronzeOp::ElemSet;
             out.index = static_cast<uint32_t>(il::writeMode(inst));
             out.imm_i64 = inst.immI32 & ~il::kWriteModeMask;
-            break;
-        case il::Op::ElemGetTyped:
-            out.op = il2mir::BronzeOp::ElemGetTyped;
-            out.imm_i64 = inst.immI32;
-            break;
-        case il::Op::ElemSetTyped:
-            out.op = il2mir::BronzeOp::ElemSetTyped;
-            out.imm_i64 = inst.immI32;
-            out.index = inst.keyIndex;
-            break;
-        case il::Op::MathUnary:
-            out.op = il2mir::BronzeOp::MathUnary;
-            out.imm_i64 = inst.immI32;
-            break;
-        case il::Op::IsShape:
-        case il::Op::LayoutFact:
-            out.op = inst.op == il::Op::IsShape ? il2mir::BronzeOp::IsShape : il2mir::BronzeOp::LayoutFact;
-            out.static_slot = inst.staticSlot;
-            out.static_cell = inst.staticCellIndex;
-            out.static_regrow = inst.staticRegrow;
-            out.family_lo = inst.familyLo;
-            out.family_span = inst.familySpan;
-            out.is_family = inst.familyLo != il::Instruction::kNoFamily;
-            break;
-        case il::Op::MathRandom:
-            out.op = il2mir::BronzeOp::MathRandom;
-            break;
-        case il::Op::LayoutEpoch:
-            out.op = il2mir::BronzeOp::LayoutEpoch;
             break;
 
         // --- Dynamic Calls & Objects ---
@@ -381,7 +286,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::ModuleNamespace: out.op = il2mir::BronzeOp::ModuleNamespace; break;
-        case il::Op::ObjectKeys: out.op = il2mir::BronzeOp::ObjectKeys; break;
         case il::Op::ForInKeys: out.op = il2mir::BronzeOp::ForInKeys; break;
         case il::Op::MethodDef:
             out.op = il2mir::BronzeOp::MethodDef;
@@ -403,7 +307,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_i64 = inst.immI32;
-            out.define_cell = inst.defineAddCell;
             break;
         case il::Op::GetNewTarget: out.op = il2mir::BronzeOp::GetNewTarget; break;
         case il::Op::ImportMeta:
@@ -424,7 +327,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::TemplateObject;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ArrayAppendHole: out.op = il2mir::BronzeOp::ArrayAppendHole; break;
         case il::Op::PropDelete:
             out.op = il2mir::BronzeOp::PropDelete;
             out.index = inst.keyIndex;
@@ -453,12 +355,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PinGuard:
             out.op = il2mir::BronzeOp::PinGuard;
             out.imm_i64 = static_cast<int64_t>(inst.immI32);
-            out.string_literal = ctx.keyString(inst.keyIndex);
-            break;
-        case il::Op::CensusRecord:
-            out.op = il2mir::BronzeOp::CensusRecord;
-            out.imm_i64 = inst.immI32 & BRONZE_ABI_CENSUS_KIND_MASK;
-            out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         // The census's own call (abi/bronze_feedback_site.h): the whole site
@@ -520,13 +416,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_fn_recv = inst.icFnRecv;
-            if (inst.directTarget != il::Instruction::kNoDirectTarget) {
-                out.callee_name = ctx.fnName(inst.directTarget);
-            }
-            if (inst.typedTarget != il::Instruction::kNoDirectTarget) {
-                out.typed_callee_name = ctx.fnName(inst.typedTarget);
-            }
             out.imm_i64 = inst.immI32;
             out.param_count = inst.operands.size() > 1 ? static_cast<uint32_t>(inst.operands.size() - 1) : 0;
             break;
@@ -578,39 +467,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PrintSpread: out.op = il2mir::BronzeOp::PrintSpread; break;
         case il::Op::PrintSpreadErr: out.op = il2mir::BronzeOp::PrintSpreadErr; break;
         case il::Op::KeepAlive: out.op = il2mir::BronzeOp::KeepAlive; break;
-        case il::Op::MethodIcIs:
-            out.op = il2mir::BronzeOp::MethodIcIs;
-            out.callee_name = ctx.fnName(inst.calleeIndex);
-            out.ic_index = inst.icIndex;
-            out.static_cell = inst.staticCellIndex;
-            out.imm_i64 = inst.immI32;
-            break;
-        case il::Op::RunMethodIs:
-            out.op = il2mir::BronzeOp::RunMethodIs;
-            out.callee_name = ctx.fnName(inst.calleeIndex);
-            out.ic_index = inst.icIndex;
-            out.static_cell = inst.staticCellIndex;
-            out.imm_i64 = inst.immI32;
-            out.run_cell = inst.transitionRunCell;
-            break;
-        case il::Op::MethodSlotFn:
-            out.op = il2mir::BronzeOp::MethodSlotFn;
-            out.ic_index = inst.icIndex;
-            break;
-        case il::Op::ClosureIs:
-            out.op = il2mir::BronzeOp::ClosureIs;
-            out.imm_i64 = inst.immI32;
-            out.callee_name = ctx.fnName(inst.calleeIndex);
-            out.run_cell = inst.transitionRunCell;
-            break;
-        case il::Op::ClosureEnv: out.op = il2mir::BronzeOp::ClosureEnv; break;
-        case il::Op::CreateThis: out.op = il2mir::BronzeOp::CreateThis; break;
-        case il::Op::AccessorIcIs:
-            out.op = il2mir::BronzeOp::AccessorIcIs;
-            out.callee_name = ctx.fnName(inst.calleeIndex);
-            out.static_cell = inst.staticCellIndex;
-            out.index = inst.keyIndex;
-            break;
     }
 
     return out;
@@ -705,26 +561,11 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
 
         bfn.params.reserve(fn.params.size());
-        bfn.param_const_ints.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {
             bfn.params.push_back({static_cast<uint32_t>(p), mapType(fn.params[p].type)});
-            bfn.param_const_ints.push_back(fn.params[p].knownConstInt);
         }
 
         if (fn.blocks.empty()) return bfn;
-
-        for (const auto& f : fn.inlineFrames) {
-            il2mir::BronzeFunction::InlineFrame bf;
-            bf.callee = ctx.fnName(f.callee);
-            if ((f.callSpan.begin != 0 || f.callSpan.end != 0) && f.callSpan.file < ctx.lineTables.size()) {
-                const SourceBuffer::LineCol lc = ctx.lineTables[f.callSpan.file].lineCol(f.callSpan.begin);
-                bf.line = lc.line;
-                bf.column = lc.column;
-                bf.file = f.callSpan.file;
-            }
-            bf.parent = f.parent;
-            bfn.inline_frames.push_back(std::move(bf));
-        }
 
         bfn.blocks.reserve(fn.blocks.size());
         for (const auto& block : fn.blocks) {
@@ -745,40 +586,6 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
                 }
                 bblk.instructions.push_back(lowerInstruction(inst, ctx));
             }
-            // A guarded region's trampoline: a fast block whose jump enters
-            // the slow copy of its own region.
-            if (block.copyClass == il::CopyClass::Fast && !block.instructions.empty()) {
-                const il::Instruction& term = block.instructions.back();
-                if (term.op == il::Op::Jump && term.target.block < fn.blocks.size()) {
-                    const il::Block& to = fn.blocks[term.target.block];
-                    bblk.instructions.back().leaves_fast_copy =
-                        to.copyClass == il::CopyClass::Slow && to.copyRegion == block.copyRegion;
-                }
-            }
-            // A guard of a fast copy: a branch one of whose edges leaves the
-            // copy, into the slow copy or a trampoline to it.
-            if (block.copyClass == il::CopyClass::Fast && !block.instructions.empty() &&
-                block.instructions.back().op == il::Op::Branch) {
-                const il::Instruction& term = block.instructions.back();
-                const auto leaves = [&](il::BlockId id) {
-                    if (id >= fn.blocks.size()) return false;
-                    const il::Block& to = fn.blocks[id];
-                    if (to.copyRegion != block.copyRegion) return false;
-                    if (to.copyClass == il::CopyClass::Slow) return true;
-                    if (to.copyClass != il::CopyClass::Fast || to.instructions.empty()) return false;
-                    const il::Instruction& last = to.instructions.back();
-                    if (last.op != il::Op::Jump || last.target.block >= fn.blocks.size()) return false;
-                    const il::Block& past = fn.blocks[last.target.block];
-                    return past.copyClass == il::CopyClass::Slow && past.copyRegion == block.copyRegion;
-                };
-                const bool thenLeaves = leaves(term.target.block);
-                const bool elseLeaves = leaves(term.elseTarget.block);
-                if (thenLeaves != elseLeaves) {
-                    bblk.instructions.back().guard_edge = thenLeaves ? il2mir::BronzeInstruction::GuardEdge::Then
-                                                                     : il2mir::BronzeInstruction::GuardEdge::Else;
-                }
-            }
-
             bfn.blocks.push_back(std::move(bblk));
         }
 

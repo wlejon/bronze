@@ -1,18 +1,16 @@
-// Keyed element reads and writes (`o[i]`): the inline paths for an Array or a
-// TypedArray read or written at an integral in-bounds index, and the runtime
-// helpers (bronze_elem_get / bronze_elem_set) for everything else.
+// Keyed element reads and writes (`o[i]`): the runtime helpers
+// (bronze_elem_get / bronze_elem_set), and the receiver tests the IL names
+// (`is.dense_array`, `is.typed_array`, `is.plain_array`).
 //
 // The layouts are the runtime's (runtime/array.h, runtime/typed_array.h),
 // pinned by the BRONZE_ABI_* offsets their static_asserts check.
 
 #include "il/il_op.h"
-#include "il/il_pin.h"
 #include "il_abi.h"
 #include "il_lowering_ops.h"
-#include "il_elem_stub.h"
 #include "il_property.h"
 #include <brass/mir/function.hpp>
-#include <cmath>
+#include <brass/mir/module.hpp>
 #include <string>
 
 namespace il2mir {
@@ -20,124 +18,12 @@ namespace il2mir {
 namespace {
 
 constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
-constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
-constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
-
-// An element index: `i64` is the index when `ok` (an integral Number; the
-// element paths range-check it against an unsigned length, so a negative one
-// misses there). The boxed Value for the slow-path helper is materialized only
-// in `bb_slow`.
-//
-// `bounded`, when not null, is `i64` when `ok`, and otherwise INT64_MIN plus
-// the constant offset taken from a base: as an unsigned number at least
-// 2^63 - 2^31, above every view's length, so `bounded < length` alone answers
-// "an index, and in bounds". It is made for `view[base + k]` when asked for
-// (`want_bounded`): the select is on the base, once for every offset from it
-// (GVN), where ANDing `ok` into each access's range check is a second branch
-// at each. Any other index has none, and keeps `ok` beside its own range
-// check.
-struct ElemIndex {
-    Value* i64 = nullptr;
-    Value* ok = nullptr;
-    Value* bounded = nullptr;
-};
-
-ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false, bool want_bounded = false,
-                     bool offset_base = false) {
-    ElemIndex r;
-    if (index->type() == Type::i32()) {
-        r.i64 = b.build_sext_i64(index);
-        r.ok = b.build_iconst_i32(1);
-        return r;
-    }
-    Value* f = nullptr;
-    Value* is_number = nullptr;
-    if (index->type() == Type::f64()) {
-        f = index;
-    } else if (Value* src = boxed_f64_source(index)) {
-        f = src;
-    } else {
-        // A Number's bits are the double; any other Value is a tag above them.
-        is_number = b.build_ule(index, iconst(b, kBronzeNumberMaxBits));
-        f = b.build_bitcast_f64_i64(index);
-    }
-    if (f && f->is_instruction()) {
-        const Instruction* fdef = f->defining_instruction();
-        if (fdef) {
-            if (fdef->opcode() == Opcode::sitofp_f64_i32 && fdef->operand_count() == 1) {
-                r.i64 = b.build_sext_i64(fdef->operand(0));
-                r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                        return r;
-            }
-            if (fdef->opcode() == Opcode::sitofp_f64_i64 && fdef->operand_count() == 1) {
-                Value* z = fdef->operand(0);
-                if (z && z->is_instruction()) {
-                    const Instruction* zdef = z->defining_instruction();
-                    if (zdef && zdef->opcode() == Opcode::zext_i64 && zdef->operand_count() == 1 &&
-                        zdef->operand(0)->type() == Type::i32()) {
-                        r.i64 = z;
-                        r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                                        return r;
-                    }
-                }
-            }
-            if (fdef->opcode() == Opcode::fconst_f64 && std::isfinite(fdef->imm_f64()) &&
-                std::floor(fdef->imm_f64()) == fdef->imm_f64() &&
-                std::fabs(fdef->imm_f64()) <= 2147483647.0) {
-                r.i64 = iconst(b, static_cast<uint64_t>(static_cast<int64_t>(fdef->imm_f64())));
-                r.ok = is_number ? is_number : b.build_iconst_i32(1);
-                        return r;
-            }
-            // `base + k` / `base - k` with an integral constant |k| <= 2^31
-            // (`view[index + 3]`): the index of the base, tested once and
-            // shared by every offset from it (GVN), plus k in integers. When
-            // the base is integral and base + k lands in a view (below 2^32),
-            // |base| < 2^33, so the double sum is exact and is that integer.
-            // When it is not, the double sum is no index below 2^32 either
-            // (a fraction of a base under 2^53 survives the add; a base of
-            // 2^53 or more sums past 2^52): both are outside every view, so
-            // the access misses either way, and the miss path is given the
-            // index operand itself.
-            const bool offset = (fdef->opcode() == Opcode::add || fdef->opcode() == Opcode::sub) &&
-                                fdef->operand_count() == 2 && f->type() == Type::f64() && !proven_integral &&
-                                is_number == nullptr;
-            for (int side = 0; offset && side < 2; ++side) {
-                if (side == 1 && fdef->opcode() == Opcode::sub) break;
-                Value* base = fdef->operand(side);
-                Value* k = fdef->operand(1 - side);
-                const Instruction* kdef = k && k->is_instruction() ? k->defining_instruction() : nullptr;
-                if (base == nullptr || base->type() != Type::f64() || kdef == nullptr ||
-                    kdef->opcode() != Opcode::fconst_f64 || !std::isfinite(kdef->imm_f64()) ||
-                    std::floor(kdef->imm_f64()) != kdef->imm_f64() || std::fabs(kdef->imm_f64()) > 2147483648.0) {
-                    continue;
-                }
-                const int64_t step = static_cast<int64_t>(kdef->imm_f64());
-                const ElemIndex at = elem_index(b, base, false, false, /*offset_base=*/want_bounded);
-                Value* k_i64 = iconst(b, static_cast<uint64_t>(fdef->opcode() == Opcode::sub ? -step : step));
-                r.i64 = b.build_add(at.i64, k_i64);
-                r.ok = at.ok;
-                if (at.bounded) r.bounded = b.build_add(at.bounded, k_i64);
-                return r;
-            }
-        }
-    }
-    // Integral when the round trip is exact (the compare is ordered: NaN
-    // fails it; -0 reads as index 0, as ToPropertyKey makes it "0").
-    r.i64 = b.build_fptosi_i64(f);
-    if (proven_integral) {
-        r.ok = is_number ? is_number : b.build_iconst_i32(1);
-        return r;
-    }
-    Value* exact = b.build_eq(b.build_sitofp_f64_i64(r.i64), f);
-    r.ok = is_number ? b.build_and(is_number, exact) : exact;
-    if (offset_base) r.bounded = b.build_select(r.ok, r.i64, iconst(b, uint64_t{1} << 63));
-    return r;
-}
 
 // The payload pointer of `obj` and whether it is an object at all.
 void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
@@ -145,864 +31,31 @@ void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
     ptr = object_address(b, obj);
 }
 
-// The first byte of the typed array at `ptr`'s window: its buffer's external
-// store, or the bytes inline after the buffer's header, plus byteOffset.
-Value* typed_array_data(Builder& b, Value* ptr) {
-    Value* buf = b.build_and(with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET), kTypedArrayHeaderAliasClass), iconst(b, kPayloadMask));
-    Value* ext = with_alias_class(b.build_load(Type::i64(), buf, BRONZE_ABI_BUF_EXTPTR_OFFSET), kTypedArrayHeaderAliasClass);
-    Value* inline_data = b.build_add(buf, iconst(b, BRONZE_ABI_BUF_DATA_OFFSET));
-    Value* data = b.build_select(b.build_ne(ext, iconst(b, 0)), ext, inline_data);
-    Value* byte_offset = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET), kTypedArrayHeaderAliasClass));
-    return b.build_add(data, byte_offset);
+// The TLS block's word at `off`.
+Value* tls_block_word(Builder& b, int32_t off) {
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    return b.build_load(Type::i64(), tls, off);
 }
 
-// Element `idx` of a 16-bit array at `data`, zero-extended to i64. MIR widens
-// an i8 but not an i16, so it is read as its two bytes (little-endian, as
-// every target brass runs typed arrays on is).
-Value* load_u16(Builder& b, Value* data, Value* idx) {
-    Value* lo = b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx, 2, 0));
-    Value* hi = b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx, 2, 1));
-    return b.build_or(lo, b.build_shl(hi, iconst(b, 8)));
+}  // namespace
+
+// An element key as the Value the helpers take: an i32 is an int32 Number, an
+// f64 its boxed bits, anything else already a Value.
+Value* boxed_elem_key(Builder& b, Value* index) {
+    if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
+    if (index->type() == Type::f64()) return box_f64_bits(b, index);
+    return index;
 }
 
-// The low `bits` of `v` (an i64 holding them zero-extended) sign-extended.
-Value* sign_extend(Builder& b, Value* v, int bits) {
-    Value* shift = iconst(b, static_cast<uint64_t>(64 - bits));
-    return b.build_ashr(b.build_shl(v, shift), shift);
+Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
+    return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
 }
 
-Value* load_typed_array_elem(Builder& b, Value* data, Value* idx_i64, int64_t elem_kind) {
-    switch (elem_kind) {
-        case BRONZE_ABI_TA_KIND_FLOAT64:
-            return b.build_load_indexed(Type::f64(), data, idx_i64, 8);
-        case BRONZE_ABI_TA_KIND_FLOAT32:
-            return b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx_i64, 4));
-        case BRONZE_ABI_TA_KIND_INT32:
-            return b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx_i64, 4));
-        case BRONZE_ABI_TA_KIND_UINT32:
-            return b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i32(), data, idx_i64, 4)));
-        case BRONZE_ABI_TA_KIND_INT16:
-            return b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx_i64), 16));
-        case BRONZE_ABI_TA_KIND_UINT16:
-            return b.build_sitofp_f64_i64(load_u16(b, data, idx_i64));
-        case BRONZE_ABI_TA_KIND_INT8:
-            return b.build_sitofp_f64_i64(
-                sign_extend(b, b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx_i64, 1)), 8));
-        default: // UINT8, UINT8CLAMPED
-            return b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx_i64, 1)));
-    }
-}
-
-Value* extract_i32_from_sitofp(Value* v) {
-    if (!v || !v->is_instruction()) return nullptr;
-    const Instruction* def = v->defining_instruction();
-    if (!def) return nullptr;
-    if (def->opcode() == Opcode::sitofp_f64_i32 && def->operand_count() == 1) {
-        return def->operand(0);
-    }
-    if (def->opcode() == Opcode::sitofp_f64_i64 && def->operand_count() == 1) {
-        Value* z = def->operand(0);
-        if (z && z->is_instruction()) {
-            const Instruction* zdef = z->defining_instruction();
-            if (zdef && zdef->opcode() == Opcode::zext_i64 && zdef->operand_count() == 1 &&
-                zdef->operand(0)->type() == Type::i32()) {
-                return zdef->operand(0);
-            }
-        }
-    }
-    return nullptr;
-}
-
-} // namespace
-
-Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
-    if (Value* x = extract_i32_from_sitofp(v)) return x;
-    if (v && v->is_instruction()) {
-        const Instruction* def = v->defining_instruction();
-        if (def) {
-            if (def->opcode() == Opcode::fconst_f64 && std::isfinite(def->imm_f64()) &&
-                std::fabs(def->imm_f64()) <= 4294967295.0) {
-                return b.build_iconst_i32(static_cast<int32_t>(static_cast<int64_t>(def->imm_f64())));
-            }
-            if ((def->opcode() == Opcode::add || def->opcode() == Opcode::sub) &&
-                def->operand_count() == 2) {
-                for (int side = 0; side < 2; ++side) {
-                    if (side == 1 && def->opcode() == Opcode::sub) break;
-                    Value* lhs_i32 = extract_i32_from_sitofp(def->operand(side));
-                    const Instruction* rdef =
-                        def->operand(1 - side) ? def->operand(1 - side)->defining_instruction() : nullptr;
-                    if (lhs_i32 && rdef && rdef->opcode() == Opcode::fconst_f64 &&
-                        std::isfinite(rdef->imm_f64()) &&
-                        std::floor(rdef->imm_f64()) == rdef->imm_f64() &&
-                        std::fabs(rdef->imm_f64()) <= 2147483648.0) {
-                        Value* rhs_i32 = b.build_iconst_i32(
-                            static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(rdef->imm_f64()))));
-                        return def->opcode() == Opcode::add ? b.build_add(lhs_i32, rhs_i32)
-                                                            : b.build_sub(lhs_i32, rhs_i32);
-                    }
-                }
-            }
-        }
-    }
-    BasicBlock* cur = b.current_block();
-    const std::string pfx = "ta_toi32_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(pfx + "_fast");
-    BasicBlock* slow = b.append_block(pfx + "_slow");
-    slow->set_cold();
-    BasicBlock* merge = b.append_block(pfx + "_merge");
-    Value* res = b.add_block_param(merge, Type::i32());
-    b.position_at_end(cur);
-    Value* bits = b.build_bitcast_i64_f64(v);
-    Value* abs_bits = b.build_and(bits, iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-    b.build_br_if(b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)), fast, slow);
-    b.position_at_end(slow);
-    Value* in_range = b.build_ult(abs_bits, iconst(b, 0x4530000000000000ULL));
-    Value* mant = b.build_or(b.build_and(abs_bits, iconst(b, 0x000FFFFFFFFFFFFFULL)),
-                             iconst(b, 0x0010000000000000ULL));
-    Value* shift = b.build_and(b.build_sub(b.build_lshr(abs_bits, iconst(b, 52)), iconst(b, 1075)),
-                               iconst(b, 63));
-    Value* mag = b.build_shl(mant, shift);
-    Value* signed_val = b.build_select(b.build_slt(v, b.build_fconst_f64(0.0)), b.build_sub(iconst(b, 0), mag), mag);
-    b.build_br(merge, {b.build_trunc_i32(b.build_select(in_range, signed_val, iconst(b, 0)))});
-    b.position_at_end(fast);
-    b.build_br(merge, {b.build_trunc_i32(b.build_fptosi_i64(v))});
-    b.position_at_end(merge);
-    return res;
-}
-
-Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index, int64_t flags) {
-    if (!enable_inlined_fastpaths_) {
-        return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
-    }
-    if (elem_array_receiver(flags)) return lower_elem_get_array(b, obj, index, flags);
-    if (elem_word_view_receiver(flags)) return lower_elem_get_word_view(b, obj, index, flags);
-
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "elem_get_" + std::to_string(fn->next_block_id());
-
-    // ARMS: an index into an Array, into a view, and a plain object's own
-    // slot by a key (the computed-read cache's hit). The words after them are the
-    // site's CELL in a build that marks nothing (runtime/elem_ic.cpp
-    // bronze_elem_cell_fill): `shape, key bits, slot word, fills`; in a build
-    // that marks they are a view's element kinds, which the cell's site never
-    // read: doubles, floats, the 32-bit integers, the narrower ones.
-    enum : uint32_t { kArmArray = 1, kArmView, kArmKeyed, kCellWords = 4, kArmF64 = 4, kArmF32, kArmInt32, kArmNarrow };
-
-    // ONE PAIR: where the harvested build read here and never indexed an
-    // Array or a view, the read is the cell's two compares and the slot (a
-    // plain object's own slot by a key), and everything else calls the stub,
-    // which answers any receiver and key, after a fill of the cell while the
-    // site has fills left. Not an exit: a second pair is a fill, and a site
-    // of many pairs, or of reads no pair stands for (a constant of the
-    // prototype by its name), reads through the table from the stub without
-    // the index tests it never passed. A site the harvested build never ran
-    // (its slow arm an exit, its key arm cold) stays the ladder's exit.
-    const bool ran = !arm_exits(kArmKeyed) || !slow_exits_;
-    if (Value* cell = arm_exits(kArmArray) && arm_exits(kArmView) && ran && elem_stubs_ ? arm_cell(b, kCellWords)
-                                                                                         : nullptr) {
-        BasicBlock* bb_plain = b.append_block(prefix + "_pair");
-        BasicBlock* bb_hit = b.append_block(prefix + "_pair_hit");
-        BasicBlock* bb_miss = b.append_block(prefix + "_pair_miss");
-        BasicBlock* bb_fill = b.append_block(prefix + "_pair_fill");
-        bb_fill->set_cold();
-        BasicBlock* bb_stub = b.append_block(prefix + "_pair_stub");
-        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-        Value* result = b.add_block_param(bb_merge, Type::i64());
-
-        b.position_at_end(cur);
-        Value* key = boxed_elem_key(b, index);
-        Value* ptr = nullptr;
-        Value* is_obj = nullptr;
-        object_pointer(b, obj, ptr, is_obj);
-        b.build_br_if(is_obj, bb_plain, bb_miss);
-
-        b.position_at_end(bb_plain);
-        const auto word = [&](int32_t at) {
-            return with_alias_class(b.build_load(Type::i64(), cell, at), kSlowCountAliasClass);
-        };
-        Value* plain = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow));
-        Value* same_shape = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), word(0));
-        Value* same_key = b.build_eq(key, word(8));
-        b.build_br_if(b.build_and(b.build_and(plain, same_shape), same_key), bb_hit, bb_miss);
-
-        b.position_at_end(bb_hit);
-        b.build_br(bb_merge, {load_slot(b, ptr, word(16))});
-
-        b.position_at_end(bb_miss);
-        b.build_br_if(b.build_ult(word(24), b.build_iconst_i64(BRONZE_ABI_ELEM_CELL_LIMIT)), bb_fill, bb_stub);
-
-        b.position_at_end(bb_fill);
-        b.build_call("bronze_elem_cell_fill", Type::void_type(), {obj, key, cell});
-        b.build_br(bb_stub);
-
-        b.position_at_end(bb_stub);
-        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
-
-        b.position_at_end(bb_merge);
-        return result;
-    }
-    // A site whose key arm ran reads through it: its slow branches are no
-    // exits, whatever the stub's call did.
-    const bool exits = slow_exits_;
-    if (slow_sites_.size() == 1 && !arm_exits(kArmKeyed)) slow_exits_ = false;
-
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_array = b.append_block(prefix + "_array");
-    BasicBlock* bb_array_load = b.append_block(prefix + "_array_load");
-    BasicBlock* bb_ta_check = b.append_block(prefix + "_ta_check");
-    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
-    BasicBlock* bb_ta_load = b.append_block(prefix + "_ta_load");
-    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
-    BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
-    BasicBlock* bb_i32 = b.append_block(prefix + "_i32");
-    BasicBlock* bb_u32 = b.append_block(prefix + "_u32");
-    BasicBlock* bb_i16 = b.append_block(prefix + "_i16");
-    BasicBlock* bb_u16 = b.append_block(prefix + "_u16");
-    BasicBlock* bb_i8 = b.append_block(prefix + "_i8");
-    BasicBlock* bb_u8 = b.append_block(prefix + "_u8");
-    BasicBlock* bb_box = b.append_block(prefix + "_box");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    bb_slow->set_cold();
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* number = b.add_block_param(bb_box, Type::f64());
-    Value* result = b.add_block_param(bb_merge, Type::i64());
-
-    // An object and an integral index, or the helper.
-    b.position_at_end(cur);
-    Value* ptr = nullptr;
-    Value* is_obj = nullptr;
-    object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index);
-    slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-    // A site that read only views asks for a view, and leaves for the two
-    // tests otherwise; one that read only Arrays leaves at the first.
-    b.position_at_end(bb_obj);
-    Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    if (only_arm(kArmArray, kArmKeyed) == kArmView) {
-        BasicBlock* bb_which = b.append_block(prefix + "_which");
-        b.position_at_end(bb_obj);
-        site_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_which,
-                    /*exits=*/true);
-        b.position_at_end(bb_which);
-    }
-    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check,
-             slow_exits() && arm_exits(kArmView));
-
-    // An Array: an in-bounds element, a hole by the hole rule
-    // (il_number_array.cpp). Past the length the helper decides.
-    b.position_at_end(bb_array);
-    arm_begin(b, kArmArray);
-    Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    const ArrayElements elems = array_elements(b, ptr);
-    slow_branch(b, b.build_ult(idx.i64, length), bb_array_load, bb_slow);
-
-    b.position_at_end(bb_array_load);
-    Value* elem = array_element_load(b, elems, idx.i64);
-    finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
-
-    b.position_at_end(bb_ta_check);
-    slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
-
-    // A TypedArray of a Number kind, in bounds (a detached view's length is
-    // 0); Float16 and the BigInt kinds take the helper.
-    b.position_at_end(bb_ta);
-    arm_begin(b, kArmView);
-    Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    slow_branch(b, b.build_ult(idx.i64, ta_length), bb_ta_load, bb_slow);
-
-    // Float16 and the BigInt kinds: the slow arm, through a block of its own
-    // (a switch's default cannot be a twin exit) when it is one.
-    BasicBlock* bb_ta_other = bb_slow;
-    if (slow_exits()) {
-        bb_ta_other = b.append_block(prefix + "_ta_other");
-        bb_ta_other->set_cold();
-        b.position_at_end(bb_ta_other);
-        slow_branch(b, b.build_iconst_i32(0), bb_box, bb_slow, {b.build_fconst_f64(0)});
-    }
-
-    b.position_at_end(bb_ta_load);
-    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* data = typed_array_data(b, ptr);
-    // The one kind the harvested build read, asked alone (a 32-bit integer
-    // view's two, one after the other); the switch is then the twin's.
-    {
-        BasicBlock* bb_kinds = b.append_block(prefix + "_kinds");
-        b.position_at_end(bb_ta_load);
-        const auto is_kind = [&](int32_t k) { return b.build_eq(kind, b.build_iconst_i32(k)); };
-        switch (only_arm(kArmF64, kArmNarrow)) {
-            case kArmF64:
-                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_FLOAT64), bb_f64, bb_kinds, /*exits=*/true);
-                break;
-            case kArmF32:
-                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_FLOAT32), bb_f32, bb_kinds, /*exits=*/true);
-                break;
-            case kArmInt32: {
-                BasicBlock* bb_unsigned = b.append_block(prefix + "_unsigned");
-                b.position_at_end(bb_ta_load);
-                b.build_br_if(is_kind(BRONZE_ABI_TA_KIND_INT32), bb_i32, bb_unsigned);
-                b.position_at_end(bb_unsigned);
-                site_branch(b, is_kind(BRONZE_ABI_TA_KIND_UINT32), bb_u32, bb_kinds, /*exits=*/true);
-                break;
-            }
-            default:
-                b.build_br(bb_kinds);
-                break;
-        }
-        b.position_at_end(bb_kinds);
-    }
-    b.build_switch(kind, bb_ta_other,
-                   {SwitchCase(BRONZE_ABI_TA_KIND_FLOAT64, bb_f64), SwitchCase(BRONZE_ABI_TA_KIND_FLOAT32, bb_f32),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_i32), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_u32),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT16, bb_i16), SwitchCase(BRONZE_ABI_TA_KIND_UINT16, bb_u16),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT8, bb_i8), SwitchCase(BRONZE_ABI_TA_KIND_UINT8, bb_u8),
-                    SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_u8)});
-
-    b.position_at_end(bb_f64);
-    arm_begin(b, kArmF64);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT64)});
-    b.position_at_end(bb_f32);
-    arm_begin(b, kArmF32);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT32)});
-    b.position_at_end(bb_i32);
-    arm_begin(b, kArmInt32);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT32)});
-    b.position_at_end(bb_u32);
-    arm_begin(b, kArmInt32);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT32)});
-    b.position_at_end(bb_i16);
-    arm_begin(b, kArmNarrow);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT16)});
-    b.position_at_end(bb_u16);
-    arm_begin(b, kArmNarrow);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT16)});
-    b.position_at_end(bb_i8);
-    arm_begin(b, kArmNarrow);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT8)});
-    b.position_at_end(bb_u8);
-    arm_begin(b, kArmNarrow);
-    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT8)});
-
-    b.position_at_end(bb_box);
-    b.build_br(bb_merge, {box_f64_bits(b, number)});
-
-    // Past the array and view arms: a plain object's own slot answers inline
-    // from the computed-read cache, and only the rest calls the stub.
-    // The key arm is an arm where the site has arms (alone, no run of
-    // instructions), and part of the slow arm elsewhere.
-    b.position_at_end(bb_slow);
-    const bool armed = slow_sites_.size() == 1;
-    if (!armed) slow_arm(b);
-    Value* key = boxed_elem_key(b, index);
-    if (elem_stubs_) {
-        const size_t slow_base = fn->blocks().size();
-        BasicBlock* bb_stub = b.append_block(prefix + "_stub");
-        b.position_at_end(bb_slow);
-        build_inline_elem_get_hit(*this, b, obj, key, bb_merge, bb_stub, kArmKeyed);
-        for (size_t bi = slow_base; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
-        b.position_at_end(bb_stub);
-    }
-    if (armed) slow_arm(b);
-    b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
-    slow_exits_ = exits;
-
-    b.position_at_end(bb_merge);
-    return result;
-}
-
-Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Value* index, int64_t elem_kind,
-                                                    Value* preloaded_data, Value* preloaded_length) {
-    if (!enable_inlined_fastpaths_) {
-        return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)}));
-    }
-
-    const bool proven_integral = (elem_kind & (1LL << 16)) != 0;
-    const bool proven_in_bounds = (elem_kind & (1LL << 17)) != 0;
-    elem_kind &= 0xFFFF;
-    constexpr int64_t kElemKindPlainArrayF64 = 100;
-    if (elem_kind == kElemKindPlainArrayF64) {
-        BasicBlock* cur = b.current_block();
-        Function* fn = cur->parent();
-        const std::string prefix = "elem_get_arr_" + std::to_string(fn->next_block_id());
-        BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-        BasicBlock* bb_array = b.append_block(prefix + "_array");
-        BasicBlock* bb_array_load = b.append_block(prefix + "_array_load");
-        BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-        bb_slow->set_cold();
-        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-        Value* result = b.add_block_param(bb_merge, Type::i64());
-
-        b.position_at_end(cur);
-        Value* ptr = nullptr;
-        Value* is_obj = nullptr;
-        object_pointer(b, obj, ptr, is_obj);
-        const ElemIndex idx = elem_index(b, index, proven_integral);
-        slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-        b.position_at_end(bb_obj);
-        Value* header_low = b.build_load(Type::i32(), ptr, 0);
-        slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
-
-        b.position_at_end(bb_array);
-        Value* length = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-        const ArrayElements elems = array_elements(b, ptr);
-        slow_branch(b, b.build_ult(idx.i64, length), bb_array_load, bb_slow);
-
-        b.position_at_end(bb_array_load);
-        finish_hole_read(b, array_element_load(b, elems, idx.i64), bb_merge, bb_slow, prefix);
-
-        b.position_at_end(bb_slow);
-        slow_arm(b);
-        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_elem_key(b, index)})});
-
-        // The read is ToNumber of the element (il::elemGetCoerces): a Number
-        // is its own bits, anything else — a hole or a miss read as
-        // undefined, an Int32 box, a string, an object — takes the coercion.
-        b.position_at_end(bb_merge);
-        BasicBlock* bb_coerce = b.append_block(prefix + "_coerce_cold");
-        bb_coerce->set_cold();
-        BasicBlock* bb_done = b.append_block(prefix + "_done");
-        Value* number = b.add_block_param(bb_done, Type::f64());
-        b.position_at_end(bb_merge);
-        Value* is_num = b.build_ule(result, iconst(b, kBronzeNumberMaxBits));
-        b.build_br_if(is_num, bb_done, {b.build_bitcast_f64_i64(result)}, bb_coerce, {});
-        b.position_at_end(bb_coerce);
-        b.build_br(bb_done, {b.build_call("bronze_unbox_f64", Type::f64(), {result})});
-        b.position_at_end(bb_done);
-        return number;
-    }
-
-    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
-        return b.build_bitcast_f64_i64(lower_elem_get(b, obj, index));
-    }
-
-    const bool known_num_idx =
-        index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
-    const ElemIndex idx = elem_index(b, index, proven_integral, /*want_bounded=*/true);
-    if (proven_in_bounds && proven_integral && known_num_idx) {
-        Value* data = preloaded_data ? preloaded_data
-                                     : typed_array_data(b, object_address(b, obj));
-        return load_typed_array_elem(b, data, idx.i64, elem_kind);
-    }
-
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "elem_get_ta_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_load = b.append_block(prefix + "_load");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(bb_merge, Type::f64());
-
-    b.position_at_end(cur);
-    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : object_address(b, obj);
-    Value* ta_len = preloaded_length
-                        ? preloaded_length
-                        : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    Value* ok = nullptr;
-    if (idx.bounded) {
-        ok = b.build_ult(idx.bounded, ta_len);
-    } else {
-        Value* in_bounds = b.build_ult(idx.i64, ta_len);
-        ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
-    }
-    Value* nan_f64 = b.build_bitcast_f64_i64(iconst(b, BRONZE_ABI_CANONICAL_NAN_BITS));
-    // The window's first byte before the bounds test, as the length is: the
-    // receiver is a view either way, and in the block that dominates the
-    // load the next read of the same view finds it (GVN), where in the
-    // in-bounds block it would be recomputed for every read.
-    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
-    b.build_br_if(ok, bb_load, {}, bb_merge, {nan_f64});
-
-    b.position_at_end(bb_load);
-    Value* loaded_val = load_typed_array_elem(b, data, idx.i64, elem_kind);
-    b.build_br(bb_merge, {loaded_val});
-
-    b.position_at_end(bb_merge);
-    last_ta_get_ = {bb_merge, bb_load, result, loaded_val, data, idx.i64, obj, index, elem_kind};
-    return result;
-}
-
-// The inline stores are exactly the helper's own fast path
-// (rt_prop_write.cpp bronze_elem_set), so they decide nothing it does not:
-//
-//  - An Array element at an index below both its length and capacity, or the
-//    append at `length` inside the capacity while the array index hazard is
-//    clear (branch_on_array_store), on an
-//    array with no named-properties object. Frozen, sealed and non-writable
-//    elements and accessor elements all live behind that object, so an array
-//    without one has none of them. The store is followed by the write barrier
-//    for a reference value, on the slot's own address, as HeapValue gives it.
-//  - A TypedArray element in bounds, of a Number value, for the Number kinds
-//    Int8..Float64. An integer kind stores the low bits of the value's ToInt32
-//    (inline for a magnitude below 2^63, as the bitwise operators take it: the
-//    truncation's low 8/16/32 bits are ToInt8..ToUint32 alike); Uint8Clamped
-//    only an integral value, clamped; Float32 the rounded float. Everything
-//    else — Float16, the BigInt kinds, a non-Number value, NaN or a huge
-//    magnitude into an integer kind, a fraction into Uint8Clamped, any index
-//    out of bounds (a discard the helper makes) — takes the helper.
-void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict,
-                                            int64_t flags) {
-    Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
-    if (!enable_inlined_fastpaths_) {
-        b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
-        return;
-    }
-    if (elem_array_receiver(flags)) return lower_elem_set_array(b, obj, index, val, strict, flags);
-    if (elem_word_view_receiver(flags)) return lower_elem_set_word_view(b, obj, index, val, strict, flags);
-
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "elem_set_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_array = b.append_block(prefix + "_array");
-    BasicBlock* bb_array_store = b.append_block(prefix + "_array_store");
-    BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
-    BasicBlock* bb_ta_check = b.append_block(prefix + "_ta_check");
-    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
-    BasicBlock* bb_ta_store = b.append_block(prefix + "_ta_store");
-    BasicBlock* bb_f64 = b.append_block(prefix + "_f64");
-    BasicBlock* bb_f32 = b.append_block(prefix + "_f32");
-    BasicBlock* bb_int_check = b.append_block(prefix + "_int_check");
-    BasicBlock* bb_int = b.append_block(prefix + "_int");
-    BasicBlock* bb_i32 = b.append_block(prefix + "_i32");
-    BasicBlock* bb_i16 = b.append_block(prefix + "_i16");
-    BasicBlock* bb_i8 = b.append_block(prefix + "_i8");
-    BasicBlock* bb_clamp_check = b.append_block(prefix + "_clamp_check");
-    BasicBlock* bb_clamp = b.append_block(prefix + "_clamp");
-    BasicBlock* bb_kinds = b.append_block(prefix + "_kinds");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    bb_slow->set_cold();
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    // The store's ARMS (il_speculation.h): which receiver, and which element
-    // kind of a view. One site stores into one of them, nearly always.
-    enum : uint32_t { kArmArray = 1, kArmView, kArmF64, kArmF32, kArmInt, kArmClamp };
-
-    // An object and an integral index, or the helper.
-    b.position_at_end(cur);
-    Value* ptr = nullptr;
-    Value* is_obj = nullptr;
-    object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index);
-    slow_branch(b, b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-    b.position_at_end(bb_obj);
-    Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    // A site that stored only into views asks for a view, and leaves for
-    // the two tests otherwise.
-    if (only_arm(kArmArray, kArmView) == kArmView) {
-        BasicBlock* bb_which = b.append_block(prefix + "_which");
-        b.position_at_end(bb_obj);
-        site_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_which,
-                    /*exits=*/true);
-        b.position_at_end(bb_which);
-    }
-    arm_test(b, b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check,
-             slow_exits() && arm_exits(kArmView));
-
-    // An Array: an element in bounds or the append at `length`, and no
-    // properties object (il_number_array.cpp, branch_on_array_store).
-    b.position_at_end(bb_array);
-    arm_begin(b, kArmArray);
-    Value* block = nullptr;
-    Value* slot = nullptr;
-    branch_on_array_store(b, ptr, idx.i64, bb_array_store, bb_slow, prefix, block, slot);
-
-    b.position_at_end(bb_array_store);
-    with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
-    // Every reference, and every value that is not a Number, is tagged above the Number range.
-    b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_merge);
-
-    b.position_at_end(bb_barrier);
-    forget_numbers(b, obj);
-    Value* slot_addr = b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
-    b.build_write_barrier(slot_addr, val);
-    b.build_br(bb_merge);
-
-    // A TypedArray of a Number kind, in bounds, and a Number value.
-    b.position_at_end(bb_ta_check);
-    slow_branch(b, b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
-
-    b.position_at_end(bb_ta);
-    arm_begin(b, kArmView);
-    Value* num = boxed_f64_source(val);
-    Value* is_number = num ? b.build_iconst_i32(1) : b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
-    if (!num) num = b.build_bitcast_f64_i64(val);
-    Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    slow_branch(b, b.build_and(is_number, b.build_ult(idx.i64, ta_length)), bb_ta_store, bb_slow);
-
-    b.position_at_end(bb_ta_store);
-    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* data = typed_array_data(b, ptr);
-    // The one kind the harvested build stored into, where it is one whose
-    // test is a compare, is asked alone; the switch is then the twin's.
-    {
-        struct KindArm {
-            uint32_t arm;
-            int32_t kind;
-            BasicBlock* bb;
-        };
-        const KindArm arms[] = {{kArmF64, BRONZE_ABI_TA_KIND_FLOAT64, bb_f64},
-                                {kArmF32, BRONZE_ABI_TA_KIND_FLOAT32, bb_f32},
-                                {kArmClamp, BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_clamp_check}};
-        const KindArm* only = nullptr;
-        size_t ran = arm_exits(kArmInt) ? 0 : 1;
-        for (const KindArm& k : arms) {
-            if (arm_exits(k.arm)) continue;
-            ++ran;
-            only = &k;
-        }
-        if (ran == 1 && only != nullptr) {
-            site_branch(b, b.build_eq(kind, b.build_iconst_i32(only->kind)), only->bb, bb_kinds, /*exits=*/true);
-        } else {
-            b.build_br(bb_kinds);
-        }
-    }
-    b.position_at_end(bb_kinds);
-    b.build_switch(kind, bb_slow,
-                   {SwitchCase(BRONZE_ABI_TA_KIND_FLOAT64, bb_f64), SwitchCase(BRONZE_ABI_TA_KIND_FLOAT32, bb_f32),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_int_check), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_int_check),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT16, bb_int_check), SwitchCase(BRONZE_ABI_TA_KIND_UINT16, bb_int_check),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT8, bb_int_check), SwitchCase(BRONZE_ABI_TA_KIND_UINT8, bb_int_check),
-                    SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_clamp_check)});
-
-    b.position_at_end(bb_f64);
-    arm_begin(b, kArmF64);
-    with_alias_class(b.build_store_indexed(Type::f64(), data, idx.i64, 8, num), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-    b.position_at_end(bb_f32);
-    arm_begin(b, kArmF32);
-    with_alias_class(b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(num)), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-
-    // The integer kinds: a magnitude below 2^63 (NaN and the infinities fail
-    // it) truncates exactly, and its low bits are the stored element.
-    b.position_at_end(bb_int_check);
-    arm_begin(b, kArmInt);
-    Value* abs_bits = b.build_and(b.build_bitcast_i64_f64(num), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-    b.build_br_if(b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)), bb_int, bb_slow);
-
-    b.position_at_end(bb_int);
-    Value* whole = b.build_fptosi_i64(num);
-    b.build_switch(kind, bb_slow,
-                   {SwitchCase(BRONZE_ABI_TA_KIND_INT32, bb_i32), SwitchCase(BRONZE_ABI_TA_KIND_UINT32, bb_i32),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT16, bb_i16), SwitchCase(BRONZE_ABI_TA_KIND_UINT16, bb_i16),
-                    SwitchCase(BRONZE_ABI_TA_KIND_INT8, bb_i8), SwitchCase(BRONZE_ABI_TA_KIND_UINT8, bb_i8)});
-
-    b.position_at_end(bb_i32);
-    with_alias_class(b.build_store_indexed(Type::i32(), data, idx.i64, 4, b.build_trunc_i32(whole)), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-    // Two bytes, little-endian, as load_u16 reads them.
-    b.position_at_end(bb_i16);
-    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 2, 0, b.build_trunc_i8(whole)), kTypedElementAliasClass);
-    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 2, 1, b.build_trunc_i8(b.build_lshr(whole, iconst(b, 8)))), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-    b.position_at_end(bb_i8);
-    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(whole)), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-
-    // Uint8Clamped: an integral value (the round trip is exact, so no
-    // rounding is owed and NaN fails it), clamped to 0..255.
-    b.position_at_end(bb_clamp_check);
-    arm_begin(b, kArmClamp);
-    Value* c_abs = b.build_and(b.build_bitcast_i64_f64(num), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-    Value* c_whole = b.build_fptosi_i64(num);
-    Value* c_exact = b.build_eq(b.build_sitofp_f64_i64(c_whole), num);
-    b.build_br_if(b.build_and(b.build_ult(c_abs, iconst(b, 0x43E0000000000000ULL)), c_exact), bb_clamp, bb_slow);
-
-    b.position_at_end(bb_clamp);
-    Value* lo = b.build_select(b.build_slt(c_whole, iconst(b, 0)), iconst(b, 0), c_whole);
-    Value* clamped = b.build_select(b.build_sgt(lo, iconst(b, 255)), iconst(b, 255), lo);
-    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(clamped)), kTypedElementAliasClass);
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_slow);
-    slow_arm(b);
-    b.build_call(elem_set_helper(), Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_merge);
-}
-
-void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value* index, Value* val_f64,
-                                                  int64_t elem_kind, uint32_t strict, Value* preloaded_data,
-                                                  Value* preloaded_length) {
-    Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
-    if (!enable_inlined_fastpaths_) {
-        b.build_call("bronze_elem_set", Type::void_type(),
-                     {obj, boxed_elem_key(b, index), box_f64_bits(b, val_f64), strict_val});
-        return;
-    }
-
-    const bool proven_integral = (elem_kind & (1LL << 16)) != 0;
-    const bool proven_in_bounds = (elem_kind & (1LL << 17)) != 0;
-    elem_kind &= 0xFFFF;
-    constexpr int64_t kElemKindPlainArrayF64 = 100;
-    if (elem_kind == kElemKindPlainArrayF64) {
-        BasicBlock* cur = b.current_block();
-        Function* fn = cur->parent();
-        const std::string prefix = "elem_set_arr_" + std::to_string(fn->next_block_id());
-        BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-        BasicBlock* bb_array = b.append_block(prefix + "_array");
-        BasicBlock* bb_array_store = b.append_block(prefix + "_array_store");
-        BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-        bb_slow->set_cold();
-        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-
-        b.position_at_end(cur);
-        Value* ptr = nullptr;
-        Value* is_obj = nullptr;
-        object_pointer(b, obj, ptr, is_obj);
-        const ElemIndex idx = elem_index(b, index, proven_integral);
-        b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-        b.position_at_end(bb_obj);
-        Value* header_low = b.build_load(Type::i32(), ptr, 0);
-        b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
-
-        b.position_at_end(bb_array);
-        Value* block = nullptr;
-        Value* slot = nullptr;
-        branch_on_array_store(b, ptr, idx.i64, bb_array_store, bb_slow, prefix, block, slot);
-
-        b.position_at_end(bb_array_store);
-        // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
-        with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64_bits(b, val_f64)), kBoxedElementAliasClass);
-        b.build_br(bb_merge);
-
-        b.position_at_end(bb_slow);
-        b.build_call(elem_set_helper(), Type::void_type(),
-                     {obj, boxed_elem_key(b, index), box_f64_bits(b, val_f64), strict_val});
-        b.build_br(bb_merge);
-
-        b.position_at_end(bb_merge);
-        return;
-    }
-
-    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
-        lower_elem_set(b, obj, index, box_f64_bits(b, val_f64), strict);
-        return;
-    }
-
-    const LastTypedGet prev_get = last_ta_get_;
-    last_ta_get_ = {};
-    auto emit_typed_store = [&](Value* data, Value* idx_i64) {
-        switch (elem_kind) {
-            case BRONZE_ABI_TA_KIND_FLOAT64:
-                with_alias_class(b.build_store_indexed(Type::f64(), data, idx_i64, 8, val_f64), kTypedElementAliasClass);
-                break;
-            case BRONZE_ABI_TA_KIND_FLOAT32:
-                with_alias_class(b.build_store_indexed(Type::f32(), data, idx_i64, 4, b.build_fptrunc_f32_f64(val_f64)), kTypedElementAliasClass);
-                break;
-            case BRONZE_ABI_TA_KIND_INT32:
-            case BRONZE_ABI_TA_KIND_UINT32:
-                with_alias_class(b.build_store_indexed(Type::i32(), data, idx_i64, 4, narrow_f64_to_i32_callfree(b, val_f64)), kTypedElementAliasClass);
-                break;
-            case BRONZE_ABI_TA_KIND_INT16:
-            case BRONZE_ABI_TA_KIND_UINT16: {
-                Value* i32 = narrow_f64_to_i32_callfree(b, val_f64);
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 2, 0, b.build_trunc_i8(i32)), kTypedElementAliasClass);
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 2, 1,
-                                      b.build_trunc_i8(b.build_lshr(i32, b.build_iconst_i32(8)))), kTypedElementAliasClass);
-                break;
-            }
-            case BRONZE_ABI_TA_KIND_INT8:
-            case BRONZE_ABI_TA_KIND_UINT8:
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 1,
-                                      b.build_trunc_i8(narrow_f64_to_i32_callfree(b, val_f64))), kTypedElementAliasClass);
-                break;
-            default: { // UINT8CLAMPED: half-to-even rounding in [0, 255]
-                Value* is_nan = b.build_ne(val_f64, val_f64);
-                Value* le_zero = b.build_or(is_nan, b.build_sle(val_f64, b.build_fconst_f64(0.0)));
-                Value* ge_255 = b.build_sge(val_f64, b.build_fconst_f64(255.0));
-                Value* trunc_i64 = b.build_fptosi_i64(val_f64);
-                Value* floor_f64 = b.build_sitofp_f64_i64(trunc_i64);
-                Value* diff = b.build_sub(val_f64, floor_f64);
-                Value* gt_half = b.build_sgt(diff, b.build_fconst_f64(0.5));
-                Value* eq_half = b.build_eq(diff, b.build_fconst_f64(0.5));
-                Value* is_odd = b.build_ne(b.build_and(trunc_i64, iconst(b, 1)), iconst(b, 0));
-                Value* round_up = b.build_or(gt_half, b.build_and(eq_half, is_odd));
-                Value* rounded = b.build_add(trunc_i64, b.build_zext_i64(round_up));
-                Value* clamped = b.build_select(le_zero, iconst(b, 0),
-                                                b.build_select(ge_255, iconst(b, 255), rounded));
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 1, b.build_trunc_i8(clamped)), kTypedElementAliasClass);
-                break;
-            }
-        }
-    };
-
-    if (b.current_block() == prev_get.merge_bb && prev_get.load_bb && prev_get.load_bb->tail() &&
-        obj == prev_get.obj && index == prev_get.index && elem_kind == prev_get.elem_kind &&
-        (elem_kind == BRONZE_ABI_TA_KIND_FLOAT64 || elem_kind == BRONZE_ABI_TA_KIND_FLOAT32 ||
-         extract_i32_from_sitofp(prev_get.loaded_val) != nullptr) &&
-        val_f64 && val_f64->is_instruction()) {
-        const Instruction* vdef = val_f64->defining_instruction();
-        const Instruction* rdef = (vdef && vdef->operand_count() == 2 && vdef->operand(1))
-                                      ? vdef->operand(1)->defining_instruction()
-                                      : nullptr;
-        if (vdef && vdef->parent() == prev_get.merge_bb &&
-            (vdef->opcode() == Opcode::add || vdef->opcode() == Opcode::sub) &&
-            vdef->operand(0) == prev_get.result && rdef && rdef->opcode() == Opcode::fconst_f64 &&
-            std::isfinite(rdef->imm_f64()) && std::floor(rdef->imm_f64()) == rdef->imm_f64() &&
-            std::fabs(rdef->imm_f64()) <= 2147483648.0) {
-            bool pure_merge = true;
-            for (const Instruction* it = prev_get.merge_bb->head(); it; it = it->next()) {
-                if (it->opcode() != Opcode::fconst_f64 && it->opcode() != Opcode::add &&
-                    it->opcode() != Opcode::sub && it->opcode() != Opcode::iconst_i32 &&
-                    it->opcode() != Opcode::iconst_i64) {
-                    pure_merge = false;
-                    break;
-                }
-            }
-            if (pure_merge) {
-                BasicBlock* resume = b.current_block();
-                b.position_before(prev_get.load_bb->tail());
-                Value* c = b.build_fconst_f64(rdef->imm_f64());
-                val_f64 = vdef->opcode() == Opcode::add ? b.build_add(prev_get.loaded_val, c)
-                                                        : b.build_sub(prev_get.loaded_val, c);
-                emit_typed_store(prev_get.data, prev_get.idx_i64);
-                b.position_at_end(resume);
-                return;
-            }
-        }
-    }
-
-    const bool known_num_idx =
-        index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
-    const ElemIndex idx = elem_index(b, index, proven_integral, /*want_bounded=*/true);
-    if (proven_in_bounds && proven_integral && known_num_idx) {
-        Value* data = preloaded_data ? preloaded_data
-                                     : typed_array_data(b, object_address(b, obj));
-        emit_typed_store(data, idx.i64);
-        return;
-    }
-
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "elem_set_ta_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_store = b.append_block(prefix + "_store");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-
-    b.position_at_end(cur);
-    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : object_address(b, obj);
-    Value* ta_len = preloaded_length
-                        ? preloaded_length
-                        : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    Value* ok = nullptr;
-    if (idx.bounded) {
-        ok = b.build_ult(idx.bounded, ta_len);
-    } else {
-        Value* in_bounds = b.build_ult(idx.i64, ta_len);
-        ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
-    }
-    // Before the bounds test, as lower_elem_get_typed computes it.
-    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
-    b.build_br_if(ok, bb_store, bb_merge);
-
-    b.position_at_end(bb_store);
-    emit_typed_store(data, idx.i64);
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_merge);
+void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
+    b.build_call("bronze_elem_set", Type::void_type(),
+                 {obj, boxed_elem_key(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
 }
 
 bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
@@ -1049,18 +102,45 @@ bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
     return check(check, val, 0);
 }
 
+// `is.dense_array`: an Array with an elements block, `max_index < length`, and
+// the array index hazard clear (the TLS tag mask the elements word is ANDed
+// with zeroes once it is set), as an i32.
 Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index) {
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, max_index, /*writable=*/false, ok, block, head);
-    return ok;
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "is_dense_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_obj);
+    Value* is_arr = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
+    b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_arr);
+    Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    Value* mask = tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF);
+    Value* has_elems = b.build_eq(b.build_and(elems, mask), iconst(b, kObjectTagBits));
+    Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
+    b.build_br(bb_merge, {b.build_and(has_elems, in_bounds)});
+
+    b.position_at_end(bb_merge);
+    return result;
 }
 
-// Branches rather than selects over a stand-in block: the test is made once
-// per entry of the loop it versions, never per element. The kind word is read
-// only once the header says the object is a view, since only a view is known
-// to be that long.
+// Whether the view at `ptr`, of element kind `kind` (an i64), answers
+// `length` from its header the way the runtime's read would
+// (rtTypedArrayChainPristine): its kind's intrinsic instance shape, and the
+// family verified pristine at the current prototype-mutation epoch (TLS
+// ta_length_tbl). An i32.
 Value* PropertyLoweringHelper::typed_array_chain_pristine(Builder& b, Value* ptr, Value* kind) {
     Module* mod = b.current_block()->parent()->parent();
     Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
@@ -1097,16 +177,6 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
 
     b.position_at_end(bb_view);
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    if (imm == bronze::il::kTypedArrayWordView) {
-        // The word kinds are contiguous: Int32, Uint32, Float32, Float64.
-        static_assert(BRONZE_ABI_TA_KIND_UINT32 == BRONZE_ABI_TA_KIND_INT32 + 1 &&
-                      BRONZE_ABI_TA_KIND_FLOAT32 == BRONZE_ABI_TA_KIND_INT32 + 2 &&
-                      BRONZE_ABI_TA_KIND_FLOAT64 == BRONZE_ABI_TA_KIND_INT32 + 3);
-        b.build_br(bb_merge, {b.build_ult(b.build_sub(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_INT32)),
-                                          b.build_iconst_i32(4))});
-        b.position_at_end(bb_merge);
-        return result;
-    }
     Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
     if (pristine) {
         kind_ok = b.build_and(kind_ok, typed_array_chain_pristine(b, ptr, iconst(b, static_cast<uint64_t>(elem_kind))));
@@ -1117,31 +187,35 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
     return result;
 }
 
-void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok,
-                                                   bool proven_integral) {
-    const ElemIndex idx = elem_index(b, index, proven_integral);
-    out_i64 = idx.i64;
-    out_ok = idx.ok;
-}
+// `is.plain_array` (il_op.h): an Array whose props word holds no object.
+Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "is_parr_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i32());
 
-Value* PropertyLoweringHelper::unbox_known_number(Builder& b, Value* val, Value*& out_ok) {
-    out_ok = nullptr;
-    if (val->type() == Type::f64()) return val;
-    if (Value* src = boxed_f64_source(val)) return src;
-    out_ok = b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
-    return b.build_bitcast_f64_i64(val);
+    b.position_at_end(cur);
+    Value* is_obj = is_object_address(b, object_address(b, obj));
+    b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_obj);
+    Value* ptr = object_address(b, obj);
+    Value* is_arr = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
+    b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_arr);
+    Value* props = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    b.build_br(bb_merge, {b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits))});
+
+    b.position_at_end(bb_merge);
+    return result;
 }
 
 Value* PropertyLoweringHelper::box_number(Builder& b, Value* f64_val) {
     return box_f64_bits(b, f64_val);
-}
-
-void PropertyLoweringHelper::object_payload(Builder& b, Value* obj, Value*& out_ptr, Value*& out_is_obj) {
-    object_pointer(b, obj, out_ptr, out_is_obj);
-}
-
-Value* PropertyLoweringHelper::load_typed_array_data(Builder& b, Value* ptr) {
-    return typed_array_data(b, ptr);
 }
 
 } // namespace il2mir

@@ -126,23 +126,6 @@ static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronz
     b.build_store(Type::i64(), at, 0, word);
 }
 
-
-// A fresh cell of `bronze_bytes` (its bronze header included) from the
-// module's tagged allocator (bronze_gc_alloc; brass bumps the allocation
-// window inline): answers its Object Value's bits and sets `*addr` to its
-// address. The allocation is a GC point; nothing after it until the caller's
-// stores have written every word may be one (brass's verifier holds it to
-// that). Its second operand is the TLS block's gc_cell_header.
-static Value* tagged_cell(Builder& b, size_t bronze_bytes, Value** addr) {
-    using namespace bronze_heap_abi;
-    Value* cell = b.build_load(Type::i64(), bronze_tls_addr(b), TLS_GC_CELL_HEADER_OFF);
-    Value* o = b.build_call("bronze_gc_alloc", Type::tagged(),
-                            {b.build_iconst_i64(static_cast<int64_t>(bronze_bytes)), cell});
-    Value* bits = b.build_bitcast_i64_tagged(o);
-    *addr = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK)));
-    return bits;
-}
-
 Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* precondition,
                                               BasicBlock* miss, BasicBlock* bb_fast, uint32_t inline_slots) {
     using namespace bronze_heap_abi;
@@ -217,81 +200,6 @@ Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* p
     Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
     Value* masked_ptr = b.build_and(obj_ptr, ptr_mask);
     return b.build_or(masked_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
-}
-
-Value* AllocLoweringHelper::bump_slot_block(Builder& b, Value* capacity, BasicBlock* miss, BasicBlock* fast) {
-    using namespace bronze_heap_abi;
-    constexpr uint64_t OBJ_FLAGS_SLOT_BLOCK = BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK;
-    Function* fn = b.current_block()->parent();
-    const std::string prefix = "tlab_slots_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_cur = b.current_block();
-    BasicBlock* bb_init = b.append_block(prefix + "_init");
-    BasicBlock* bb_fill = b.append_block(prefix + "_fill");
-    Value* index = b.add_block_param(bb_fill, Type::i64());
-
-    b.position_at_end(bb_cur);
-    Value* tls_addr = bronze_tls_addr(b);
-    // The block's bronze bytes: its header word and the slots.
-    Value* bronze_bytes = b.build_add(b.build_shl(capacity, b.build_iconst_i64(3)),
-                                      b.build_iconst_i64(static_cast<int64_t>(HDR_BYTES)));
-    Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
-    Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
-    Value* new_cursor = b.build_add(b.build_add(cur_cursor, bronze_bytes),
-                                    b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
-    b.build_br_if(b.build_ule(new_cursor, cur_limit), bb_init, miss);
-
-    b.position_at_end(bb_init);
-    b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
-    Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
-    b.build_store(Type::i64(), cur_cursor, 0, b.build_or(cell, bronze_bytes));
-    Value* blk = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
-    // HeapKind::SlotBlock, not the zero a plain header has: the collector
-    // reads a plain payload's first word as a Shape* (ObjectHeader::ensureOverflow).
-    constexpr uint64_t kKindWord = make_header_word(0, OBJ_FLAGS_SLOT_BLOCK, TAG_OBJECT);
-    b.build_store(Type::i64(), blk, 0,
-                  b.build_or(b.build_shl(bronze_bytes, b.build_iconst_i64(32)),
-                             b.build_iconst_i64(static_cast<int64_t>(kKindWord))));
-    b.build_br(bb_fill, {b.build_iconst_i64(0)});
-
-    // Every slot undefined, which is what a slot the shape does not name yet
-    // must read as when the next add stores the shape before its value.
-    b.position_at_end(bb_fill);
-    Value* at = b.build_add(blk, b.build_shl(index, b.build_iconst_i64(3)));
-    b.build_store(Type::i64(), at, static_cast<int32_t>(HDR_BYTES), b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED)));
-    Value* next = b.build_add(index, b.build_iconst_i64(1));
-    b.build_br_if(b.build_ult(next, capacity), bb_fill, {next}, fast, {});
-    b.position_at_end(fast);
-    return blk;
-}
-
-uint32_t AllocLoweringHelper::literal_root(uint32_t want) { return literal_inline_slots(want); }
-
-uint32_t AllocLoweringHelper::literal_capacity(uint32_t root) {
-    return root == 0 ? BRONZE_ABI_OBJ_INLINE_SLOTS : root;
-}
-
-Value* AllocLoweringHelper::published_literal_root(Builder& b, uint32_t root) {
-    using namespace bronze_heap_abi;
-    const int32_t shape_off =
-        root == 0 ? TLS_PLAIN_SHAPE_OFF : static_cast<int32_t>(BRONZE_TLS_PLAIN_SHAPES_OFF + 8 * root);
-    return b.build_load(Type::i64(), bronze_tls_addr(b), shape_off);
-}
-
-Value* AllocLoweringHelper::init_literal(Builder& b, uint32_t root, Value* shape, const std::vector<Value*>& slots) {
-    using namespace bronze_heap_abi;
-    const uint32_t capacity = literal_capacity(root);
-    const uint64_t header = bareHeaderFor(capacity);
-    Value* obj = nullptr;
-    Value* bits = tagged_cell(b, static_cast<size_t>(header >> 32), &obj);
-    b.build_store(Type::i64(), obj, 0, b.build_iconst_i64(static_cast<int64_t>(header)));
-    b.build_store(Type::i64(), obj, 8, shape);
-    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
-    b.build_store(Type::i64(), obj, 16, undef_val);
-    for (uint32_t i = 0; i < capacity; ++i) {
-        Value* v = i < slots.size() && slots[i] ? slots[i] : undef_val;
-        b.build_store(Type::i64(), obj, static_cast<int32_t>(24 + i * 8), v);
-    }
-    return bits;
 }
 
 Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b, uint32_t inline_slots) {
@@ -414,97 +322,6 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     // Merge block
     b.position_at_end(bb_merge);
     return merge_val;
-}
-
-// The largest length lower_array_species_create allocates inline. Past it
-// the helper's fill of the holes (a vectorized run) outweighs the call it
-// saves: a 1000-element map's result costs 7% more filled by the inline loop.
-constexpr int64_t kSpeciesInlineMaxLength = 64;
-
-Value* AllocLoweringHelper::lower_array_species_create(Builder& b, Value* o, Value* length) {
-    if (!enable_tlab_) return b.build_call("bronze_sh_array_species_create", Type::i64(), {o, length});
-    using namespace bronze_heap_abi;
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "species_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_num = b.append_block(prefix + "_num");
-    BasicBlock* bb_bump = b.append_block(prefix + "_bump");
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_fill = b.append_block(prefix + "_fill");
-    BasicBlock* bb_done = b.append_block(prefix + "_done");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* index = b.add_block_param(bb_fill, Type::i64());
-    Value* result = b.add_block_param(bb_merge, Type::i64());
-    bb_slow->set_cold();
-    auto k = [&](uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); };
-    constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
-    constexpr int32_t kArrayHeaderLow = static_cast<int32_t>((OBJ_FLAGS_ARRAY << 16) | TAG_OBJECT);
-
-    // rtArraySpeciesCreate's first answers: O an Array (by its header's kind)
-    // with no property box answers ArrayCreate(length).
-    b.position_at_end(cur);
-    b.build_br_if(b.build_eq(b.build_and(o, k(kTagMask)), k(VALUE_TAG_OBJECT)), bb_obj, bb_slow);
-    b.position_at_end(bb_obj);
-    Value* ptr = b.build_and(o, k(VALUE_PAYLOAD_MASK));
-    Value* is_array = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
-    Value* box = b.build_load(Type::i64(), ptr, 32);
-    Value* no_box = b.build_ne(b.build_and(box, k(kTagMask)), k(VALUE_TAG_OBJECT));
-    b.build_br_if(b.build_and(is_array, no_box), bb_num, bb_slow);
-
-    // The length a Number whose bits are those of a small non-negative
-    // integer (-0 and anything else take the helper).
-    b.position_at_end(bb_num);
-    Value* is_number = b.build_ule(length, k(BRONZE_ABI_NUMBER_MAX_BITS));
-    Value* n = b.build_fptosi_i64(b.build_bitcast_f64_i64(b.build_select(is_number, length, k(0))));
-    Value* exact = b.build_eq(b.build_bitcast_i64_f64(b.build_sitofp_f64_i64(n)), length);
-    Value* small = b.build_ule(n, k(static_cast<uint64_t>(kSpeciesInlineMaxLength)));
-    b.build_br_if(b.build_and(b.build_and(is_number, exact), small), bb_bump, bb_slow);
-
-    // Header and element block in one bump: bronze_create_array's capacity
-    // floor, two collector objects.
-    b.position_at_end(bb_bump);
-    Value* cap = b.build_select(b.build_ult(n, k(ARRAY_MIN_CAPACITY)), k(ARRAY_MIN_CAPACITY), n);
-    Value* elem_bytes = b.build_add(b.build_shl(cap, k(3)), k(HDR_BYTES));
-    Value* tls_addr = bronze_tls_addr(b);
-    Value* cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
-    Value* limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
-    Value* next_cursor = b.build_add(b.build_add(cursor, elem_bytes), k(GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES));
-    b.build_br_if(b.build_ule(next_cursor, limit), bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, next_cursor);
-    store_gc_header(b, tls_addr, cursor, ARRAY_HEADER_BYTES);
-    Value* arr = b.build_add(cursor, k(GC_HDR_BYTES));
-    Value* elem_gc = b.build_add(cursor, k(GC_HDR_BYTES + ARRAY_HEADER_BYTES));
-    Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
-    b.build_store(Type::i64(), elem_gc, 0, b.build_or(cell, elem_bytes));
-    Value* elems = b.build_add(cursor, k(GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES));
-    b.build_store(Type::i64(), arr, 0, k(make_header_word(ARRAY_HEADER_BYTES, OBJ_FLAGS_ARRAY, TAG_OBJECT)));
-    b.build_store(Type::i64(), arr, 8, b.build_or(n, b.build_shl(cap, k(32))));
-    b.build_store(Type::i64(), arr, 16, k(0));
-    b.build_store(Type::i64(), arr, 24, b.build_or(b.build_and(elems, k(VALUE_PAYLOAD_MASK)), k(VALUE_TAG_OBJECT)));
-    b.build_store(Type::i64(), arr, 32, k(VALUE_TAG_UNDEFINED));
-    b.build_store(Type::i64(), elems, 0,
-                  b.build_or(b.build_shl(elem_bytes, k(32)), k(make_header_word(0, OBJ_FLAGS_VALUE_BLOCK, TAG_OBJECT))));
-    b.build_br(bb_fill, {k(0)});
-
-    // Every slot a hole (ArrayHeader::create's setCapacity).
-    b.position_at_end(bb_fill);
-    b.build_store(Type::i64(), b.build_add(elems, b.build_shl(index, k(3))), static_cast<int32_t>(HDR_BYTES),
-                  k(VALUE_TAG_HOLE));
-    Value* next_index = b.build_add(index, k(1));
-    b.build_br_if(b.build_ult(next_index, cap), bb_fill, {next_index}, bb_done, {});
-
-    b.position_at_end(bb_done);
-    b.build_br(bb_merge, {b.build_or(b.build_and(arr, k(VALUE_PAYLOAD_MASK)), k(VALUE_TAG_OBJECT))});
-
-    b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {b.build_call("bronze_sh_array_species_create", Type::i64(), {o, length})});
-
-    b.position_at_end(bb_merge);
-    return result;
 }
 
 Value* AllocLoweringHelper::lower_env_create_bronze(Builder& b, Value* parent_val, Value* size_val, uint32_t param_count) {

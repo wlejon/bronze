@@ -8,7 +8,6 @@
 
 #include <atomic>
 #include <cmath>
-#include <unordered_map>
 
 namespace il2mir {
 
@@ -57,37 +56,16 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
 }
 
 IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag)
-    : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
-      alloc_lowering_(options.enable_tlab) {
+    : options_(options), diag_(diag), alloc_lowering_(options.enable_tlab) {
     spec_.set_feedback(options.spec_feedback.get());
     spec_.set_image_sites(options.twin_exits);
-    // An AOT lowering with a profile lays its sites out as the tiered
-    // lowering does (every keyed site inline), minus what only an in-process
-    // module can hold (a host address in the code).
-    if (!options.spec_feedback && options.spec_profile) spec_.set_profile(options.spec_profile.get());
     prop_lowering_.set_spec(&spec_);
     prop_lowering_.set_inline_sets(!options.enable_census);
-    prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr || spec_.has_profile());
     prop_lowering_.set_in_process(options.spec_feedback != nullptr);
     prop_lowering_.set_key_names(&options_.key_constants);
-    prop_lowering_.set_layout_cells(&options_.layout_cells);
-    prop_lowering_.set_class_family_objects(&options_.class_family_object_slots);
-    // The table addresses are shared, computed once at entry: the IC table,
-    // and the static-slot sites' cell table and family-range table (each
-    // site otherwise computed its realm-relative address afresh). A shared
-    // key map address or guard constant would join every guard's state for
-    // nothing.
+    // The IC table's address is shared, computed once at entry (each site
+    // otherwise computed its realm-relative address afresh).
     prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
-    // The guard tables stand at fixed distances after the IC table
-    // (il_abi.h ic_static_cells_offset), so they are that base plus a
-    // constant where they are used: one value held across a function's calls.
-    prop_lowering_.set_static_base_fn([this](Builder& b, bool family) {
-        const uint64_t sites = options_.ic_site_count;
-        const uint64_t methods = options_.method_ic_sites.size();
-        const int64_t off = family ? ic_family_base_offset(sites, methods, options_.static_site_count)
-                                   : ic_static_cells_offset(sites, methods);
-        return b.build_add(hoisted(b, Hoist::IcTable), b.build_iconst_i64(off));
-    });
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_slow_count_fn([this](Builder& b, uint32_t index) {
             // Lowering may run on several threads.
@@ -125,9 +103,8 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     }
     // ARMS (il_speculation.h). An arm is on the instruction's fast path, so
     // its mark is one store of a constant where a slow arm counts.
-    std::function<void(Builder&, uint32_t)> mark;
     if (options.count_slow_sites && options.slow_site_count != 0) {
-        mark = [this](Builder& b, uint32_t index) {
+        prop_lowering_.set_arm_mark_fn([this](Builder& b, uint32_t index) {
             if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
                 std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
                     .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
@@ -135,98 +112,8 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
             Value* at = b.build_add(hoisted(b, Hoist::IcTable),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             with_alias_class(b.build_store(Type::i64(), at, 0, b.build_iconst_i64(1)), kSlowCountAliasClass);
-        };
-    }
-    if (!options.count_slow_sites && options.slow_site_count != 0) {
-        prop_lowering_.set_arm_cell_fn([this](Builder& b, uint32_t index) {
-            return b.build_add(hoisted(b, Hoist::IcTable),
-                               b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
         });
     }
-    prop_lowering_.set_arm_fns(
-        [this](uint32_t index) {
-            return options_.twin_exits && spec_.image_sites_here() && options_.slow_cold.count(index) != 0;
-        },
-        std::move(mark));
-}
-
-// The f64 block parameters of `fn` that only ever hold an int32: every value
-// an edge passes is the result of a bitwise operation or Math.imul (each an
-// int32 by definition), a constant that is one, or another such parameter.
-// The lowering carries these as i32 (IlLowering's block-parameter setup), so
-// a value a loop keeps in the integer domain (`h = Math.imul(h ^ x, k)`, a
-// bit set, a PRNG's state) crosses the back edge as the integer it is and not
-// as a double converted back at every use.
-//
-// Found optimistically: every f64 parameter of a block reached only by jumps
-// and branches starts in the set, and one leaves when an edge passes it a
-// value that is none of the above, until nothing changes. `>>>` is a uint32
-// and -0 is no int32, so neither qualifies.
-std::unordered_set<uint32_t> int32_block_params(const BronzeFunction& fn) {
-    std::unordered_map<uint32_t, const BronzeInstruction*> def;
-    std::unordered_set<uint32_t> handlers;
-    std::unordered_map<uint32_t, const BronzeBlock*> block_of;
-    for (const BronzeBlock& blk : fn.blocks) {
-        block_of.emplace(blk.id, &blk);
-        if (blk.handler_id != UINT32_MAX) handlers.insert(blk.handler_id);
-        for (const BronzeInstruction& inst : blk.instructions) {
-            if (inst.result_id != UINT32_MAX) def.emplace(inst.result_id, &inst);
-        }
-    }
-    std::unordered_set<uint32_t> set;
-    for (size_t i = 1; i < fn.blocks.size(); ++i) {
-        const BronzeBlock& blk = fn.blocks[i];
-        if (handlers.count(blk.id)) continue;
-        for (const auto& p : blk.params) {
-            if (p.second == BronzeType::F64) set.insert(p.first);
-        }
-    }
-    if (set.empty()) return set;
-    const auto is_int32 = [&](uint32_t id) {
-        if (set.count(id)) return true;
-        const auto it = def.find(id);
-        if (it == def.end()) return false;
-        const BronzeInstruction& d = *it->second;
-        switch (d.op) {
-            case BronzeOp::BitAnd:
-            case BronzeOp::BitOr:
-            case BronzeOp::BitXor:
-            case BronzeOp::Shl:
-            case BronzeOp::Shr:
-            case BronzeOp::BitNot:
-            case BronzeOp::MathImul:
-                return d.result_type == BronzeType::F64;
-            case BronzeOp::ConstF64:
-                return d.imm_f64 >= -2147483648.0 && d.imm_f64 <= 2147483647.0 &&
-                       d.imm_f64 == std::trunc(d.imm_f64) && !std::signbit(d.imm_f64);
-            default:
-                return false;
-        }
-    };
-    for (bool changed = true; changed;) {
-        changed = false;
-        const auto check = [&](const BronzeBlockTarget& tgt) {
-            const auto it = block_of.find(tgt.block_id);
-            if (it == block_of.end()) return;
-            const auto& params = it->second->params;
-            for (size_t i = 0; i < params.size(); ++i) {
-                if (!set.count(params[i].first)) continue;
-                if (i < tgt.args.size() && is_int32(tgt.args[i])) continue;
-                set.erase(params[i].first);
-                changed = true;
-            }
-        };
-        for (const BronzeBlock& blk : fn.blocks) {
-            for (const BronzeInstruction& inst : blk.instructions) {
-                if (inst.op == BronzeOp::Jump) check(inst.target);
-                if (inst.op == BronzeOp::Branch) {
-                    check(inst.target);
-                    check(inst.else_target);
-                }
-            }
-        }
-    }
-    return set;
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

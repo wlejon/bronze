@@ -1,12 +1,10 @@
 #include "il_lowering_dynamic.h"
 #include "il_lowering.h"
-#include "il_accessor_direct.h"
 #include "il_lowering_calls.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_ops.h"
 #include "il_property_lowering.h"
 #include "il_abi.h"
-#include <utility>
 #include <brass/mir/verifier.hpp>
 #include <algorithm>
 #include <iostream>
@@ -18,73 +16,23 @@ namespace il2mir {
 
 namespace {
 
-// `!cond` of a 0/1 value, as the compare brass fuses with a branch: the
-// opposite compare of the same operands where `cond` is one (integers and
-// pointers; of doubles only `==` and `!=`, whose opposites say the same of a
-// NaN), else `cond == 0`, which costs a setcc and a test in front of the
-// branch.
-Value* opposite_condition(Builder& b, Value* cond) {
-    const Instruction* def = cond->is_instruction() ? cond->defining_instruction() : nullptr;
-    if (def && def->operand_count() == 2) {
-        Value* l = def->operand(0);
-        Value* r = def->operand(1);
-        const bool ints = !l->type().is_float() && !r->type().is_float();
-        switch (def->opcode()) {
-            case Opcode::eq: return b.build_ne(l, r);
-            case Opcode::ne: return b.build_eq(l, r);
-            case Opcode::slt: if (ints) return b.build_sge(l, r); break;
-            case Opcode::sle: if (ints) return b.build_sgt(l, r); break;
-            case Opcode::sgt: if (ints) return b.build_sle(l, r); break;
-            case Opcode::sge: if (ints) return b.build_slt(l, r); break;
-            case Opcode::ult: if (ints) return b.build_uge(l, r); break;
-            case Opcode::ule: if (ints) return b.build_ugt(l, r); break;
-            case Opcode::ugt: if (ints) return b.build_ule(l, r); break;
-            case Opcode::uge: if (ints) return b.build_ult(l, r); break;
-            default: break;
-        }
-    }
-    return b.build_eq(cond, b.build_iconst_i32(0));
-}
-
-// A double that is a Value's bits and no arithmetic's result: an i64
-// reinterpreted, or a boxed element loaded as one (il.h `numberBits`). The
-// bridge verifier's rule for a bitcast back that canonicalises nothing
-// (il_bridge_verifier.cpp `is_value_bits_f64`), asked of the definition alone.
-bool is_value_bits(const Value* v) {
-    const Instruction* def = v->type() == Type::f64() && v->is_instruction() ? v->defining_instruction() : nullptr;
-    if (!def) return false;
-    if (def->opcode() == Opcode::bitcast_f64_i64) return def->operand(0)->type() == Type::i64();
-    return (def->opcode() == Opcode::load || def->opcode() == Opcode::load_indexed) &&
-           def->alias_class() == kBoxedElementAliasClass;
-}
-
 // ToNumber of the Value bits `bits`. A Number's bits are its double, so that
 // operand (nearly every one: `queue.length`, a field holding a double) is a
 // compare and a bitcast; everything else is the helper's ToNumber, which may
 // call user code (an object's ToPrimitive). The test is a speculation site,
 // which tier 2 turns into a guard where the helper never ran.
-Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits, bool hot) {
-    if (lowering->run_once()) return b.build_call("bronze_unbox_f64", Type::f64(), {bits});
+Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "unbox_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(prefix + "_num");
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::f64());
-    // A type-feedback hint (il.h `numberHint`): the ToNumber call out of line.
-    if (hot) slow->set_cold();
 
     b.position_at_end(cur);
     PropertyLoweringHelper& prop = lowering->prop_lowering();
-    // A value with a NUMBER FLAG (il_property.h) is asked through it.
-    Value* is_num = prop.number_flag(bits);
-    if (!is_num) is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    if (prop.slow_exits()) {
-        prop.slow_branch(b, is_num, fast, slow);
-        b.position_at_end(slow);
-    } else {
-        lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
-    }
+    Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
     prop.slow_arm(b);
     b.build_br(merge, {b.build_call("bronze_unbox_f64", Type::f64(), {bits})});
 
@@ -207,15 +155,6 @@ bool IlLowering::lower_instruction(
         if (!lower_property_instruction(this, inst_ast, b, fn, val_map, res_val)) {
             return false;
         }
-        // An element read the guarded-region pass let us hold as a double,
-        // which the property lowering loaded as one: kept as the f64, never
-        // made a tagged value (see number_bits_ids_).
-        if (inst_ast.op == BronzeOp::PropGet && inst_ast.number_bits && res_val &&
-            res_val->type() == Type::f64() && inst_ast.result_id != UINT32_MAX) {
-            val_map[inst_ast.result_id] = res_val;
-            number_bits_ids_[inst_ast.result_id] = !is_hole_insensitive(inst_ast.result_id);
-            return true;
-        }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
         return true;
     }
@@ -313,12 +252,6 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        case BronzeOp::ObjectKeys: {
-            Value* obj = ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_object_keys", Type::i64(), {obj});
-            break;
-        }
-
         case BronzeOp::ForInKeys: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_for_in_keys", Type::i64(), {obj});
@@ -328,8 +261,7 @@ bool IlLowering::lower_instruction(
         case BronzeOp::EnvCreate: {
             Value* parent_val = ensure_type(get_opd(0), Type::i64(), b);
             Value* size_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.param_count));
-            res_val = run_once_ ? b.build_call("bronze_env_create", Type::i64(), {parent_val, size_val})
-                                : alloc_lowering_.lower_env_create(b, parent_val, size_val, inst_ast.param_count);
+            res_val = alloc_lowering_.lower_env_create(b, parent_val, size_val, inst_ast.param_count);
             break;
         }
 
@@ -475,20 +407,6 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        case BronzeOp::MathImul: {
-            Value* lhs = ensure_type(get_opd(0), Type::i32(), b);
-            Value* rhs = ensure_type(get_opd(1), Type::i32(), b);
-            Value* r = b.build_mul(lhs, rhs);
-            if (inst_ast.result_type == BronzeType::F64) {
-                res_val = b.build_sitofp_f64_i32(r);
-            } else if (inst_ast.result_type == BronzeType::Dynamic) {
-                res_val = b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(r));
-            } else {
-                res_val = r;
-            }
-            break;
-        }
-
         case BronzeOp::Pow: {
             Value* op0 = get_opd(0);
             Value* op1 = get_opd(1);
@@ -503,22 +421,14 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::CreateArray: {
             Value* size_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.param_count));
-            res_val = run_once_ ? b.build_call("bronze_create_array", Type::i64(), {size_val})
-                                : alloc_lowering_.lower_create_array(b, size_val, inst_ast.param_count);
+            res_val = alloc_lowering_.lower_create_array(b, size_val, inst_ast.param_count);
             break;
         }
 
         case BronzeOp::CreateObject: {
             // imm_i64: the literal's predicted inline slots (lower_object.cpp).
             const uint32_t want = inst_ast.imm_i64 > 0 ? static_cast<uint32_t>(inst_ast.imm_i64) : 0u;
-            if (run_once_) {
-                const bool tlab = alloc_lowering_.enable_tlab();
-                alloc_lowering_.set_enable_tlab(false);
-                res_val = alloc_lowering_.lower_create_object(b, want);
-                alloc_lowering_.set_enable_tlab(tlab);
-            } else {
-                res_val = alloc_lowering_.lower_create_object(b, want);
-            }
+            res_val = alloc_lowering_.lower_create_object(b, want);
             break;
         }
 
@@ -561,12 +471,6 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        case BronzeOp::ArrayAppendHole: {
-            Value* arr = ensure_type(get_opd(0), Type::i64(), b);
-            b.build_call("bronze_array_append_hole", Type::void_type(), {arr});
-            break;
-        }
-
         case BronzeOp::ArraySpread: {
             Value* arr = ensure_type(get_opd(0), Type::i64(), b);
             Value* val = ensure_type(get_opd(1), Type::i64(), b);
@@ -588,18 +492,10 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        // A computed key's definition. The element-store paths (typed views,
-        // dense arrays, the per-thread store cache) are all an assignment's
-        // and none of them may answer a define.
+        // A computed key's definition.
         case BronzeOp::ElemDefine: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             Value* val = ensure_type(get_opd(2), Type::i64(), b);
-            // An open Array's own index: the define's own inline arm
-            // (il_elem_array.cpp), which no assignment path shares.
-            if (prop_lowering().enable_inlined_fastpaths()) {
-                prop_lowering().lower_elem_define_array(b, obj, get_opd(1), val);
-                break;
-            }
             Value* key = ensure_type(get_opd(1), Type::i64(), b);
             b.build_call("bronze_elem_define", Type::void_type(), {obj, key, val});
             break;
@@ -656,22 +552,12 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::Box: {
             if (inst_ast.box_type == BronzeType::Str && inst_ast.operands.empty()) {
-                if (is_elided_typeof_lit(inst_ast.result_id)) {
-                    res_val = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
-                    break;
-                }
-                Value* key_idx = get_key_id(b, inst_ast.index);
-                res_val = lower_box_str_key(b, key_idx);
+                res_val = b.build_call("bronze_box_str_key", Type::i64(), {get_key_id(b, inst_ast.index)});
                 break;
             }
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            if (inst_ast.box_type == BronzeType::F64 && inst_ast.raw_box && is_value_bits(op0)) {
-                // A Value's own bits (il.h `rawBox`): moved, with no NaN to
-                // canonicalise, and never answered with the boxed value they
-                // were read from, whose live range ends at its test.
-                res_val = b.build_bitcast_i64_f64(op0);
-            } else if (inst_ast.box_type == BronzeType::F64) {
+            if (inst_ast.box_type == BronzeType::F64) {
                 if (op0->type() == Type::i64()) {
                     res_val = op0;
                 } else if (op0->defining_instruction() &&
@@ -704,35 +590,16 @@ bool IlLowering::lower_instruction(
         case BronzeOp::Unbox: {
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            if (inst_ast.result_type == BronzeType::F64 && inst_ast.raw_unbox && !inst_ast.operands.empty() &&
-                number_bits_ids_.count(inst_ast.operands[0])) {
-                // The read was loaded as the double these bits are.
-                res_val = val_map.at(inst_ast.operands[0]);
-            } else if (inst_ast.result_type == BronzeType::F64 && boxed_f64_source(op0) != nullptr) {
+            if (inst_ast.result_type == BronzeType::F64 && boxed_f64_source(op0) != nullptr) {
                 // A box made here of a double (an array's header length, a
                 // typed element): that double, whichever unbox this is.
                 res_val = boxed_f64_source(op0);
             } else if (inst_ast.result_type == BronzeType::F64) {
-                Value* i_val = ensure_type(op0, Type::i64(), b);
-                if (inst_ast.raw_unbox) {
-                    res_val = b.build_bitcast_f64_i64(i_val);
-                } else if (inst_ast.nullish_unbox) {
-                    Value* is_num = b.build_ule(i_val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-                    Value* is_null = b.build_eq(i_val, b.build_iconst_i64(static_cast<int64_t>(kNullTag)));
-                    Value* nullish_bits = b.build_select(
-                        is_null,
-                        b.build_iconst_i64(0),
-                        b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)));
-                    Value* f64_bits = b.build_select(is_num, i_val, nullish_bits);
-                    res_val = b.build_bitcast_f64_i64(f64_bits);
-                } else {
-                    res_val = lower_unbox_f64(this, b, i_val, inst_ast.number_hint);
-                }
+                res_val = lower_unbox_f64(this, b, ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::Bool) {
-                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_, inst_ast.number_hint,
-                                               inst_ast.truth_hint, &prop_lowering_);
+                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), &prop_lowering_);
                 note_boolean(res_val);
             } else if (inst_ast.result_type == BronzeType::Str) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
@@ -747,17 +614,6 @@ bool IlLowering::lower_instruction(
             std::string callee_name = resolve_callee(inst_ast.callee_name);
             if (inst_ast.callee_name.rfind("__bronze_global_read_k", 0) == 0) {
                 if ((res_val = lower_global_read(this, b, inst_ast, callee_name))) break;
-            }
-            if (callee_name == "bronze_sh_length_of_array_like" && inst_ast.operands.size() == 1 &&
-                prop_lowering().enable_inlined_fastpaths()) {
-                res_val = prop_lowering().lower_length_of_array_like(b, ensure_type(get_opd(0), Type::i64(), b));
-                break;
-            }
-            if (callee_name == "bronze_sh_array_species_create" && inst_ast.operands.size() == 2 &&
-                prop_lowering().enable_inlined_fastpaths()) {
-                res_val = alloc_lowering().lower_array_species_create(b, ensure_type(get_opd(0), Type::i64(), b),
-                                                                      ensure_type(get_opd(1), Type::i64(), b));
-                break;
             }
             Function* callee = fn->parent()->get_function(callee_name);
             Type callee_ret = callee ? callee->return_type() : lower_type(inst_ast.result_type);
@@ -851,17 +707,7 @@ bool IlLowering::lower_instruction(
             std::vector<Value*> target_args;
             for (size_t i = 0; i < inst_ast.target.args.size(); ++i) {
                 Value* aval = get_val_by_id(inst_ast.target.args[i]);
-                const bool to_tagged = i < target_bb->params().size() && target_bb->params()[i]->type().is_tagged();
-                if (inst_ast.leaves_fast_copy && to_tagged && aval && aval->type() == Type::i64()) {
-                    // A value the fast copy hands its slow copy is rooted
-                    // again from its bits, as a value of the slow copy's own.
-                    // Handed over as itself it would be one value live through
-                    // the slow copy's calls, and a root live across any call is
-                    // kept in its frame slot for the whole of its life: stored
-                    // where the fast copy defines it and reloaded at each use
-                    // there, for the sake of the copy that did not run.
-                    aval = b.build_bitcast_tagged_i64(aval);
-                } else if (i < target_bb->params().size() && aval) {
+                if (i < target_bb->params().size() && aval) {
                     aval = ensure_type(aval, target_bb->params()[i]->type(), b);
                 }
                 target_args.push_back(aval);
@@ -909,66 +755,8 @@ bool IlLowering::lower_instruction(
                                                  : get_args(inst_ast.target, true_bb);
             std::vector<Value*> false_args = swap ? get_args(inst_ast.target, true_bb)
                                                   : get_args(inst_ast.else_target, false_bb);
-            // A fast copy's guard (il_ast.h `guard_edge`) is an image site
-            // where the function has a resume twin: the failing edge is the
-            // twin's, entered at the block that edge goes to. A shape test
-            // left to this branch (defer_shape_test) is lowered here.
-            const BronzeInstruction* test = std::exchange(pending_shape_test_, nullptr);
-            // The branch's ARMS (il_speculation.h): its two edges. An edge
-            // the harvested build never took, of a branch it took the other
-            // way, leaves as a guard's does: the block behind it, the calls
-            // in it and the join after it are the twin's, and what the
-            // taken side proved holds past where the two met.
+            // The branch's ARMS (il_speculation.h): its two edges.
             enum : uint32_t { kArmThen = 1, kArmElse };
-            BronzeInstruction::GuardEdge guard_edge = inst_ast.guard_edge;
-            if (guard_edge == BronzeInstruction::GuardEdge::None && test == nullptr) {
-                const bool then_cold = prop_lowering_.arm_exits(kArmThen);
-                if (then_cold != prop_lowering_.arm_exits(kArmElse)) {
-                    guard_edge = then_cold ? BronzeInstruction::GuardEdge::Then : BronzeInstruction::GuardEdge::Else;
-                }
-            }
-            if ((guard_edge != BronzeInstruction::GuardEdge::None || test != nullptr) && spec_.image_sites_here()) {
-                const bool then_leaves = guard_edge == BronzeInstruction::GuardEdge::Then;
-                const bool true_leaves = then_leaves != swap;
-                Value* hit = true_leaves ? opposite_condition(b, cond) : cond;
-                BasicBlock* stays = true_leaves ? on_false : on_true;
-                BasicBlock* leaves = true_leaves ? on_true : on_false;
-                const std::vector<Value*>& stay_args = true_leaves ? false_args : true_args;
-                const std::vector<Value*>& leave_args = true_leaves ? true_args : false_args;
-                {
-                    // A resume block takes no parameters, and an IL block's
-                    // may still gain some after this branch is lowered (the
-                    // shape memo's, given to every edge into it): the edge
-                    // goes through a block of its own.
-                    BasicBlock* cur = b.current_block();
-                    BasicBlock* edge = b.append_block("guard_edge_" + std::to_string(fn->next_block_id()));
-                    edge->set_cold();
-                    b.position_at_end(edge);
-                    b.build_br(leaves, leave_args);
-                    b.position_at_end(cur);
-                    leaves = edge;
-                }
-                if (test != nullptr) {
-                    // Its tests leave one by one. A shape word read on the
-                    // plain-only path is the receiver's keyed shape where
-                    // the tests held, so the memo has it on the staying edge
-                    // only.
-                    Value* obj = pending_shape_obj_;
-                    const uint32_t recv = test->operands[0];
-                    Value* keyed = memo_lookup(recv);
-                    if (keyed == nullptr) {
-                        memo_leave_end_[block_id] = {inst_ast.else_target.block_id, memo_snapshot()};
-                        keyed = prop_lowering_.plain_shape_or_miss(b, obj, leaves, /*exits=*/true);
-                        memo_add(recv, keyed);
-                    }
-                    hit = test->op == BronzeOp::IsShape
-                              ? prop_lowering_.lower_is_shape(b, obj, keyed, StaticSlotSite::of(*test))
-                              : accessor_cell_hit(this, b, obj, test->static_cell, keyed,
-                                                  method_guard_shapes(*test));
-                }
-                spec_.site_branch(b, hit, stays, leaves, /*exits=*/true, stay_args);
-                break;
-            }
             // A build that may be harvested marks the edge taken, in a block
             // of the edge's own.
             if (prop_lowering_.arms_marked()) {

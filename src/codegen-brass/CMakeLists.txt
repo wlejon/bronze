@@ -23,7 +23,6 @@ add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
     brass_backend_debug.cpp
     brass_backend_sections.cpp
-    brass_backend_placement.cpp
     brass_jit.cpp
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
@@ -34,48 +33,16 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_alloc_lowering.cpp
     il2mir/il_bridge_verifier.cpp
     il2mir/il_elem_lowering.cpp
-    il2mir/il_elem_array.cpp
-    il2mir/il_in_elem_fuse.cpp
-    il2mir/il_prop_length.cpp
-    il2mir/il_elem_word_view.cpp
-    il2mir/il_elem_stub.cpp
     il2mir/il_iter_lowering.cpp
-    il2mir/il_number_array.cpp
-    il2mir/il_box_str_key.cpp
     il2mir/il_env_lowering.cpp
     il2mir/il_ic_lowering.cpp
-    il2mir/il_static_slot.cpp
-    il2mir/il_accessor_direct.cpp
-    il2mir/il_array_method.cpp
-    il2mir/il_native_fast.cpp
-    il2mir/il_array_sort.cpp
-    il2mir/il_lowering_static_run.cpp
-    il2mir/il_transition_run.cpp
-    il2mir/il_define_add.cpp
-    il2mir/il_fn_recv.cpp
-    il2mir/il_ic_stub.cpp
     il2mir/il_lowering.cpp
-    il2mir/il_builtin_call.cpp
     il2mir/il_lowering_calls.cpp
-    il2mir/il_lowering_direct.cpp
-    il2mir/il_direct_common.cpp
-    il2mir/il_prop_stubs.cpp
-    il2mir/il_method_site.cpp
-    il2mir/il_is_array.cpp
-    il2mir/il_prop_get_inline.cpp
-    il2mir/il_prop_get_fast.cpp
-    il2mir/il_prop_set_fast.cpp
     il2mir/il_lowering_coro.cpp
     il2mir/il_lowering_eh.cpp
-    il2mir/il_lowering_elem_run.cpp
-    il2mir/il_string_join.cpp
     il2mir/il_lowering_bool.cpp
     il2mir/il_lowering_hoist.cpp
-    il2mir/il_lowering_index_run.cpp
-    il2mir/il_shape_memo.cpp
     il2mir/il_lowering_types.cpp
-    il2mir/il_cfg_cycles.cpp
-    il2mir/il_ta_cursor.cpp
     il2mir/il_lowering_loc.cpp
     il2mir/il_lowering_inst.cpp
     il2mir/il_lowering_lazy.cpp
@@ -85,7 +52,6 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_module_symbols.cpp
     il2mir/il_pipeline.cpp
     il2mir/il_property_lowering.cpp
-    il2mir/il_spec_profile.cpp
     il2mir/il_speculation.cpp
     il2mir/il_translator.cpp
 )

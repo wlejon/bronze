@@ -1,6 +1,4 @@
 #include "il_lowering.h"
-#include "il_lowering_direct.h"
-#include "il_elem_stub.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_ops.h"
 #include "il_lowering_calls.h"
@@ -119,14 +117,6 @@ Value* IlLowering::get_val_by_id(uint32_t id, Builder& b, const std::unordered_m
     }
     auto it = val_map.find(id);
     if (it == val_map.end()) return nullptr;
-    // An element read held as a double (il.h `numberBits`), its bits made at the use: nothing
-    // collects before its guard chain and past it they are a Number's, never a moved object.
-    if (const auto nb = number_bits_ids_.find(id); nb != number_bits_ids_.end() && it->second) {
-        Value* bits = b.build_bitcast_i64_f64(it->second);
-        if (!nb->second) return bits;
-        Value* is_hole = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
-        return b.build_select(is_hole, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), bits);
-    }
     // A dynamic value lives as a tagged SSA value, which every tier reports
     // to the collector; each use reads its bits afresh, so a use after a
     // collection sees where the object is now.
@@ -161,24 +151,17 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     if (a.operands != b.operands) return false;
     if (std::memcmp(&a.imm_f64, &b.imm_f64, sizeof(double)) != 0) return false;
     if (a.imm_i64 != b.imm_i64 || a.imm_bool != b.imm_bool) return false;
-    if (a.box_type != b.box_type || a.raw_unbox != b.raw_unbox || a.nullish_unbox != b.nullish_unbox ||
-        a.raw_box != b.raw_box || a.leaves_fast_copy != b.leaves_fast_copy) {
-        return false;
-    }
+    if (a.box_type != b.box_type) return false;
     if (a.callee_name != b.callee_name || a.string_literal != b.string_literal) return false;
-    if (a.typed_callee_name != b.typed_callee_name) return false;
     if (a.depth != b.depth || a.index != b.index || a.param_count != b.param_count) return false;
-    if (a.static_slot != b.static_slot || a.ic_index != b.ic_index || a.is_fn_recv != b.is_fn_recv ||
-        a.is_family != b.is_family) return false;
-    if (a.static_cell != b.static_cell || a.family_lo != b.family_lo || a.family_span != b.family_span) return false;
-    if (a.run_cell != b.run_cell || a.run_length != b.run_length || a.run_slot != b.run_slot) return false;
+    if (a.ic_index != b.ic_index) return false;
     if (a.target.block_id != b.target.block_id || a.target.args != b.target.args) return false;
     if (a.else_target.block_id != b.else_target.block_id || a.else_target.args != b.else_target.args) return false;
     return true;
 }
 
 static bool functions_are_identical(const BronzeFunction& a, const BronzeFunction& b) {
-    if (a.params != b.params || a.param_const_ints != b.param_const_ints ||
+    if (a.params != b.params ||
         a.return_type != b.return_type || a.is_exported != b.is_exported) return false;
     if (a.blocks.size() != b.blocks.size()) return false;
     for (size_t i = 0; i < a.blocks.size(); ++i) {
@@ -308,9 +291,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // brass lowers each write_barrier to a test of its target against it and
     // calls brass_gc_write_barrier only for a target outside it.
     if (options_.pin_tls_register) mod->set_young_range(BRONZE_TLS_YOUNG_BASE_OFF, BRONZE_TLS_YOUNG_SPAN_OFF);
-    // A fresh literal is a brass tagged allocation (il_alloc_lowering.cpp
-    // init_literal): bronze_gc_alloc, Object-tagged, with the allocation
-    // window brass bumps inline through the pinned register.
+    // The module's tagged allocator: bronze_gc_alloc, Object-tagged, with
+    // the allocation window brass bumps inline through the pinned register.
     mod->set_tagged_allocator("bronze_gc_alloc", BRONZE_TLS_ALLOC_CURSOR_OFF, BRONZE_TLS_ALLOC_LIMIT_OFF,
                               static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) << BRONZE_ABI_VALUE_TAG_SHIFT);
     // The constants the runtime keeps below the block (bronze_abi_tls.h,
@@ -327,15 +309,11 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     for (const std::string& file : ast.source_files) {
         source_file_ids_.push_back(mod->debug_context().get_or_add_file(file));
     }
-    if (!record_inline_scopes(ast, *mod)) return nullptr;
 
     // Register external runtime helper functions
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
     prop_lowering_.set_key_map_sym(module_sym("__bronze_key_map"));
     prop_lowering_.set_ic_table(module_sym("__bronze_ic_table"), options_.ic_site_count);
-    prop_lowering_.set_method_sites(options_.method_ic_sites);
-    prop_lowering_.set_static_tables(module_sym("__bronze_static_cells"), options_.static_site_count,
-                                     module_sym("__bronze_family_base"), options_.class_family_count);
     if (options_.per_thread_module_data) {
         prop_lowering_.set_module_delta_fn([this](Builder& b) { return module_delta(b); });
         mod->add_external_symbol("bronze_module_instance");
@@ -554,8 +532,6 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
-    emit_direct_stubs(this, *mod);
-    emit_elem_stubs(this, *mod);
     ltimer.mark("declare");
     // 2. Lower each function body, or leave it lazy (il_lowering_lazy.cpp).
     lazy_bodies_.clear();
@@ -597,8 +573,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // can address is declared here (the entry is always built).
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
-                                 "__bronze_ic_table", "__bronze_module_slot", "__bronze_static_cells",
-                                 "__bronze_family_base"}) {
+                                 "__bronze_ic_table", "__bronze_module_slot"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }
@@ -678,14 +653,12 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     module_env_regs_.clear();
     current_fn_dynamic_ids_.clear();
-    number_bits_ids_.clear();
     create_func_counter_.clear();
     argv_block_ = nullptr;
     argv_block_words_ = 0;
     current_module_delta_ = nullptr;
     begin_hoisting(nullptr);
     analyze_function(fn_ast);
-    pair_in_element_reads(fn_ast);
 
     // The argv block a call stages its arguments in (il_lowering_calls.h).
     const uint32_t widest_method_argc = argv_block_words(this, fn_ast);
@@ -701,18 +674,13 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // each guard's state, so a deopt finishes the resume in Tier 0 over the
     // same frame. The argv block is an alloca, which a resume re-creates in
     // the new frame with its contents.
-    // The entry's symbol differs between a JIT run and an AOT build; a
-    // profile names it kSpecEntryName (il_spec_profile.h).
+    // The entry's symbol differs between a JIT run and an AOT build; its
+    // sites name it kSpecEntryName.
     const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
     // In an image a guard exits into the function's resume twin, a second
-    // copy of the function: only for the functions the profile calls hot,
-    // and never a coroutine body, which cannot have one.
-    bool takes_guards = true;
-    if (options_.twin_exits) {
-        const auto meta = options_.function_meta.find(fn_ast.name);
-        takes_guards = meta != options_.function_meta.end() && meta->second.hot && !fn_ast.is_coroutine_body() &&
-                       !fn_ast.is_toplevel;
-    }
+    // copy of the function, which a coroutine body and the top level never
+    // have.
+    const bool takes_guards = !options_.twin_exits || (!fn_ast.is_coroutine_body() && !fn_ast.is_toplevel);
     spec_.begin_function(takes_guards, is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
@@ -832,8 +800,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             Value* manifest_addr = b.build_func_addr(key_sym);
             Value* map_addr = b.build_func_addr(module_sym("__bronze_key_map"));
             b.build_call("bronze_register_key_manifest", Type::void_type(), {manifest_addr, map_addr});
-            register_class_families(b, map_addr);
-            register_slot_repr(b, map_addr);
             // The method-call sites' env words, registered as value cells
             // (bronze_abi.h, bronze_register_method_ic_cells): a latched
             // direct-form entry may hold a closure's environment record —
@@ -884,52 +850,22 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
         // Everything the body shares is computed here, where it dominates
         // every block, and only once something first asks for it.
-        if (!fn_ast.is_coroutine_body()) {
-            for (size_t i = 0; i < fn_ast.params.size() && i < fn_ast.param_const_ints.size(); ++i) {
-                if (fn_ast.param_const_ints[i].has_value() &&
-                    fn_ast.params[i].second == BronzeType::F64) {
-                    val_map[fn_ast.params[i].first] =
-                        b.build_fconst_f64(static_cast<double>(*fn_ast.param_const_ints[i]));
-                }
-            }
-        }
         begin_hoisting(b.current_block());
     }
 
     // 3. Set up non-entry block parameters
-    // An f64 parameter that only ever holds an int32 (int32_block_params) is
-    // an i32 parameter, and the IL value is the double made from it at the
-    // top of its block: a use that wants the integer takes the parameter
-    // (ensure_type, ToInt32), and a block with no other use leaves the
-    // conversion dead.
-    const std::unordered_set<uint32_t> int32_params = int32_block_params(fn_ast);
     for (size_t i = 1; i < fn_ast.blocks.size(); ++i) {
         const auto& blk_ast = fn_ast.blocks[i];
         BasicBlock* bb = block_map[blk_ast.id];
-        std::vector<std::pair<uint32_t, Value*>> narrowed;
         for (const auto& p : blk_ast.params) {
-            uint32_t param_id = p.first;
-            if (int32_params.count(param_id)) {
-                narrowed.emplace_back(param_id, b.add_block_param(bb, Type::i32()));
-                continue;
-            }
-            Type param_type = lower_abi_type(p.second);
-            Value* param_val = b.add_block_param(bb, param_type);
-            val_map[param_id] = param_val;
+            val_map[p.first] = b.add_block_param(bb, lower_abi_type(p.second));
         }
-        if (narrowed.empty()) continue;
-        BasicBlock* at = b.current_block();
-        b.position_at_end(bb);
-        for (const auto& [id, param] : narrowed) val_map[id] = b.build_sitofp_f64_i32(param);
-        b.position_at_end(at);
     }
     add_handler_params(fn_ast, b, block_map);
 
     // 4. Lower instructions block by block, in an order where a definition
     // is lowered before its uses (see lowering_order).
-    memo_begin_function(fn_ast);
     boolean_values_.clear();
-    prop_lowering_.clear_number_flags();
     for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
         const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];
@@ -939,55 +875,19 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
-        run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
-        in_loop_ = loop_blocks_.count(blk_ast.id) != 0;
-        protected_block_ = blk_ast.handler_id != UINT32_MAX;
-        begin_block_proofs(blk_ast.id);
-        forget_ta_cursors();
-        memo_begin_block(b, blk_ast, bb);
 
-        for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
-            const MirMark mark = mir_mark(b, *fn);
-            // The instruction's slow site; a run with a slow arm names its
-            // own (set_run_slow_site).
-            set_slow_site_of(blk_ast.instructions[inst_idx]);
-            // A static run carries the shape memo across its join itself; the
-            // other runs' slow copies call helpers, so it is forgotten there.
-            const bool other_run =
-                try_lower_transition_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
-                try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
-                try_lower_elem_offset_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter);
-            if (other_run || try_lower_static_slot_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
-                if (has_error_) return false;
-                settle_ta_cursors(mark, *fn);
-                if (other_run) memo_kill();
-                shape_memo_kept_ = false;
-                continue;
-            }
-            if (try_lower_string_join(blk_ast, inst_idx, b, val_map)) {
-                if (has_error_) return false;
-                continue;
-            }
-            const auto& inst_ast = blk_ast.instructions[inst_idx];
+        for (const auto& inst_ast : blk_ast.instructions) {
             apply_inst_loc(b, inst_ast);
-            next_inst_ = inst_idx + 1 < blk_ast.instructions.size() ? &blk_ast.instructions[inst_idx + 1] : nullptr;
-            const bool lowered =
-                lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter);
-            next_inst_ = nullptr;
-            if (!lowered) return false;
-            settle_ta_cursors(mark, *fn);
-            after_instruction_proofs(inst_ast);
-            memo_after_instruction(inst_ast);
+            if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id,
+                                   &cont_counter)) {
+                return false;
+            }
         }
-        memo_end_block(blk_ast, bb, fn, first_new_block);
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
         if (blk_ast.cold) {
             for (size_t bi = first_new_block; bi < fn->blocks().size(); ++bi) fn->blocks()[bi]->set_cold();
         }
     }
-    run_once_ = false;
-    in_loop_ = false;
-    protected_block_ = false;
     route_exception_edges(b, block_map);
 
     if (stack_check_entry_bb_ != nullptr) {

@@ -120,36 +120,6 @@ void emitCensusData(ObjectFile& obj, Section& roSec, int32_t roIdx,
                  roSec.data.size() - sitesOffset, SymbolBinding::Local);
 }
 
-// The proven class layouts `bronze_register_class_family` takes (bronze_abi.h):
-// per class a (field start, field count) pair of u32, then every class's
-// fields as one u32 each, the module key index shifted left two with bit 0 the
-// writable flag and bit 1 the object one. Preorder, as the IL lists them, because that order is what
-// the family ids number.
-void emitClassFamilies(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
-                       const il::Module& module) {
-    if (module.classFamilies.empty()) return;
-    roSec.align_to(4);
-    const size_t classesOffset = roSec.data.size();
-    uint32_t start = 0;
-    for (const auto& cls : module.classFamilies) {
-        roSec.emit32(start);
-        roSec.emit32(static_cast<uint32_t>(cls.fields.size()));
-        start += static_cast<uint32_t>(cls.fields.size());
-    }
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_class_families"), roIdx, classesOffset,
-                 roSec.data.size() - classesOffset, SymbolBinding::Local);
-    const size_t fieldsOffset = roSec.data.size();
-    for (const auto& cls : module.classFamilies) {
-        for (const auto& f : cls.fields) {
-            roSec.emit32((f.keyIndex << 2) | (f.object ? 2u : 0u) | (f.writable ? 1u : 0u));
-        }
-    }
-    // A table of classes that declare no field at all is still an address.
-    if (start == 0) roSec.emit32(0);
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_class_family_fields"), roIdx, fieldsOffset,
-                 roSec.data.size() - fieldsOffset, SymbolBinding::Local);
-}
-
 void emitMethodIcSites(ObjectFile& obj, Section& roSec, int32_t roIdx,
                        const std::string& entrySymbol, const std::vector<uint32_t>& methodIcSites) {
     if (methodIcSites.empty()) return;
@@ -645,28 +615,6 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_ic_method_rows"), dataIdx, methodRowsOffset,
                  methodRowsBytes, SymbolBinding::Local);
 
-    // The static-slot guards' cells (il.h `staticSiteCount`): zero is "never
-    // tried", which no live shape equals, so an unpublished cell is a miss
-    // (runtime/static_shape.cpp has the three states). Then the family base
-    // `bronze_register_class_family` writes, and after it two zero words a
-    // guard reads as the stamp and the double-slot map of a receiver that is
-    // no plain object (il_static_slot.cpp): UNSTAMPED, which no family range
-    // admits, and every slot boxed.
-    // Both at their fixed distances from the IC table (il_abi.h
-    // ic_static_cells_offset): generated code addresses them off its base.
-    const size_t staticOffset =
-        icTableOffset + static_cast<size_t>(il2mir::ic_static_cells_offset(icSites, module.methodIcSites().size()));
-    const size_t staticBytes = std::max<size_t>(module.staticSiteCount, 1) * sizeof(uint64_t);
-    dataSec.data.resize(staticOffset + staticBytes, 0);
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_static_cells"), dataIdx, staticOffset,
-                 staticBytes, SymbolBinding::Local);
-    const size_t familyBaseOffset = dataSec.data.size();
-    dataSec.emit64(0);
-    dataSec.emit64(BRONZE_ABI_FAMILY_UNSTAMPED);
-    dataSec.emit64(0);
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_family_base"), dataIdx, familyBaseOffset, 24,
-                 SymbolBinding::Local);
-
     const auto& imports = module.nativeImports;
     const std::string importsSymbol = entrySymbol + "_native_imports";
     dataSec.align_to(8);
@@ -774,7 +722,6 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitCensusData(obj, roSec, roIdx, entrySymbol, in.module);
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
     emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module);
-    emitClassFamilies(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     emitFileStrings(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles);
     timer.mark("ro tables");

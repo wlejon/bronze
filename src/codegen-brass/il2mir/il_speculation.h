@@ -7,9 +7,8 @@
 // operation) is lowered as `br_if %hit, fast, slow` behind a placeholder
 // guard whose resume target is `slow`; the slow path counts its runs, and
 // tier 2 arms the guards of the sites whose counts say they stay on the fast
-// path. What is bronze's here: the kinds of site, the policy that reads their
-// counts, and an AOT build's profile (il_spec_profile.h), which lays each
-// site out as a recorded run's counts say instead of guarding it.
+// path. What is bronze's here: the kinds of site and the policy that reads
+// their counts.
 //
 // Every function carries guards: nothing its slow paths read is wrong in the
 // fresh Tier-0 frame a deopt resumes in. An argv block (an alloca) is fine:
@@ -25,10 +24,8 @@
 #include <brass/mir/speculation_sites.hpp>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace il2mir {
@@ -42,38 +39,22 @@ enum class SpecKind : uint8_t {
     // An inline-cache hit: armed while its misses stay within the cold
     // fills a monomorphic site takes.
     Property,
-    // A call whose target is the builtin its key names (a `Math` member)
-    // with a Number argument, lowered to the machine op: armed only if the
-    // generic call never ran (the target never was anything else).
-    CallTarget,
-    // A property read's scan of its site's other ways, entered on a way-0
-    // miss: armed while the helper ran only for the fills a site of up to
-    // BRONZE_ABI_IC_WAYS shapes takes (a megamorphic site keeps its branch).
-    PolyProperty,
 };
 
 // A program's speculation feedback, armed by bronze's policy.
 std::shared_ptr<SpecFeedback> make_spec_feedback();
 
-class SpecProfile;
-
-// The name a profile gives the program's entry function, whose symbol
+// The name the sites give the program's entry function, whose symbol
 // differs between a JIT run and an AOT build of the same program.
 inline constexpr std::string_view kSpecEntryName = "<entry>";
 
-// The per-lowering half: brass's site emitter, or, in an AOT lowering with a
-// profile, the profile's layout of each site.
+// The per-lowering half: brass's site emitter.
 class SpecSiteEmitter {
 public:
     void set_feedback(SpecFeedback* feedback) { sites_.set_feedback(feedback); }
     [[nodiscard]] bool has_feedback() const noexcept { return sites_.has_feedback(); }
-    // An AOT lowering with a profile (il_spec_profile.h): each site's branch
-    // stays a branch (no guard, no count), laid out as the profile's counts
-    // say, and a site the profile shows megamorphic skips its poly scan.
-    void set_profile(const SpecProfile* profile) { profile_ = profile; }
-    [[nodiscard]] bool has_profile() const noexcept { return profile_ != nullptr; }
     // Starts a function; `can_deopt` false lowers every site as its branch.
-    // `name` is its profile name (kSpecEntryName for the entry).
+    // `name` is its site name (kSpecEntryName for the entry).
     void begin_function(bool can_deopt, std::string_view name = {});
     // brass::SpecSiteEmitter's replay of a body built again.
     void begin_replay(uint32_t first, uint32_t count) { sites_.begin_replay(first, count); }
@@ -105,25 +86,9 @@ public:
     // Whether the module is an image's, whose functions make_resume_twins
     // sees: where the fact markers below may be emitted.
     [[nodiscard]] bool image_sites() const noexcept { return sites_.image_sites(); }
-    // With a profile: the recorded misses of the next site of (kind, tag),
-    // without taking it; nullopt when the profile does not name it.
-    std::optional<uint32_t> peek_profile(SpecKind kind, std::string_view tag) const;
-    // With a profile: passes over the next site of (kind, tag) without
-    // emitting it, so the ones after it keep their occurrence numbers.
-    void skip_site(SpecKind kind, std::string_view tag);
-    // Whether a Property site's recorded misses say it saw several shapes.
-    static bool profile_says_polymorphic(uint32_t misses);
 
 private:
-    // The profile's decision for the next site of (kind, tag): `slow`
-    // renamed cold, and a megamorphic scan's `hit` made false. False when
-    // the profile does not name the site.
-    bool apply_profile(Builder& b, Value*& hit, BasicBlock* slow, SpecKind kind, std::string_view tag);
     brass::SpecSiteEmitter sites_;
-    const SpecProfile* profile_ = nullptr;
-    std::string fn_name_;
-    // Per (kind, tag): how many sites of the current function came before.
-    std::unordered_map<std::string, uint32_t> occurrences_;
 };
 
 // An image module lowered with image sites, before any pass: every function
@@ -154,32 +119,13 @@ private:
 // generic fallback, the slow arm of an instruction with a slow site (il.h
 // `slowSite`), is reached through PropertyLoweringHelper::slow_branch and
 // begins with slow_arm. In a build that may be harvested slow_arm bumps the
-// site's counter and marks the site armed; in a function with a twin, built
-// on a harvest whose build armed the site and never ran its arm
-// (IlLowering::slow_exits), slow_branch is an image site: the arm is the
-// twin's, and the function keeps no call or join there. Every slow arm of
-// one instruction shares its counter, so an exit is taken only where the
-// harvested build ran none of them, and an instruction it lowered with no
-// counting arm (a cache call, a representation with no fallback) keeps its
-// branches. A run of instructions under one guard counts every slow site in
-// it and exits only when all are cold (IlLowering::set_run_slow_site),
-// whatever runs the harvested build formed; a constant-index run's never
-// exits (its state would hold every element it loaded).
+// site's counter and marks the site armed. Every slow arm of one instruction
+// shares its counter.
 //
-// ARMS. An inline path is often several: a store into an Array or into a
-// view of one of nine element kinds, a truthiness test of a flag, an object,
-// a Number or a String. One site nearly always takes one of them, and which
-// is in the harvest too: an instruction with a slow site has
-// kSlowSiteArms indices, the first its slow arm's and the rest its arms',
-// which its lowering names (an enum beside the code) and marks where each
-// begins (PropertyLoweringHelper::arm_begin: one store of a constant, an arm
-// being on the fast path). Built on the harvest, in a function with a twin,
-// a site whose one arm ran asks that arm's test and leaves for the whole
-// ladder otherwise (only_arm), and a ladder ends in an exit behind the last
-// arm that ran (arm_test); the twin has all of them. An exit never goes
-// INTO an arm past a test turned around: that kept every value the arm
-// reads alive for the twin and ran pixi's sprite loop 3% more instructions.
-// A run of instructions has no arms.
+// ARMS. An instruction with a slow site has kSlowSiteArms indices, the first
+// its slow arm's and the rest its arms', which its lowering marks where each
+// begins (PropertyLoweringHelper::arm_begin) in a build that may be
+// harvested.
 //
 // PROVEN FACTS. A fact about a value that nothing can undo (that it is a
 // plain object: its tag is the value, its heap kind set once at creation)

@@ -1,21 +1,15 @@
 // The inline-cache paths of a property read and write (il_property.h): the
-// way-0 guard-and-load in front of the helper, the read's scan of its other
-// ways, and the store.
+// way-0 guard-and-load (or store) in front of the helper.
 
 #include "il_abi.h"
 #include "il_property.h"
 #include "il_speculation.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
-#include <cstdlib>
-#include <utility>
 
 namespace il2mir {
 
 namespace {
-constexpr int32_t kIcShapeOffset = BRONZE_ABI_IC_SHAPE_OFFSET;
-constexpr int32_t kIcSlotWordOffset = BRONZE_ABI_IC_SLOT_OFFSET;
-constexpr int32_t kIcEntrySize = static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
 constexpr int64_t kIcOwnDataLimit = int64_t{1} << 32;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
@@ -51,25 +45,17 @@ int32_t PropertyLoweringHelper::hot_row_off(const IcSite& site) const {
                                 static_cast<int64_t>(site.index) * BRONZE_ABI_IC_HOT_ENTRY_SIZE);
 }
 
-// A row has way 0's layout (bronze_abi_layout.h): a site that keeps none is
-// its own row.
+// A row has way 0's layout (bronze_abi_layout.h).
 static_assert(BRONZE_ABI_IC_HOT_SHAPE_OFFSET == BRONZE_ABI_IC_SHAPE_OFFSET &&
                   BRONZE_ABI_IC_HOT_SLOT_OFFSET == BRONZE_ABI_IC_SLOTWORD_OFFSET,
               "a row reads as the first two words of way 0");
 
-Value* PropertyLoweringHelper::hot_row_ptr(Builder& b, const IcSite& site) {
-    if (!site.packed) return site_ptr(b, site);
-    return b.build_add(site.base, b.build_iconst_i64(hot_row_off(site)));
-}
-
 Value* PropertyLoweringHelper::way0_shape(Builder& b, const IcSite& site) {
-    const int32_t row = site.packed ? hot_row_off(site) : site.off;
-    return b.build_load(Type::i64(), site.base, row + BRONZE_ABI_IC_HOT_SHAPE_OFFSET);
+    return b.build_load(Type::i64(), site.base, hot_row_off(site) + BRONZE_ABI_IC_HOT_SHAPE_OFFSET);
 }
 
 Value* PropertyLoweringHelper::way0_slot_word(Builder& b, const IcSite& site) {
-    const int32_t row = site.packed ? hot_row_off(site) : site.off;
-    return b.build_load(Type::i64(), site.base, row + BRONZE_ABI_IC_HOT_SLOT_OFFSET);
+    return b.build_load(Type::i64(), site.base, hot_row_off(site) + BRONZE_ABI_IC_HOT_SLOT_OFFSET);
 }
 
 Value* PropertyLoweringHelper::site_ptr(Builder& b, const IcSite& site) {
@@ -82,16 +68,6 @@ Value* PropertyLoweringHelper::ic_site(Builder& b, uint32_t ic_index) {
     return site ? site_ptr(b, site) : nullptr;
 }
 
-Value* PropertyLoweringHelper::method_row(Builder& b, uint32_t ic_index) {
-    const auto it = method_rank_.find(ic_index);
-    if (it == method_rank_.end()) return nullptr;
-    const IcSite site = ic_site_ref(b, ic_index);
-    if (!site) return nullptr;
-    const int64_t off = ic_method_rows_offset(ic_site_count_) +
-                        static_cast<int64_t>(it->second) * BRONZE_ABI_METHOD_ROW_SIZE;
-    return b.build_add(site.base, b.build_iconst_i64(off));
-}
-
 // The runtime's id for the module's key constant `key_index`, read through
 // the module's key map; kNoKey passes through as itself.
 Value* PropertyLoweringHelper::runtime_key(Builder& b, uint32_t key_index) {
@@ -101,16 +77,11 @@ Value* PropertyLoweringHelper::runtime_key(Builder& b, uint32_t key_index) {
 }
 
 Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
-    if (site && ic_stubs_) {
-        return b.build_call(kPropGetStub, Type::i64(),
-                            {obj, runtime_key(b, key_index), site_ptr(b, site), hot_row_ptr(b, site)});
-    }
     Value* entry = site ? site_ptr(b, site) : b.build_iconst_i64(0);
     return b.build_call("bronze_prop_get", Type::i64(), {obj, runtime_key(b, key_index), entry});
 }
 
-Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
-                                                  bool expect_poly) {
+Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
     // The bronze object model as the inline hit reads it (bronze_abi.h):
     // a NaN-boxed Value whose tag is BRONZE_ABI_TAG_OBJECT, whose header
     // word's low half is (flags << 16) | tag — so one i32 compare against
@@ -128,218 +99,104 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // branch: the header and shape loads go through a base that a select
     // steers at a mapped block when the value is not an object, so nothing
     // is ever dereferenced through a non-pointer payload (receiver_shape).
-    // Straight-line code before a single two-way split keeps the site to
-    // few new blocks with no critical edge, which is what keeps GVN-PRE's
-    // per-hoist restart from going quadratic over a function with hundreds
-    // of property reads.
-    //
-    // A way-0 miss does not go straight to the helper: the POLY block
-    // compares the receiver's shape against ways 1..N-1 and loads the slot on
-    // a hit, so a site the helper filled with 2..N shapes stays inline in
-    // every tier. Only a receiver no way describes reaches `bronze_prop_get`.
-    // Under feedback the two tests are two speculation sites: way 0
-    // (SpecKind::Property, counting poly-block entries) and the scan
-    // (SpecKind::PolyProperty, counting helper calls), so tier 2 pins a
-    // monomorphic site to way 0 and guards a polymorphic one on the scan,
-    // deoptimizing only when it turns megamorphic.
-    //
-    // In the JIT's own tiers (in process, with feedback) the scan is a call
-    // (kPolyScanHelper) and the miss a counted helper, which is what keeps a
-    // read to about forty instructions; tier 2 expands the scan back inline
-    // (il_ic_stub.h), so its code is what the inline form always was.
-    // The scan goes where a site can turn out polymorphic: every read under
-    // the tiered pipeline, and in an AOT build only the reads its profile
-    // saw miss way 0 past the cold fills. A plain AOT build's inline reads
-    // are the ones inference proved monomorphic, and the scan's blocks
-    // there cost the whole-program optimizer (tests/cli
-    // large_module_compile_test: 3000 top-level reads went from under 90 s
-    // to 213 s) for nothing. The exception is a read inference typed by a
-    // class with subclasses (`expect_poly`): `this.matrix` in
-    // Object3D.updateMatrix meets a Scene, a Mesh and a bare Object3D in one
-    // frame, and the helper installs each new shape at way 0, so without the
-    // scan every one of them after the first missed into the helper.
-    bool no_poly_scan = false;
-    if (!in_process_ && !expect_poly) {
-        const std::optional<uint32_t> way0 =
-            spec_ ? spec_->peek_profile(SpecKind::Property, key_tag(key_index)) : std::nullopt;
-        no_poly_scan = !way0 || !SpecSiteEmitter::profile_says_polymorphic(*way0);
-        // The profile's scan site for this read is then not lowered; the
-        // next read of the same key keeps its own.
-        if (no_poly_scan && spec_) spec_->skip_site(SpecKind::PolyProperty, key_tag(key_index));
-    }
-    const bool compact = !no_poly_scan && in_process_ && spec_ && spec_->has_feedback();
-    // The memo carry is an image's (a compiled-ahead read's way 0 is the
-    // shape word's compare): the in-process forms keep their own guards.
-    const MemoCarry* carry = std::exchange(memo_carry_, nullptr);
-    if (in_process_) carry = nullptr;
-    std::vector<std::pair<BasicBlock*, bool>> edges;
-    Value* keyed = carry ? carry->keyed(b) : nullptr;
+    // A way-0 miss is `bronze_prop_get`, which answers from the site's
+    // other ways and fills it.
+    count_shape_turn(b, obj, site);
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_get_" + std::to_string(fn->next_block_id());
-
-    // Where nothing measured the site (an AOT build without a profile),
-    // everything past way 0 is laid out after the function's hot code
-    // (codegen/block_layout.cpp reads the name): a loop that reads a few
-    // fields per iteration otherwise carries each read's scan and helper call
-    // in its body, and instanced_mesh_churn's loop took 25x the instruction-
-    // cache misses for it. A profile, or tier 2's counts, place them instead.
-    const bool unmeasured = !in_process_ && !(spec_ && (spec_->has_profile() || spec_->has_feedback()));
-    const std::string cold = unmeasured ? "_cold" : "";
     BasicBlock* bb_fast = b.append_block(prefix + "_hit");
-    BasicBlock* bb_poly = no_poly_scan ? nullptr : b.append_block(prefix + "_poly" + cold);
-    BasicBlock* bb_slow = b.append_block(prefix + "_miss" + cold);
+    BasicBlock* bb_slow = b.append_block(prefix + "_miss");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(bb_current);
-    Value* hit = nullptr;
+    Value* plain = nullptr;
     Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    Value* hit = nullptr;
     Value* slot_word = nullptr;
-    BasicBlock* bb_way0_miss = bb_poly ? bb_poly : bb_slow;
-    if (in_process_) {
-        mono_hit(b, obj, site, hit, ptr, slot_word);
-    } else {
-        // Compiled ahead of time, the object and plain-header tests branch
-        // to the way-0 miss, and way 0 is compared with the shape word
-        // itself (plain_shape_or_miss) — or with the receiver's keyed shape
-        // the memo carry has, which no way holds unless it is a plain
-        // object's.
-        Value* shape = keyed ? keyed : plain_shape_or_miss(b, obj, bb_way0_miss);
-        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        emit_mono_slot_guard(b, shape, nullptr, site, hit, slot_word);
-    }
-    Value* c0 = nullptr;
+    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
     if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_way0_miss, SpecKind::Property, key_tag(key_index),
-                           compact ? &c0 : nullptr);
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, key_tag(key_index));
     } else {
-        b.build_br_if(hit, bb_fast, bb_way0_miss);
-        b.position_at_end(bb_way0_miss);
+        b.build_br_if(hit, bb_fast, bb_slow);
+        b.position_at_end(bb_slow);
     }
-
-    if (compact) {
-        // append_block moves the insertion point: the block first.
-        BasicBlock* bb_poly_hit = b.append_block(prefix + "_phit");
-        b.position_at_end(bb_poly);
-        Value* entry = site_ptr(b, site);
-        Value* addr = b.build_call(kPolyScanHelper, Type::i64(), {obj, entry, c0});
-        Value* c1 = nullptr;
-        spec_->emit_branch(b, b.build_ne(addr, b.build_iconst_i64(0)), bb_poly_hit, bb_slow,
-                           SpecKind::PolyProperty, key_tag(key_index), &c1);
-        b.build_br(bb_merge, {b.build_call("bronze_prop_get_counted", Type::i64(),
-                                           {obj, runtime_key(b, key_index), entry, c1})});
-        b.position_at_end(bb_poly_hit);
-        b.build_br(bb_merge, {b.build_load(Type::i64(), addr, 0)});
-    } else {
-        if (bb_poly) {
-            // Recomputed from `obj`, so what a way-0 guard carries into the
-            // poly block is the operands alone, as it was into the helper.
-            // Carrying the way-0 block's receiver words instead put them in
-            // every armed way-0 guard's state, which kept them materialized
-            // in tier-2 code (about 50 ms of nbody's 350 in bro's
-            // cpu_work.js).
-            //
-            // A site whose way 1 is empty has never held a second shape (the
-            // helper installs move-to-front), so its miss goes straight to
-            // the helper: one load and branch instead of the scan.
-            BasicBlock* bb_scan = b.append_block(prefix + "_scan" + cold);
-            BasicBlock* bb_poly_hit = b.append_block(prefix + "_phit" + cold);
-            b.position_at_end(bb_poly);
-            Value* way1_shape = b.build_load(Type::i64(), site.base, site.off + kIcEntrySize + kIcShapeOffset);
-            b.build_br_if(b.build_ne(way1_shape, b.build_iconst_i64(0)), bb_scan, bb_slow);
-            b.position_at_end(bb_scan);
-            Value* poly_hit = nullptr;
-            Value* poly_slot = nullptr;
-            // The keyed shape: no way holds it unless the receiver is a plain
-            // object of that shape.
-            Value* poly_shape = keyed_shape(b, obj);
-            Value* poly_ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-            other_ways_hit(b, nullptr, poly_shape, site, poly_hit, poly_slot);
-            if (spec_) {
-                spec_->emit_branch(b, poly_hit, bb_poly_hit, bb_slow, SpecKind::PolyProperty, key_tag(key_index));
-            } else {
-                b.build_br_if(poly_hit, bb_poly_hit, bb_slow);
-                b.position_at_end(bb_slow);
-            }
-            b.position_at_end(bb_poly_hit);
-            Value* poly_val = load_slot_br(b, poly_ptr, poly_slot);
-            edges.emplace_back(b.current_block(), true);
-            b.build_br(bb_merge, {poly_val});
-            b.position_at_end(bb_slow);
-        }
-        Value* slow_val = lower_prop_get(b, obj, key_index, site);
-        edges.emplace_back(b.current_block(), false);
-        b.build_br(bb_merge, {slow_val});
-    }
+    slow_arm(b);
+    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
 
     b.position_at_end(bb_fast);
-    Value* fast_val = load_slot_br(b, ptr, slot_word);
-    edges.emplace_back(b.current_block(), true);
-    b.build_br(bb_merge, {fast_val});
+    b.build_br(bb_merge, {load_slot_br(b, ptr, slot_word)});
 
-    if (carry) carry_memo(b, *carry, bb_merge, edges);
     b.position_at_end(bb_merge);
     return merge_val;
 }
 
-void PropertyLoweringHelper::carry_memo(Builder& b, const MemoCarry& carry, BasicBlock* merge,
-                                        const std::vector<std::pair<BasicBlock*, bool>>& edges) {
-    size_t n = 0;
-    for (const auto& [blk, hit] : edges) {
-        Instruction* term = blk->terminator();
-        // A miss edge's values are the receivers' shapes read again after
-        // the helper ran, just before the edge leaves.
-        if (!hit) b.position_before(term);
-        const std::vector<Value*> vals = hit ? carry.hit(b) : carry.miss(b);
-        n = vals.size();
-        for (BranchTarget* t : {&term->branch_target(), &term->true_target(), &term->false_target()}) {
-            if (t->block == merge) t->args.insert(t->args.end(), vals.begin(), vals.end());
+namespace {
+// The value a fact is recorded under: `v` behind the bitcasts between `i64`
+// and `tagged`.
+Value* fact_root(Value* v) {
+    for (int hops = 0; hops < 3; ++hops) {
+        const Instruction* def = v->defining_instruction();
+        if (def == nullptr || def->operand_count() != 1 ||
+            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
+            break;
         }
+        v = def->operand(0);
     }
-    std::vector<Value*> params;
-    for (size_t i = 0; i < n; ++i) params.push_back(b.add_block_param(merge, Type::i64()));
-    carry.merged(params);
+    return v;
+}
+// The marks of one value a test asks: the latest ones, each a call until
+// resolve_fact_markers.
+constexpr size_t kProofsAsked = 3;
+}  // namespace
+
+void PropertyLoweringHelper::prove_plain(Builder& b, Value* v) {
+    if (!spec_ || !spec_->image_sites() || v == nullptr) return;
+    const uint32_t id = next_proof_++;
+    b.build_call(kFactProofSymbol, Type::void_type(), {b.build_iconst_i32(static_cast<int32_t>(id))});
+    plain_proofs_[fact_root(v)].push_back(id);
 }
 
-void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,
-                                            Value*& slot_word) {
+Value* PropertyLoweringHelper::proven_plain(Builder& b, Value* v) {
+    if (v == nullptr) return nullptr;
+    const auto it = plain_proofs_.find(fact_root(v));
+    if (it == plain_proofs_.end()) return nullptr;
+    const std::vector<uint32_t>& ids = it->second;
     Value* any = nullptr;
-    slot_word = nullptr;
-    // At most one way names a shape (an install rewrites an existing entry
-    // in place), so the words select on the shape alone and the one
-    // own-data test is of the selected word.
-    for (int32_t way = BRONZE_ABI_IC_WAYS - 1; way >= 1; --way) {
-        const int32_t base = site.off + way * kIcEntrySize;
-        Value* match = b.build_eq(shape, b.build_load(Type::i64(), site.base, base + kIcShapeOffset));
-        Value* word = b.build_load(Type::i64(), site.base, base + kIcSlotWordOffset);
-        slot_word = slot_word ? b.build_select(match, word, slot_word) : word;
-        any = any ? b.build_or(any, match) : match;
+    for (size_t i = ids.size() > kProofsAsked ? ids.size() - kProofsAsked : 0; i < ids.size(); ++i) {
+        Value* p = b.build_call(kFactProvenSymbol, Type::i32(), {b.build_iconst_i32(static_cast<int32_t>(ids[i]))});
+        any = any ? b.build_or(any, p) : p;
     }
-    hit = b.build_and(plain ? b.build_and(plain, any) : any,
-                      b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit)));
+    return any;
 }
 
-void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape,
-                                            Value** base_out) {
+void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
+                                         const std::vector<Value*>& fast_args) {
+    if (spec_) {
+        spec_->site_branch(b, hit, fast, slow, exits, fast_args);
+    } else {
+        b.build_br_if(hit, fast, fast_args, slow, {});
+    }
+}
+
+void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSite& site) {
+    if (!site || !shape_turn_fn_ || slow_sites_.size() != 1) return;
+    // Zero for a receiver that is no plain object: the harvest reads the
+    // word as a shape's address.
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    shape_turn_fn_(b, slow_sites_[0], b.build_select(plain, shape, b.build_iconst_i64(0)));
+}
+
+void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape) {
     // The payload is the Value with its object tag XORed away, which is below
     // 2^48 exactly when the tag was the object tag.
     ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    // A value with an OBJECT FLAG (il_property.h): the flag is the plain
-    // test, and the header is read only to refuse the rest.
-    if (Value* known = object_flag(obj)) {
-        const Instruction* d = known->defining_instruction();
-        const bool always = d != nullptr && d->opcode() == Opcode::iconst_i32 && d->imm_i32() == 1;
-        Value* base = always ? ptr
-                             : b.build_select(known, ptr,
-                                              in_process_ ? b.build_iconst_i64(static_cast<int64_t>(
-                                                                reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
-                                                          : b.build_pinned_tls_read());
-        plain = known;
-        shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-        if (base_out) *base_out = base;
-        return;
-    }
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
     // A non-object reads through a mapped block whose header word is no
     // object's, so the header compare alone refuses it and `is_obj` has the
@@ -359,7 +216,6 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
     if (proven) plain = b.build_or(proven, plain);
     shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    if (base_out) *base_out = base;
 }
 
 void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
@@ -377,14 +233,6 @@ void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Valu
         slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
     }
     hit = plain ? b.build_and(plain, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
-}
-
-void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, const IcSite& site, Value*& hit, Value*& ptr,
-                                      Value*& slot_word) {
-    Value* plain = nullptr;
-    Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
-    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
 }
 
 // The base that, with slot_word * 8 + BRONZE_ABI_OBJ_SLOTS_OFFSET, addresses
@@ -429,155 +277,9 @@ Value* PropertyLoweringHelper::load_slot_br(Builder& b, Value* ptr, Value* slot_
     return val;
 }
 
-void PropertyLoweringHelper::expand_poly_scan(Builder& b, Instruction* call, Value*& hit, Value*& ptr,
-                                              Value*& slot_word) {
-    Value* obj = call->operand(0);
-    Value* entry = call->operand(1);
-    Value* counter = call->operand(2);
-    const Instruction* counter_def = counter ? counter->defining_instruction() : nullptr;
-    if (counter_def && counter_def->opcode() == Opcode::iconst_i64 && counter_def->imm_i64() != 0) {
-        Value* old = b.build_load(Type::i32(), counter, 0);
-        b.build_store(Type::i32(), counter, 0, b.build_add(old, b.build_iconst_i32(1)));
-    }
-    Value* plain = nullptr;
-    Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
-    other_ways_hit(b, plain, shape, IcSite{entry, 0}, hit, slot_word);
-}
-
-// The shape-transition hit, inline: the receiver is one property short of the
-// shape the site's way 0 names, and that property is the site's key — a
-// constructor's `this.x = x` on every `new` after the first. It is the
-// runtime's own transition hit (ObjectHeader::setProp) asked in generated
-// code, guard for guard, so the two cannot disagree about which receivers may
-// take it:
-//  - a plain object with no internal slots: the full header word, size
-//    included. A String wrapper is a plain object with internal slots, and
-//    the helper refuses its `length` and index writes before setProp is ever
-//    reached; the size keeps every such kind on the helper.
-//  - way 0 names a real shape whose parent is the receiver's shape (one add
-//    above it, on the same chain, so the receiver is not in dictionary mode —
-//    frozen, sealed and non-extensible objects all are — and its shape is not
-//    a dictionary either, asked directly as the runtime does);
-//  - the cached shape's own node is the slot the entry names (slots are unique
-//    along a chain, so this is the key identity), a plain data property
-//    (enumerable, writable, configurable, no accessor), and the slot word has
-//    no flag (depth 0), or only the f64 flag with a Number to store;
-//  - the receiver's shape is not a prototype's (an add to one must bump the
-//    epoch, the helper's job), and the entry's epoch is the thread's: no setter
-//    or read-only property has appeared on the chain since the fill proved
-//    there was none, and no prototype has been swapped;
-//  - the slot is addressable without allocating: an inline slot, or one the
-//    overflow block already has room for. Growing the block allocates, which
-//    can move the object, so that add stays the helper's.
-// Nothing here allocates or calls out before the stores, so `ptr` stays the
-// object's address throughout. The builder enters in the miss block and leaves
-// in the block that must call the helper; a transition branches to `done`.
-void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* shape, Value* plain,
-                                                 const IcSite& site, Value* val, bool need_barrier,
-                                                 BasicBlock* done, const std::string& prefix) {
-    BasicBlock* bb_miss = b.current_block();
-    BasicBlock* bb_node = b.append_block(prefix + "_tr_node");
-    BasicBlock* bb_room = b.append_block(prefix + "_tr_room");
-    BasicBlock* bb_store = b.append_block(prefix + "_tr_store");
-    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_tr_barrier") : nullptr;
-    BasicBlock* bb_helper = b.append_block(prefix + "_tr_miss");
-
-    b.position_at_end(bb_miss);
-    // Way 0's words from the packed row the guard just read.
-    Value* cached = way0_shape(b, site);
-    Value* slot_word = way0_slot_word(b, site);
-    // Zero is an unfilled entry and 1 the array-method sentinel (only a read
-    // site holds it, but a pointer is above both either way).
-    Value* real = b.build_ugt(cached, b.build_iconst_i64(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD));
-    Value* no_flag = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
-    // A transition to a double node is taken by a Number, whose bits are the
-    // double's; anything else misses to the helper, which takes the boxed edge.
-    Value* number = is_known_number(val)
-        ? b.build_iconst_i32(1)
-        : b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    Value* dbl = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
-                            b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG));
-    no_flag = b.build_or(no_flag, b.build_and(dbl, number));
-    // A transition to an object slot's node is taken by a plain object.
-    if (!is_known_number(val)) {
-        Value* objs = b.build_eq(b.build_lshr(slot_word, b.build_iconst_i64(32)),
-                                 b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_OBJECT_FLAG));
-        no_flag = b.build_or(no_flag, b.build_and(objs, plain_object_test(b, val)));
-    }
-    slot_word = b.build_and(slot_word, b.build_iconst_i64(0xFFFFFFFFLL));
-    b.build_br_if(b.build_and(plain, b.build_and(real, no_flag)), bb_node, bb_helper);
-
-    b.position_at_end(bb_node);
-    Value* header = b.build_load(Type::i64(), ptr, 0);
-    // Bare: the whole header word is the one a plain object with no internal
-    // slots has at its shape's inline capacity (shape.h `bare_header`). The
-    // arm's `plain` test has already said the shape word is a shape.
-    Value* is_bare = b.build_eq(header, b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET));
-    Value* is_child = b.build_eq(b.build_load(Type::i64(), cached, BRONZE_ABI_SHAPE_PARENT_OFFSET), shape);
-    Value* own_slot = b.build_eq(
-        b.build_zext_i64(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET)), slot_word);
-    Value* plain_data = b.build_eq(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_ATTRS_OFFSET),
-                                   b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_SHAPE_ATTRS_PLAIN_DATA)));
-    Value* not_dict = b.build_eq(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET),
-                                 b.build_iconst_i64(0));
-    Value* not_proto = b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET)),
-                                  b.build_iconst_i64(0));
-    Module* mod = b.current_block()->parent()->parent();
-    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
-                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
-    Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_EPOCH_OFFSET),
-                                 b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
-    Value* node_ok = b.build_and(b.build_and(b.build_and(is_bare, is_child), b.build_and(own_slot, plain_data)),
-                                 b.build_and(b.build_and(not_dict, not_proto), epoch_ok));
-    b.build_br_if(node_ok, bb_room, bb_helper);
-
-    // Room: an inline slot always has it; an overflow slot needs a block (the
-    // word is an object-tagged pointer, else undefined) whose capacity, read
-    // off its header's size exactly as ObjectHeader::overflowCapacity does,
-    // reaches the slot. A word that is no block reads the object's own header
-    // instead, and the select throws that answer away.
-    b.position_at_end(bb_room);
-    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot));
-    Value* overflow = b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset);
-    Value* block = b.build_xor(overflow, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    Value* has_block = b.build_ult(block, b.build_iconst_i64(kPayloadLimit));
-    Value* block_base = b.build_select(has_block, block, ptr);
-    Value* size = b.build_zext_i64(b.build_load(Type::i32(), block_base, BRONZE_ABI_HDR_SIZE_OFFSET));
-    Value* capacity = b.build_lshr(b.build_sub(size, b.build_iconst_i64(BRONZE_ABI_HDR_BYTES)),
-                                   b.build_iconst_i64(3));
-    Value* fits = b.build_and(has_block, b.build_ult(b.build_sub(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot)),
-                                                     capacity));
-    b.build_br_if(b.build_or(is_inline, fits), bb_store, bb_helper);
-
-    // The shape first, then the value: the new slot is already `undefined`
-    // (an object's inline slots and an overflow block's unused ones are
-    // filled when allocated), and the barrier, which comes last as it does on
-    // every slot store, sees the object at its final shape.
-    b.position_at_end(bb_store);
-    with_alias_class(b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, cached), kShapeWordAliasClass);
-    Value* base = slot_base(b, ptr, slot_word);
-    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
-                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
-    with_alias_class(b.build_store(Type::i64(), slot_addr, 0, val), kObjectSlotAliasClass);
-    if (need_barrier) {
-        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-        b.build_br_if(is_ref, bb_barrier, done);
-        b.position_at_end(bb_barrier);
-        b.build_write_barrier(slot_addr, val);
-    }
-    b.build_br(done);
-
-    b.position_at_end(bb_helper);
-}
-
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
-                                                 uint32_t imm, const IcSite& site, bool val_is_primitive,
-                                                 bool with_transition) {
-    // The counted helper is the assignment's; a definition's miss is
-    // bronze_prop_define's whatever the tier (lower_prop_set).
-    const bool compact = in_process_ && spec_ && spec_->has_feedback() &&
-                         imm != kDefineWriteMode && imm != kLiteralElementWriteMode;
+                                                 uint32_t imm, const IcSite& site, bool val_is_primitive) {
+    count_shape_turn(b, obj, site);
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
@@ -593,54 +295,22 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Value* slot_word = nullptr;
     Value* plain = nullptr;
     Value* shape = nullptr;
-    if (in_process_ || with_transition) {
-        receiver_shape(b, obj, plain, ptr, shape);
-    } else {
-        // Ahead of time and with no transition arm (which reads the shape
-        // on its miss), as the read's way-0 guard: branches to the helper.
-        shape = plain_shape_or_miss(b, obj, bb_slow);
-        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    }
+    receiver_shape(b, obj, plain, ptr, shape);
     // A Number's store also hits a double slot's way (its bits are the
-    // double's); anything else there misses to the stub, which converts an
+    // double's); anything else there misses to the helper, which converts an
     // Int32 box or generalizes the slot.
-    Value* number_store = is_known_number(val)
-        ? b.build_iconst_i32(1)
-        : b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    Value* number_store = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     emit_mono_slot_guard(b, shape, plain, site, hit, slot_word, number_store);
-    Value* counter = nullptr;
     // A write's tag is its key after '=', apart from the reads of it.
     const std::string tag = "=" + std::string(key_tag(key_index));
-    if (with_transition) {
-        // The site's profile counts only the helper's runs (the transition
-        // arm answers a constructor's adds without one), so the guard goes
-        // where the helper is reached: guarding the own-slot test instead
-        // deopted on every add, since a constructor's write never finds its
-        // key already there, and each recompile disarmed one site.
-        b.build_br_if(hit, bb_fast, bb_slow);
-        b.position_at_end(bb_slow);
-        emit_transition_arm(b, ptr, shape, plain, site, val, need_barrier, bb_merge, prefix);
-        if (spec_) {
-            // `hit` is false here; it is the guard's test so an armed site
-            // exits wherever the helper would run.
-            BasicBlock* bb_tr_miss = b.current_block();
-            BasicBlock* bb_helper = b.append_block(prefix + "_helper");
-            b.position_at_end(bb_tr_miss);
-            spec_->emit_branch(b, hit, bb_fast, bb_helper, SpecKind::Property, tag, compact ? &counter : nullptr);
-        }
-    } else if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, tag, compact ? &counter : nullptr);
+    if (spec_) {
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, tag);
     } else {
         b.build_br_if(hit, bb_fast, bb_slow);
         b.position_at_end(bb_slow);
     }
-    if (compact) {
-        b.build_call("bronze_prop_set_counted", Type::void_type(),
-                     {obj, runtime_key(b, key_index), val, site_ptr(b, site), b.build_iconst_i32(imm != 0 ? 1 : 0),
-                      counter});
-    } else {
-        lower_prop_set(b, obj, key_index, val, imm, site_ptr(b, site));
-    }
+    slow_arm(b);
+    lower_prop_set(b, obj, key_index, val, imm, site_ptr(b, site));
     b.build_br(bb_merge);
 
     // The store, then the barrier for a value that is not a Number (every
@@ -671,7 +341,7 @@ void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key
     // module has no table entry for passes null, never an index.
     Value* entry = ic_entry ? ic_entry : b.build_iconst_i64(0);
     if (imm == kDefineWriteMode || imm == kLiteralElementWriteMode) {
-        // A definition's miss: never the assignment's helper or its stub,
+        // A definition's miss: never the assignment's helper,
         // whose chain walk would run an inherited setter. The entry is this
         // site's own, which only bronze_prop_define fills. An array
         // literal's element misses the same way (il.h kWriteLiteralElement).
@@ -679,8 +349,7 @@ void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key
         return;
     }
     Value* strict_val = b.build_iconst_i32(imm != 0 ? 1 : 0);
-    const char* callee = ic_entry && ic_stubs_ ? kPropSetStub : "bronze_prop_set";
-    b.build_call(callee, Type::void_type(), {obj, runtime_key(b, key_index), val, entry, strict_val});
+    b.build_call("bronze_prop_set", Type::void_type(), {obj, runtime_key(b, key_index), val, entry, strict_val});
 }
 
 void PropertyLoweringHelper::lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure) {

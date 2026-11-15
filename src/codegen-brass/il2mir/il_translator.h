@@ -21,7 +21,6 @@ class SpecFeedback;
 namespace il2mir {
 
 using brass::SpecFeedback;
-class SpecProfile;
 
 struct FunctionMeta {
     bool needs_env = false;
@@ -38,10 +37,6 @@ struct FunctionMeta {
     uint32_t adapt_arity = 0;
     std::vector<bool> params_pinned;
     std::vector<uint32_t> param_pin_keys;
-    // One of the functions a profile's samples put the run's time in
-    // (il::Module::hotFunctions): with TranslatorOptions::twin_exits it is
-    // compiled with guards and a resume twin.
-    bool hot = false;
 };
 
 struct TranslatorOptions {
@@ -100,7 +95,6 @@ struct TranslatorOptions {
     bool enable_slp = true;
     bool enable_loop_tile = true;
     size_t tile_size = 16;
-    bool enable_inlined_fastpaths = true;
     bool enable_tlab = false;
     bool dump_ic_stats = false;
     bool enable_wbe = true;
@@ -160,24 +154,6 @@ struct TranslatorOptions {
     uint32_t ic_site_count = 0;
     std::vector<uint32_t> method_ic_sites;
     uint32_t template_site_count = 0;
-    // The static-slot guards' tables (il.h `staticSiteCount`,
-    // `classFamilies`): `static_site_count` i64 cells the embedder lays out
-    // as `__bronze_static_cells`, and, when `class_family_count` is nonzero,
-    // the family tables `__bronze_class_families` / `__bronze_class_family_fields`
-    // the entry hands `bronze_register_class_family`, with the base id it
-    // writes into `__bronze_family_base` (all module-suffixed; both writable
-    // tables per thread, like the cache).
-    uint32_t static_site_count = 0;
-    uint32_t class_family_count = 0;
-    // il.h `slotReprFields`: the module key indices the entry hands
-    // `bronze_register_slot_repr`, the names whose slots may be born doubles;
-    // and `slotReprObjectFields`, those whose slots may be born object ones.
-    std::vector<uint32_t> slot_repr_fields;
-    std::vector<uint32_t> slot_repr_object_fields;
-    // Per class family (il.h `classFamilies`, preorder), bit N set when field
-    // N is an `object` one: the runtime stamps the class only on a shape
-    // whose slot N is an object slot (runtime/class_family.cpp).
-    std::vector<uint64_t> class_family_object_slots;
     // Address the module's WRITABLE tables — `__bronze_module_env`,
     // `__bronze_template_cells`, `__bronze_ic_table`, and the embedder's own
     // (global cache, native imports) — per THREAD rather than per image, so
@@ -191,53 +167,30 @@ struct TranslatorOptions {
     // the cell names. A table's address is then `symbol + delta`. Off (the
     // default, and every standalone brass test) keeps the plain addresses.
     bool per_thread_module_data = false;
-    // Calls may enter a compiled callee's code directly when its function
-    // object carries BRONZE_ABI_FN_FLAG_DIRECT_CALL (the backend's
-    // setDirectJsCalls, which also decides which functions carry it): the
-    // inline call, method-call and `new` paths of il_lowering_direct.cpp.
-    bool direct_js_calls = false;
     // The program's speculation feedback (il_speculation.h), for a module
     // that runs in-process under brass's tiered pipeline: its inline fast
     // paths count their misses there and carry the guards tier 2 arms. Null
     // (AOT objects, whole-program tier 2) lowers them as plain branches.
     std::shared_ptr<SpecFeedback> spec_feedback;
-    // An AOT lowering's speculation profile (il_spec_profile.h), written by
-    // a tiered run of the same program: every keyed property site inline,
-    // each site's slow path laid out as its counts say, and every slow path
-    // kept as a branch. Ignored with spec_feedback.
-    std::shared_ptr<const SpecProfile> spec_profile;
-    // An image built on a profile, for a target whose guards can exit into a
-    // resume twin (x64): in the functions the profile's samples call hot
-    // (FunctionMeta::hot) the sites are guards, a claimed property site among
-    // them unless the profile saw it miss (its inline-cache index is in
-    // `missed_claim_ics`), and each such function is compiled twice
-    // (il_speculation.h, "IMAGE SITES"). Off, every site is a branch.
+    // An image for a target whose guards can exit into a resume twin (x64):
+    // each function but the top level and a coroutine body is compiled with
+    // its guards and a twin (il_speculation.h, "IMAGE SITES"). Off, every
+    // site is a branch.
     bool twin_exits = false;
-    std::unordered_set<uint32_t> missed_claim_ics;
-    // The layout cells (il::Module::layoutCells), by static cell.
-    std::unordered_map<uint32_t, LayoutCell> layout_cells;
-    // The sites whose harvested cache held several shapes or callees
-    // (il::Module::mixedIcs): an inlined accessor's guard on one of them
-    // keeps its miss in line.
-    std::unordered_set<uint32_t> mixed_ics;
     // SLOW SITES (il.h `slowSite`, il_speculation.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image
     // that may be harvested: one built on no profile) each slow arm bumps its
     // instruction's counter, and lowering sets the site's bit in
     // `slow_armed` (sized (count + 63) / 64 words by the caller, which lays
-    // it out before the counters). With `twin_exits`, a slow arm of a twinned
-    // function whose site is in `slow_cold` (armed in the harvested build,
-    // never run) is a twin exit.
+    // it out before the counters).
     uint32_t slow_site_count = 0;
     bool count_slow_sites = false;
     // The image is built to be harvested (il::Module::harvestOutPath): its
     // named reads and writes count their off-way receivers too
-    // (il/feedback_site.h kOffWayArm), and none has a slot of its own
-    // (il_to_brass_ast.cpp cacheEvidence).
+    // (il/feedback_site.h kShapeTurnArm).
     bool cache_evidence = false;
     std::shared_ptr<std::vector<uint64_t>> slow_armed;
-    std::unordered_set<uint32_t> slow_cold;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

@@ -1,536 +1,11 @@
 #include "il_property_lowering.h"
-#include "il_accessor_direct.h"
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_property.h"
-#include "il/il_pin.h"
-#include "il/key.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
-#include <bit>
-#include <cstdlib>
-#include <optional>
-#include <unordered_set>
 
 namespace il2mir {
-
-namespace {
-
-bool is_buffer_safe_function(const BronzeFunction& fn_ast,
-                             const PropertyLoweringHelper& prop_lowering,
-                             const IlLowering& lowering,
-                             std::unordered_set<uint32_t>& out_ta_receivers,
-                             std::unordered_set<uint32_t>& out_construct_ta_ids) {
-    if (fn_ast.blocks.size() <= 1 || fn_ast.is_coroutine_body()) return false;
-    std::unordered_set<uint32_t> safe_unbox_ids;
-    for (const auto& p : fn_ast.params) {
-        if (lowering.is_primitive_value(p.first)) safe_unbox_ids.insert(p.first);
-    }
-    for (const auto& blk : fn_ast.blocks) {
-        if (blk.handler_id != UINT32_MAX) return false;
-        for (const auto& bp : blk.params) {
-            if (lowering.is_primitive_value(bp.first)) safe_unbox_ids.insert(bp.first);
-        }
-        for (const auto& inst : blk.instructions) {
-            if (inst.result_id != UINT32_MAX && lowering.is_primitive_value(inst.result_id)) {
-                safe_unbox_ids.insert(inst.result_id);
-            }
-            if (inst.op == BronzeOp::PropGet && prop_lowering.key_tag(inst.index) == "length" &&
-                inst.result_id != UINT32_MAX) {
-                safe_unbox_ids.insert(inst.result_id);
-            }
-            if ((inst.op == BronzeOp::ElemGetTyped || inst.op == BronzeOp::ElemSetTyped) &&
-                !inst.operands.empty()) {
-                const int64_t k = inst.imm_i64 & 0xFFFF;
-                if (k >= BRONZE_ABI_TA_KIND_INT8 && k <= BRONZE_ABI_TA_KIND_FLOAT64) {
-                    out_ta_receivers.insert(inst.operands[0]);
-                }
-                if (inst.op == BronzeOp::ElemGetTyped && inst.result_id != UINT32_MAX) {
-                    safe_unbox_ids.insert(inst.result_id);
-                }
-            }
-        }
-    }
-    if (out_ta_receivers.empty()) return false;
-
-    for (size_t b_idx = 0; b_idx < fn_ast.blocks.size(); ++b_idx) {
-        for (const auto& inst : fn_ast.blocks[b_idx].instructions) {
-            switch (inst.op) {
-                case BronzeOp::ConstI32:
-                case BronzeOp::ConstF64:
-                case BronzeOp::ConstBool:
-                case BronzeOp::ConstNull:
-                case BronzeOp::ConstUndefined:
-                case BronzeOp::IsNumber:
-                case BronzeOp::IsNullish:
-                case BronzeOp::IsDenseArray:
-                case BronzeOp::NumTruthy:
-                case BronzeOp::Box:
-                case BronzeOp::Jump:
-                case BronzeOp::Branch:
-                case BronzeOp::Ret:
-                case BronzeOp::CensusRecord:
-                case BronzeOp::KeepAlive:
-                case BronzeOp::PinGuard:
-                case BronzeOp::GlobalGet:
-                case BronzeOp::EnvGet:
-                case BronzeOp::EnvGetTdz:
-                case BronzeOp::ModuleEnvGet:
-                case BronzeOp::CmpLt:
-                case BronzeOp::CmpLe:
-                case BronzeOp::CmpGt:
-                case BronzeOp::CmpGe:
-                case BronzeOp::CmpEq:
-                case BronzeOp::CmpNe:
-                    break;
-                case BronzeOp::ElemGetTyped:
-                case BronzeOp::ElemSetTyped: {
-                    const int64_t k = inst.imm_i64 & 0xFFFF;
-                    if (k < BRONZE_ABI_TA_KIND_INT8 || k > BRONZE_ABI_TA_KIND_FLOAT64) return false;
-                    break;
-                }
-                case BronzeOp::Add:
-                case BronzeOp::Sub:
-                case BronzeOp::Mul:
-                case BronzeOp::Div:
-                case BronzeOp::Mod:
-                case BronzeOp::Pow:
-                case BronzeOp::Neg:
-                case BronzeOp::BitAnd:
-                case BronzeOp::BitOr:
-                case BronzeOp::BitXor:
-                case BronzeOp::BitNot:
-                case BronzeOp::Shl:
-                case BronzeOp::Shr:
-                case BronzeOp::UShr:
-                case BronzeOp::MathImul:
-                case BronzeOp::MathUnary:
-                    if (inst.result_type != BronzeType::F64 && inst.result_type != BronzeType::I32) {
-                        return false;
-                    }
-                    break;
-                case BronzeOp::ToInt32:
-                case BronzeOp::Unbox:
-                    if (inst.raw_unbox || inst.nullish_unbox) break;
-                    if (inst.operands.empty() || safe_unbox_ids.count(inst.operands[0]) == 0) {
-                        return false;
-                    }
-                    break;
-                case BronzeOp::PropGet:
-                    if (prop_lowering.key_tag(inst.index) != "length") return false;
-                    break;
-                case BronzeOp::Call:
-                    if (inst.callee_name.rfind("__bronze_global_read_k", 0) != 0) return false;
-                    break;
-                case BronzeOp::Construct:
-                    if (inst.operands.size() != 2 || safe_unbox_ids.count(inst.operands[1]) == 0) {
-                        return false;
-                    }
-                    if (inst.result_id != UINT32_MAX) out_construct_ta_ids.insert(inst.result_id);
-                    break;
-                case BronzeOp::MethodCall:
-                    if (prop_lowering.key_tag(inst.index) != "fill" || inst.operands.size() != 2 ||
-                        safe_unbox_ids.count(inst.operands[1]) == 0) {
-                        return false;
-                    }
-                    break;
-                default:
-                    return false;
-            }
-        }
-    }
-    return true;
-}
-
-// Whether `id` is the result of an environment or module-binding read.
-bool defined_by_binding_read(const BronzeFunction& fn_ast, uint32_t id) {
-    for (const auto& blk : fn_ast.blocks) {
-        for (const auto& inst : blk.instructions) {
-            if (inst.result_id != id) continue;
-            return inst.op == BronzeOp::EnvGet || inst.op == BronzeOp::ModuleEnvGet;
-        }
-    }
-    return false;
-}
-
-// Whether the typed array `obj_id` names may be read and written through a
-// cursor (get_preloaded_ta_cursor): it is one array for the whole function,
-// and nothing in the function can collect between a cursor and its uses.
-bool ta_cursor_eligible(IlLowering* lowering, uint32_t obj_id, Value* raw_obj) {
-    const BronzeFunction* fn_ast = lowering->current_fn_ast();
-    if (!fn_ast) return false;
-    // The array is re-read from its tagged bits in every block, and only a
-    // tagged value is a root the collector updates when the array moves.
-    if (!raw_obj->type().is_tagged()) return false;
-
-    std::unordered_set<uint32_t> ta_receivers;
-    std::unordered_set<uint32_t> construct_ta_ids;
-    const bool fn_safe =
-        is_buffer_safe_function(*fn_ast, lowering->prop_lowering(), *lowering, ta_receivers,
-                                construct_ta_ids) &&
-        ta_receivers.count(obj_id) != 0;
-    if (!fn_safe) return false;
-    // A buffer-safe function allocates nowhere but in its typed-array
-    // constructions, so the parameter's cursor needs none of them and a
-    // constructed array's needs to be the only one (another `new` after it,
-    // or a string built in the loop that reads it, left every read and write
-    // going to the storage's old address).
-    if (construct_ta_ids.size() > (construct_ta_ids.count(obj_id) != 0 ? 1u : 0u)) return false;
-    for (const auto& p : fn_ast->params) {
-        if (p.first == obj_id) return true;
-    }
-    if (raw_obj->is_instruction() && construct_ta_ids.count(obj_id) != 0) return true;
-    // A captured or module binding read once (the N-body kernel's `pos`, `vel`
-    // and `acc`, closed over by the function that loops on them): the read is
-    // an SSA value, so it names one array for the whole function, and nothing
-    // in a buffer-safe function can store to the binding or run code that
-    // would.
-    return raw_obj->is_instruction() && defined_by_binding_read(*fn_ast, obj_id);
-}
-
-// Reads, once, what a cursor keeps (IlLowering::TaCursor): at the function's
-// entry for a parameter, right after the definition for a construction or a
-// binding read. The buffer is held tagged, a root. The window's first byte is
-// (buffer address & keep) + off: an inline buffer's bytes follow its header,
-// so keep is the payload mask and off the header's size plus byteOffset; an
-// external store never moves, so keep is 0 and off the store's address plus
-// byteOffset. Those and the length are read once: no collection changes
-// them. Only the host, while a compartment is suspended at a poll, could
-// detach, resize or externalize the buffer under the loop, and each leaves
-// the bytes the cursor names inside the buffer (a detach keeps them, a
-// resizable buffer reserves its maximum, an externalized one keeps its
-// inline copy): a cursor that missed it reads and writes bytes the buffer
-// still owns, never memory it does not.
-bool load_ta_cursor(IlLowering* lowering, Value* raw_obj, Builder& b, IlLowering::TaCursor& cursor) {
-    BasicBlock* resume_bb = b.current_block();
-    const DebugLoc saved_loc = b.current_loc();
-    bool repositioned = false;
-    if (!raw_obj->is_instruction()) {
-        BasicBlock* target_bb = lowering->entry_hoist_block();
-        if (!target_bb) return false;
-        if (target_bb != resume_bb) {
-            if (!target_bb->tail()) return false;
-            b.clear_current_loc();
-            b.position_before(target_bb->tail());
-            repositioned = true;
-        }
-    } else {
-        Instruction* def_inst = raw_obj->defining_instruction();
-        if (!def_inst || !def_inst->parent()) return false;
-        if (def_inst->next() != nullptr) {
-            b.clear_current_loc();
-            b.position_after(def_inst);
-            repositioned = true;
-        }
-    }
-    const auto mask = b.build_iconst_i64(0x0000FFFFFFFFFFFFLL);
-    Value* ptr = b.build_and(lowering->ensure_type(raw_obj, Type::i64(), b), mask);
-    Value* buf_bits = with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET), kTypedArrayHeaderAliasClass);
-    Value* buf_addr = b.build_and(buf_bits, mask);
-    Value* ext = with_alias_class(b.build_load(Type::i64(), buf_addr, BRONZE_ABI_BUF_EXTPTR_OFFSET), kTypedArrayHeaderAliasClass);
-    Value* is_ext = b.build_ne(ext, b.build_iconst_i64(0));
-    Value* byte_offset = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET), kTypedArrayHeaderAliasClass));
-    cursor.buf = lowering->ensure_type(buf_bits, Type::tagged(), b);
-    cursor.keep = b.build_select(is_ext, b.build_iconst_i64(0), mask);
-    cursor.off = b.build_add(b.build_select(is_ext, ext, b.build_iconst_i64(BRONZE_ABI_BUF_DATA_OFFSET)),
-                             byte_offset);
-    cursor.len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
-    cursor.loaded = true;
-
-    if (repositioned) {
-        b.position_at_end(resume_bb);
-        b.set_current_loc(saved_loc);
-    }
-    return true;
-}
-
-bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
-                             const std::unordered_map<uint32_t, Value*>& val_map,
-                             Value*& out_data, Value*& out_len) {
-    out_data = nullptr;
-    out_len = nullptr;
-    if (!lowering || !lowering->prop_lowering().enable_inlined_fastpaths()) {
-        return false;
-    }
-    auto vit = val_map.find(obj_id);
-    if (vit == val_map.end() || !vit->second) return false;
-    Value* raw_obj = vit->second;
-
-    auto& cursors = lowering->ta_cursors();
-    auto cit = cursors.find(obj_id);
-    if (cit == cursors.end()) {
-        cit = cursors.emplace(obj_id, IlLowering::TaCursor{}).first;
-        cit->second.eligible = ta_cursor_eligible(lowering, obj_id, raw_obj);
-    }
-    IlLowering::TaCursor& cursor = cit->second;
-    if (!cursor.eligible) return false;
-    if (!cursor.loaded && !load_ta_cursor(lowering, raw_obj, b, cursor)) {
-        cursor.eligible = false;
-        return false;
-    }
-    // A cursor is a raw pointer into the array's storage, and a collection
-    // moves that storage, so the pointer is good only until the next point
-    // where one can run. A buffer-safe function has few: its one
-    // construction, if any, which a constructed array's cursor follows, and
-    // a loop's back edge, which carries an interrupt poll (brass
-    // Module::interrupt_poll, inserted after the optimizer). A compartment
-    // suspends its fiber at that poll (rtServiceInterrupt), and while it is
-    // suspended the host and every other compartment on the thread run,
-    // allocate and collect: the collection moves a young array's buffer, and
-    // a pointer taken once at the function's entry went on reading and
-    // writing the nursery copy after it. So the pointer lives within one IL
-    // block, and not past a lowering that emitted a call or a loop
-    // (IlLowering::settle_ta_cursors). It is made again from the buffer's
-    // tagged bits, which the stack maps keep current across the poll and
-    // whose read no pass hoists out of the loop (brass gc_refs.hpp,
-    // bitcast_i64_tagged): a load from the frame, a mask and an add.
-    if (!cursor.data) {
-        Value* buf_bits = lowering->ensure_type(cursor.buf, Type::i64(), b);
-        cursor.data = b.build_add(b.build_and(buf_bits, cursor.keep), cursor.off);
-    }
-    out_data = cursor.data;
-    out_len = cursor.len;
-    return true;
-}
-
-constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-constexpr uint64_t kMaxInlineDispIndex = (uint64_t{INT32_MAX} - kBronzeHdrBytes) / 8;
-
-Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
-
-// A read's ordinary sequence: the `length` arms, then the inline cache test.
-// A static site's guard misses into this.
-Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                               const IcSite& site, const MemoCarry* carry = nullptr);
-
-// `carry`: the shape memo carried across the read (MemoCarry), where the read
-// is a mono or absent site of its own and not a branch of a larger one.
-Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                             const IcSite& site, const MemoCarry* carry = nullptr) {
-    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
-    prop_lowering.count_shape_turn(b, obj_val, site);
-    // A receiver written as a class's name: the function arms first
-    // (il_fn_recv.cpp), the site's ordinary read for anything else.
-    if (inst_ast.is_fn_recv && site && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
-        inst_ast.index != PropertyLoweringHelper::kNoKey) {
-        return prop_lowering.lower_prop_get_fn_recv(b, obj_val, inst_ast.index, site, [&](Builder& bb) {
-            return lower_prop_get_ordinary(lowering, inst_ast, bb, obj_val, site);
-        });
-    }
-    return lower_prop_get_ordinary(lowering, inst_ast, b, obj_val, site, carry);
-}
-
-Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                               const IcSite& site, const MemoCarry* carry) {
-    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
-    // `x.length` where nothing proved what `x` is: an Array answers
-    // from its header (10.4.2's exotic `length`, which the runtime's
-    // read answers the same way for every array, `arguments`
-    // included), and anything else takes the way-0 guard. An array carries
-    // no shape, so the cache test below could only ever miss on one.
-    if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
-        prop_lowering.key_tag(inst_ast.index) == "length") {
-        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, static_cast<bool>(site),
-                                                   inst_ast.is_family);
-    }
-    // An image's read: the inline cache test (il_prop_get_inline.cpp).
-    if (Value* v = prop_lowering.lower_prop_get_inline(b, obj_val, inst_ast.index, site, lowering->run_once(), carry)) {
-        return v;
-    }
-    // In process: the way-0 guard and load in front of the helper. Code that
-    // runs once calls the helper, which caches as well.
-    if (site && prop_lowering.enable_inlined_fastpaths() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
-        !lowering->run_once()) {
-        prop_lowering.set_memo_carry(carry);
-        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
-    }
-    return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
-}
-
-// A write's ordinary sequence: the way-0 inline store (with a constructor's
-// inline transition), or the helper for a fresh object's. A static
-// site's guard misses into this.
-void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                           Value* val, const IcSite& site) {
-    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
-    prop_lowering.count_shape_turn(b, obj_val, site);
-    // The strict flag of an assignment, or kDefineWriteMode for a PropDefine:
-    // the helper the miss calls is chosen by it (lower_prop_set).
-    const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
-    // Every write gets the inline own-slot store, less the writes to an
-    // object this function just created; a write in a class constructor
-    // (`this.x = x`) also gets the inline shape transition on its miss, which
-    // is what answers those adds on every construction after the first.
-    const bool fresh = lowering->is_fresh_object(inst_ast.operands[0]);
-    const bool adds = lowering->in_class_constructor();
-    if (site && (!fresh || adds) && prop_lowering.enable_inlined_fastpaths() &&
-        prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
-        !lowering->run_once()) {
-        const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-        prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim,
-                                          /*with_transition=*/adds);
-        return;
-    }
-    prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
-                                 site ? prop_lowering.site_ptr(b, site) : nullptr);
-}
-
-} // namespace
-
-void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
-    Value* ptr = object_address(b, obj);
-    Value* block = b.build_and(array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
-    Value* head = b.build_zext_i64(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    out_block = b.build_add(block, b.build_shl(head, iconst64(b, 3)));
-    out_head = nullptr;
-}
-
-Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index) {
-    if (!head) {
-        return b.build_add(block, iconst64(b, kBronzeHdrBytes + static_cast<uint64_t>(index) * 8));
-    }
-    Value* slot = index == 0 ? head : b.build_add(head, iconst64(b, index));
-    return b.build_add(b.build_add(block, b.build_shl(slot, iconst64(b, 3))), iconst64(b, kBronzeHdrBytes));
-}
-
-Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
-                                                            bool check_hole, Type as) {
-    Value* elem = nullptr;
-    if (!head) {
-        if (index <= kMaxInlineDispIndex) {
-            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            elem = b.build_load(as, block, disp);
-        } else {
-            elem = b.build_load_indexed(as, block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
-        }
-    } else if (index <= kMaxInlineDispIndex) {
-        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        elem = b.build_load_indexed(as, block, head, 8, disp);
-    } else {
-        Value* slot = b.build_add(head, iconst64(b, index));
-        elem = b.build_load_indexed(as, block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
-    }
-    // The double form carries the hole's bits; its boxed uses map it
-    // (IlLowering::get_val_by_id).
-    if (as == Type::f64()) elem->defining_instruction()->set_alias_class(kBoxedElementAliasClass);
-    if (check_hole && as == Type::i64()) {
-        Value* is_hole = b.build_eq(elem, iconst64(b, BRONZE_ABI_HOLE_BITS));
-        elem = b.build_select(is_hole, iconst64(b, kUndefinedTag), elem);
-    }
-    return elem;
-}
-
-void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
-                                                           Value* val) {
-    const Type ty = val->type() == Type::f64() ? Type::f64() : Type::i64();
-    if (!head) {
-        if (index <= kMaxInlineDispIndex) {
-            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            with_alias_class(b.build_store(ty, block, disp, val), kBoxedElementAliasClass);
-        } else {
-            with_alias_class(b.build_store_indexed(ty, block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
-        }
-    } else if (index <= kMaxInlineDispIndex) {
-        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        with_alias_class(b.build_store_indexed(ty, block, head, 8, disp, val), kBoxedElementAliasClass);
-    } else {
-        Value* slot = b.build_add(head, iconst64(b, index));
-        with_alias_class(b.build_store_indexed(ty, block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
-    }
-}
-
-namespace {
-// An array index as the Number a computed access carries for a key.
-uint64_t number_bits(uint32_t index) { return std::bit_cast<uint64_t>(static_cast<double>(index)); }
-}  // namespace
-
-// What a constant-index access calls once its receiver has proven no dense
-// Array: the computed access with the index as its key, behind the module's
-// constant-index stub (il_elem_stub.cpp), which answers a word view's element
-// itself and leaves the rest (another typed array's element, a string's unit)
-// at the keyed stub's door. The named access
-// went through the site's cache to learn that an index is no shape's slot.
-Value* PropertyLoweringHelper::lower_index_get_helper(Builder& b, Value* obj, uint32_t elem_index) {
-    return b.build_call(index_get_helper(), Type::i64(), {obj, iconst64(b, number_bits(elem_index))});
-}
-
-void PropertyLoweringHelper::lower_index_set_helper(Builder& b, Value* obj, uint32_t elem_index, Value* val,
-                                                    uint32_t strict) {
-    b.build_call(index_set_helper(), Type::void_type(),
-                 {obj, iconst64(b, number_bits(elem_index)), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
-}
-
-Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t elem_index,
-                                                    bool check_hole) {
-    BasicBlock* cur = b.current_block();
-    Function* fn = cur->parent();
-    const std::string prefix = "prop_idx_get_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(bb_merge, Type::i64());
-
-    b.position_at_end(cur);
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head, bb_slow);
-    slow_branch(b, ok, bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    Value* fast_val = load_proven_dense_array_elem(b, block, head, elem_index, check_hole);
-    b.build_br(bb_merge, {fast_val});
-
-    b.position_at_end(bb_slow);
-    slow_arm(b);
-    Value* slow_val = lower_index_get_helper(b, obj, elem_index);
-    b.build_br(bb_merge, {slow_val});
-
-    b.position_at_end(bb_merge);
-    return result;
-}
-
-void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t elem_index, Value* val,
-                                                  uint32_t strict, bool val_is_primitive) {
-    BasicBlock* cur = b.current_block();
-    const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
-    Function* fn = cur->parent();
-    const std::string prefix = "prop_idx_set_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-
-    b.position_at_end(cur);
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head, bb_slow);
-    slow_branch(b, ok, bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    store_proven_dense_array_elem(b, block, head, elem_index, val);
-    if (need_barrier) {
-        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NUMBER_MAX_BITS)));
-        b.build_br_if(is_ref, bb_barrier, bb_merge);
-        b.position_at_end(bb_barrier);
-        forget_numbers(b, obj);
-        Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
-        b.build_write_barrier(slot_addr, val);
-        b.build_br(bb_merge);
-    } else {
-        // A primitive the barrier skips may still not be a Number (il_number_array.cpp, the rule for a store).
-        if (!is_known_number(val)) forget_numbers_unless_number(b, obj, val);
-        b.build_br(bb_merge);
-    }
-
-    b.position_at_end(bb_slow);
-    slow_arm(b);
-    lower_index_set_helper(b, obj, elem_index, val, strict);
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_merge);
-}
 
 // The inline-cache paths: il_ic_lowering.cpp. lower_elem_get /
 // lower_elem_set: il_elem_lowering.cpp.
@@ -547,12 +22,8 @@ bool is_property_il_op(BronzeOp op) {
         case BronzeOp::AccessorDef:
         case BronzeOp::AccessorDefComputed:
         case BronzeOp::ElemGet:
-        case BronzeOp::ElemGetTyped:
         case BronzeOp::ElemSet:
-        case BronzeOp::ElemSetTyped:
         case BronzeOp::ElemDelete:
-        case BronzeOp::IsShape:
-        case BronzeOp::LayoutFact:
             return true;
         default:
             return false;
@@ -568,193 +39,48 @@ bool lower_property_instruction(
     Value*& res_val
 ) {
     auto get_opd = [&](size_t idx) -> Value* {
-        if (idx < inst_ast.operands.size()) {
-            uint32_t id = inst_ast.operands[idx];
-            if (lowering) {
-                return lowering->get_val_by_id(id, b, val_map);
-            }
-            if (val_map.count(id)) return val_map[id];
-        }
+        if (idx < inst_ast.operands.size()) return lowering->get_val_by_id(inst_ast.operands[idx], b, val_map);
         return nullptr;
     };
-
     auto ensure_type = [&](Value* val, Type target_type) -> Value* {
-        if (lowering) {
-            return lowering->ensure_type(val, target_type, b);
-        }
-        return val;
+        return lowering->ensure_type(val, target_type, b);
     };
-
-    auto get_key_id = [&](uint32_t key_idx) -> Value* {
-        if (lowering) {
-            return lowering->get_key_id(b, key_idx);
-        }
-        return b.build_iconst_i32(static_cast<int32_t>(key_idx));
-    };
+    auto get_key_id = [&](uint32_t key_idx) -> Value* { return lowering->get_key_id(b, key_idx); };
 
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
 
     switch (inst_ast.op) {
+        // The site's way-0 guard and load in front of bronze_prop_get, or the
+        // helper alone for a read with no cache.
         case BronzeOp::PropGet: {
-            if (!inst_ast.operands.empty() && prop_lowering.key_tag(inst_ast.index) == "length") {
-                Value* ta_data = nullptr;
-                Value* ta_len = nullptr;
-                if (get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len)) {
-                    res_val = prop_lowering.box_number(b, b.build_sitofp_f64_i64(ta_len));
-                    return true;
-                }
-                if ((inst_ast.imm_i64 & bronze::il::kPropGetArrayLength) != 0) {  // il_pin.h
-                    res_val = prop_lowering.lower_array_length(b, ensure_type(get_opd(0), Type::i64()));
-                    return true;
-                }
-            }
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
-            if (lower_shape_guarded(lowering, inst_ast, b, obj_val, nullptr, res_val)) return true;
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
-            if (accessor_direct_here(lowering, inst_ast)) {
-                AccessorMiss miss;
-                miss.get = [&](Builder& bb) { return lower_prop_get_cached(lowering, inst_ast, bb, obj_val, site); };
-                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                res_val = lower_accessor_get(lowering, inst_ast, b, obj_val, miss);
-                return true;
+            if (site && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
+            } else {
+                res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
             }
-            if (static_get_lowerable(lowering, inst_ast)) {
-                auto static_get = [&](Builder& bb) {
-                    StaticMiss miss;
-                    miss.get = [&](Builder& b2) { return lower_prop_get_cached(lowering, inst_ast, b2, obj_val, site); };
-                    miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                    miss.exits = lowering->claim_exits(inst_ast);
-                    lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
-                    return prop_lowering.lower_prop_get_static(bb, obj_val, inst_ast.index,
-                                                               StaticSlotSite::of(inst_ast), miss);
-                };
-                if (has_layout_fact(inst_ast)) {
-                    res_val = lower_fact_site(
-                        lowering, b, ensure_type(get_opd(1), Type::f64()), val_map, /*has_result=*/true,
-                        [&](Builder& bb) {
-                            return prop_lowering.lower_prop_get_guarded(bb, obj_val, StaticSlotSite::of(inst_ast));
-                        },
-                        static_get);
-                    return true;
-                }
-                res_val = static_get(b);
-                return true;
-            }
-            if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
-                if (const auto elem_idx = bronze::il::parseIndexKey(prop_lowering.key_tag(inst_ast.index))) {
-                    if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets()) {
-                        const bool check_hole = !lowering->is_hole_insensitive(inst_ast.result_id);
-                        if (lowering->is_proven_dense_array(inst_ast.operands[0], *elem_idx)) {
-                            Value* block = nullptr;
-                            Value* head = nullptr;
-                            lowering->get_dense_array_cursor(inst_ast.operands[0], obj_val, b, block, head);
-                            // il.h `numberBits`: the same load as a double.
-                            res_val = prop_lowering.load_proven_dense_array_elem(
-                                b, block, head, *elem_idx, check_hole,
-                                inst_ast.number_bits ? Type::f64() : Type::i64());
-                            // A load from an elements block a dominating guard
-                            // proved in bounds (a hole reads as undefined by a
-                            // select): no call, no allocation, no shape moved,
-                            // so the shape memo stays (il_shape_memo.cpp).
-                            lowering->memo_keep();
-                            return true;
-                        }
-                        if (!lowering->run_once()) {
-                            res_val = prop_lowering.lower_prop_get_index(b, obj_val, *elem_idx, check_hole);
-                            lowering->invalidate_dense_array_proofs();
-                            return true;
-                        }
-                    }
-                    res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
-                    lowering->invalidate_dense_array_proofs();
-                    return true;
-                }
-            }
-            // The read keeps the shape memo across its join where it is an
-            // inline-cache site (MemoCarry); anything else forgets it after.
-            const std::optional<MemoCarry> carry = lowering->memo_carry(inst_ast.operands[0], obj_val, val_map);
-            res_val = lower_prop_get_cached(lowering, inst_ast, b, obj_val, site, carry ? &*carry : nullptr);
-            prop_lowering.set_memo_carry(nullptr);
             return true;
         }
 
-        case BronzeOp::IsShape:
-        case BronzeOp::LayoutFact:
-            lower_shape_guarded(lowering, inst_ast, b, ensure_type(get_opd(0), Type::i64()), nullptr, res_val);
-            return true;
-
-        case BronzeOp::PropSet: {
-            Value* obj_val = ensure_type(get_opd(0), Type::i64());
-            Value* val = ensure_type(get_opd(1), Type::i64());
-            if (lower_shape_guarded(lowering, inst_ast, b, obj_val, val, res_val)) return true;
-            const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
-            const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
-            if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
-                if (const auto elem_idx = bronze::il::parseIndexKey(prop_lowering.key_tag(inst_ast.index))) {
-                    if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets() &&
-                        !lowering->run_once()) {
-                        const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                        prop_lowering.lower_prop_set_index(b, obj_val, *elem_idx, val, strict, val_prim);
-                        lowering->invalidate_dense_array_proofs();
-                        return true;
-                    }
-                    prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
-                                                 site ? prop_lowering.site_ptr(b, site) : nullptr);
-                    lowering->invalidate_dense_array_proofs();
-                    return true;
-                }
-            }
-            if (accessor_direct_here(lowering, inst_ast)) {
-                AccessorMiss miss;
-                miss.set = [&](Builder& bb) { lower_prop_set_cached(lowering, inst_ast, bb, obj_val, val, site); };
-                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                lower_accessor_set(lowering, inst_ast, b, obj_val, val, miss);
-                return true;
-            }
-            if (static_set_lowerable(lowering, inst_ast)) {
-                auto static_set = [&](Builder& bb) -> Value* {
-                    StaticMiss miss;
-                    miss.set = [&](Builder& b2) { lower_prop_set_cached(lowering, inst_ast, b2, obj_val, val, site); };
-                    miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                    miss.exits = lowering->claim_exits(inst_ast);
-                    lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
-                    const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                    const bool need_barrier = !val_prim && !prop_lowering.is_known_non_ref(val);
-                    prop_lowering.lower_prop_set_static(bb, obj_val, inst_ast.index, val,
-                                                        StaticSlotSite::of(inst_ast),
-                                                        lowering->is_number_value(inst_ast.operands[1]),
-                                                        need_barrier, miss);
-                    return nullptr;
-                };
-                if (has_layout_fact(inst_ast)) {
-                    // The verifier holds a fact site's value to a Number box,
-                    // which every slot representation takes with no barrier.
-                    lower_fact_site(
-                        lowering, b, ensure_type(get_opd(2), Type::f64()), val_map, /*has_result=*/false,
-                        [&](Builder& bb) -> Value* {
-                            prop_lowering.lower_prop_set_guarded(bb, obj_val, val, StaticSlotSite::of(inst_ast));
-                            return nullptr;
-                        },
-                        static_set);
-                    return true;
-                }
-                static_set(b);
-                return true;
-            }
-            lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
-            return true;
-        }
-
-        // A DEFINITION (il_ast.h PropDefine): the site's own cache — its
-        // inline own-slot store and, in a constructor, its inline transition —
-        // then bronze_prop_define. None of the assignment's other paths: an
-        // index key's element store, an accessor call and a static-slot guard
-        // each answer what a [[Set]] finds on the chain.
+        // An assignment, or a DEFINITION (il_ast.h PropDefine): the site's
+        // way-0 store in front of the helper, which for a definition is
+        // bronze_prop_define (lower_prop_set reads the mode).
+        case BronzeOp::PropSet:
         case BronzeOp::PropDefine: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* val = ensure_type(get_opd(1), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
-            lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
+            // The strict flag of an assignment, or kDefineWriteMode for a
+            // PropDefine: the helper the miss calls is chosen by it.
+            const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
+            if (site && prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site,
+                                                  lowering->is_primitive_value(inst_ast.operands[1]));
+            } else {
+                prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
+                                             site ? prop_lowering.site_ptr(b, site) : nullptr);
+            }
             return true;
         }
 
@@ -785,12 +111,9 @@ bool lower_property_instruction(
             Value* target = ensure_type(get_opd(0), Type::i64());
             Value* value = ensure_type(get_opd(1), Type::i64());
             Value* key_id = get_key_id(inst_ast.index);
-            // A block run once keeps the helper alone: its arm would only be size.
-            const bool arm = lowering && !lowering->run_once();
-            const bool val_is_number = lowering && inst_ast.operands.size() > 1 &&
-                                       lowering->is_number_value(inst_ast.operands[1]);
-            prop_lowering.lower_define_own_attr(b, target, key_id, value, static_cast<uint32_t>(inst_ast.imm_i64),
-                                                inst_ast.define_cell, arm, val_is_number);
+            b.build_call("bronze_define_own_attr", Type::void_type(),
+                         {target, key_id, value, b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64)),
+                          b.build_iconst_i64(0)});
             return true;
         }
 
@@ -818,43 +141,7 @@ bool lower_property_instruction(
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
-            auto full = [&](Builder& fb) {
-                return lowering->run_once() ? prop_lowering.lower_elem_get_call(fb, obj_val, idx_val)
-                                            : prop_lowering.lower_elem_get(fb, obj_val, idx_val, inst_ast.imm_i64);
-            };
-            // Or the element the `in` before it loaded (il_in_elem_fuse.cpp).
-            Value* loaded = lowering->in_element_for(inst_ast.result_id);
-            res_val = loaded ? prop_lowering.lower_elem_get_loaded(b, loaded, full) : full(b);
-            return true;
-        }
-
-        case BronzeOp::ElemGetTyped: {
-            Value* idx_val = get_opd(1);
-            if (!idx_val) return false;
-            if (lowering->run_once()) {
-                Value* obj_val = ensure_type(get_opd(0), Type::i64());
-                res_val = prop_lowering.lower_elem_get_call(b, obj_val, idx_val);
-                if (inst_ast.result_type == BronzeType::F64) {
-                    // A plain array's element is ToNumber'd (il::elemGetCoerces),
-                    // a view's is a Number already.
-                    const bool plain = (inst_ast.imm_i64 & 0xFFFF) == 100;  // il::kElemKindPlainArrayF64
-                    res_val = plain ? b.build_call("bronze_unbox_f64", Type::f64(), {res_val})
-                                    : ensure_type(res_val, Type::f64());
-                }
-            } else {
-                Value* ta_data = nullptr;
-                Value* ta_len = nullptr;
-                if (!inst_ast.operands.empty()) {
-                    get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len);
-                }
-                const bool proven_in_bounds = (inst_ast.imm_i64 & (1LL << 17)) != 0;
-                const bool need_obj = !ta_data || (!ta_len && !proven_in_bounds);
-                Value* obj_val = need_obj ? ensure_type(get_opd(0), Type::i64()) : nullptr;
-                res_val = prop_lowering.lower_elem_get_typed(b, obj_val, idx_val, inst_ast.imm_i64, ta_data, ta_len);
-                if (inst_ast.result_type != BronzeType::F64) {
-                    res_val = ensure_type(res_val, Type::i64());
-                }
-            }
+            res_val = prop_lowering.lower_elem_get(b, obj_val, idx_val);
             return true;
         }
 
@@ -863,35 +150,7 @@ bool lower_property_instruction(
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             Value* val = ensure_type(get_opd(2), Type::i64());
-            if (lowering->run_once()) {
-                prop_lowering.lower_elem_set_call(b, obj_val, idx_val, val, inst_ast.index);
-            } else {
-                prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index, inst_ast.imm_i64);
-            }
-            return true;
-        }
-
-        case BronzeOp::ElemSetTyped: {
-            Value* idx_val = get_opd(1);
-            if (!idx_val) return false;
-            Value* raw_val = get_opd(2);
-            if (!raw_val) return false;
-            if (lowering->run_once()) {
-                Value* obj_val = ensure_type(get_opd(0), Type::i64());
-                prop_lowering.lower_elem_set_call(b, obj_val, idx_val, ensure_type(raw_val, Type::i64()),
-                                                  inst_ast.index);
-            } else {
-                Value* ta_data = nullptr;
-                Value* ta_len = nullptr;
-                if (!inst_ast.operands.empty()) {
-                    get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len);
-                }
-                const bool proven_in_bounds = (inst_ast.imm_i64 & (1LL << 17)) != 0;
-                const bool need_obj = !ta_data || (!ta_len && !proven_in_bounds);
-                Value* obj_val = need_obj ? ensure_type(get_opd(0), Type::i64()) : nullptr;
-                prop_lowering.lower_elem_set_typed(b, obj_val, idx_val, ensure_type(raw_val, Type::f64()),
-                                                   inst_ast.imm_i64, inst_ast.index, ta_data, ta_len);
-            }
+            prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index);
             return true;
         }
 

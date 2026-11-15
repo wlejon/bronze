@@ -2,7 +2,6 @@
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
-#include <functional>
 #include <unordered_map>
 
 namespace il2mir {
@@ -10,36 +9,6 @@ namespace il2mir {
 class IlLowering;
 
 bool is_property_il_op(BronzeOp op);
-
-// Whether a PropGet / PropSet's layout claim (il.h `staticSlot`) is lowered
-// through its static-slot guard here (il_static_slot.cpp). A claim the module
-// has no guard table for is reported as an error and answers false.
-bool static_get_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast);
-bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast);
-
-// SHAPE GUARDS (il.h `Op::IsShape`, `shapeGuarded`; il_static_slot.cpp):
-// lowers an `is.shape` into `res`, or a shape-guarded PropGet (into `res`) or
-// PropSet (of `val`) as its bare access, and answers true; a site that is not
-// shape-guarded, or one whose guard is not lowered here, answers false and is
-// lowered as it otherwise would be.
-bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
-                         Value*& res);
-
-// LAYOUT FACTS (il.h `layoutFactOperand`, lower/layout_facts.h): whether a
-// site holds one; the layout epoch word as an i64; the word `fact` (the
-// operand, an f64 holding the word's bits) was made of; and whether it still
-// holds, as an i1.
-bool has_layout_fact(const BronzeInstruction& inst_ast);
-Value* load_layout_epoch(Builder& b);
-Value* layout_fact_word(Builder& b, Value* fact);
-Value* layout_fact_holds(Builder& b, Value* fact);
-
-// A site holding a fact: `bare` (the slot's load or store) where the fact
-// holds, else `ordinary` (the site as it is lowered without one), joined. The
-// result (an i64) when `has_result`; the shape memo is carried across.
-Value* lower_fact_site(IlLowering* lowering, Builder& b, Value* fact,
-                       const std::unordered_map<uint32_t, Value*>& val_map, bool has_result,
-                       const std::function<Value*(Builder&)>& bare, const std::function<Value*(Builder&)>& ordinary);
 
 bool lower_property_instruction(
     IlLowering* lowering,

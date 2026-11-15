@@ -23,9 +23,8 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_dynamic_add", "bronze_f64_mod", "bronze_name_resolve", "bronze_resolve_name", "bronze_env_create",
         "bronze_env_get", "bronze_env_get_tdz", "bronze_env_set", "bronze_env_ancestor", "bronze_create_func",
         "bronze_create_function", "bronze_function_singleton", "bronze_import_meta", "bronze_create_array",
-        "bronze_create_object", "bronze_create_object_sized", "bronze_gc_alloc","bronze_prop_get", "bronze_prop_set", "bronze_elem_get", "bronze_elem_cell_fill", "bronze_twin_exit_note", "bronze_elem_set",
+        "bronze_create_object", "bronze_create_object_sized", "bronze_gc_alloc","bronze_prop_get", "bronze_prop_set", "bronze_elem_get", "bronze_twin_exit_note", "bronze_elem_set",
         "bronze_prop_define", "bronze_elem_define", "bronze_object_literal_proto",
-        "bronze_prop_poly_scan", "bronze_prop_get_counted", "bronze_prop_set_counted",
         "bronze_method_def", "bronze_method_def_computed", "bronze_define_own_attr", "bronze_accessor_def",
         "bronze_accessor_def_computed", "bronze_module_namespace", "bronze_ic_get", "bronze_ic_set",
         "bronze_call_dynamic_0", "bronze_call_dynamic_1", "bronze_call_dynamic_2", "bronze_call_dynamic_3",
@@ -52,15 +51,12 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_super_call_16", "bronze_super_call_n",
         "bronze_dynamic_import", "bronze_iter_value", "bronze_iter_close", "bronze_iter_rest",
         "bronze_iter_delegate", "bronze_async_iter_open", "bronze_async_iter_next", "bronze_async_iter_close",
-        "bronze_pattern_check", "bronze_array_sort_merged", "bronze_array_append", "bronze_array_append_hole", "bronze_array_spread",
+        "bronze_pattern_check", "bronze_array_append", "bronze_array_spread",
         "bronze_object_spread", "bronze_object_rest", "bronze_dynamic_call_spread", "bronze_call_method_spread",
         "bronze_call_method", "bronze_register_method_ic_cells", "__bronze_ic_table", "__bronze_method_ic_sites",
         "bronze_register_ic_hot", "bronze_register_method_ic_rows", "__bronze_ic_identity",
-        "bronze_static_shape_publish", "bronze_static_layout_publish", "bronze_family_stamp", "bronze_register_class_family",
-        "bronze_register_slot_repr",
-        "__bronze_static_cells", "__bronze_family_base", "__bronze_class_families", "__bronze_class_family_fields",
         "bronze_construct_spread", "bronze_super_call_spread", "bronze_arg_at", "bronze_arguments_object",
-        "bronze_rest_args", "bronze_super_get", "bronze_super_set", "bronze_object_keys", "bronze_for_in_keys",
+        "bronze_rest_args", "bronze_super_get", "bronze_super_set", "bronze_for_in_keys",
         "bronze_instanceof", "bronze_has_property", "bronze_is_nullish", "bronze_strict_eq", "bronze_loose_eq",
         "bronze_rel_lt", "bronze_rel_gt", "bronze_rel_le", "bronze_rel_ge", "bronze_pin_guard",
         "bronze_census_record", "bronze_to_int32", "bronze_to_int32_f64", "bronze_private_new", "bronze_private_has",
@@ -126,10 +122,6 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         mod->add_external_symbol("__bronze_ic_table_" + entry_symbol);
         mod->add_external_symbol("__bronze_method_ic_sites_" + entry_symbol);
         mod->add_external_symbol("__bronze_ic_identity_" + entry_symbol);
-        for (const char* base : {"__bronze_static_cells", "__bronze_family_base", "__bronze_class_families",
-                                 "__bronze_class_family_fields"}) {
-            mod->add_external_symbol(std::string(base) + "_" + entry_symbol);
-        }
     }
 }
 

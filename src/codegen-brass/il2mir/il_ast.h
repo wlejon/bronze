@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <optional>
 
 // il2mir: bronze's IL → brass MIR translator. bronze::il::Module is
 // flattened into this AST (il_to_brass_ast.cpp), then lowered to a
@@ -104,7 +103,6 @@ enum class BronzeOp {
     ConcatEnd,
     IsNumber,
     IsDenseArray,
-    IsNumberArray,
     IsNullish,
     GlobalGet,
     MethodCall,
@@ -115,25 +113,11 @@ enum class BronzeOp {
     SuperGet,
     InstanceOf,
     In,
-    ElemSetTyped,
-    ElemGetTyped,
     PinGuard,
     CensusRecord,
-    MathImul,
     SuperSet,
-    MathUnary,
-    MathRandom,
-    // a: f64 = layout.epoch (il_op.h `LayoutEpoch`).
-    LayoutEpoch,
-    // a: f64 = layout.fact recv: the epoch when recv passes the claim it
-    // carries, else 1, which no epoch is (il_op.h `LayoutFact`).
-    LayoutFact,
-    // a: bool = is.shape recv: the static-slot guard of the site claim it
-    // carries (il.h `Op::IsShape`).
-    IsShape,
     DynamicImport,
     ModuleNamespace,
-    ObjectKeys,
     ForInKeys,
     MethodDefComputed,
     AccessorDef,
@@ -144,7 +128,6 @@ enum class BronzeOp {
     SuperCallSpread,
     TemplateCached,
     TemplateObject,
-    ArrayAppendHole,
     PropDelete,
     ElemDelete,
     ImmutableAssign,
@@ -172,21 +155,9 @@ enum class BronzeOp {
     PrintSpread,
     PrintSpreadErr,
     KeepAlive,
-    MethodIcIs,
-    // `method.ic.is` of the shape a transition run ends at (il.h
-    // `Op::RunMethodIs`): `run_cell` names the run, no operand.
-    RunMethodIs,
-    AccessorIcIs,
     IsTypedArray,
-    IsArray,
     IsPlainArray,
-    MethodSlotFn,
-    ClosureIs,
-    ClosureEnv,
-    CreateThis,
     // `prop.set` / `elem.set` in kWriteDefine mode (il.h): CreateDataPropertyOrThrow.
-    // Their own ops here so that no assignment fast path — a static slot, an
-    // accessor call, an index run, a typed store — can match one by its op.
     PropDefine,
     ElemDefine,
     ObjectLitProto,
@@ -200,11 +171,6 @@ inline constexpr uint32_t kDefineWriteMode = 2;
 // il.h kWriteLiteralElement: an array literal's element store, an
 // assignment's `PropSet` whose miss defines (bronze_prop_define).
 inline constexpr uint32_t kLiteralElementWriteMode = 3;
-// il.h's truthiness hint kinds (il_to_brass_ast.cpp asserts they agree).
-inline constexpr uint8_t kTruthBool = 1;
-inline constexpr uint8_t kTruthObject = 2;
-inline constexpr uint8_t kTruthUndefined = 4;
-inline constexpr uint8_t kTruthNull = 8;
 
 struct BronzeBlockTarget {
     uint32_t block_id = 0;
@@ -221,71 +187,18 @@ struct BronzeInstruction {
     int64_t imm_i64 = 0;
     bool imm_bool = false;
     BronzeType box_type = BronzeType::Unknown;
-    bool raw_unbox = false;
-    bool nullish_unbox = false;
-    // Box f64: the operand is a tested Number's own bits (il.h `rawBox`).
-    bool raw_box = false;
-    // Jump: the edge by which a guarded region's fast copy leaves for its
-    // slow copy (il.h `CopyClass`), taken when a guard failed.
-    bool leaves_fast_copy = false;
-    // Branch, in a region's fast copy: which of its edges leaves the copy
-    // for the slow one, directly or through a trampoline (a guard's failing
-    // side); the other edge stays.
-    enum class GuardEdge : uint8_t { None, Then, Else };
-    GuardEdge guard_edge = GuardEdge::None;
-    // A type-feedback hint (il.h `numberHint`): the Number arm falls through
-    // and the generic path is laid out cold.
-    bool number_hint = false;
-    // A truthiness hint (il.h `truthHint`): the kinds (kTruth*) the profile saw.
-    uint8_t truth_hint = 0;
-    // PropGet: the element's bits may be held as a double (il.h `numberBits`).
-    bool number_bits = false;
-    // PropGet/PropSet: a dominating `is.shape` answered the site's static
-    // guard (il.h `shapeGuarded`): a bare load or store at the claimed slot.
-    bool shape_guarded = false;
     std::string callee_name;
-    // MethodCall: the typed entry of `callee_name` the direct edge calls
-    // (il.h `typedTarget`), or empty. The guard's identity stays `callee_name`.
-    std::string typed_callee_name;
     std::string string_literal;
 
     uint32_t depth = 0;
     uint32_t index = 0;
     uint32_t param_count = 0;
 
-    static constexpr uint32_t kNoStaticSlot = UINT32_MAX;
     static constexpr uint32_t kNoIcIndex = UINT32_MAX;
-    uint32_t static_slot = kNoStaticSlot;
     uint32_t ic_index = kNoIcIndex;
     // il.h `slowSite`: the instruction's slow-site counter, or kNoSlowSite.
     static constexpr uint32_t kNoSlowSite = UINT32_MAX;
     uint32_t slow_site = kNoSlowSite;
-    bool is_fn_recv = false;
-    // A read whose receiver inference typed by a class SOMEBODY EXTENDS (`this`
-    // in a base-class method, a parameter whose callers named a base): more
-    // than one shape is the expected case, so a way-0 miss scans the site's
-    // other ways inline rather than calling the helper.
-    bool is_family = false;
-    // PropGet/PropSet with a `static_slot`: which guard licenses it (il.h
-    // `staticCellIndex`, `familyLo`/`familySpan`). An identity site compares
-    // the receiver's shape with its module cell `static_cell`; a family site
-    // (`family_lo` not kNoFamily) asks the shape's stamp for a class id in
-    // `family_lo .. family_lo + family_span`.
-    static constexpr uint32_t kNoFamily = UINT32_MAX;
-    uint32_t static_cell = 0;
-    // il.h `staticRegrow`.
-    bool static_regrow = false;
-    uint32_t family_lo = kNoFamily;
-    uint32_t family_span = 0;
-    // PropSet: the first write of a transition run (il.h `transitionRunCell`,
-    // lowered by il_transition_run.cpp): its first static cell, its length in
-    // instructions, and the slot its first key lands at.
-    static constexpr uint32_t kNoTransitionRun = UINT32_MAX;
-    uint32_t run_cell = kNoTransitionRun;
-    uint32_t run_length = 0;
-    uint32_t run_slot = 0;
-    // DefineOwnAttr: its add cells (il.h `defineAddCell`), or kNoTransitionRun.
-    uint32_t define_cell = kNoTransitionRun;
 
     BronzeBlockTarget target;
     BronzeBlockTarget else_target;
@@ -296,23 +209,6 @@ struct BronzeInstruction {
     // UINT32_MAX for the module's own name (the instruction has no span).
     uint32_t file = UINT32_MAX;
     uint32_t env_hops = UINT32_MAX;
-    // il::Instruction::inlineFrame: 0, or a 1-based index into the function's
-    // `inline_frames`.
-    uint32_t inline_frame = 0;
-};
-
-// A layout cell (il::Module::LayoutCellEntry): the shape's key count and the
-// (key, slot, stored-to, a double, an object) list its publish checks.
-struct LayoutCell {
-    struct Pair {
-        uint32_t key = 0;
-        uint32_t slot = 0;
-        bool write = false;
-        bool number = false;
-        bool object = false;
-    };
-    uint32_t key_count = 0;
-    std::vector<Pair> pairs;
 };
 
 struct BronzeBlock {
@@ -327,7 +223,6 @@ struct BronzeBlock {
 struct BronzeFunction {
     std::string name;
     std::vector<std::pair<uint32_t, BronzeType>> params;
-    std::vector<std::optional<int64_t>> param_const_ints;
     BronzeType return_type = BronzeType::Void;
     bool is_exported = false;
     // A coroutine body's BRONZE_ABI_CORO_* kind, or -1: the function runs on
@@ -337,16 +232,6 @@ struct BronzeFunction {
     bool is_coroutine_body() const { return coro_kind >= 0; }
     // The program's top level (`main` and its segments): run once.
     bool is_toplevel = false;
-    // il::Function::inlineFrames, with the callee by its MIR function name and
-    // the call's position as an instruction's (`file` the same index).
-    struct InlineFrame {
-        std::string callee;
-        uint32_t line = 0;
-        uint32_t column = 0;
-        uint32_t file = UINT32_MAX;
-        uint32_t parent = 0;
-    };
-    std::vector<InlineFrame> inline_frames;
     std::vector<BronzeBlock> blocks;
 };
 

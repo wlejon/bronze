@@ -1,7 +1,5 @@
 #include "il_speculation.h"
 #include "il_abi.h"
-#include "il_ic_stub.h"
-#include "il_spec_profile.h"
 
 #include "abi/bronze_abi.h"
 
@@ -26,24 +24,19 @@ namespace {
 // run, and a refill after the site's way 0 was displaced. More misses than
 // this before tier-up says the site sees several shapes.
 constexpr uint32_t kPropertyColdMisses = 2;
-// A polymorphic site's helper runs once per way it fills, and again when a
-// fill is displaced; twice the ways leaves room for that and still refuses a
-// megamorphic site, whose helper runs on most reads.
-constexpr uint32_t kPolyPropertyColdMisses = 2 * BRONZE_ABI_IC_WAYS;
 
 // BRONZE_SPEC_ARM_KINDS=<mask>: the kinds armed (should_arm).
 uint32_t arm_kind_mask() {
     static const uint32_t mask = [] {
         const char* v = std::getenv("BRONZE_SPEC_ARM_KINDS");
-        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0xEu;
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0x2u;
     }();
     return mask;
 }
 
 bool should_arm(uint8_t raw_kind, uint32_t misses, bool ran) {
     // BRONZE_SPEC_ARM_KINDS=<mask>: arm only the kinds whose bit is set (1
-    // arith, 2 property, 4 call target, 8 poly property); the deopt-stress
-    // oracle arms all four (tests/oracle/CMakeLists.txt). Arith sites are not armed by default. Arming them once cost nbody time
+    // arith, 2 property); the deopt-stress oracle arms both (tests/oracle/CMakeLists.txt). Arith sites are not armed by default. Arming them once cost nbody time
     // because brass's register allocator kept every guard state value live to
     // the guard's exit block at the end of the function (176 spill slots in
     // nbody's advance armed against 118 unarmed); brass now ends that
@@ -64,23 +57,19 @@ bool should_arm(uint8_t raw_kind, uint32_t misses, bool ran) {
     // Left a branch, its first run takes the slow path and carries on.
     switch (static_cast<SpecKind>(raw_kind)) {
         case SpecKind::Arith: return ran && misses == 0;
-        case SpecKind::CallTarget: return misses == 0;
         case SpecKind::Property: return misses != 0 && misses <= kPropertyColdMisses;
-        case SpecKind::PolyProperty: return misses != 0 && misses <= kPolyPropertyColdMisses;
     }
     return false;
 }
 
 // Whether a site of `kind` whose slow path ran `misses` times took it only
 // as rarely as its kind does where the fast path holds: never for an arith
-// or call-target site, the cache fills for a property site. Its slow path is
-// then laid out cold, by an AOT profile and by tier 2 alike.
+// site, the cache fills for a property site. Tier 2 then lays its slow path
+// out cold.
 bool slow_is_cold(SpecKind kind, uint32_t misses) {
     switch (kind) {
-        case SpecKind::Arith:
-        case SpecKind::CallTarget: return misses == 0;
+        case SpecKind::Arith: return misses == 0;
         case SpecKind::Property: return misses <= kPropertyColdMisses;
-        case SpecKind::PolyProperty: return misses <= kPolyPropertyColdMisses;
     }
     return false;
 }
@@ -97,46 +86,11 @@ std::shared_ptr<SpecFeedback> make_spec_feedback() {
 }
 
 void SpecSiteEmitter::begin_function(bool can_deopt, std::string_view name) {
-    fn_name_ = name;
-    occurrences_.clear();
     sites_.begin_function(can_deopt, name);
-}
-
-std::optional<uint32_t> SpecSiteEmitter::peek_profile(SpecKind kind, std::string_view tag) const {
-    if (!profile_) return std::nullopt;
-    auto it = occurrences_.find(spec_site_key({}, kind, tag));
-    return profile_->misses(fn_name_, kind, tag, it == occurrences_.end() ? 0 : it->second);
-}
-
-void SpecSiteEmitter::skip_site(SpecKind kind, std::string_view tag) {
-    if (profile_) ++occurrences_[spec_site_key({}, kind, tag)];
-}
-
-bool SpecSiteEmitter::profile_says_polymorphic(uint32_t misses) {
-    return misses > kPropertyColdMisses;
-}
-
-bool SpecSiteEmitter::apply_profile(Builder& b, Value*& hit, BasicBlock* slow, SpecKind kind, std::string_view tag) {
-    const std::string key = spec_site_key({}, kind, tag);
-    const uint32_t n = occurrences_[key]++;
-    const std::optional<uint32_t> misses = profile_->misses(fn_name_, kind, tag, n);
-    if (!misses) return false;
-    const bool cold = slow_is_cold(kind, *misses);
-    // Megamorphic: the scan would miss as the helper does, so the way-0 miss
-    // goes to the helper, as it did before the scan.
-    if (kind == SpecKind::PolyProperty && !cold) hit = b.build_iconst_i32(0);
-    // brass's block layout sinks a block whose name says cold to the end of
-    // the function (codegen/block_layout.cpp), off the fast path's line.
-    if (cold) {
-        Module* mod = slow->parent() ? slow->parent()->parent() : nullptr;
-        if (mod) slow->set_name(mod->string_pool().intern(std::string(slow->name()) + "_cold"));
-    }
-    return true;
 }
 
 void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, SpecKind kind,
                                   std::string_view tag, Value** counter_out) {
-    if (profile_ && !sites_.has_feedback()) apply_profile(b, hit, slow, kind, tag);
     sites_.emit_branch(b, hit, fast, slow, static_cast<uint8_t>(kind), tag, counter_out);
 }
 
@@ -344,10 +298,8 @@ void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
     }();
     brass::ArmSpeculationOptions options;
     options.trace = trace;
-    // What survives of the reads' out-of-line scans goes back inline.
-    options.after_function = [](Function& fn) { expand_ic_stubs(fn); };
-    // A site left a branch is laid out as a profile would lay it out: the
-    // counts before tier-up are this run's profile.
+    // A site left a branch is laid out cold where its counts before tier-up
+    // say its slow path is.
     options.cold_slow = [](uint8_t kind, uint32_t misses, bool) {
         return slow_is_cold(static_cast<SpecKind>(kind), misses);
     };
