@@ -1,0 +1,33 @@
+#pragma once
+
+// TEST FOLDING (job 2): a test whose answer the facts already hold becomes
+// that answer. This is what deletes the second and every later guard on the
+// same value, and, once the branch on it becomes a jump, the guard's whole
+// exit block.
+//
+// Answers come from three places, each exact:
+//   - the FactEnv at the test's position (opt/core fact_env.h), which holds
+//     what dominating branch edges proved and has already dropped memory facts
+//     killed since;
+//   - the test's subject's own definition (a `box` of a typed value is never
+//     an object, a hole or nullish; a fresh allocation is an object);
+//   - for `ptr.eq (load.shape x), (shape.cell n)`, the shape fact about x
+//     PROVIDED the load is still the available read of x's shape in the
+//     table, i.e. no write of `Shapes` lies between the load and here — the
+//     fact describes the present, and the load must read the present.
+
+#include <optional>
+
+#include "il/il.h"
+#include "opt/core/fact_env.h"
+#include "opt/redundancy/expr_table.h"
+#include "opt/redundancy/fold.h"
+
+namespace bronze::opt::redundancy {
+
+// The value of test `inst` (operands resolved) if it is known here, else
+// nullopt. Does not modify anything.
+std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& facts,
+                                    const ExprTable& exprs, const ValueView& values);
+
+}  // namespace bronze::opt::redundancy
