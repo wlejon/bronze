@@ -629,35 +629,6 @@ TEST_CASE("a target only the prediction knows reaches guarded inlining") {
     CHECK(il::verify(with, vdiags));
 }
 
-TEST_CASE("a read some receivers lack on their whole chain is marked absent") {
-    // `isB` is own on B's instances and on no link of A's chain, so the read
-    // answers an own slot or `undefined`.
-    DiagnosticSink diags;
-    SourceBuffer buf("test.ts", "");
-    auto mod = lower_test::inferAndLower(
-        "class A { constructor() { this.a = 1; } }\n"
-        "class B { constructor() { this.isB = true; } }\n"
-        "function rk(o) { return o.isB; }\n"
-        "console.log(rk(new A()), rk(new B()));\n",
-        diags, buf);
-    REQUIRE(mod.has_value());
-    optimizeForBuild(*mod, BuildOptions{});
-    const il::Function* rk = functionNamed(*mod, "rk");
-    REQUIRE(rk != nullptr);
-    const il::Instruction* read = nullptr;
-    for (const auto& block : rk->blocks) {
-        for (const auto& inst : block.instructions) {
-            if (inst.op == il::Op::PropGet) read = &inst;
-        }
-    }
-    REQUIRE(read != nullptr);
-    CHECK(read->icAbsent);
-    CHECK_FALSE(read->icPolymorphic);
-    CHECK(il::print(*mod).find(", absent") != std::string::npos);
-    DiagnosticSink vdiags;
-    CHECK(il::verify(*mod, vdiags));
-}
-
 TEST_CASE("a call of a factory's own-slot closure enters the predicted function directly") {
     // `api.step` is the literal's own slot, so no direct target is set; the
     // prediction knows the closure is `step`'s and the call is split on it.

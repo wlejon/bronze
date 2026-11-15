@@ -124,7 +124,7 @@ struct StaticMiss {
 };
 
 // The shape memo (il_shape_memo.cpp) carried across an inline-cache read
-// (lower_prop_get_mono, lower_prop_get_absent), as a static site carries it
+// (lower_prop_get_mono), as a static site carries it
 // (StaticMiss): `keyed` is the receiver's keyed shape, the memo's or computed
 // and remembered there, which the site's way 0 is compared with; `hit` is
 // what every edge into the read's join that ran no call passes, `miss` what
@@ -439,14 +439,6 @@ public:
     // Requires a real site.
     Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
                                bool expect_poly = false);
-
-    // A read predicted to answer `undefined` for some receivers (il.h
-    // `icAbsent`): way 0 of the site, taken inline when it names the
-    // receiver's shape with an own data slot (the slot) or, while the
-    // prototype epoch holds, with the negative entry (`undefined`); anything
-    // else is the stub. An image's only: the epoch is read through the pinned
-    // TLS register. Requires a real site.
-    Value* lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
 
     // A read a profile saw meet 1..4 shapes (il.h `icChain`,
     // il_prop_get_chain.cpp): that many ways compared inline, the matching

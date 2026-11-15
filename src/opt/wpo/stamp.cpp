@@ -329,14 +329,7 @@ void planAccessor(const Solver& s, const SiteFact& fact, StampPlan& plan) {
 // monomorphic keeps its way-0 form unless more than one receiver reaches it.
 void planPoly(const il::Module& mod, const SiteFact& fact, StampPlan& plan) {
     if (fact.op != il::Op::PropGet) return;
-    if (fact.ownOrAbsent) {
-        const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
-        if (inst.staticSlot == il::Instruction::kNoStaticSlot && inst.directTarget == il::Instruction::kNoDirectTarget &&
-            !inst.operands.empty() && !il::parseIndexKey(mod.keyConstants[inst.keyIndex])) {
-            plan.absents.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
-        }
-        return;
-    }
+    if (fact.ownOrAbsent) return;
     const bool ownEverywhere = fact.prop == PropClass::SlotDiffers || fact.prop == PropClass::NotInPrefix ||
                                fact.prop == PropClass::SameSlot || fact.prop == PropClass::SameSlotEscaped;
     if (!ownEverywhere) return;
@@ -503,9 +496,6 @@ void applyStamps(il::Module& mod, const StampPlan& plan) {
     applyDirects(mod, plan);
     for (const PolyEntry& p : plan.polys) {
         mod.functions[p.fn].blocks[p.block].instructions[p.inst].icPolymorphic = true;
-    }
-    for (const PolyEntry& p : plan.absents) {
-        mod.functions[p.fn].blocks[p.block].instructions[p.inst].icAbsent = true;
     }
     for (const StampEntry& e : plan.entries) {
         il::Instruction& inst = mod.functions[e.fn].blocks[e.block].instructions[e.inst];

@@ -68,7 +68,6 @@ Module fullModule() {
     inst.icIndex = 6;
     inst.icMonomorphic = true;
     inst.icPolymorphic = true;
-    inst.icAbsent = true;
     inst.icFnRecv = true;
     inst.rawUnbox = true;
     inst.nullishUnbox = true;
@@ -126,7 +125,6 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.nullishUnbox);
     CHECK(b.rawBox);
     CHECK(b.icPolymorphic);
-    CHECK(b.icAbsent);
     CHECK(b.numberBits);
     CHECK(b.truthHint == a.truthHint);
     CHECK(b.icChain == (3 | Instruction::kChainProto));

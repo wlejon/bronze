@@ -30,7 +30,6 @@ struct InstructionMirror {
     uint32_t slowSite;
     bool icMonomorphic;
     bool icPolymorphic;
-    bool icAbsent;
     bool icFnRecv;
     bool rawUnbox;
     bool nullishUnbox;
@@ -315,7 +314,6 @@ enum InstBits : uint64_t {
     kNumberBits = 1u << 28,
     kStaticSlotGuessed = 1u << 29,
     kIcPolymorphic = 1u << 30,
-    kIcAbsent = 1u << 31,
     kShapeGuarded = uint64_t{1} << 32,
     kNumberHint = uint64_t{1} << 33,
     kHasTruthHint = uint64_t{1} << 34,
@@ -369,7 +367,6 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
     if (inst.icMonomorphic) m |= kIcMonomorphic;
     if (inst.icPolymorphic) m |= kIcPolymorphic;
-    if (inst.icAbsent) m |= kIcAbsent;
     if (inst.icFnRecv) m |= kIcFnRecv;
     if (inst.rawUnbox) m |= kRawUnbox;
     if (inst.nullishUnbox) m |= kNullishUnbox;
@@ -482,7 +479,6 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasElse) readTarget(r, inst.elseTarget);
     inst.icMonomorphic = (m & kIcMonomorphic) != 0;
     inst.icPolymorphic = (m & kIcPolymorphic) != 0;
-    inst.icAbsent = (m & kIcAbsent) != 0;
     inst.icFnRecv = (m & kIcFnRecv) != 0;
     inst.rawUnbox = (m & kRawUnbox) != 0;
     inst.nullishUnbox = (m & kNullishUnbox) != 0;

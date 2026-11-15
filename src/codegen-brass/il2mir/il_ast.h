@@ -266,9 +266,6 @@ struct BronzeInstruction {
     // A read the whole-program optimizer predicts meets a few shapes (il.h
     // `icPolymorphic`): the same inline scan as a family read.
     bool is_poly = false;
-    // A read predicted to answer `undefined` for some receivers (il.h
-    // `icAbsent`): way 0's own-data or negative entry inline.
-    bool is_absent = false;
     // A read a profile saw meet 1..4 shapes (il.h `icChain`): that many ways
     // tested inline, own data and negative entries (and a one-link prototype
     // data entry with kChainProto) answered there.

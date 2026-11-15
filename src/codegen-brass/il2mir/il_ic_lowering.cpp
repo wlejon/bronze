@@ -283,69 +283,6 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     return merge_val;
 }
 
-Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index,
-                                                    const IcSite& site) {
-    BasicBlock* bb_current = b.current_block();
-    Function* fn = bb_current->parent();
-    const std::string prefix = "ic_absent_" + std::to_string(fn->next_block_id());
-    // The stub is laid out after the hot code where nothing measured the
-    // site, as lower_prop_get_mono's miss is.
-    const bool unmeasured = !(spec_ && (spec_->has_profile() || spec_->has_feedback()));
-    BasicBlock* bb_own = b.append_block(prefix + "_own");
-    BasicBlock* bb_test = b.append_block(prefix + "_test");
-    BasicBlock* bb_undef = b.append_block(prefix + "_undef");
-    BasicBlock* bb_slow = b.append_block(prefix + "_miss" + std::string(unmeasured ? "_cold" : ""));
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* merge_val = b.add_block_param(bb_merge, Type::i64());
-    const MemoCarry* carry = std::exchange(memo_carry_, nullptr);
-    std::vector<std::pair<BasicBlock*, bool>> edges;
-
-    b.position_at_end(bb_current);
-    Value* match = nullptr;
-    Value* ptr = nullptr;
-    if (carry) {
-        // The receiver's keyed shape is what no way holds unless the
-        // receiver is a plain object with that shape word: its compare is
-        // the plain test and the shape's together.
-        Value* keyed = carry->keyed(b);
-        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        match = b.build_eq(keyed, way0_shape(b, site));
-    } else {
-        Value* keyed = keyed_shape(b, obj);
-        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-        match = b.build_eq(keyed, way0_shape(b, site));
-    }
-    Value* slot_word = way0_slot_word(b, site);
-    b.build_br_if(b.build_and(match, b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit))), bb_own, bb_test);
-
-    // The negative entry's word is the flag alone (InlineCache::fillAbsent),
-    // and it speaks only for the epoch it was filled at.
-    b.position_at_end(bb_test);
-    constexpr int64_t kAbsentWord = int64_t{BRONZE_ABI_IC_DEPTH_ABSENT_FLAG} << 32;
-    Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* current = b.build_eq(b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_EPOCH_OFFSET), epoch);
-    Value* absent = b.build_and(b.build_and(match, current), b.build_eq(slot_word, b.build_iconst_i64(kAbsentWord)));
-    b.build_br_if(absent, bb_undef, bb_slow);
-
-    b.position_at_end(bb_undef);
-    edges.emplace_back(bb_undef, true);
-    b.build_br(bb_merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
-
-    b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site);
-    edges.emplace_back(b.current_block(), false);
-    b.build_br(bb_merge, {slow_val});
-
-    b.position_at_end(bb_own);
-    Value* own_val = load_slot_br(b, ptr, slot_word);
-    edges.emplace_back(b.current_block(), true);
-    b.build_br(bb_merge, {own_val});
-
-    if (carry) carry_memo(b, *carry, bb_merge, edges);
-    b.position_at_end(bb_merge);
-    return merge_val;
-}
-
 void PropertyLoweringHelper::carry_memo(Builder& b, const MemoCarry& carry, BasicBlock* merge,
                                         const std::vector<std::pair<BasicBlock*, bool>>& edges) {
     size_t n = 0;

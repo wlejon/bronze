@@ -256,7 +256,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
                 out.shape_guarded = inst.shapeGuarded;
             }
             out.is_poly = inst.icPolymorphic;
-            out.is_absent = inst.icAbsent;
             out.ic_chain = inst.icChain;
             out.number_bits = inst.numberBits;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {

@@ -47,8 +47,6 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
         for (const DirectEntry& d : plan->directs) directAt[{d.fn, d.block, d.inst}] = d.target;
         std::set<std::tuple<uint32_t, uint32_t, uint32_t>> polyAt;
         for (const PolyEntry& p : plan->polys) polyAt.insert({p.fn, p.block, p.inst});
-        std::set<std::tuple<uint32_t, uint32_t, uint32_t>> absentAt;
-        for (const PolyEntry& p : plan->absents) absentAt.insert({p.fn, p.block, p.inst});
         for (SiteFact& f : facts) {
             if (auto d = directAt.find({f.fn, f.block, f.inst}); d != directAt.end()) {
                 f.wpoStamp = "direct " + mod.functions[d->second].name;
@@ -57,7 +55,6 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
             auto it = byLoc.find({f.fn, f.block, f.inst});
             if (it == byLoc.end()) {
                 if (polyAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "poly";
-                if (absentAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "absent";
                 continue;
             }
             f.wpoStamp = it->second->form == StampForm::Identity
@@ -116,7 +113,6 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
     out += "wpo-stamp: predicted polymorphic reads " + std::to_string(plan.polys.size()) + " of " +
            std::to_string(plan.polyCandidates) + " own-data reads without a claim; more receivers than cache ways " +
            std::to_string(plan.polyTooMany) + "\n";
-    out += "wpo-stamp: predicted absent reads " + std::to_string(plan.absents.size()) + "\n";
     if (!opts.perSite) return out;
     for (const auto& [fn, row] : perFn) {
         const std::string& name = mod.functions[fn].name;

@@ -75,8 +75,6 @@ struct StampPlan {
     std::vector<StampEntry> entries;
     std::vector<DirectEntry> directs;
     std::vector<PolyEntry> polys;
-    // Reads some predicted receiver answers with `undefined` (il.h `icAbsent`).
-    std::vector<PolyEntry> absents;
     // Method calls whose one predicted callee a receiver holds in an own slot.
     std::vector<DirectEntry> ownCalls;
     // Property sites whose predicted receivers resolve to one prototype getter or setter.

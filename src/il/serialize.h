@@ -27,7 +27,6 @@ namespace bronze::il {
 // 12: `object.proto`, and prop.set / elem.set carry kWriteDefine (il.h).
 // 13: prop.get / prop.set carry staticSlotGuessed (il.h).
 // 14: prop.get carries icPolymorphic (il.h).
-// 15: prop.get carries icAbsent (il.h).
 // 16: is.shape, and prop.get/prop.set carry shapeGuarded (il.h).
 // 17: feedback.record (il_op.h).
 // 18: numberHint (il.h), from a type-feedback profile.
@@ -43,7 +42,8 @@ namespace bronze::il {
 // 31: a layout cell's member carries `number` (il.h).
 // 32: object members and family fields, Module::slotReprObjectFields.
 // 33: Instruction::slowSite, Module::slowSiteCount (il/feedback_site.h).
-inline constexpr uint32_t kFormatVersion = 33;
+// 34: prop.get no longer carries icAbsent.
+inline constexpr uint32_t kFormatVersion = 34;
 
 std::string serializeModule(const Module& module);
 
