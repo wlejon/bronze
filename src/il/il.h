@@ -9,11 +9,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
-// What a `census.record` site observes. Its own header — the runtime's census
-// table is the other half of that fact — included here so an instruction's
-// readers still find `CensusSite` where they always did.
-#include "il/census_site.h"
-// The pin claims the IL carries (`PinBarrier`, `kElemKindPlainArrayF64`).
+// The pin claims the IL carries (`PinBarrier`, element flags).
 // Included here rather than left to each user, because every one of them
 // reaches these names through this header and a seam is not an occasion to
 // make twenty files say where they now live.
@@ -86,262 +82,17 @@ struct Instruction {
     // that reads it number the same instructions alike; copies share it.
     static constexpr uint32_t kNoSlowSite = UINT32_MAX;
     uint32_t slowSite = kNoSlowSite;
-    // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
-    // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
-    // `MathUtils.generateUUID`, a class name used inside its own body —
-    // rather than `this`, a parameter, or a local holding an instance. So the
-    // receiver can be a FUNCTION object at run time, and a function's members
-    // do not live where every other receiver's do: a `static` sits in a side
-    // object hanging off the FunctionHeader, with its own shape and slots.
-    //
-    // It is a HINT and never a proof. The binding can be reassigned, shadowed
-    // by a `with`, or hold something else entirely, so generated code still
-    // tests the receiver's flags — what the bit decides is only whether the
-    // arm that handles a function receiver is EMITTED at this site.
-    //
-    // That is worth a bit of its own because the arm is not free to emit
-    // everywhere. Emitting it at every read measurably slowed pure-math code,
-    // in block placement and live ranges around the cache, for an arm those
-    // reads can never take. False is always sound; it is the helper, which is
-    // the answer the arm exists to avoid asking for and never a different one.
-    bool icFnRecv = false;
-    // Unbox: the operand is PROVEN to be a Number, so the conversion is a
-    // bitcast and nothing else — no tag test, no branch, no ToNumber helper, no
-    // phi. bronze's Value is NaN-boxed with the doubles at the bottom of the
-    // encoding, so a Number's bits ARE its double's bits: an unboxed f64 field
-    // needs no second representation, only permission to stop checking.
-    //
-    // Granted by exactly one thing, `InferenceResult::provenFieldReads`: a read
-    // of a field whose class installs it on every construction path, whose
-    // receiver this compilation watched being made, and whose name the
-    // whole-program write audit certified — or by a DOMINATING `is.number` on
-    // this same SSA value, which is what the guarded-region pass emits: the
-    // test is the condition of a block's terminator and the raw unbox sits in
-    // the block on its true edge. On an SSA VALUE and never on a location — a
-    // property re-read after a call is a different value and gets its own
-    // guard. `false` is the checked form, which is ToNumber and correct for
-    // anything, and is what every other Number claim in the lattice keeps.
-    bool rawUnbox = false;
-    // Unbox: the operand is PROVEN to be a Number, `null` or `undefined` and
-    // nothing else, so ToNumber is decidable from the bits with no call. The
-    // number range is the BOTTOM of the NaN box, so one unsigned compare
-    // separates the arms, and the nullish arm is two constants — +0 for null
-    // and NaN for undefined (7.1.4 table 14). Emitted branchless: the compares
-    // and selects stay in the block, which is the point, because what this
-    // exists for is the middle of a chain of fmuls.
-    //
-    // Mutually exclusive with `rawUnbox` and strictly weaker: a raw unbox of
-    // `undefined` reads 0xFFF6000000000000 as a double. Granted by exactly one
-    // thing, `InferenceResult::nullishNumberFieldReads` — a `--pins
-    // number-or-nullish` declaration (types/pins.h) — and by no lattice type,
-    // because there is no lattice element for "number or nullish" and there is
-    // deliberately never going to be one.
-    bool nullishUnbox = false;
-    // Box (f64): the operand is the `unbox.f64 raw` of a boxed value, so the
-    // double's bits are that value's own bits and the box is a move of them:
-    // no NaN to canonicalise, because no arithmetic made this double. Set by
-    // exactly one thing, the guarded-region pass, where a fast copy needs the
-    // boxed form of a value again past its `is.number` test (a trampoline's
-    // argument, a store): the value is rebuilt from the double there, so the
-    // box it was read as dies at its test and is never live across a call
-    // (lower/guard_region.h, "GUARD AT DEFINITION"). A REQUEST and not a
-    // claim: the backend moves the bits only when the operand it is handed
-    // is visibly a Value's bits reinterpreted (a round trip that is the
-    // identity on any bits, Number or not), and otherwise boxes as it always
-    // does, so a pass that replaces the operand with some other double costs
-    // the move and nothing else. Where it does move them it must not answer
-    // with the original box, whose live range this exists to end.
-    bool rawBox = false;
-    // PropGet of a canonical index key: the backend may hold the element's
-    // bits as a DOUBLE rather than as a tagged value. Set by exactly one
-    // thing, the guarded-region pass, on the fast copy of a read that a guard
-    // point tests and whose stretch from the read to that point's chain is
-    // only reads and instructions pure in the fast copy (a NUMBER WINDOW or a
-    // READ RUN, lower/guard_region.h). Sound because until the chain nothing
-    // can collect, so bits held as a double still name where any object is,
-    // and past it the chain has proved the value a Number, whose bits ARE its
-    // double's. What it buys is the representation: the 32 reads of a matrix
-    // kernel become f64 loads, not GC references that are spilled at their
-    // definition and moved to an xmm register at each use.
-    bool numberBits = false;
-    // PropGet/PropSet with a `staticSlot`: a dominating `is.shape` of the same
-    // receiver has already admitted this site's claim, with nothing between
-    // that can move a shape, so the backend emits the slot's load or store and
-    // no guard of its own. Set by exactly one thing, the guarded-region pass,
-    // on the fast copy (lower/guard_region.h, "SHAPE GUARDS"); a store carries
-    // it only when its value is a `box.f64`, which no slot's representation
-    // refuses and which needs no write barrier.
-    bool shapeGuarded = false;
-    // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
-    // at, or `kNoStaticSlot`. Strictly stronger than an identity claim, which is
-    // only an identity claim: this says the receiver's class was modellable end
-    // to end (every field it installs, in the runtime's own transition order,
-    // through the whole `extends` chain) and that this key is one of the own
-    // data properties in it — never a prototype method, never an accessor.
-    //
-    // What it licenses is a load at a COMPILE-TIME CONSTANT offset behind a
-    // single shape compare, instead of decoding a cache entry's slot word. It
-    // still does not remove the guard, and it cannot: the layout is derived
-    // from source and the shape is built at run time. The two are reconciled at
-    // `staticCellIndex` below.
-    static constexpr uint32_t kNoStaticSlot = 0xFFFFFFFFu;
-    uint32_t staticSlot = kNoStaticSlot;
-    // The module-global cell this site compares the receiver's shape against.
-    // One i64 per static site, zero-initialized, published by the runtime the
-    // first time the site's slow path sees an object that really does carry
-    // this key as an own data property at `staticSlot`. A layout that was
-    // wrong therefore never publishes, and the site simply keeps taking its
-    // slow path — the failure mode is a cost, never an answer.
-    uint32_t staticCellIndex = 0;
-    // PropGet/PropSet: the LAYOUT FAMILY this site guards on instead of one
-    // shape's identity, as the preorder id of the receiver's class and the size
-    // of its `extends` subtree. `kNoFamily` for a site that keeps the identity
-    // form.
-    //
-    // This is what a `this` receiver inside a method of an EXTENDED class gets.
-    // Its static class is not its runtime shape — three.js never constructs a
-    // bare `Object3D`, so `this.matrixWorld` in `updateMatrixWorld` runs on a
-    // Group, a Mesh and a Scene — and a cell that pins one of those misses on
-    // the rest forever. The layout was never wrong: a proven subclass's fields
-    // begin with its base's, at the same slots. So the guard changes shape
-    // rather than the claim, from `shape == pinned` to `stamp - (base + lo) <=u
-    // span`, where the stamp is a word the runtime wrote onto the SHAPE after
-    // verifying that class's whole field list against it.
-    //
-    // `staticSlot` still says which slot; these say who may use it.
-    static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
-    uint32_t familyLo = kNoFamily;
-    uint32_t familySpan = 0;
-    // PropGet/PropSet with a `staticSlot`: the receiver's class is a GUESS (a
-    // parameter's agreeing callers, a key's sole owning class, an identity the
-    // interprocedural pass guessed), so the guard can miss on a receiver of any
-    // kind, one with an accessor for this key included, and the miss runs the
-    // generic get or set. The guard makes the site itself sound. What it does
-    // NOT give is the fact the IL passes read off a proven claim, that the key
-    // is a data property of this receiver (no getter to run, a store then a
-    // read gives the stored value): `il::provenStaticSlot` is the question
-    // those passes ask. `{get p() {...}, set p(v) {...}}` passed where a class
-    // instance was guessed is the case: `n.p = v; return n.p` must call both.
-    bool staticSlotGuessed = false;
-    // An identity cell (`staticCellIndex`, no family) that may latch an
-    // object still being built: one allocation site whose keys are added
-    // after it is exposed (the interprocedural pass could not fix its shape),
-    // or a profile that saw, besides the claimed shape, one it grew from. Its
-    // fill re-latches a receiver whose shape grew from the cell's by one or
-    // two keys (il_static_slot.cpp emit_static_regrow); any other cell's
-    // fill tests nothing past the empty cell.
-    bool staticRegrow = false;
-    // PropSet: the FIRST site of a TRANSITION RUN (lower/transition_runs.h), a
-    // stretch of writes that adds `transitionRunSites` keys to one receiver
-    // with nothing between them that can run user code, throw, or read the
-    // heap. `transitionRunCell` is the first of kTransitionRunCells static
-    // cells the runtime publishes the run's start and end shapes into
-    // (runtime/transition_run.cpp); the stretch is `transitionRunLength`
-    // instructions from this one, and its keys land at consecutive slots from
-    // `transitionRunSlot`. A claim the runtime verifies before it publishes,
-    // so a wrong one costs only the run's guard.
-    static constexpr uint32_t kNoTransitionRun = 0xFFFFFFFFu;
-    static constexpr uint32_t kTransitionRunCells = 5;
-    uint32_t transitionRunCell = kNoTransitionRun;
-    uint32_t transitionRunLength = 0;
-    uint32_t transitionRunSlot = 0;
-    // DefineOwnAttr: the first of BRONZE_ABI_DEFINE_ADD_CELLS static cells in
-    // which the helper publishes the add this site last made on a plain object
-    // (runtime builtin_object_define.cpp), so the next receiver at the same
-    // shape takes the add inline — the transition a define with a literal
-    // descriptor is, cached as an assignment's is. `kNoDefineAddCell` keeps
-    // the helper alone.
-    static constexpr uint32_t kNoDefineAddCell = 0xFFFFFFFFu;
-    uint32_t defineAddCell = kNoDefineAddCell;
-    // MethodCall: the module function this site's key resolves to, on the class
-    // lowering believes the receiver has — a GUESS, and named as one, because
-    // the receiver's static class is not its runtime shape and a subclass may
-    // override the name.
-    //
-    // What makes the guess sound is that the backend does not spend it on the
-    // receiver at all. The site's own inline cache has already established, for
-    // a matching shape, WHICH function object the key resolves to and what its
-    // code pointer is; the direct edge adds one compare of that code pointer
-    // against this function's call wrapper. A wrong guess therefore never
-    // matches and the site takes the cache's ordinary indirect dispatch — the
-    // same failure mode a mispredicted class layout has, a cost and never an
-    // answer.
-    //
-    // What it buys is everything the indirect call blocks: the argument vector
-    // is never built, the wrapper's unpack never runs, and the callee is an
-    // ordinary internal LLVM function at a call site LLVM may inline — which is
-    // how a `setValue -> arraysEqual -> copyArray` chain becomes one region.
-    //
-    // PropGet/PropSet: the getter or setter of the accessor the key resolves
-    // to on the receiver's class, the same kind of GUESS. Its guard is not a
-    // cache's: such a site's `staticCellIndex` names a PAIR of static cells,
-    // (shape, prototype-mutation epoch), which the runtime publishes only
-    // after resolving the key on the receiver's chain to an accessor whose
-    // half is this function (runtime/accessor_cell.cpp); a site that names a
-    // target never also claims a `staticSlot`.
+    // Construct: the module function a `new` whose callee is written as the
+    // name of a function declaration lowered before it enters
+    // (lower_object.cpp), or kNoDirectTarget. A `new` whose plain-name callee
+    // was not yet lowered carries the name in `keyIndex` and kConstructNamed
+    // in `immI32` instead.
     static constexpr uint32_t kNoDirectTarget = 0xFFFFFFFFu;
     uint32_t directTarget = kNoDirectTarget;
-    // MethodCall: a TYPED ENTRY of `directTarget` (lower/typed_entry.h) the
-    // direct edge calls in its place, or `kNoDirectTarget`. Its identity is
-    // still `directTarget`'s: the fast path's guard compares the site's cached
-    // code pointer against the GENERIC function's wrapper, exactly as the
-    // untyped edge does, so a receiver whose method is anything else takes the
-    // inline cache's ordinary dispatch with the arguments boxed. Only the
-    // callee of the edge changes, to a copy of `directTarget` whose parameters
-    // in the typed positions arrive as `f64` / `bool` — and this site's
-    // operand in each such position IS that type, which the verifier checks.
-    uint32_t typedTarget = kNoDirectTarget;
-    // MethodCall `immI32`: HINT bits, each deciding only whether the backend
-    // emits an inline arm that tests what it needs of the receiver itself.
-    //   kMethodRecvArray  inference typed the receiver a dense JS Array: an
-    //                     Array builtin's arm (il_array_method.h).
-    //   kMethodOwnCallee  the key names a class method AND is written as an
-    //                     own property somewhere in the module (three.js's
-    //                     `_onChangeCallback`, a prototype no-op until
-    //                     `_onChange(cb)` stores a closure on the instance),
-    //                     or a type-feedback profile saw the site's
-    //                     receivers hold the key as their own with no one
-    //                     closure in it (opt/spec/feedback_apply.cpp):
-    //                     the method cache's SLOT form, for a callee held in
-    //                     the receiver's own slot, is dispatched at the site
-    //                     (il_lowering_direct.h, lower_method_slot_inline).
-    //   kMethodPolyShapes a type-feedback profile saw the site meet more than
-    //                     one receiver shape: a way-0 miss tests the cache's
-    //                     way 1 at the site before the method stub.
-    // `closure.is` asked as a construction (il_op.h), and a `new` whose callee
-    // was written as a plain name, which `keyIndex` then holds
-    // (direct_method_table.h, resolveConstructs).
-    static constexpr int32_t kClosureIsConstruct = 1;
     static constexpr int32_t kConstructNamed = 1;
-    static constexpr int32_t kMethodRecvArray = 1;
-    static constexpr int32_t kMethodOwnCallee = 2;
-    static constexpr int32_t kMethodPolyShapes = 4;
-    // StrictEq `immI32`: a DISPATCH test (lower_keyed_field_store.cpp), whose
-    // true edge is correct exactly when the operands are the same String and
-    // whose false edge is correct for ANY operands. So a backend may answer it
-    // by comparing bits alone — false for two equal Strings at different
-    // addresses — and the interpreter's full `===` is right too. Nothing may
-    // learn `a !== b` from its false edge.
-    static constexpr int32_t kStrictEqIdentityDispatch = 1;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
     bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding
-    // A HINT from a type-feedback profile (`--feedback-in`, docs/type-feedback.md):
-    // every Dynamic operand this arithmetic, compare, equality, ToNumber or
-    // truthiness op saw on the profiled run was a Number. The backend puts the
-    // Number arm on the fall-through and the generic path out of line (cold);
-    // both paths stay, so a wrong hint costs speed and never an answer.
-    bool numberHint = false;
-    // A HINT for a truthiness `unbox` (Bool result), from the same profile:
-    // the kinds of value it saw, when every one was a Boolean, an object,
-    // undefined or null (presence tests, `if (material.map)`, and the joins
-    // of `a && b`). The backend tests those kinds first and moves the rest of
-    // ToBoolean out of line; the answer for every value is unchanged.
-    static constexpr uint8_t kTruthBool = 1;
-    static constexpr uint8_t kTruthObject = 2;
-    static constexpr uint8_t kTruthUndefined = 4;
-    static constexpr uint8_t kTruthNull = 8;
-    uint8_t truthHint = 0;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //
@@ -359,12 +110,6 @@ struct Instruction {
     // that needs none.
     static constexpr uint32_t kNoEnvHops = 0xFFFFFFFFu;
     uint32_t callEnvHops = kNoEnvHops;
-
-    // The inlined call this instruction was copied in for, as a 1-based index
-    // into its function's `inlineFrames`; 0 for the function's own code. The
-    // span stays the callee's own, so a stack trace names the callee at that
-    // line and the caller at the frame's call span (lower/inline_guarded.cpp).
-    uint32_t inlineFrame = 0;
 
     Span span;
 
@@ -392,13 +137,6 @@ bool canThrow(const Instruction& inst);
 // user code answer false, so an op added later is a missed optimisation rather
 // than a dangling pointer.
 bool canCollect(const Instruction& inst);
-
-// Whether an `elem.get.typed` is a PLAIN ARRAY read (kElemKindPlainArrayF64),
-// which applies ToNumber to an element that is not a Number — user code for an
-// object, a TypeError for a Symbol — rather than a typed view's raw load.
-inline bool elemGetCoerces(const Instruction& inst) {
-    return inst.op == Op::ElemGetTyped && (inst.immI32 & kElemKindMask) == kElemKindPlainArrayF64;
-}
 
 // The WRITE MODE `prop.set` and `elem.set` carry in `immI32`. An assignment is
 // sloppy (0) or strict (1), the refusal rule 13.15.2 applies; a DEFINITION (2)
@@ -432,67 +170,14 @@ inline bool isDefineWrite(const Instruction& inst) {
     return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && writeMode(inst) == kWriteDefine;
 }
 
-// A static-slot claim on a receiver whose class is PROVEN, which is what an IL
-// pass needs before it treats the key as a plain data property of that
-// receiver (Instruction::staticSlotGuessed says why a guessed one is not).
-inline bool provenStaticSlot(const Instruction& inst) {
-    return inst.staticSlot != Instruction::kNoStaticSlot && !inst.staticSlotGuessed;
-}
-
-// The `layout.fact` a shape-guarded site holds as its last operand
-// (lower/layout_facts.h): one operand past a prop.get's receiver or a
-// prop.set's receiver and value. `kNoValue` for every other instruction,
-// including a shape-guarded site of a guarded region, which holds none and is
-// its bare access unconditionally.
-inline ValueId layoutFactOperand(const Instruction& inst) {
-    if (!inst.shapeGuarded) return kNoValue;
-    if (inst.op == Op::PropGet && inst.operands.size() == 2) return inst.operands[1];
-    if (inst.op == Op::PropSet && inst.operands.size() == 3) return inst.operands[2];
-    return kNoValue;
-}
-
-// Which copy of a guarded numeric region a block belongs to
-// (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
-// whose numbers are carried as `f64` and leaves the original blocks as the SLOW
-// copy, entered only through one-way trampolines. The two are MUTUALLY
-// EXCLUSIVE in their values: control that has left the fast copy through a
-// trampoline runs the slow copy, and where a loop region comes back to its
-// fast copy (guard_region.h, "RE-ENTRY") it does so at the fast header, with
-// everything it carries passed as block arguments.
-//
-// It is a fact about the block and not about the function, so it lives here: it
-// travels with the block through every copy, move and renumbering the pass and
-// the pruner perform, which a parallel vector on `Function` would have to be
-// kept in step with by hand at each of them.
-//
-// What reads it is `planFrame` (codegen-llvm/llvm_frame.h): two values that can
-// never both be live may share one GC root slot, and the two copies of one
-// region are exactly that. What makes that a proof rather than a hope is the
-// verifier, which rejects a value defined in one copy and used in the other.
-enum class CopyClass : uint8_t {
-    Shared,  // outside every region — including a region's preheader and exits
-    Fast,    // the fast copy proper, its guard chains and its trampolines
-    Slow,    // an original region block, or the tail of one split for a guard
-};
-
-// `Block::copyRegion` when the block belongs to no region's copy.
-inline constexpr uint32_t kNoCopyRegion = UINT32_MAX;
-
 struct Block {
     BlockId id = 0;
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
-    // Which copy this block is, and of WHICH region: one function can hold
-    // several disjoint fast/slow pairs, and only the two copies of the SAME
-    // region are known to be mutually exclusive. `Shared` always carries
-    // `kNoCopyRegion`; the two together are the block's copy identity.
-    CopyClass copyClass = CopyClass::Shared;
-    // A block a recorded run says is not taken: the slow copy and trampolines
-    // of a PROFILE-GUIDED region (lower/guard_region.h). The backend lays it
-    // out cold, after the function's main line; it is a layout hint and never
-    // changes what the block does.
+    // A block lowering expects not to be taken (lower_pattern.cpp). The
+    // backend lays it out cold, after the function's main line; it is a
+    // layout hint and never changes what the block does.
     bool cold = false;
-    uint32_t copyRegion = kNoCopyRegion;
     // Where control goes if something inside this block throws: the innermost
     // enclosing handler, or `kNoBlock` for "leave the function". It sits on
     // the block rather than on each call: the backend makes each call in the
@@ -520,7 +205,6 @@ struct Param {
     // The key-constant index of the manifest line this pin came from, valid
     // only when `pinned`.
     uint32_t pinKeyIndex = 0;
-    std::optional<int64_t> knownConstInt;
 };
 
 struct Function {
@@ -635,18 +319,6 @@ struct Function {
     uint32_t sourceEnd = 0;
     std::string displayName;
     uint32_t descFlags = 0;
-    // This function is a TYPED ENTRY of the module function at this index
-    // (lower/typed_entry.h): the same body entered with some source
-    // parameters unboxed, reached only from the direct edge of a method-call
-    // site whose `directTarget` is that function. Never a function object of
-    // its own, so nothing about it is observable but its result.
-    static constexpr uint32_t kNoTypedOrigin = 0xFFFFFFFFu;
-    uint32_t typedOrigin = kNoTypedOrigin;
-    // How many arguments every edge into this typed entry passes. The source
-    // parameters past it are ones the edge omits, which the backend fills
-    // with `undefined` and the entry's body reads as `undefined` — so an edge
-    // passing any other count would hand it a value its body does not expect.
-    uint32_t typedArgc = 0;
 
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {
@@ -667,16 +339,6 @@ struct Function {
     uint32_t adaptArity() const {
         return needsArguments ? 0u : static_cast<uint32_t>(callerParamCount());
     }
-    // One entry per call inlined into this function (lower/inline_guarded.cpp):
-    // the callee that was inlined, where its call was written, and the frame
-    // that call itself sat in (0 for the function's own code, else a 1-based
-    // index here). An instruction's `inlineFrame` names its innermost entry.
-    struct InlineFrame {
-        uint32_t callee = 0;
-        Span callSpan;
-        uint32_t parent = 0;
-    };
-    std::vector<InlineFrame> inlineFrames;
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
@@ -703,139 +365,31 @@ struct Module {
     // template object 13.2.8.4 GetTemplateObject requires that site to hand its
     // tag function on every call.
     uint32_t templateSiteCount = 0;
-    // How many STATIC-SLOT sites lowering handed out. Sized exactly like
-    // `icSiteCount`: the backend emits this many i64 cells as a global array,
-    // and the verifier checks every `staticCellIndex` against it. Zero when the
-    // seam is off or nothing proved, and then no array is emitted at all.
-    uint32_t staticSiteCount = 0;
     // How many SLOW SITES (Instruction::slowSite) the final passes handed
     // out: the backend emits this many zeroed u64 counters right before the
     // IC table, and the harvest reads them back (docs/type-feedback.md,
     // "Slow paths").
     uint32_t slowSiteCount = 0;
-    // The proven class layouts, in the PREORDER the family ids number: what the
-    // module hands `bronze_register_class_family` at init so that the runtime
-    // can recognise a shape as an instance of one. Empty when nothing proved,
-    // or when the family seam is off.
-    struct ClassFamilyField {
-        uint32_t keyIndex = 0;   // into `keyConstants`
-        bool writable = true;    // as the construction sequence installs it
-        // A harvest saw the key hold only plain objects (feedback_plan.h
-        // `harvestObjects`): the runtime stamps the class only on a shape that
-        // calls the field's slot an object one, and only a field so marked
-        // may be one (runtime/class_family.cpp), so a family site's read of
-        // it is a receiver with no tag or header test.
-        bool object = false;
-    };
-    struct ClassFamilyEntry {
-        std::string name;  // the class's binding, for the IL dump only
-        std::vector<ClassFamilyField> fields;
-    };
-    std::vector<ClassFamilyEntry> classFamilies;
-    // LAYOUT CELLS (opt/spec/feedback_plan.h, `applyFeedbackLayoutCells`): a
-    // static cell that stands for one whole shape the recorded run saw, by
-    // name (prototype and key list), and that every claimed site of a hot
-    // function which met only that shape asks instead of a cell or a family
-    // range of its own. Two sites on one receiver then make the same compare,
-    // and the backend's passes drop the second. The runtime publishes a
-    // shape into the cell only when it has `keyCount` keys and carries every
-    // listed key as an own data property at its slot (writable, and no
-    // prototype's shape, where a member stores): what each member's own
-    // publish checked for its one key (runtime/static_shape.cpp). A member
-    // marked `number` is one the harvest saw hold a double on that shape
-    // (opt/spec/feedback_plan.h `harvestDoubles`): the runtime publishes the
-    // cell only for a shape that calls the slot a double, whose objects hold
-    // a Number there for as long as they keep the shape (runtime/slot_repr.h),
-    // so a read behind the cell's guard is a Number with no test. A member
-    // marked `object` is one the harvest saw hold only plain objects: the
-    // cell is published only for a shape that calls the slot an object one,
-    // so a read behind its guard is a plain object, and a written member not
-    // so marked is never an object slot (runtime/static_shape.cpp).
-    struct LayoutCellEntry {
-        struct Pair {
-            uint32_t keyIndex = 0;  // into `keyConstants`
-            uint32_t slot = 0;
-            bool write = false;
-            bool number = false;
-            bool object = false;
-        };
-        uint32_t cell = 0;  // a `staticCellIndex`
-        uint32_t keyCount = 0;
-        std::vector<Pair> pairs;
-    };
-    std::vector<LayoutCellEntry> layoutCells;
-    // THE SLOT-REPRESENTATION ELIGIBILITY LIST (stage R1,
-    // src/runtime/slot_repr.h): indices into `keyConstants` naming the property
-    // names a `--pins` manifest declared `number` on some class this
-    // compilation proved a layout for, and the keys of the layout cells'
-    // `number` members (a harvest). The runtime is told them at module init
-    // and uses them for one decision — whether a shape transition that FIRST
-    // installs such a name, with a Number in hand, may store the slot as a raw
-    // double instead of a boxed Value.
-    //
-    // NAMES and not (class, slot) pairs: the runtime meets a transition long
-    // before it can recognise a class, and the name is the only fact available
-    // at the moment the storage decision has to be made. Over-application is
-    // sound — the runtime generalizes a slot whose promise a store breaks — so
-    // a name shared with an unpinned class costs a shape split at worst.
-    // Empty without a manifest or a harvest.
-    std::vector<uint32_t> slotReprFields;
-    // The same list for the OBJECT representation (runtime/slot_repr.h): the
-    // keys of the layout cells' and class families' `object` members, which
-    // a slot first installed with a plain object in hand is born an object
-    // slot under. Empty without a harvest.
-    std::vector<uint32_t> slotReprObjectFields;
-    // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
-    // entry per site lowering created, handed to the runtime at module init so
-    // that a site the run never reaches is still known — "never observed" and
-    // "not a site" are different answers, and a STATIC refusal has to
-    // disqualify its entry on a run that never touches it.
-    //
-    // Built here rather than scanned back out of the instructions, because
-    // some entries have no instruction at all: an owner spelling that would
-    // govern two different IL functions is refused by a table row and nothing
-    // else.
+    // THE CENSUS SITE TABLE, the runtime channel a type-feedback build
+    // (`--feedback-out`, lower/lower_feedback.cpp) registers its sites
+    // through (abi/bronze_feedback_site.h): handed to the runtime at module
+    // init, so a site the run never reaches is still known.
     struct CensusSiteEntry {
         uint32_t keyIndex = 0;  // into `keyConstants`
-        uint32_t info = 0;      // BRONZE_ABI_CENSUS_* kind | flags
+        uint32_t info = 0;      // BRONZE_FEEDBACK_INFO kind | ordinal
     };
     std::vector<CensusSiteEntry> censusSites;
-    // Where the census run writes its manifest. Empty unless `--census`.
+    // Where the instrumented run writes its profile. Empty unless
+    // `--feedback-out`.
     std::string censusOutPath;
     // THE INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"). The image
     // carries an identity record its module init hands the runtime with the
     // IC table: `icLayoutDigest`, a hash of the source texts and of what every
     // IC index names (il/feedback_site.h icLayoutDigest), as the final passes
-    // left them before a profile was spent; `feedbackApplied` when a profile
-    // or harvest changed this build (its caches then describe a specialized
-    // build, and the runtime does not harvest it); and `harvestOutPath`
+    // left them; and `harvestOutPath`
     // (`--harvest-out`), where a standalone program writes its harvest.
     uint64_t icLayoutDigest = 0;
-    bool feedbackApplied = false;
     std::string harvestOutPath;
-    // With `feedbackApplied`: the inline-cache indices of the claimed
-    // property sites the profile saw miss (spec::applyFeedbackClaimsAndHints).
-    // An image's lowering trusts every other claim enough to leave the
-    // function on its miss (il2mir/il_speculation.h, "IMAGE SITES"). Not
-    // serialized: it is read by the build that made it.
-    std::unordered_set<uint32_t> missedClaimIcs;
-    // With `feedbackApplied`: the inline-cache indices of the property and
-    // method sites whose harvested cache held more than one receiver shape or
-    // callee. A guard that asks one cell about such a site (an inlined
-    // accessor's or method's) keeps its miss in line in an image; any other
-    // may leave the function. Not serialized either.
-    std::unordered_set<uint32_t> mixedIcs;
-    // With `feedbackApplied` and a harvest that counted slow sites (its
-    // `slowsites` row matched `slowSiteCount`): the COLD slow sites, those the
-    // harvested build lowered with a counting fallback that never ran. An
-    // image's lowering leaves a twinned function for its resume twin from
-    // these only (il2mir/il_speculation.h, "SLOW ARMS"). Not serialized.
-    std::unordered_set<uint32_t> slowCold;
-    // THE FUNCTION PLACEMENT (lower/function_placement.h): indices into
-    // `functions` the backend lays out first in its text, in this order, and
-    // last. Only where code sits, never what it is.
-    std::vector<uint32_t> hotFunctions;
-    std::vector<uint32_t> coldFunctions;
     // THE NATIVE IMPORT TABLE (`--native-manifest`; bronze_abi.h's loadable-
     // module section): one entry per native the program calls directly, in
     // the order lowering first met them. Entry `i` is reached through the

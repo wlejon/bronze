@@ -98,37 +98,6 @@ static bool verifyConcatChain(const Function& fn, DiagnosticSink& diags) {
     return true;
 }
 
-// closure.env's licence (il_op.h): it reads a function object's env word,
-// which only a closure has, so it must stand where `closure.is` on the same
-// value has just said yes — first in a block entered by exactly one edge, the
-// true edge of a branch on that test. The value is SSA and a closure's env
-// word never changes, so nothing between the test and the read can undo it.
-static bool closureEnvProved(const Function& fn, size_t bIdx, size_t iIdx) {
-    if (iIdx != 0) return false;
-    const ValueId f = fn.blocks[bIdx].instructions[0].operands[0];
-    size_t edges = 0;
-    const Instruction* test = nullptr;
-    for (const auto& blk : fn.blocks) {
-        if (blk.instructions.empty()) continue;
-        const Instruction& t = blk.instructions.back();
-        if (t.op != Op::Jump && t.op != Op::Branch) continue;
-        if (t.target.block == bIdx) {
-            ++edges;
-            if (t.op == Op::Branch) test = &t;
-        }
-        if (t.op == Op::Branch && t.elseTarget.block == bIdx) edges += 2;
-    }
-    if (edges != 1 || test == nullptr || test->operands.empty()) return false;
-    for (const auto& blk : fn.blocks) {
-        for (const auto& inst : blk.instructions) {
-            if (inst.result == test->operands[0]) {
-                return inst.op == Op::ClosureIs && !inst.operands.empty() && inst.operands[0] == f;
-            }
-        }
-    }
-    return false;
-}
-
 bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     if (fn.blocks.empty()) {
         diags.error(Span{}, "Function " + fn.name + " has no blocks");
@@ -189,22 +158,6 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             diags.error(Span{}, "Function " + fn.name + ": block id mismatch at index " +
                                   std::to_string(bIdx) + " (expected b" + std::to_string(bIdx) +
                                   ", got b" + std::to_string(block.id) + ")");
-            return false;
-        }
-
-        // A copy class and a region index are one fact in two fields, so the
-        // two states that spell nothing — a shared block claiming a region, a
-        // copy claiming none — are rejected rather than interpreted. The frame
-        // overlay keys on the pair.
-        if ((block.copyClass == CopyClass::Shared) !=
-            (block.copyRegion == kNoCopyRegion)) {
-            diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
-                                    " has copy class " +
-                                    (block.copyClass == CopyClass::Shared ? "shared" : "fast/slow") +
-                                    " but region index " +
-                                    (block.copyRegion == kNoCopyRegion
-                                         ? std::string("none")
-                                         : std::to_string(block.copyRegion)));
             return false;
         }
 
@@ -374,51 +327,6 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             diags.error(Span{}, "Function " + fn.name + ": within-block use-after-def of %" + std::to_string(id));
             return false;
         }
-        // THE COPY-CLASS INVARIANT (il.h `CopyClass`). A guarded numeric region
-        // exists as two copies that are mutually exclusive: control enters the
-        // fast one at most once per region entry and, once it has left through
-        // a trampoline, never comes back. So a value defined in one copy of a
-        // region may be read only in that same copy of that same region, and a
-        // value defined outside every copy — a function parameter, a preheader
-        // value — may be read anywhere.
-        //
-        // A trampoline's block ARGUMENTS are uses in the trampoline, which is
-        // fast, and the slow tail's parameters are the definitions on the other
-        // side; so the one place the two copies meet already satisfies this
-        // without an exception for it.
-        //
-        // It is checked here because `planFrame` OVERLAYS the two copies' GC
-        // root slots on the strength of it (codegen-llvm/llvm_frame.h). A
-        // violation would be two live values in one slot, which is a
-        // use-after-move that only appears under collection pressure — so it is
-        // a hard error at the earliest point that can see it, not a lint.
-        //
-        // Function parameters are exempt by id: they are recorded against block
-        // 0 for the ordering check above, and block 0 is not where they live.
-        if (id >= static_cast<ValueId>(fn.params.size())) {
-            const Block& defBlock = fn.blocks[loc.blockIdx];
-            const Block& useBlock = fn.blocks[useBlockIdx];
-            if (defBlock.copyClass != CopyClass::Shared &&
-                (defBlock.copyClass != useBlock.copyClass ||
-                 defBlock.copyRegion != useBlock.copyRegion)) {
-                auto where = [](const Block& b) {
-                    std::string out = "b" + std::to_string(b.id);
-                    switch (b.copyClass) {
-                        case CopyClass::Shared: return out + " (shared)";
-                        case CopyClass::Fast:
-                            return out + " (fast " + std::to_string(b.copyRegion) + ")";
-                        case CopyClass::Slow:
-                            return out + " (slow " + std::to_string(b.copyRegion) + ")";
-                    }
-                    return out;
-                };
-                diags.error(Span{}, "Function " + fn.name + ": %" + std::to_string(id) +
-                                        " is defined in " + where(defBlock) +
-                                        " and used in " + where(useBlock) +
-                                        ", which is a different copy of a guarded region");
-                return false;
-            }
-        }
 
         if (id >= static_cast<ValueId>(fn.params.size()) && loc.blockIdx != useBlockIdx) {
             if (!dominates(static_cast<BlockId>(loc.blockIdx), static_cast<BlockId>(useBlockIdx))) {
@@ -500,108 +408,17 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             for (ValueId opId : inst.operands) {
                 if (!checkUse(opId, bIdx, iIdx)) return false;
             }
-            if (inst.inlineFrame > fn.inlineFrames.size()) {
-                diags.error(Span{}, "Function " + fn.name + ": an instruction names inline frame " +
-                                        std::to_string(inst.inlineFrame) + " of " +
-                                        std::to_string(fn.inlineFrames.size()));
-                return false;
-            }
-            if (inst.op == Op::MethodIcIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
-                diags.error(Span{}, "Function " + fn.name + ": method.ic.is takes one operand and is a bool");
-                return false;
-            }
-            if (inst.op == Op::RunMethodIs &&
-                (!inst.operands.empty() || inst.type != Type::Bool ||
-                 inst.transitionRunCell == Instruction::kNoTransitionRun)) {
-                diags.error(Span{}, "Function " + fn.name + ": run.method.is names a run, takes no operand and is a bool");
-                return false;
-            }
-            if (inst.op == Op::AccessorIcIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
-                diags.error(Span{}, "Function " + fn.name + ": accessor.ic.is takes one operand and is a bool");
-                return false;
-            }
-            if ((inst.op == Op::MethodSlotFn || inst.op == Op::ClosureEnv || inst.op == Op::CreateThis) &&
-                (inst.operands.size() != 1 || inst.type != Type::Dynamic || inst.result == kNoValue)) {
-                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                        " takes one operand and is a dynamic value");
-                return false;
-            }
-            if ((inst.op == Op::ClosureIs || inst.op == Op::IsPlainArray) && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
+            if (inst.op == Op::IsPlainArray && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
                 diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " takes one operand and is a bool");
                 return false;
             }
-            if (inst.op == Op::ClosureEnv && !closureEnvProved(fn, bIdx, iIdx)) {
-                diags.error(Span{}, "Function " + fn.name + ": closure.env %" + std::to_string(inst.operands[0]) +
-                                        " in b" + std::to_string(bIdx) +
-                                        " is not first in the one successor of its closure.is test");
-                return false;
-            }
-            if (inst.op == Op::IsShape &&
-                (inst.operands.size() != 1 || inst.type != Type::Bool || inst.result == kNoValue ||
-                 definedTypes[inst.operands[0]] != Type::Dynamic)) {
-                diags.error(Span{}, "Function " + fn.name + ": is.shape takes one dynamic operand and is a bool");
-                return false;
-            }
-            // A shape-guarded site is a bare load or store at its claimed slot,
-            // and a store's value has to be one every slot representation takes
-            // without a barrier: a Number box.
-            if (inst.shapeGuarded) {
-                const bool site = (inst.op == Op::PropGet || inst.op == Op::PropSet) &&
-                                  inst.staticSlot != Instruction::kNoStaticSlot &&
-                                  inst.directTarget == Instruction::kNoDirectTarget;
-                bool numberValue = inst.op != Op::PropSet;
-                if (site && !numberValue && inst.operands.size() > 1) {
-                    for (const auto& defBlock : fn.blocks) {
-                        for (const auto& def : defBlock.instructions) {
-                            if (def.result == inst.operands[1]) {
-                                numberValue = def.op == Op::Box && def.boxType == Type::F64;
-                            }
-                        }
-                    }
-                }
-                if (!site || !numberValue) {
-                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                            " is shape-guarded without a static slot claim or a number to store");
-                    return false;
-                }
-                // A layout fact, when the site holds one, is a `layout.fact`
-                // of the same receiver.
-                const ValueId fact = layoutFactOperand(inst);
-                if (fact != kNoValue) {
-                    bool factOk = false;
-                    for (const auto& defBlock : fn.blocks) {
-                        for (const auto& def : defBlock.instructions) {
-                            if (def.result == fact) {
-                                factOk = def.op == Op::LayoutFact && def.operands.size() == 1 &&
-                                         def.operands[0] == inst.operands[0];
-                            }
-                        }
-                    }
-                    if (!factOk) {
-                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                                " holds a layout fact that is no layout.fact of its receiver");
-                        return false;
-                    }
-                }
-            }
-            if (inst.op == Op::LayoutFact &&
-                (inst.operands.size() != 1 || inst.type != Type::F64 || inst.result == kNoValue ||
-                 definedTypes[inst.operands[0]] != Type::Dynamic ||
-                 inst.staticSlot == Instruction::kNoStaticSlot)) {
-                diags.error(Span{}, "Function " + fn.name +
-                                        ": layout.fact takes one dynamic operand and a site's slot claim, and is an f64");
-                return false;
-            }
             // The kind is compared against the view header's kind word, so it
-            // must be one of the Number kinds the typed element ops serve.
-            // kTypedArrayWordView asks for any of the four word kinds, never with
-            // the pristine-length bit.
+            // must be one of the Number kinds.
             const int32_t taKind = inst.immI32 & ~kTypedArrayPristineLength;
-            const bool anyWord = inst.immI32 == kTypedArrayWordView;
             if (inst.op == Op::IsTypedArray &&
                 (inst.operands.size() != 1 || inst.type != Type::Bool || inst.result == kNoValue ||
                  definedTypes[inst.operands[0]] != Type::Dynamic ||
-                 (!anyWord && (taKind < 0 || taKind > BRONZE_ABI_TA_KIND_FLOAT64)))) {
+                 taKind < 0 || taKind > BRONZE_ABI_TA_KIND_FLOAT64)) {
                 diags.error(Span{}, "Function " + fn.name +
                                         ": is.typed_array takes one dynamic operand and a Number element kind, "
                                         "and is a bool");
@@ -668,8 +485,7 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 }
             }
 
-            // `is.number` is the guarded-region pass's barrier, and both halves
-            // of its shape are load-bearing: the operand must be BOXED, because
+            // `is.number`: both halves of its shape are load-bearing: the operand must be BOXED, because
             // the test is a compare against the NaN-box's number range and an
             // f64 operand would be comparing a double's bits to a tag bound,
             // and the result must be `bool`, because the only thing that may
@@ -696,14 +512,12 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 }
             }
 
-            // `is.dense_array` is the read-run half of the same barrier, and it
-            // owes the same two halves plus one: a receiver whose bits are a
-            // tagged value, a `bool` for a `br` to consume, and a NON-NEGATIVE
-            // index — `immI32` is compared against a length, and a negative
-            // claim would widen to an enormous unsigned bound.
-            // `is.number_array` owes exactly what `is.dense_array` does, for
-            // the same reasons: it is the same receiver test with one more bit.
-            if (inst.op == Op::IsDenseArray || inst.op == Op::IsNumberArray) {
+            // `is.dense_array` owes the same two halves plus one: a receiver
+            // whose bits are a tagged value, a `bool` for a `br` to consume,
+            // and a NON-NEGATIVE index — `immI32` is compared against a
+            // length, and a negative claim would widen to an enormous unsigned
+            // bound.
+            if (inst.op == Op::IsDenseArray) {
                 const std::string opn = opName(inst.op);
                 if (inst.operands.size() != 1 || inst.result == kNoValue) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opn +
@@ -787,11 +601,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                 const bool refersToFunction = inst.op == Op::Call ||
                                               inst.op == Op::CreateFunction ||
                                               inst.op == Op::FunctionRef ||
-                                              inst.op == Op::CoroStart ||
-                                              inst.op == Op::MethodIcIs ||
-                                              inst.op == Op::RunMethodIs ||
-                                              inst.op == Op::AccessorIcIs ||
-                                              inst.op == Op::ClosureIs;
+                                              inst.op == Op::CoroStart;
                 if (!refersToFunction) continue;
                 if (inst.calleeIndex >= module.functions.size()) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
@@ -852,105 +662,24 @@ bool verify(const Module& module, DiagnosticSink& diags) {
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
-                // An ACCESSOR site (direct_method_table.h, `resolveAccessors`)
-                // and its inlined body's guard both read the two cells from
-                // `staticCellIndex`, and its hit calls the accessor with no
-                // environment: a site naming anything else is a bug in the
-                // pass that stamped it, never something to lower around.
-                const bool accessorSite = (inst.op == Op::PropGet || inst.op == Op::PropSet) &&
-                                          inst.directTarget != Instruction::kNoDirectTarget;
-                if (accessorSite || inst.op == Op::AccessorIcIs) {
-                    const uint32_t target = accessorSite ? inst.directTarget : inst.calleeIndex;
-                    if (static_cast<size_t>(inst.staticCellIndex) + 1 >= module.staticSiteCount ||
-                        target >= module.functions.size() || module.functions[target].needsEnv ||
-                        (accessorSite && inst.staticSlot != Instruction::kNoStaticSlot)) {
-                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                                " names accessor cell " + std::to_string(inst.staticCellIndex) +
-                                                " and target @" + std::to_string(target) +
-                                                ", which the module cannot back");
-                        return false;
-                    }
-                }
-                // A DEFINITION (il.h kWriteDefine) never walks the prototype
-                // chain, so an accessor target or an assignment's static-slot
-                // claim on one would answer it with a Set. Write modes past
-                // the three are no mode at all.
+                // Write modes past the literal element's are no mode at all,
+                // and an element store carries only the element flags above it.
                 if ((inst.op == Op::PropSet || inst.op == Op::ElemSet) &&
                     (writeMode(inst) > kWriteLiteralElement ||
                      (inst.immI32 & ~(inst.op == Op::ElemSet ? kElemSetFlagBits : kWriteModeMask)) != 0 ||
-                     (inst.op == Op::ElemSet && writeMode(inst) == kWriteLiteralElement) ||
-                     (isDefineWrite(inst) && (inst.directTarget != Instruction::kNoDirectTarget ||
-                                              inst.staticSlot != Instruction::kNoStaticSlot)))) {
+                     (inst.op == Op::ElemSet && writeMode(inst) == kWriteLiteralElement))) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " in write mode " +
-                                            std::to_string(inst.immI32) +
-                                            " carries an assignment's accessor target or static slot, or no mode");
+                                            std::to_string(inst.immI32) + " carries no mode");
                     return false;
                 }
-                // A transition run's cells are the same fixed global. The
-                // store that heads a run names its extent, instructions of
-                // this block; a guard that asks a run's cells (`closure.is`,
-                // `run.method.is`) names only the run.
-                const bool asksRun = inst.op == Op::ClosureIs || inst.op == Op::RunMethodIs;
-                if (inst.transitionRunCell != Instruction::kNoTransitionRun &&
-                    ((inst.op != Op::PropSet && !asksRun) ||
-                     static_cast<size_t>(inst.transitionRunCell) + Instruction::kTransitionRunCells >
-                         module.staticSiteCount ||
-                     (!asksRun &&
-                      (inst.transitionRunLength < 1 ||
-                       static_cast<size_t>(&inst - block.instructions.data()) + inst.transitionRunLength >
-                           block.instructions.size())))) {
-                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                            " names transition run cell " + std::to_string(inst.transitionRunCell) +
-                                            " over " + std::to_string(inst.transitionRunLength) +
-                                            " instructions, which the module or block cannot back");
-                    return false;
-                }
-                // So are a define's add cells.
-                if (inst.defineAddCell != Instruction::kNoDefineAddCell &&
-                    (inst.op != Op::DefineOwnAttr ||
-                     static_cast<size_t>(inst.defineAddCell) + BRONZE_ABI_DEFINE_ADD_CELLS > module.staticSiteCount)) {
-                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " names define add cell " +
-                                            std::to_string(inst.defineAddCell) + ", which the module cannot back");
-                    return false;
-                }
-                if (inst.op == Op::PropGet || inst.op == Op::PropSet || inst.op == Op::IsShape || inst.op == Op::LayoutFact ||
-                    inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
+                if (inst.op == Op::PropGet || inst.op == Op::PropSet || inst.op == Op::MethodCall ||
+                    inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {
                         diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                                 " names inline-cache site " +
                                                 std::to_string(inst.icIndex) +
                                                 ", past the module's site count " +
                                                 std::to_string(module.icSiteCount));
-                        return false;
-                    }
-                    // Same shape of bug, same rule: the static-slot cell array
-                    // is a fixed-size global the backend emits, so a cell index
-                    // past the count is an out-of-bounds store.
-                    // A FAMILY site names no cell at all — its guard is a
-                    // range compare against constants — so the bound is the
-                    // identity form's alone.
-                    if (inst.staticSlot != Instruction::kNoStaticSlot &&
-                        inst.familyLo == Instruction::kNoFamily &&
-                        inst.staticCellIndex >= module.staticSiteCount) {
-                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                                " names static-slot site " +
-                                                std::to_string(inst.staticCellIndex) +
-                                                ", past the module's site count " +
-                                                std::to_string(module.staticSiteCount));
-                        return false;
-                    }
-                    // And a family site's range has to be inside the table the
-                    // module actually emits, for the same reason: the runtime
-                    // registers exactly this many classes.
-                    if (inst.familyLo != Instruction::kNoFamily &&
-                        static_cast<size_t>(inst.familyLo) + inst.familySpan >=
-                            module.classFamilies.size()) {
-                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                                " names class-family range " +
-                                                std::to_string(inst.familyLo) + ".." +
-                                                std::to_string(inst.familyLo + inst.familySpan) +
-                                                ", past the module's class count " +
-                                                std::to_string(module.classFamilies.size()));
                         return false;
                     }
                     continue;

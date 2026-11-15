@@ -1,7 +1,6 @@
 #include "il/print.h"
 
 #include <charconv>
-#include <map>
 
 #include "il/feedback_site.h"
 #include "il/il_pin.h"
@@ -39,15 +38,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         return idx < module.functions.size() ? module.functions[idx].name : "?";
     };
     std::string out = "module " + module.name + "\n";
-    // The PIN CENSUS site table, when there is one. Printed because some of its
-    // rows have NO instruction to read them off: a store through a receiver the
-    // compiler cannot type registers a row and emits nothing (there is no class
-    // to name and so no observation to make), and a static refusal is a row and
-    // nothing else. Without this the two facts that decide whether an entry
-    // ships — is it refused, is it `@observed` — would be invisible until a run
-    // produced them. Only when the module has one, so every IL dump of a build
-    // without `--census` is byte-identical to what it always was.
-    // A type-feedback build registers through the same table
+    // A type-feedback build registers through the module's census table
     // (abi/bronze_feedback_site.h): its rows are the output path's marker and
     // the method-name links, which are summarized rather than listed — the
     // sites themselves are the `feedback.record` instructions.
@@ -58,36 +49,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
     if (feedbackRows != 0) {
         out += "\nfeedback " + module.censusOutPath + " (" + std::to_string(feedbackRows) +
                " registration rows)\n";
-    }
-    if (module.censusSites.size() > feedbackRows) {
-        out += "\ncensus " + module.censusOutPath + " {\n";
-        // Deduplicated and sorted: the table has one row per SITE and a reader
-        // of the dump wants one line per target. The count is what says how
-        // many stores or call positions stand behind it.
-        std::map<std::string, std::pair<uint32_t, uint32_t>> rows;  // -> (count, info)
-        for (const auto& site : module.censusSites) {
-            if ((site.info & BRONZE_FEEDBACK_FLAG) != 0) continue;
-            const std::string& name = site.keyIndex < module.keyConstants.size()
-                                          ? module.keyConstants[site.keyIndex]
-                                          : std::string();
-            auto& row = rows[name];
-            row.first += 1;
-            row.second |= site.info;
-        }
-        for (const auto& [name, row] : rows) {
-            const char* kind = "field";
-            switch (static_cast<CensusSite>(row.second & BRONZE_ABI_CENSUS_KIND_MASK)) {
-                case CensusSite::EnvSlot: kind = "env-slot"; break;
-                case CensusSite::Field: kind = "field"; break;
-                case CensusSite::Param: kind = "param"; break;
-                case CensusSite::Return: kind = "return"; break;
-                case CensusSite::OpaqueFieldStore: kind = "opaque-store"; break;
-            }
-            out += "  " + std::string(kind) + " \"" + name + "\" x" +
-                   std::to_string(row.first) +
-                   ((row.second & BRONZE_ABI_CENSUS_REFUSES) != 0 ? " refused" : "") + "\n";
-        }
-        out += "}\n";
     }
     // The native import table and the declarations that reach it, before any
     // body: a call to `@__bronze_native_3` in a dump is only readable next to
@@ -143,13 +104,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
             if (block.handler != kNoBlock) {
                 out += " handler b" + std::to_string(block.handler);
             }
-            // Only when the block is in a region's copy, so the dump of a
-            // program the guarded-region pass did not touch is byte-identical
-            // to what it was before copy classes existed.
-            if (block.copyClass != CopyClass::Shared) {
-                out += block.copyClass == CopyClass::Fast ? " [fast " : " [slow ";
-                out += std::to_string(block.copyRegion) + (block.cold ? " cold]" : "]");
-            }
+            if (block.cold) out += " [cold]";
             out += ":\n";
 
             for (const auto& inst : block.instructions) {
@@ -184,9 +139,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         } else {
                             out += " %" + std::to_string(inst.operands[0]);
                         }
-                        // A move of the bits rather than a canonicalising box
-                        // (il.h `rawBox`): different emitted code, so named.
-                        if (inst.rawBox) out += ", raw";
                         break;
                     case Op::Neg:
                         out += "neg %" +
@@ -230,56 +182,11 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        // The raw form is a different instruction in every way
-                        // that matters — it cannot throw and it emits one
-                        // bitcast — so the canonical text names it.
-                        if (inst.rawUnbox) out += ", raw";
-                        if (inst.nullishUnbox) out += ", nullish";
                         break;
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
                         if (inst.immI32 & kPropGetArrayLength) out += ", array-length";
-                        // The receiver is a class- or function-declaration BINDING, so it
-                        // can be a function object with members in a statics box: a hint,
-                        // not a proof, but it decides whether the backend emits the arm
-                        // that reads one. f64-bits (il.h `numberBits`) changes the read's
-                        // representation. Both change emitted code, so the text names them.
-                        if (inst.icFnRecv) out += ", fn-recv";
-                        if (inst.numberBits) out += ", f64-bits";
-                        // The stronger claim, and the one that changes emitted
-                        // code: a proven class layout put this key at a
-                        // constant instance slot, so the site carries a
-                        // shape-compare-and-load fast path in front of the
-                        // cache. Printed because a reader cannot otherwise tell
-                        // the two forms apart in the IL.
-                        if (inst.staticSlot != Instruction::kNoStaticSlot) {
-                            out += ", slot " + std::to_string(inst.staticSlot);
-                            // A family site names a RANGE of class ids and no
-                            // cell; an identity site names its cell. Two
-                            // spellings because they are two guards, and a
-                            // reader of the IL has no other way to tell.
-                            if (inst.familyLo != Instruction::kNoFamily) {
-                                out += " family " + std::to_string(inst.familyLo) + ".." +
-                                       std::to_string(inst.familyLo + inst.familySpan);
-                            } else {
-                                out += "@" + std::to_string(inst.staticCellIndex);
-                                if (inst.staticRegrow) out += " regrow";
-                            }
-                            // A dominating `is.shape` answered the guard: the
-                            // site is a bare load or store. With a layout fact
-                            // (its last operand), only while the epoch equals it.
-                            if (inst.shapeGuarded) out += ", shape-guarded";
-                            if (inst.shapeGuarded && layoutFactOperand(inst) != kNoValue) {
-                                out += " fact %" + std::to_string(layoutFactOperand(inst));
-                            }
-                        }
-                        // An accessor site calls its getter or setter behind
-                        // the cell pair it names: emitted code again.
-                        if (inst.directTarget != Instruction::kNoDirectTarget) {
-                            out += ", accessor @" + std::to_string(inst.directTarget) + "@" +
-                                   std::to_string(inst.staticCellIndex);
-                        }
                         break;
                     // The key index, and no cache slot: a class body runs
                     // once, so a method definition has no repeat to cache
@@ -356,10 +263,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                               "configurable");
                         out += fields + "}";
                         if ((mask & BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY) != 0) out += " single";
-                        // The inline add arm is emitted code, as a run's is.
-                        if (inst.defineAddCell != Instruction::kNoDefineAddCell) {
-                            out += ", add @" + std::to_string(inst.defineAddCell);
-                        }
                         break;
                     }
                     case Op::GetNewTarget:
@@ -372,17 +275,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                     : std::string("?")) +
                                "\"";
                         break;
-                    case Op::ArrayAppendHole:
-                        out += "array.append.hole %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        break;
                     case Op::TemplateCached:
                         out += "template.cached " + std::to_string(inst.immI32);
                         break;
                     // The claim's index bound is its content beside the receiver.
                     case Op::IsDenseArray:
                     case Op::IsTypedArray:
-                    case Op::IsNumberArray:
                         out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
                                std::to_string(inst.immI32);
@@ -442,41 +340,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", " + std::to_string(inst.icIndex) + ", " +
                                std::to_string(inst.immI32);
-                        // The read twin's note applies: the static slot is
-                        // printed because it changes emitted code.
-                        if (inst.staticSlot != Instruction::kNoStaticSlot) {
-                            out += ", slot " + std::to_string(inst.staticSlot);
-                            // A family site names a RANGE of class ids and no
-                            // cell; an identity site names its cell. Two
-                            // spellings because they are two guards, and a
-                            // reader of the IL has no other way to tell.
-                            if (inst.familyLo != Instruction::kNoFamily) {
-                                out += " family " + std::to_string(inst.familyLo) + ".." +
-                                       std::to_string(inst.familyLo + inst.familySpan);
-                            } else {
-                                out += "@" + std::to_string(inst.staticCellIndex);
-                                if (inst.staticRegrow) out += " regrow";
-                            }
-                            // A dominating `is.shape` answered the guard: the
-                            // site is a bare load or store. With a layout fact
-                            // (its last operand), only while the epoch equals it.
-                            if (inst.shapeGuarded) out += ", shape-guarded";
-                            if (inst.shapeGuarded && layoutFactOperand(inst) != kNoValue) {
-                                out += " fact %" + std::to_string(layoutFactOperand(inst));
-                            }
-                        }
-                        // An accessor site calls its getter or setter behind
-                        // the cell pair it names: emitted code again.
-                        if (inst.directTarget != Instruction::kNoDirectTarget) {
-                            out += ", accessor @" + std::to_string(inst.directTarget) + "@" +
-                                   std::to_string(inst.staticCellIndex);
-                        }
-                        // A transition run's guard is emitted code too.
-                        if (inst.transitionRunCell != Instruction::kNoTransitionRun) {
-                            out += ", run @" + std::to_string(inst.transitionRunCell) + " len " +
-                                   std::to_string(inst.transitionRunLength) + " from " +
-                                   std::to_string(inst.transitionRunSlot);
-                        }
                         break;
                     case Op::DynamicCall: {
                         out += "call.dynamic";
@@ -500,16 +363,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         out += ", " + std::to_string(inst.keyIndex) + ", " +
                                std::to_string(inst.icIndex);
-                        if (inst.icFnRecv) out += ", fn-recv";
                         if (inst.directTarget != Instruction::kNoDirectTarget) {
                             out += ", direct @" + std::to_string(inst.directTarget);
                         }
-                        if (inst.typedTarget != Instruction::kNoDirectTarget) {
-                            out += " typed @" + std::to_string(inst.typedTarget);
-                        }
-                        if (inst.immI32 & Instruction::kMethodRecvArray) out += ", array-recv";
-                        if (inst.immI32 & Instruction::kMethodPolyShapes) out += ", poly-recv";
-                        if (inst.immI32 & Instruction::kMethodOwnCallee) out += ", own-callee";
                         size_t argc = inst.operands.size() > 1 ? inst.operands.size() - 1 : 0;
                         out += ", " + std::to_string(argc);
                         for (size_t i = 1; i < inst.operands.size(); ++i) {
@@ -554,23 +410,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
                                ", " + std::to_string(inst.immI32);
-                        break;
-                    case Op::ElemGetTyped:
-                        out += "elem.get.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
-                               ", " + std::to_string(inst.immI32 & kElemKindMask);
-                        break;
-                    case Op::ElemSetTyped:
-                        out += "elem.set.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
-                               ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
-                               ", " + std::to_string(inst.immI32 & kElemKindMask);
-                        break;
-                    case Op::MathUnary:
-                        out += "math.unary %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        for (size_t k = 1; k < inst.operands.size(); ++k) out += ", %" + std::to_string(inst.operands[k]);
-                        out += ", " + std::to_string(inst.immI32);
                         break;
                     case Op::CreateObject:
                         out += "create.object";
@@ -740,31 +579,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                "\"";
                         break;
                     }
-                    // The census site's TARGET — the manifest entry this
-                    // observation would support, minus the kind, which the run
-                    // decides. Printed for the same reason `pin.guard` prints
-                    // its line: what a census build is asserted against is
-                    // WHICH sites it created, and the IL is where that is
-                    // readable without running anything.
-                    case Op::CensusRecord: {
-                        const char* site = "field";
-                        switch (static_cast<CensusSite>(inst.immI32 &
-                                                        BRONZE_ABI_CENSUS_KIND_MASK)) {
-                            case CensusSite::EnvSlot: site = "env-slot"; break;
-                            case CensusSite::Field: site = "field"; break;
-                            case CensusSite::Param: site = "param"; break;
-                            case CensusSite::Return: site = "return"; break;
-                            case CensusSite::OpaqueFieldStore: site = "opaque-store"; break;
-                        }
-                        out += "census.record %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + site + ", \"" +
-                               (inst.keyIndex < module.keyConstants.size()
-                                    ? module.keyConstants[inst.keyIndex]
-                                    : std::string("?")) +
-                               "\"";
-                        break;
-                    }
                     // The site's kind and ordinal, which is what a profile
                     // row is filed under (docs/type-feedback.md), and the
                     // function key the run will file it in.
@@ -834,53 +648,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::ModuleEnvGet:
                         out += "module.env.get";
                         break;
-                    case Op::MethodIcIs:
-                        out += "method.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
-                        if (inst.staticCellIndex != 0) out += ", cell " + std::to_string(inst.staticCellIndex);
-                        if (inst.immI32 > 1) out += ", shapes " + std::to_string(inst.immI32);
-                        break;
-                    case Op::RunMethodIs:
-                        out += "run.method.is run @" + std::to_string(inst.transitionRunCell) + ", " +
-                               std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
-                        if (inst.staticCellIndex != 0) out += ", cell " + std::to_string(inst.staticCellIndex);
-                        if (inst.immI32 > 1) out += ", shapes " + std::to_string(inst.immI32);
-                        break;
-                    case Op::AccessorIcIs:
-                        out += "accessor.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", cell " + std::to_string(inst.staticCellIndex) + ", @" + getFnName(inst.calleeIndex);
-                        break;
-                    case Op::MethodSlotFn:
-                        out += "method.slot.fn %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + std::to_string(inst.icIndex);
-                        break;
-                    case Op::ClosureIs:
-                        out += "closure.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", @" +
-                               getFnName(inst.calleeIndex);
-                        if (inst.immI32 == Instruction::kClosureIsConstruct) out += ", construct";
-                        if (inst.transitionRunCell != Instruction::kNoTransitionRun) {
-                            out += ", run @" + std::to_string(inst.transitionRunCell);
-                        }
-                        break;
-                    case Op::CreateThis:
-                        out += "create.this %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        break;
-                    case Op::ClosureEnv:
-                        out += "closure.env %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        break;
-                    // The site claim it tests, spelled as the site prints it.
-                    case Op::IsShape:
-                    case Op::LayoutFact:
-                        out += std::string(opName(inst.op)) + " %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", slot " + std::to_string(inst.staticSlot);
-                        if (inst.familyLo != Instruction::kNoFamily) {
-                            out += " family " + std::to_string(inst.familyLo) + ".." +
-                                   std::to_string(inst.familyLo + inst.familySpan);
-                        } else {
-                            out += "@" + std::to_string(inst.staticCellIndex);
-                        }
-                        break;
                     case Op::Print:
                     case Op::PrintErr:
                     case Op::KeepAlive:
@@ -924,17 +691,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             }
                         }
                         break;
-                }
-                // A type-feedback hint (il.h `numberHint`): the Number arm laid
-                // out hot. Only a `--feedback-in` build sets it.
-                if (inst.numberHint) out += " !num";
-                if (inst.truthHint != 0) {
-                    out += " !truth(";
-                    if (inst.truthHint & Instruction::kTruthBool) out += "b";
-                    if (inst.truthHint & Instruction::kTruthObject) out += "o";
-                    if (inst.truthHint & Instruction::kTruthUndefined) out += "u";
-                    if (inst.truthHint & Instruction::kTruthNull) out += "n";
-                    out += ")";
                 }
                 out += "\n";
             }

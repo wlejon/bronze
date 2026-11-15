@@ -192,7 +192,6 @@ std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
     field(options.entryResolvesAs.string());
     field(options.retainSource ? "src" : "nosrc");
     field(options.emitDebugInfo ? "dbg" : "nodbg");
-    field(options.censusOutPath);
     const modules::ModuleOptions modOpts = moduleOptionsFor(options);
     field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
     for (const auto& ext : modOpts.externalModules) field(ext);

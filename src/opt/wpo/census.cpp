@@ -1,5 +1,5 @@
 // Classifying every property and method site by what the analysis knows
-// about its receivers (census.h). Printing is census_format.cpp.
+// about its receivers (census.h).
 
 #include "opt/wpo/census.h"
 
@@ -87,12 +87,6 @@ public:
                     fact.op = inst.op;
                     fact.key = inst.keyIndex;
                     fact.isCall = call;
-                    fact.stamped = inst.staticSlot != il::Instruction::kNoStaticSlot;
-                    fact.stampSlot = fact.stamped ? static_cast<int>(inst.staticSlot) : -1;
-                    fact.guessed = inst.staticSlotGuessed;
-                    fact.direct = inst.directTarget != il::Instruction::kNoDirectTarget;
-                    fact.directTarget = inst.directTarget;
-                    fact.inlined = inst.inlineFrame != 0;
                     if (s_.reachable(f) && s_.blockLive(f, b)) {
                         if (prop) classifyProp(inst, fact);
                         else classifyCall(inst, fact);

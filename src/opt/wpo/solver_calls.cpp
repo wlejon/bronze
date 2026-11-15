@@ -343,13 +343,6 @@ AVal Solver::methodCall(const il::Instruction& inst, const AVal& recv, const Cal
         self.objs = std::move(selves);
         const AVal target = AVal::obj(f);
         out.join(callValue(target, self, args));
-        // The direct edge of a site with a typed entry enters the entry, a
-        // copy of the target's body, when the cache names the target.
-        if (inst.typedTarget != il::Instruction::kNoDirectTarget &&
-            inst.directTarget != il::Instruction::kNoDirectTarget && objs_[f].kind == ObjKind::Function &&
-            objs_[f].fn == inst.directTarget) {
-            out.join(bindFunction(inst.typedTarget, f, self, args));
-        }
     }
     return out;
 }

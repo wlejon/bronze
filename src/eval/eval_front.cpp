@@ -203,16 +203,6 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
     return modOpts;
 }
 
-// Guarded method inlining (lower/inline_guarded.h) at every tier, so the IL
-// is the same at every tier and a program cached at one loads at another
-// (code_cache.h). Tier 2 alone had it at first: instanced_mesh_churn ran in
-// 26.9 ms at tier 2 without it against the image's 23.5, 23.8 with it; the
-// tiered engine (auto) gained it once its interpreted frames and installed
-// code reported inline frames.
-static lower::InlineGuardedOptions inlineGuardedFor(const CompileInputs&) {
-    return lower::InlineGuardedOptions{/*on=*/true};
-}
-
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
                          std::string_view entryText, bool withFeedback) {
@@ -221,7 +211,6 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field(options.filename);
     k.field(options.entryResolvesAs.generic_string());
     k.field(options.retainSource ? "src" : "nosrc");
-    k.field(options.censusOutPath);
     k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
     k.field("|roots");
     for (const auto& root : modOpts.moduleRoots) {
@@ -270,23 +259,21 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     if (aheadOfTime) {
         // A module build: the ahead-of-time front end (lower.h), which a
         // `bronze build` goes through too. Its profile or harvest
-        // (EvalOptions::feedbackInPath) is read as `--feedback-in` reads one.
+        // (EvalOptions::feedbackInPath, `in.feedback`) is read as
+        // `--feedback-in` reads one; nothing consumes it yet.
         lower::FeedbackOptions feedback;
-        if (in.feedback) feedback.profile = &*in.feedback;
         lower::AheadOfTimeOptions aot;
         aot.hostGlobals = &hostGlobals;
         aot.pins = in.pins.empty() ? nullptr : &in.pins;
         aot.nativeManifest = in.nativeManifest ? &*in.nativeManifest : nullptr;
-        aot.censusOutPath = options.censusOutPath;
         aot.feedback = &feedback;
         aot.selfHostLibrary = selfhost::library();
         lowered = lower::lowerAheadOfTime(astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     } else {
         lowered = lower::lowerModule(astModule, diags, inferred ? &*inferred : nullptr,
-                                     hostGlobals.empty() ? nullptr : &hostGlobals, &sources, /*stats=*/nullptr,
-                                     /*assumeNoBigInt=*/false, in.pins.empty() ? nullptr : &in.pins,
-                                     options.censusOutPath, in.nativeManifest ? &*in.nativeManifest : nullptr,
-                                     inlineGuardedFor(in));
+                                     hostGlobals.empty() ? nullptr : &hostGlobals, &sources,
+                                     in.pins.empty() ? nullptr : &in.pins,
+                                     in.nativeManifest ? &*in.nativeManifest : nullptr);
     }
     if (diags.hasErrors() || !lowered) return nullptr;
     timer.mark("lower");

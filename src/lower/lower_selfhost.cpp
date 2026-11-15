@@ -199,8 +199,7 @@ bool Lowerer::finishSelfHost() {
             }
         }
         if (fn.isEntryPoint) continue;
-        const std::string& origin =
-            fn.typedOrigin != il::Function::kNoTypedOrigin ? ilModule_.functions[fn.typedOrigin].name : fn.name;
+        const std::string& origin = fn.name;
         // A direct entry's frame is its builtin's, under the builtin's name;
         // the registered function then only forwards to it, a hidden frame
         // like any helper's.

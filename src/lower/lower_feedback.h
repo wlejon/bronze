@@ -30,9 +30,7 @@ struct FeedbackStats {
 };
 
 // Inserts the records and registers the output path through the module's
-// census table (abi/bronze_feedback_site.h). False, with `error` set, when the
-// module already carries a pin census: the two share one channel.
-bool instrumentFeedback(il::Module& module, const std::string& outPath, std::string* error,
-                        FeedbackStats* stats = nullptr);
+// census table (abi/bronze_feedback_site.h).
+void instrumentFeedback(il::Module& module, const std::string& outPath, FeedbackStats* stats = nullptr);
 
 }  // namespace bronze::lower

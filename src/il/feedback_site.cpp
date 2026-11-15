@@ -18,16 +18,15 @@ bool observesOperandTags(const Instruction& inst) {
     switch (inst.op) {
         case Op::Add: case Op::Sub: case Op::Mul: case Op::Div: case Op::Mod: case Op::Pow:
         case Op::Neg: case Op::BitAnd: case Op::BitOr: case Op::BitXor: case Op::Shl:
-        case Op::Shr: case Op::UShr: case Op::BitNot: case Op::MathImul:
+        case Op::Shr: case Op::UShr: case Op::BitNot:
         case Op::ToNumeric: case Op::NumericStep: case Op::ToInt32:
         case Op::RelLt: case Op::RelGt: case Op::RelLe: case Op::RelGe:
         case Op::CmpLt: case Op::CmpGt: case Op::CmpLe: case Op::CmpGe: case Op::CmpEq:
         case Op::CmpNe: case Op::StrictEq: case Op::LooseEq:
             return true;
-        // Truthiness (`unbox.bool`) and the checked ToNumber. A raw or nullish
-        // unbox is already proven, and observing it would measure the proof.
+        // Truthiness (`unbox.bool`) and ToNumber.
         case Op::Unbox:
-            return !inst.rawUnbox && !inst.nullishUnbox;
+            return true;
         default:
             return false;
     }
@@ -48,27 +47,10 @@ bool observesResult(const Instruction& inst) {
 bool namesCallee(Op op) {
     switch (op) {
         case Op::Call: case Op::CreateFunction: case Op::FunctionRef: case Op::CoroStart:
-        case Op::MethodIcIs: case Op::RunMethodIs: case Op::AccessorIcIs: case Op::ClosureIs:
             return true;
         default:
             return false;
     }
-}
-
-// A transition run (lower/transition_runs.h) is `transitionRunLength`
-// instructions the backend lowers as one stretch, counted from its first site.
-// Nothing may be inserted strictly inside one, so a site whose record would
-// land there is not a site. `interior[i]` says an insertion BEFORE instruction
-// i would split a run.
-std::vector<bool> runInteriors(const Block& block) {
-    std::vector<bool> interior(block.instructions.size() + 1, false);
-    for (size_t i = 0; i < block.instructions.size(); ++i) {
-        const Instruction& inst = block.instructions[i];
-        if (inst.op != Op::PropSet || inst.transitionRunCell == Instruction::kNoTransitionRun) continue;
-        const size_t end = std::min(block.instructions.size(), i + inst.transitionRunLength);
-        for (size_t j = i + 1; j < end; ++j) interior[j] = true;
-    }
-    return interior;
 }
 
 bool blockZeroHasPredecessor(const Function& fn) {
@@ -111,11 +93,8 @@ std::vector<FeedbackSite> enumerateFeedbackSites(const Module& module, const Fun
     if (fn.isExternal || fn.blocks.empty()) return sites;
     (void)module;
 
-    // Each value's type and whether it is held as raw double bits. A
-    // `numberBits` read is Dynamic in name only — the backend keeps it as a
-    // double until its guard chain — so it is never an operand of a record.
+    // Each value's type: only a Dynamic one is an operand of a record.
     std::vector<Type> types(fn.valueCount, Type::Void);
-    std::vector<bool> doubleHeld(fn.valueCount, false);
     for (size_t p = 0; p < fn.params.size() && p < types.size(); ++p) types[p] = fn.params[p].type;
     for (const Block& block : fn.blocks) {
         for (const BlockParam& bp : block.params) {
@@ -124,11 +103,10 @@ std::vector<FeedbackSite> enumerateFeedbackSites(const Module& module, const Fun
         for (const Instruction& inst : block.instructions) {
             if (inst.result == kNoValue || inst.result >= types.size()) continue;
             types[inst.result] = inst.type;
-            if (inst.numberBits) doubleHeld[inst.result] = true;
         }
     }
     auto observable = [&](ValueId v) {
-        return v < types.size() && types[v] == Type::Dynamic && !doubleHeld[v];
+        return v < types.size() && types[v] == Type::Dynamic;
     };
 
     auto add = [&](FeedbackKind kind, uint32_t block, uint32_t inst, ValueId value,
@@ -164,32 +142,28 @@ std::vector<FeedbackSite> enumerateFeedbackSites(const Module& module, const Fun
 
     for (size_t b = 0; b < fn.blocks.size(); ++b) {
         const Block& block = fn.blocks[b];
-        const std::vector<bool> interior = runInteriors(block);
         const auto bi = static_cast<uint32_t>(b);
         for (size_t i = 0; i < block.instructions.size(); ++i) {
             const Instruction& inst = block.instructions[i];
             const auto ii = static_cast<uint32_t>(i);
-            if (!interior[i]) {
-                if (observesOperandTags(inst)) {
-                    for (ValueId v : inst.operands) {
-                        if (observable(v)) add(FeedbackKind::Value, bi, ii, v);
-                    }
-                }
-                const bool icSite = inst.op == Op::PropGet || inst.op == Op::PropSet;
-                if (icSite && !inst.operands.empty() && observable(inst.operands[0])) {
-                    add(FeedbackKind::Shape, bi, ii, inst.operands[0]);
-                }
-                if ((inst.op == Op::DynamicCall || inst.op == Op::DynamicCallSpread) &&
-                    !inst.operands.empty() && observable(inst.operands[0])) {
-                    add(FeedbackKind::Target, bi, ii, inst.operands[0]);
-                }
-                if ((inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) &&
-                    !inst.operands.empty() && observable(inst.operands[0])) {
-                    add(FeedbackKind::Method, bi, ii, inst.operands[0], inst.keyIndex);
+            if (observesOperandTags(inst)) {
+                for (ValueId v : inst.operands) {
+                    if (observable(v)) add(FeedbackKind::Value, bi, ii, v);
                 }
             }
-            // After instruction i is before instruction i + 1.
-            if (!interior[i + 1] && observesResult(inst) && observable(inst.result)) {
+            const bool icSite = inst.op == Op::PropGet || inst.op == Op::PropSet;
+            if (icSite && !inst.operands.empty() && observable(inst.operands[0])) {
+                add(FeedbackKind::Shape, bi, ii, inst.operands[0]);
+            }
+            if ((inst.op == Op::DynamicCall || inst.op == Op::DynamicCallSpread) &&
+                !inst.operands.empty() && observable(inst.operands[0])) {
+                add(FeedbackKind::Target, bi, ii, inst.operands[0]);
+            }
+            if ((inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) &&
+                !inst.operands.empty() && observable(inst.operands[0])) {
+                add(FeedbackKind::Method, bi, ii, inst.operands[0], inst.keyIndex);
+            }
+            if (observesResult(inst) && observable(inst.result)) {
                 add(FeedbackKind::Result, bi, ii, inst.result);
             }
         }
@@ -254,12 +228,10 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
     // Not the inline-slot prediction (BRONZE_ABI_FN_INLINE_SLOTS_SHIFT): a
     // sizing hint that changes no site, so a profile outlives its retuning.
     h.u64(fn.fnFlags & ~(uint32_t{BRONZE_ABI_FN_INLINE_SLOTS_MASK} << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT));
-    if (fn.typedOrigin != Function::kNoTypedOrigin) h.str(fnName(fn.typedOrigin));
     h.u64(fn.blocks.size());
     for (const Block& block : fn.blocks) {
         h.u64(block.id);
         h.u64(block.handler);
-        h.u64(static_cast<uint64_t>(block.copyClass));
         h.u64(block.params.size());
         for (const BlockParam& bp : block.params) {
             h.u64(bp.id);
@@ -281,14 +253,7 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
             key(inst.keyIndex);
             if (namesCallee(inst.op)) h.str(fnName(inst.calleeIndex));
             if (inst.directTarget != Instruction::kNoDirectTarget) h.str(fnName(inst.directTarget));
-            if (inst.typedTarget != Instruction::kNoDirectTarget) h.str(fnName(inst.typedTarget));
-            h.u64((inst.icFnRecv ? 8u : 0u) | (inst.rawUnbox ? 16u : 0u) |
-                  (inst.nullishUnbox ? 32u : 0u) | (inst.numberBits ? 64u : 0u) |
-                  (inst.shapeGuarded ? 128u : 0u) | (inst.staticSlotGuessed ? 256u : 0u) |
-                  (inst.envImmutable ? 512u : 0u) | (inst.rawBox ? 1024u : 0u));
-            h.u64(inst.staticSlot);
-            h.u64(inst.transitionRunCell == Instruction::kNoTransitionRun ? 0u
-                                                                           : inst.transitionRunLength);
+            h.u64(inst.envImmutable ? 512u : 0u);
             h.u64(inst.envDepth);
             h.u64(inst.envIndex);
             h.u64(inst.callEnvHops);

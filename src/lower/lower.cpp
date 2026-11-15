@@ -339,13 +339,7 @@ std::optional<il::Module> Lowerer::lower() {
     // IL's own (lower_feedback.h), and the build that reads the profile back
     // enumerates them at this same point. Nothing runs after it, so no pass
     // ever sees a record.
-    if (feedback_ != nullptr && !feedback_->outPath.empty()) {
-        std::string err;
-        if (!instrumentFeedback(ilModule_, feedback_->outPath, &err)) {
-            diags_.error(Span{}, err);
-            return std::nullopt;
-        }
-    }
+    if (feedback_ != nullptr && !feedback_->outPath.empty()) instrumentFeedback(ilModule_, feedback_->outPath);
     return ilModule_;
 }
 

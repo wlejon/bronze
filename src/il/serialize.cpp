@@ -28,30 +28,11 @@ struct InstructionMirror {
     uint32_t keyIndex;
     uint32_t icIndex;
     uint32_t slowSite;
-    bool icFnRecv;
-    bool rawUnbox;
-    bool nullishUnbox;
-    bool rawBox;
-    bool numberBits;
-    bool shapeGuarded;
-    uint32_t staticSlot;
-    uint32_t staticCellIndex;
-    uint32_t familyLo;
-    uint32_t familySpan;
-    bool staticSlotGuessed;
-    uint32_t transitionRunCell;
-    uint32_t transitionRunLength;
-    uint32_t transitionRunSlot;
-    uint32_t defineAddCell;
     uint32_t directTarget;
-    uint32_t typedTarget;
     uint32_t envDepth;
     uint32_t envIndex;
     bool envImmutable;
-    bool numberHint;
-    uint8_t truthHint;
     uint32_t callEnvHops;
-    uint32_t inlineFrame;
     Span span;
     BlockTarget target;
     BlockTarget elseTarget;
@@ -63,9 +44,7 @@ struct BlockMirror {
     BlockId id;
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
-    CopyClass copyClass;
     bool cold;
-    uint32_t copyRegion;
     BlockId handler;
 };
 static_assert(sizeof(Block) == sizeof(BlockMirror),
@@ -76,7 +55,6 @@ struct ParamMirror {
     Type type;
     bool pinned;
     uint32_t pinKeyIndex;
-    std::optional<int64_t> knownConstInt;
 };
 static_assert(sizeof(Param) == sizeof(ParamMirror),
               "il::Param changed: update il/serialize.cpp and bump kFormatVersion");
@@ -93,6 +71,8 @@ struct FunctionMirror {
     bool needsEnv;
     bool needsThis;
     bool needsArguments;
+    bool argumentsIsList;
+    bool argumentsIsCount;
     bool isStrict;
     bool isGenerator;
     int8_t coroKind;
@@ -105,9 +85,6 @@ struct FunctionMirror {
     uint32_t sourceEnd;
     std::string displayName;
     uint32_t descFlags;
-    uint32_t typedOrigin;
-    uint32_t typedArgc;
-    std::vector<Function::InlineFrame> inlineFrames;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };
@@ -128,22 +105,11 @@ struct ModuleMirror {
     std::vector<std::string> keyConstants;
     uint32_t icSiteCount;
     uint32_t templateSiteCount;
-    uint32_t staticSiteCount;
     uint32_t slowSiteCount;
-    std::vector<Module::ClassFamilyEntry> classFamilies;
-    std::vector<Module::LayoutCellEntry> layoutCells;
-    std::vector<uint32_t> slotReprFields;
-    std::vector<uint32_t> slotReprObjectFields;
     std::vector<Module::CensusSiteEntry> censusSites;
     std::string censusOutPath;
     uint64_t icLayoutDigest;
-    bool feedbackApplied;
     std::string harvestOutPath;
-    std::unordered_set<uint32_t> missedClaimIcs;  // not serialized (il.h)
-    std::unordered_set<uint32_t> mixedIcs;        // not serialized (il.h)
-    std::unordered_set<uint32_t> slowCold;        // not serialized (il.h)
-    std::vector<uint32_t> hotFunctions;
-    std::vector<uint32_t> coldFunctions;
     std::vector<Module::NativeImport> nativeImports;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
@@ -287,34 +253,16 @@ enum InstBits : uint64_t {
     kHasBoxType = 1u << 5,
     kHasKey = 1u << 6,
     kHasIc = 1u << 7,
-    kHasStaticSlot = 1u << 8,
-    kHasStaticCell = 1u << 9,
-    kHasFamilyLo = 1u << 10,
-    kHasFamilySpan = 1u << 11,
-    kHasDirect = 1u << 12,
-    kHasEnvDepth = 1u << 13,
-    kHasEnvIndex = 1u << 14,
-    kHasEnvHops = 1u << 15,
-    kHasSpan = 1u << 16,
-    kHasTarget = 1u << 17,
-    kHasElse = 1u << 18,
-    kIcFnRecv = 1u << 20,
-    kRawUnbox = 1u << 21,
-    kNullishUnbox = 1u << 22,
-    kEnvImmutable = 1u << 23,
-    kHasTyped = 1u << 24,
-    kHasInlineFrame = 1u << 25,
-    // The three transition-run fields ride on one bit: they are set together.
-    kHasTransitionRun = 1u << 26,
-    kHasDefineAdd = 1u << 27,
-    kNumberBits = 1u << 28,
-    kStaticSlotGuessed = 1u << 29,
-    kShapeGuarded = uint64_t{1} << 32,
-    kNumberHint = uint64_t{1} << 33,
-    kHasTruthHint = uint64_t{1} << 34,
-    kRawBox = uint64_t{1} << 36,
-    kHasSlowSite = uint64_t{1} << 37,
-    kKnownBits = (uint64_t{1} << 38) - 1,
+    kHasDirect = 1u << 8,
+    kHasEnvDepth = 1u << 9,
+    kHasEnvIndex = 1u << 10,
+    kHasEnvHops = 1u << 11,
+    kHasSpan = 1u << 12,
+    kHasTarget = 1u << 13,
+    kHasElse = 1u << 14,
+    kEnvImmutable = 1u << 15,
+    kHasSlowSite = 1u << 16,
+    kKnownBits = (1u << 17) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -344,31 +292,14 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.keyIndex != 0) m |= kHasKey;
     if (inst.icIndex != 0) m |= kHasIc;
     if (inst.slowSite != Instruction::kNoSlowSite) m |= kHasSlowSite;
-    if (inst.staticSlot != Instruction::kNoStaticSlot) m |= kHasStaticSlot;
-    if (inst.staticCellIndex != 0) m |= kHasStaticCell;
-    if (inst.familyLo != Instruction::kNoFamily) m |= kHasFamilyLo;
-    if (inst.familySpan != 0) m |= kHasFamilySpan;
     if (inst.directTarget != Instruction::kNoDirectTarget) m |= kHasDirect;
-    if (inst.typedTarget != Instruction::kNoDirectTarget) m |= kHasTyped;
     if (inst.envDepth != 0) m |= kHasEnvDepth;
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
-    if (inst.inlineFrame != 0) m |= kHasInlineFrame;
-    if (inst.transitionRunCell != Instruction::kNoTransitionRun) m |= kHasTransitionRun;
-    if (inst.defineAddCell != Instruction::kNoDefineAddCell) m |= kHasDefineAdd;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
-    if (inst.icFnRecv) m |= kIcFnRecv;
-    if (inst.rawUnbox) m |= kRawUnbox;
-    if (inst.nullishUnbox) m |= kNullishUnbox;
-    if (inst.rawBox) m |= kRawBox;
-    if (inst.numberBits) m |= kNumberBits;
-    if (inst.shapeGuarded) m |= kShapeGuarded;
-    if (inst.staticSlotGuessed) m |= kStaticSlotGuessed;
     if (inst.envImmutable) m |= kEnvImmutable;
-    if (inst.numberHint) m |= kNumberHint;
-    if (inst.truthHint != 0) m |= kHasTruthHint;
 
     w.u8(static_cast<uint8_t>(inst.op));
     w.u8(static_cast<uint8_t>(inst.type));
@@ -385,23 +316,10 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasKey) w.var(inst.keyIndex);
     if (m & kHasIc) w.var(inst.icIndex);
     if (m & kHasSlowSite) w.var(inst.slowSite);
-    if (m & kHasStaticSlot) w.var(inst.staticSlot);
-    if (m & kHasStaticCell) w.var(inst.staticCellIndex);
-    if (m & kHasFamilyLo) w.var(inst.familyLo);
-    if (m & kHasFamilySpan) w.var(inst.familySpan);
     if (m & kHasDirect) w.var(inst.directTarget);
-    if (m & kHasTyped) w.var(inst.typedTarget);
     if (m & kHasEnvDepth) w.var(inst.envDepth);
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
-    if (m & kHasInlineFrame) w.var(inst.inlineFrame);
-    if (m & kHasTransitionRun) {
-        w.var(inst.transitionRunCell);
-        w.var(inst.transitionRunLength);
-        w.var(inst.transitionRunSlot);
-    }
-    if (m & kHasDefineAdd) w.var(inst.defineAddCell);
-    if (m & kHasTruthHint) w.var(inst.truthHint);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -430,27 +348,10 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasKey) inst.keyIndex = r.u32();
     if (m & kHasIc) inst.icIndex = r.u32();
     if (m & kHasSlowSite) inst.slowSite = r.u32();
-    if (m & kHasStaticSlot) inst.staticSlot = r.u32();
-    if (m & kHasStaticCell) inst.staticCellIndex = r.u32();
-    if (m & kHasFamilyLo) inst.familyLo = r.u32();
-    if (m & kHasFamilySpan) inst.familySpan = r.u32();
     if (m & kHasDirect) inst.directTarget = r.u32();
-    if (m & kHasTyped) inst.typedTarget = r.u32();
     if (m & kHasEnvDepth) inst.envDepth = r.u32();
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
-    if (m & kHasInlineFrame) inst.inlineFrame = r.u32();
-    if (m & kHasTransitionRun) {
-        inst.transitionRunCell = r.u32();
-        inst.transitionRunLength = r.u32();
-        inst.transitionRunSlot = r.u32();
-    }
-    if (m & kHasDefineAdd) inst.defineAddCell = r.u32();
-    if (m & kHasTruthHint) {
-        const uint32_t h = r.u32();
-        if (h == 0 || h > 15) r.fail("bad truthiness hint");
-        inst.truthHint = static_cast<uint8_t>(h);
-    }
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());
@@ -462,15 +363,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     }
     if (m & kHasTarget) readTarget(r, inst.target);
     if (m & kHasElse) readTarget(r, inst.elseTarget);
-    inst.icFnRecv = (m & kIcFnRecv) != 0;
-    inst.rawUnbox = (m & kRawUnbox) != 0;
-    inst.nullishUnbox = (m & kNullishUnbox) != 0;
-    inst.rawBox = (m & kRawBox) != 0;
-    inst.numberBits = (m & kNumberBits) != 0;
-    inst.shapeGuarded = (m & kShapeGuarded) != 0;
-    inst.staticSlotGuessed = (m & kStaticSlotGuessed) != 0;
     inst.envImmutable = (m & kEnvImmutable) != 0;
-    inst.numberHint = (m & kNumberHint) != 0;
 }
 
 void writeBlock(Writer& w, const Block& b) {
@@ -480,9 +373,7 @@ void writeBlock(Writer& w, const Block& b) {
         w.var(p.id);
         w.u8(static_cast<uint8_t>(p.type));
     }
-    w.u8(static_cast<uint8_t>(b.copyClass));
     w.u8(b.cold ? 1 : 0);
-    w.var(static_cast<uint32_t>(b.copyRegion + 1u));
     w.var(static_cast<uint32_t>(b.handler + 1u));
     w.var(b.instructions.size());
     for (const auto& inst : b.instructions) writeInstruction(w, inst);
@@ -495,11 +386,7 @@ void readBlock(Reader& r, Block& b) {
         p.id = r.u32();
         p.type = r.type();
     }
-    const uint8_t cc = r.u8();
-    if (cc > static_cast<uint8_t>(CopyClass::Slow)) r.fail("bad copy class");
-    b.copyClass = static_cast<CopyClass>(cc);
     b.cold = r.u8() != 0;
-    b.copyRegion = static_cast<uint32_t>(r.u32() - 1u);
     b.handler = static_cast<BlockId>(r.u32() - 1u);
     b.instructions.resize(r.count());
     for (auto& inst : b.instructions) {
@@ -543,9 +430,8 @@ void writeFunction(Writer& w, const Function& fn) {
     for (const auto& p : fn.params) {
         w.str(p.name);
         w.u8(static_cast<uint8_t>(p.type));
-        w.u8((p.pinned ? 1u : 0u) | (p.knownConstInt.has_value() ? 2u : 0u));
+        w.u8(p.pinned ? 1u : 0u);
         w.var(p.pinKeyIndex);
-        if (p.knownConstInt.has_value()) w.svar(*p.knownConstInt);
     }
     w.u8(static_cast<uint8_t>(fn.returnType));
     w.var(fn.returnPinKeyIndex);
@@ -558,16 +444,6 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(fn.sourceEnd);
     w.str(fn.displayName);
     w.var(fn.descFlags);
-    w.var(static_cast<uint32_t>(fn.typedOrigin + 1u));  // kNoTypedOrigin wraps to 0
-    w.var(fn.typedArgc);
-    w.var(fn.inlineFrames.size());
-    for (const auto& f : fn.inlineFrames) {
-        w.var(f.callee);
-        w.var(f.callSpan.begin);
-        w.var(f.callSpan.end);
-        w.var(f.callSpan.file);
-        w.var(f.parent);
-    }
     w.var(fn.valueCount);
     w.var(fn.blocks.size());
     for (const auto& b : fn.blocks) writeBlock(w, b);
@@ -595,7 +471,6 @@ void readFunction(Reader& r, Function& fn) {
         const uint8_t pflags = r.u8();
         p.pinned = (pflags & 1u) != 0;
         p.pinKeyIndex = r.u32();
-        if (pflags & 2u) p.knownConstInt = r.i32();
     }
     fn.returnType = r.type();
     fn.returnPinKeyIndex = r.u32();
@@ -612,18 +487,6 @@ void readFunction(Reader& r, Function& fn) {
     fn.sourceEnd = r.u32();
     fn.displayName = r.str();
     fn.descFlags = r.u32();
-    fn.typedOrigin = static_cast<uint32_t>(r.u32() - 1u);
-    fn.typedArgc = r.u32();
-    fn.inlineFrames.resize(r.count());
-    for (auto& f : fn.inlineFrames) {
-        f.callee = r.u32();
-        f.callSpan.begin = r.u32();
-        f.callSpan.end = r.u32();
-        const uint32_t callFile = r.u32();
-        if (callFile > UINT16_MAX) r.fail("bad inline frame file");
-        f.callSpan.file = static_cast<uint16_t>(callFile);
-        f.parent = r.u32();
-    }
     fn.valueCount = r.u32();
     fn.blocks.resize(r.count());
     for (auto& b : fn.blocks) {
@@ -645,32 +508,7 @@ std::string serializeModule(const Module& module) {
     for (const auto& k : module.keyConstants) w.str(k);
     w.var(module.icSiteCount);
     w.var(module.templateSiteCount);
-    w.var(module.staticSiteCount);
     w.var(module.slowSiteCount);
-    w.var(module.classFamilies.size());
-    for (const auto& fam : module.classFamilies) {
-        w.str(fam.name);
-        w.var(fam.fields.size());
-        for (const auto& f : fam.fields) {
-            w.var(f.keyIndex);
-            w.u8((f.writable ? 1 : 0) | (f.object ? 2 : 0));
-        }
-    }
-    w.var(module.layoutCells.size());
-    for (const auto& lc : module.layoutCells) {
-        w.var(lc.cell);
-        w.var(lc.keyCount);
-        w.var(lc.pairs.size());
-        for (const auto& p : lc.pairs) {
-            w.var(p.keyIndex);
-            w.var(p.slot);
-            w.u8((p.write ? 1 : 0) | (p.number ? 2 : 0) | (p.object ? 4 : 0));
-        }
-    }
-    w.var(module.slotReprFields.size());
-    for (uint32_t k : module.slotReprFields) w.var(k);
-    w.var(module.slotReprObjectFields.size());
-    for (uint32_t k : module.slotReprObjectFields) w.var(k);
     w.var(module.censusSites.size());
     for (const auto& c : module.censusSites) {
         w.var(c.keyIndex);
@@ -678,12 +516,7 @@ std::string serializeModule(const Module& module) {
     }
     w.str(module.censusOutPath);
     w.var(module.icLayoutDigest);
-    w.u8(module.feedbackApplied ? 1 : 0);
     w.str(module.harvestOutPath);
-    w.var(module.hotFunctions.size());
-    for (uint32_t f : module.hotFunctions) w.var(f);
-    w.var(module.coldFunctions.size());
-    for (uint32_t f : module.coldFunctions) w.var(f);
     w.var(module.nativeImports.size());
     for (const auto& n : module.nativeImports) {
         w.str(n.name);
@@ -714,37 +547,7 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     for (auto& k : out.keyConstants) k = r.str();
     out.icSiteCount = r.u32();
     out.templateSiteCount = r.u32();
-    out.staticSiteCount = r.u32();
     out.slowSiteCount = r.u32();
-    out.classFamilies.resize(r.count());
-    for (auto& fam : out.classFamilies) {
-        fam.name = r.str();
-        fam.fields.resize(r.count());
-        for (auto& f : fam.fields) {
-            f.keyIndex = r.u32();
-            const uint8_t flags = r.u8();
-            f.writable = (flags & 1) != 0;
-            f.object = (flags & 2) != 0;
-        }
-    }
-    out.layoutCells.resize(r.count());
-    for (auto& lc : out.layoutCells) {
-        lc.cell = r.u32();
-        lc.keyCount = r.u32();
-        lc.pairs.resize(r.count());
-        for (auto& p : lc.pairs) {
-            p.keyIndex = r.u32();
-            p.slot = r.u32();
-            const uint8_t flags = r.u8();
-            p.write = (flags & 1) != 0;
-            p.number = (flags & 2) != 0;
-            p.object = (flags & 4) != 0;
-        }
-    }
-    out.slotReprFields.resize(r.count());
-    for (auto& k : out.slotReprFields) k = r.u32();
-    out.slotReprObjectFields.resize(r.count());
-    for (auto& k : out.slotReprObjectFields) k = r.u32();
     out.censusSites.resize(r.count());
     for (auto& c : out.censusSites) {
         c.keyIndex = r.u32();
@@ -752,12 +555,7 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     }
     out.censusOutPath = r.str();
     out.icLayoutDigest = r.var();
-    out.feedbackApplied = r.u8() != 0;
     out.harvestOutPath = r.str();
-    out.hotFunctions.resize(r.count());
-    for (auto& f : out.hotFunctions) f = r.u32();
-    out.coldFunctions.resize(r.count());
-    for (auto& f : out.coldFunctions) f = r.u32();
     out.nativeImports.resize(r.count());
     for (auto& n : out.nativeImports) {
         n.name = r.str();

@@ -38,13 +38,8 @@ bool takeFlagValue(const std::string& arg, const char* name, int& i, int argc, c
 }
 
 bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feedbackInPath,
-                     const std::string& censusOutPath, std::optional<spec::TypeProfile>& profile,
-                     lower::FeedbackOptions& options, std::string& err) {
-    if (!feedbackOutPath.empty() && !censusOutPath.empty()) {
-        err = "error: --feedback-out and --census are two instruments on one runtime channel; "
-              "build one at a time\n";
-        return false;
-    }
+                     std::optional<spec::TypeProfile>& profile, lower::FeedbackOptions& options,
+                     std::string& err) {
     if (!feedbackOutPath.empty()) {
         std::error_code ec;
         const auto abs = std::filesystem::absolute(feedbackOutPath, ec);
@@ -57,7 +52,6 @@ bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feed
             err = "error: --feedback-in: " + loadErr + "\n";
             return false;
         }
-        options.profile = &*profile;
     }
     return true;
 }

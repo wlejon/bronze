@@ -111,9 +111,6 @@ void Solver::prepass() {
             const auto& insts = fn.blocks[b].instructions;
             for (uint32_t i = 0; i < insts.size(); ++i) {
                 const auto& inst = insts[i];
-                if (inst.op == il::Op::MethodCall || inst.op == il::Op::MethodCallSpread) {
-                    methodKeyByIc_.emplace(inst.icIndex, inst.keyIndex);
-                }
                 if (inst.op == il::Op::CreateObject) {
                     // A literal's `__proto__:` anywhere after it in this block.
                     for (uint32_t j = i + 1; j < insts.size(); ++j) {
@@ -459,7 +456,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         case Op::Sub: case Op::Neg: case Op::Mul: case Op::Div: case Op::Mod: case Op::Pow:
         case Op::ToNumeric: case Op::NumericStep: case Op::ToInt32: case Op::BitAnd:
-        case Op::BitOr: case Op::BitXor: case Op::MathImul: case Op::Shl: case Op::Shr:
+        case Op::BitOr: case Op::BitXor: case Op::Shl: case Op::Shr:
         case Op::UShr: case Op::BitNot:
             primResult(kNumber | kBigInt);
             break;
@@ -467,13 +464,8 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::NumTruthy: case Op::RelLt:
         case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber:
         case Op::IsDenseArray: case Op::InstanceOf: case Op::In: case Op::IterStep:
-        case Op::MethodIcIs: case Op::RunMethodIs: case Op::AccessorIcIs: case Op::IsTypedArray: case Op::IsNumberArray: case Op::IsArray:
-        case Op::IsPlainArray:
-        case Op::ClosureIs: case Op::PrivateHas: case Op::IsShape:
+        case Op::IsTypedArray: case Op::IsPlainArray: case Op::PrivateHas:
             primResult(kBool);
-            break;
-        case Op::MathUnary: case Op::MathRandom: case Op::ElemGetTyped: case Op::LayoutEpoch:
-            primResult(kNumber);
             break;
         case Op::CoroMode: primResult(kI32); break;
         case Op::Ret: {
@@ -563,9 +555,6 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         }
         case Op::ElemSet: writeElem(op(inst, 0), op(inst, 1), op(inst, 2)); break;
-        case Op::ElemSetTyped:
-            for (ObjId o : op(inst, 0).objs) writeElems(o, AVal::prim(kNumber));
-            break;
         case Op::DynamicCall: {
             CallArgs a = args(2);
             result(callValue(op(inst, 0), op(inst, 1), a));
@@ -693,7 +682,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             // getters, so it is that object.
             result(op(inst, 0));
             break;
-        case Op::ObjectKeys: case Op::ForInKeys:
+        case Op::ForInKeys:
             result(newArray(kTagMain, AVal::enumKeys()));
             break;
         case Op::MethodDef:
@@ -768,7 +757,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             result(opts_.predict ? AVal::prim(kUndef) : globalValue(inst.keyIndex));
             break;
         case Op::ImmutableAssign: case Op::PrivateMisuse: primResult(kUndef); break;
-        case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::IterClose: case Op::KeepAlive:
+        case Op::PinGuard: case Op::FeedbackRecord: case Op::IterClose: case Op::KeepAlive:
         case Op::Print: case Op::PrintErr: case Op::PrintSpread: case Op::PrintSpreadErr:
             break;
         case Op::PrivateNew: result(AVal::obj(alloc(curSite_, kTagMain, ObjKind::Other))); break;
@@ -799,9 +788,6 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::ArrayAppend:
             for (ObjId o : op(inst, 0).objs) writeElems(o, op(inst, 1));
             break;
-        case Op::ArrayAppendHole:
-            for (ObjId o : op(inst, 0).objs) writeElems(o, AVal::prim(kUndef));
-            break;
         case Op::ArraySpread: {
             const AVal vals = iterValues(op(inst, 1));
             for (ObjId o : op(inst, 0).objs) writeElems(o, vals);
@@ -830,23 +816,6 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             result(AVal::obj(o));
             break;
         }
-        case Op::MethodSlotFn: {
-            AVal v = readProp(op(inst, 0), methodKeyOfIc(inst.icIndex));
-            v.addPrims(kUndef);
-            result(v);
-            break;
-        }
-        case Op::ClosureEnv: {
-            AVal out;
-            const AVal& fv = op(inst, 0);
-            if (fv.topObj) out.join(AVal::top());
-            for (ObjId o : fv.objs) {
-                depend(o, kKeyEnv);
-                out.join(objs_[o].env);
-            }
-            result(out);
-            break;
-        }
         default: {
             // The open world for anything not modelled: every operand escapes
             // and the result is unknown.
@@ -857,11 +826,6 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         }
     }
     return changed;
-}
-
-uint32_t Solver::methodKeyOfIc(uint32_t ic) const {
-    auto it = methodKeyByIc_.find(ic);
-    return it == methodKeyByIc_.end() ? 0 : it->second;
 }
 
 std::string Solver::describe(ObjId id) const {

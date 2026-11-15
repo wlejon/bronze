@@ -1,8 +1,7 @@
 #pragma once
 
-// The census `bronze build --wpo-stats` prints: for every property and method
-// site of the module, what the whole-program analysis knows about its
-// receivers, next to what lowering already did with the site.
+// The site census: for every property and method site of the module, what
+// the whole-program analysis knows about its receivers.
 
 #include <cstdint>
 #include <string>
@@ -64,33 +63,12 @@ struct SiteFact {
     std::string cause;             // Unknown / UnknownTarget: where the unknown came from
     std::string escapeWhy;         // SameSlotEscaped / UnknownTarget: an escaped receiver's reason
     std::string detail;            // receiver summary for the per-site dump
-    // What lowering already did with the site.
-    bool stamped = false;          // a static-slot stamp
-    int stampSlot = -1;
-    bool guessed = false;          // the stamp is a guess
-    bool direct = false;           // a direct method target
-    uint32_t directTarget = UINT32_MAX;
-    bool inlined = false;          // an inlined copy
     bool partial = false;          // unknown receivers beside the known ones
     // Some receiver lacks the key on its whole chain and every other holds it
     // as its own data: the read answers `undefined` or an own slot.
     bool ownOrAbsent = false;
-    std::string wpoStamp;          // the claim stamp.h made on the site, for the dump
 };
 
 std::vector<SiteFact> classifySites(Solver& solver, const ShapeAnalysis& shapes);
-
-struct CensusOptions {
-    // Dump every site of the functions whose name contains one of the
-    // comma-separated substrings of `filter`.
-    bool perSite = false;
-    std::string filter;
-    // What every line starts with: `wpo` for proofs, `wpo-pred` for the
-    // predictions.
-    std::string prefix = "wpo";
-};
-
-std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std::vector<SiteFact>& facts,
-                         const CensusOptions& opts, double shapeMillis);
 
 }  // namespace bronze::wpo

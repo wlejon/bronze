@@ -144,8 +144,6 @@ public:
         bool builtinKeepsOnly = true;
     };
     Callees callees(const AVal& callee) const;
-    // The key a method-call IC site names, for `method.slot.fn`.
-    uint32_t methodKeyOfIc(uint32_t ic) const;
     uint32_t key(const char* name) { return keys_.intern(name); }
     // The prototype a builtin path names, allocated on first use.
     ObjId builtinObj(const std::string& path);
@@ -359,7 +357,6 @@ private:
     // The one instance object of each constructor, by function index.
     std::unordered_map<uint32_t, ObjId> instances_;
     std::unordered_map<uint32_t, SiteInfo> siteInfo_;
-    std::unordered_map<uint32_t, uint32_t> methodKeyByIc_;
     std::vector<RetSummary> summaries_;
     std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<DepKey, std::vector<uint32_t>, DepHash> readers_;

@@ -41,7 +41,6 @@ const char* opName(Op op) {
         case Op::BitAnd: return "and";
         case Op::BitOr: return "or";
         case Op::BitXor: return "xor";
-        case Op::MathImul: return "math.imul";
         case Op::Shl: return "shl";
         case Op::Shr: return "shr";
         case Op::UShr: return "ushr";
@@ -80,13 +79,6 @@ const char* opName(Op op) {
         case Op::PropSet: return "prop.set";
         case Op::ElemGet: return "elem.get";
         case Op::ElemSet: return "elem.set";
-        case Op::ElemGetTyped: return "elem.get.typed";
-        case Op::ElemSetTyped: return "elem.set.typed";
-        case Op::MathUnary: return "math.unary";
-        case Op::MathRandom: return "math.random";
-        case Op::IsShape: return "is.shape";
-        case Op::LayoutEpoch: return "layout.epoch";
-        case Op::LayoutFact: return "layout.fact";
         case Op::DynamicCall: return "call.dynamic";
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";
@@ -96,7 +88,6 @@ const char* opName(Op op) {
         case Op::CoroMode: return "coro.mode";
         case Op::DynamicImport: return "dynamic_import";
         case Op::ModuleNamespace: return "module.namespace";
-        case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
         case Op::MethodDef: return "method.def";
         case Op::MethodDefComputed: return "method.def.computed";
@@ -109,14 +100,12 @@ const char* opName(Op op) {
         case Op::SuperCallSpread: return "call.super.spread";
         case Op::TemplateCached: return "template.cached";
         case Op::TemplateObject: return "template.object";
-        case Op::ArrayAppendHole: return "array.append.hole";
         case Op::PropDelete: return "prop.delete";
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
         case Op::ResolveName: return "name.resolve";
         case Op::ImmutableAssign: return "immutable.assign";
         case Op::PinGuard: return "pin.guard";
-        case Op::CensusRecord: return "census.record";
         case Op::FeedbackRecord: return "feedback.record";
         case Op::ClassExtend: return "class.extend";
         case Op::PrivateNew: return "private.new";
@@ -157,17 +146,8 @@ const char* opName(Op op) {
         case Op::PrintSpread: return "print.spread";
         case Op::PrintSpreadErr: return "print.spread.err";
         case Op::KeepAlive: return "keep.alive";
-        case Op::MethodIcIs: return "method.ic.is";
-        case Op::RunMethodIs: return "run.method.is";
-        case Op::AccessorIcIs: return "accessor.ic.is";
         case Op::IsTypedArray: return "is.typed_array";
-        case Op::IsNumberArray: return "is.number_array";
-        case Op::IsArray: return "is.array";
         case Op::IsPlainArray: return "is.plain_array";
-        case Op::MethodSlotFn: return "method.slot.fn";
-        case Op::ClosureIs: return "closure.is";
-        case Op::ClosureEnv: return "closure.env";
-        case Op::CreateThis: return "create.this";
         case Op::ObjectLitProto: return "object.proto";
     }
     return "?";

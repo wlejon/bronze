@@ -30,12 +30,11 @@ bool parseTargetName(const std::string& name, brass::Target& out, std::string& e
 bool takeFlagValue(const std::string& arg, const char* name, int& i, int argc, char** argv,
                    std::string& out, std::string& err);
 // The type-feedback flags (docs/type-feedback.md): `--feedback-out` made
-// absolute (the run writes it from wherever it runs) and refused beside
-// `--census`, which uses the same runtime channel; `--feedback-in` read and
-// parsed into `profile`, which `options` then points at.
+// absolute (the run writes it from wherever it runs); `--feedback-in` read and
+// parsed into `profile`.
 bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feedbackInPath,
-                     const std::string& censusOutPath, std::optional<spec::TypeProfile>& profile,
-                     lower::FeedbackOptions& options, std::string& err);
+                     std::optional<spec::TypeProfile>& profile, lower::FeedbackOptions& options,
+                     std::string& err);
 int dispatchProveEquivArgs(int argc, char** argv);
 int dispatchSynthTestsArgs(int argc, char** argv);
 

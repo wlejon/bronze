@@ -3,15 +3,6 @@
 // The PIN CLAIMS as the IL carries them: what a `--pins` manifest declaration
 // (src/types/pins.h) has become by the time it reaches the backend.
 //
-// One header rather than two scattered declarations in il.h, because these two
-// are one thing said about two positions. A manifest entry makes a claim about
-// a SLOT and, for `numeric-elements`, a second claim about that slot's
-// ELEMENTS; `PinBarrier` names what a guard on the first tests, and
-// `kElemKindPlainArrayF64` names what the second turns the element form into.
-// Reading either without the other leaves the pair's division of labour
-// invisible — which is the argument for the seam, and the reason it is drawn
-// here rather than at whatever line count would have been convenient.
-//
 // Nothing about a manifest survives to this point. What the backend receives
 // is a SHAPE to check and an element kind to emit, never the declaration that
 // asked for them, which is why these live in `il` and not in `types`.
@@ -42,60 +33,30 @@ enum class PinBarrier : uint8_t {
     DenseArray,
 };
 
-// The PINNED element kind: a plain dense JS array whose reads and writes are
-// ASSUMED in-bounds, hole-free and numeric — no guard of any kind is emitted.
-// Granted by a `--pins ... numeric-elements` declaration (types/pins.h).
-// Nothing PROVES the assumption; enforcement is meant to move to the write paths. Deliberately
-// outside the types::TypedArrayElem range so nothing sound can collide with it.
-inline constexpr int32_t kElemKindPlainArrayF64 = 100;
-
-// Bit-flags packed into the upper 16 bits of `ElemGetTyped` / `ElemSetTyped`
-// `immI32` alongside the low-16-bit element kind (`immI32 & kElemKindMask`):
-//   - `kElemFlagProvenIntegralIndex`: the index operand is statically proven
-//     to be a finite safe integer, licensing the backend to skip the
-//     `sitofp(fptosi(idx)) == idx` round-trip check.
-//   - `kElemFlagProvenInBounds`: the index operand is statically proven to
-//     satisfy `0 <= idx < view.length` on an unmutated TypedArray view,
-//     licensing the backend to skip the unsigned bounds check.
-//   - `kElemFlagArrayReceiver` (on `ElemGet` / `ElemSet`): the receiver is
-//     an Array, tested by a dominating `is.array` (il_op.h), so the inline
-//     path skips its tag and header compares; `kElemFlagProvenIntegralIndex`
-//     beside it says the boxed index is an integral Number. On `ElemSet` the
-//     flags sit above the write mode (il.h kWriteModeMask).
-//   - `kElemFlagWordViewReceiver` (on `ElemGet` / `ElemSet`): the receiver
-//     is a WORD VIEW, an Int32Array, Uint32Array, Float32Array or
-//     Float64Array, tested by a dominating `is.typed_array r,
-//     kTypedArrayWordView` (typed_body_version.h), so the inline path skips
-//     the tag, Array and view header compares and the full kind ladder, and
-//     asks only which of the four kinds it is (a store, which of three: the
-//     two integer kinds store the same low 32 bits). The access keeps its
-//     exact semantics: a Number index outside the view reads `undefined` and
-//     drops a Number store inline (an integer kind storing ToInt32's bits);
+// Element flags an `ElemGet` / `ElemSet` carries in `immI32` (on `ElemSet`
+// above the write mode, il.h kWriteModeMask):
+//   - `kElemFlagProvenIntegralIndex`: the boxed index is an integral Number.
+//   - `kElemFlagArrayReceiver`: the receiver is an Array, tested by a
+//     dominating `is.plain_array` (lower_iter_loop.cpp), so the inline path
+//     skips its tag and header compares.
+//   - `kElemFlagWordViewReceiver`: the receiver is a WORD VIEW, an
+//     Int32Array, Uint32Array, Float32Array or Float64Array, tested by a
+//     dominating `is.typed_array` (lower_pattern.cpp), so the inline path
+//     skips the tag, Array and view header compares and the full kind
+//     ladder, and asks only which of the four kinds it is. The access keeps
+//     its exact semantics: a Number index outside the view reads `undefined`;
 //     an index or value that is no Number takes the helper.
-inline constexpr int32_t kElemKindMask = 0xFFFF;
 inline constexpr int32_t kElemFlagProvenIntegralIndex = 1 << 16;
-inline constexpr int32_t kElemFlagProvenInBounds = 1 << 17;
 inline constexpr int32_t kElemFlagArrayReceiver = 1 << 18;
 inline constexpr int32_t kElemFlagWordViewReceiver = 1 << 19;
 
 // `prop.get r, "length"` `immI32` (unused otherwise by a `prop.get`):
-// `r` is an Array, tested by a dominating `is.array` (the plain Array copy of
-// typed_loop_version.h), so the read is the header's length and nothing
+// `r` is an Array, tested by a dominating `is.plain_array`
+// (lower_iter_loop.cpp), so the read is the header's length and nothing
 // else: an Array's `length` is its own non-configurable data property, which
 // no prototype, getter or proxy can answer in its place (10.4.2), and the
 // heap kind is fixed for the object's life. The backend loads it as the
 // Number it is, with no receiver test and no other arm.
 inline constexpr int32_t kPropGetArrayLength = 1;
-
-// The most receiver shapes one `method.ic.is` guard's cells hold: the guard's
-// `immI32` says how many pairs it has (0 reads as one), each one compare on
-// the guard's path.
-inline constexpr uint32_t kMaxMethodGuardShapes = 4;
-
-// `is.typed_array`'s kind selector for "a word view" (Int32Array,
-// Uint32Array, Float32Array or Float64Array, the element kinds 5..8 of
-// abi/bronze_abi_layout.h): outside every element kind's number, below
-// kTypedArrayPristineLength (il_op.h), which it is never combined with.
-inline constexpr int32_t kTypedArrayWordView = 0x7F;
 
 }  // namespace bronze::il

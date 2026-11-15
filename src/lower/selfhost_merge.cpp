@@ -66,7 +66,6 @@ bool mergeable(const il::Instruction& inst) {
         case il::Op::ResolveName:
         case il::Op::ImportMeta:
         case il::Op::DynamicImport:
-        case il::Op::CensusRecord:
         case il::Op::PinGuard:
         case il::Op::FeedbackRecord:
         case il::Op::CoroStart:
@@ -76,23 +75,11 @@ bool mergeable(const il::Instruction& inst) {
         case il::Op::EnvSet:
         case il::Op::EnvGetTdz:
         case il::Op::EnvInitTdz:
-        case il::Op::MethodIcIs:
-        case il::Op::AccessorIcIs:
-        case il::Op::MethodSlotFn:
-        case il::Op::ClosureIs:
-        case il::Op::ClosureEnv:
-        case il::Op::IsShape:
-        case il::Op::LayoutFact:
             return false;
         default:
             break;
     }
-    return inst.staticSlot == il::Instruction::kNoStaticSlot && inst.staticCellIndex == 0 &&
-           inst.familyLo == il::Instruction::kNoFamily &&
-           inst.transitionRunCell == il::Instruction::kNoTransitionRun &&
-           inst.defineAddCell == il::Instruction::kNoDefineAddCell &&
-           inst.directTarget == il::Instruction::kNoDirectTarget &&
-           inst.typedTarget == il::Instruction::kNoDirectTarget && inst.inlineFrame == 0;
+    return inst.directTarget == il::Instruction::kNoDirectTarget;
 }
 
 bool namesFunction(il::Op op) { return op == il::Op::Call || op == il::Op::FunctionRef; }
@@ -136,8 +123,7 @@ bool Lowerer::mergeSelfHostLibrary() {
     };
     const auto carried = [&](uint32_t f) {
         const il::Function& fn = src.functions[f];
-        if (fn.needsEnv || fn.needsArguments || fn.isGenerator || fn.isCoroutineBody() || fn.isEntryPoint ||
-            !fn.inlineFrames.empty() || fn.typedOrigin != il::Function::kNoTypedOrigin) {
+        if (fn.needsEnv || fn.needsArguments || fn.isGenerator || fn.isCoroutineBody() || fn.isEntryPoint) {
             return false;
         }
         for (const il::Block& b : fn.blocks) {
@@ -298,8 +284,6 @@ bool Lowerer::mergeSelfHostLibrary() {
             il::Block blk;
             blk.id = static_cast<il::BlockId>(fn.blocks.size());
             blk.handler = fn.blocks[b].handler;
-            blk.copyClass = fn.blocks[b].copyClass;
-            blk.copyRegion = fn.blocks[b].copyRegion;
             fn.blocks.push_back(std::move(blk));
             return fn.blocks.back().id;
         };
@@ -308,7 +292,6 @@ bool Lowerer::mergeSelfHostLibrary() {
             inst.op = op;
             inst.type = type;
             inst.span = call.span;
-            inst.inlineFrame = call.inlineFrame;
             return inst;
         };
         const il::BlockId direct = newBlock();

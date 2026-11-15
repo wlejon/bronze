@@ -57,7 +57,6 @@ enum class Op : uint8_t {
     BitAnd,     // a: f64 = and b, c
     BitOr,
     BitXor,
-    MathImul,   // a: f64 = imul b, c         (operands i32, 32-bit signed multiply denotated as f64)
     Shl,        // a: f64 = shl b, c          (count masked to 5 bits)
     Shr,        // arithmetic: the sign bit is replicated
     UShr,       // logical, and the ONE bitwise op whose result is ToUint32
@@ -123,18 +122,15 @@ enum class Op : uint8_t {
     // It is the same compare `pin.guard` makes, and the difference is the whole
     // point of it. `pin.guard` holds a program to a promise and THROWS when the
     // promise is broken; this one is a BRANCH, and what its false edge leads to
-    // is ordinary IL that would have existed anyway. The guarded-region pass
-    // (src/lower/guard_region.h) emits it as the condition of a block's
-    // terminator, and the block on the true edge is where the `unbox.f64 raw`
-    // it licenses lives.
+    // is ordinary IL that would have existed anyway.
     IsNumber,   // a: bool = is.number b     (b: dynamic)
     // The DENSE-ARRAY TEST: does this receiver answer every constant-index read
     // up to `immI32` out of its own element block, with no user code and no
     // allocation? It is to a constant-index read what `is.number` is to a
     // coercion, so one test covers a run of reads. It compiles to the backend's
     // own receiver proof (llvm_recv_proof.h), so it claims nothing the reads it
-    // stands in front of were not already going to assume; the pass in
-    // `src/lower/guard_region.h` is its only producer and says why.
+    // stands in front of were not already going to assume
+    // (lower_pattern.cpp).
     IsDenseArray,  // a: bool = is.dense_array b, <immI32: max index>
     Ret,        // ret [a]
     // `throw v`: goes to this block's handler with v, or raises v out of the
@@ -174,42 +170,6 @@ enum class Op : uint8_t {
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>, <strict>
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
     ElemSet,    // elem.set obj, idx, val, <strict>   (all dynamic)
-    // Element access on a receiver INFERENCE PROVED is a Float64Array or
-    // Float32Array view (`immI32` is the types::TypedArrayElem number). The
-    // proof is what licenses generated code to skip the tag/kind guard ladder
-    // and touch the bytes directly; the index and bounds checks stay, because
-    // they are the language's own rule, not a guess about the receiver.
-    //
-    // The get computes ToNumber of the language's read: a valid in-bounds
-    // index yields the element, and every other number index — negative,
-    // fractional, NaN, past the view — yields NaN, which IS
-    // ToNumber(undefined). An f64 cannot carry `undefined` itself, so
-    // lowering only places this op where the consumer coerces (arithmetic, a
-    // typed store's value, an update); anywhere the raw value could be
-    // observed keeps `elem.get`. The bound is the view's length, the same
-    // bound bronze_elem_get uses, so the two modes agree byte for byte —
-    // detach included: the runtime zeroes a stranded view's length at the
-    // `transfer`/`resize` that strands it (closeOrReopenViews), so the one
-    // bounds compare is also 10.4.5.9's out-of-bounds check.
-    //
-    // The set is the full 23.2.5 store: ToNumber already done (the value
-    // operand is f64), a valid index stores with the element kind's
-    // narrowing, an invalid one is a silent no-op. Neither op can throw and
-    // neither can allocate, which is what keeps a loop of them free of
-    // safepoints.
-    // <immI32> is a types::TypedArrayElem number, or the PROBE kind below.
-    ElemGetTyped, // a: f64 = elem.get.typed obj, idx(f64), <immI32: elem kind>
-    ElemSetTyped, // elem.set.typed obj, idx(f64), val(f64), <immI32: elem kind>
-    // A call INFERENCE PROVED reaches a pristine builtin `Math` method
-    // (`immI32` is the MathUnaryFn number), with its argument (two for
-    // atan2, two to four for max and min) already a machine number. Admitted are the functions IEEE 754
-    // pins to a single result, which the backend may emit as an intrinsic,
-    // and the libm members whose result is implementation-defined, which the
-    // op computes by calling the runtime's own kernel — the one the builtin
-    // calls — so both inference modes stay byte-identical. `pow` stays a
-    // dynamic call (its operator form has its own kernel). Cannot throw,
-    // cannot allocate, runs no user code.
-    MathUnary,  // a: f64 = math.unary x(f64)[, x2.. (f64) for Atan2, Max, Min], <immI32: MathUnaryFn>
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
@@ -237,7 +197,6 @@ enum class Op : uint8_t {
     // literal with a different attribute set, it is a receiver KIND whose
     // own-key order, [[Set]] and [[GetOwnProperty]] are each its own.
     ModuleNamespace, // a = module.namespace b
-    ObjectKeys, // a = object.keys b
     // The keys a `for-in` will visit, as one array built before the first
     // iteration: own AND inherited enumerable string keys, each once.
     // Snapshotting is what lets the loop itself be for-of's index walk over the
@@ -319,18 +278,6 @@ enum class Op : uint8_t {
     // fixpoint) emits none: the proof is the licence, and re-checking it
     // would tax the programs that need no barrier at all.
     PinGuard,
-    // `census.record <value>, <site kind>, <key_const_index>`: hands one
-    // observation to the pin census (src/runtime/pin_census.h, stage C1). Void,
-    // and it NEVER THROWS — it is an instrument, and an instrument that can
-    // change control flow is one whose readings are about itself.
-    //
-    // Emitted only under `--census`, and only where lowering has no static
-    // answer for the claim a manifest would make: the mirror image of
-    // `PinGuard`, which is emitted only where a manifest HAS made one. A build
-    // carrying census records is never a build anything is measured on; the
-    // artefact is the manifest, and the manifest is then fed to an ordinary
-    // `--pins` build.
-    CensusRecord,
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
     // be made together, before any method is stored.
@@ -417,7 +364,6 @@ enum class Op : uint8_t {
     // Appending rather than indexing is the point — a literal with a spread in
     // it has no length until it is built.
     ArrayAppend,  // array.append arr, v
-    ArrayAppendHole, // array.append.hole arr
     ArraySpread,  // array.spread arr, iterable
     ObjectSpread, // object.spread obj, source
     // `{ a, ...others }`: a fresh object of `source`'s own enumerable
@@ -484,44 +430,15 @@ enum class Op : uint8_t {
     // pointer the native was given: the handle's destructor must not run
     // while that pointer, or anything the native derived from it, is in use.
     KeepAlive,
-    // a: bool = method.ic.is recv, <ic_site_index>, @callee. Whether the
-    // method-call site's cache holds a DIRECT entry for `recv`'s shape, latched
-    // at the current prototype-mutation epoch, whose code is `@callee`'s: the
-    // function a `method.call` at that site would enter for this receiver,
-    // which is what its direct edge already tests. The guard of an inlined
-    // method body (lower/inline_guarded.cpp). Loads only; cannot throw.
-    MethodIcIs,
-    // a: bool = run.method.is run @R, <ic_site_index>, @callee. `method.ic.is`
-    // asked of an instance nothing made (lower/fresh_instances.h): the shape
-    // transition run R ends at (il.h `transitionRunCell`; the run's cells,
-    // still of this prototype-mutation epoch) stands for the receiver's, so
-    // the answer is the one the object the run would have built gets. No
-    // operands: the cells are the whole question. Loads only; cannot throw.
-    RunMethodIs,
-    // a: bool = accessor.ic.is recv, <cell>, @callee. Whether the receiver is
-    // a plain object whose shape the site's ACCESSOR CELL (two words from
-    // static cell `cell`: a shape and the prototype-mutation epoch it was
-    // published at) names at the current epoch: the runtime publishes a
-    // shape there only after resolving the site's key on its chain to an
-    // accessor whose getter (prop.get) or setter (prop.set) is `@callee`
-    // (runtime/accessor_cell.cpp). The guard of an inlined accessor body.
-    // Loads only; cannot throw.
-    AccessorIcIs,
     // a: bool = is.typed_array b, <immI32: types::TypedArrayElem number>.
     // Whether `b` is a TypedArray of exactly that element kind. Both facts
     // are fixed when the view is made — no operation changes an object's
     // kind — so a test that held once holds for as long as the same value
     // is in hand, across calls, detaches and collections alike; what such a
     // call CAN change, the view's length and where its bytes are, the typed
-    // element ops read afresh at every access. That is the licence for
-    // `elem.get.typed` / `elem.set.typed` on the true edge, and the
-    // typed-loop versioning pass (lower/typed_loop_version.h) produces it.
-    // With immI32 kTypedArrayWordView (il_pin.h) it asks whether `b` is an
-    // Int32Array, Uint32Array, Float32Array or Float64Array, the licence for
-    // the element flag
-    // kElemFlagWordViewReceiver (typed-body versioning,
-    // lower/typed_body_version.h). Header loads only: cannot throw, cannot
-    // collect.
+    // element accesses read afresh at every access. That is the licence for
+    // the element flag kElemFlagWordViewReceiver (il_pin.h) on the true edge
+    // (lower_pattern.cpp). Header loads only: cannot throw, cannot collect.
     //
     // With kTypedArrayPristineLength set in `immI32` it also requires what the
     // runtime's own `length` read requires to answer from the view header
@@ -530,65 +447,6 @@ enum class Op : uint8_t {
     // prototype-mutation epoch. Unlike the kind, that holds only until code
     // runs that could define a property or patch a prototype.
     IsTypedArray,
-    // a: bool = is.number_array b, <immI32: max index>. The NUMBER-ARRAY
-    // CLAIM: is `b` an Array whose NUMBERS bit is set (runtime/array.h) and
-    // whose length exceeds `immI32` — every constant-index read up to it a
-    // load of a Number? When the bit is clear on such an array, of at most
-    // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements, it scans the elements and
-    // sets the bit if they are all Numbers, so it is NOT pure: it writes the
-    // array's header, an answer nothing in the language can observe.
-    //
-    // Its answer is about the elements as they are at the claim, so it is
-    // spent only across a stretch that cannot write anything — the guarded-
-    // region pass (lower/guard_region.h, "NUMBER ARRAYS") is its only producer
-    // and puts it in front of such a stretch of reads. Cannot throw, cannot
-    // collect; nothing may move it.
-    IsNumberArray,
-    // CLOSURE INLINING (lower/inline_guarded.cpp, "own callees"): the three
-    // ops that test which function an own-slot callback is and hand its
-    // body the environment it closed over.
-    //
-    // a: dynamic = method.slot.fn recv, <ic_site_index>. The value in the
-    // receiver's own slot that the method-call site's cache names for it:
-    // way 0 is a SLOT entry latched for the receiver's shape (a plain object
-    // whose own data property under the site's key held a function when the
-    // entry was made), and this is what that slot holds now; `undefined` when
-    // way 0 is anything else. A shape fixes the slot's key, attributes and
-    // representation, so the value read is the one `recv[key]` reads. Loads
-    // only: cannot throw, cannot collect.
-    MethodSlotFn,
-    // a: bool = closure.is f, @callee. Whether `f` is a function object of
-    // the current realm that a call may enter directly
-    // (BRONZE_ABI_FN_FLAG_DIRECT_CALL set, CLASS_CTOR clear) whose code is
-    // @callee's: a closure of that function, whatever environment it closed
-    // over. A bound function, a Proxy, a native or any other value is no.
-    // Asked as a CONSTRUCTION (immI32 kClosureIsConstruct) it is whether
-    // `new f` may enter that code with a fresh plain instance: the same
-    // function test with the class-constructor bit free and the
-    // construction vetted (bronze_abi.h, the inline `new` contract), so `f`
-    // has an instance shape for `create.this`.
-    // A construction asked FOR A RUN (`transitionRunCell` set) also asks that
-    // the run's cells were published from `f`'s instance shape at this
-    // prototype-mutation epoch: that the constructor's adds, on the instance
-    // `create.this f` would make now, are the run's plain stores, running no
-    // code (lower/fresh_instances.h).
-    // Loads only: cannot throw, cannot collect.
-    ClosureIs,
-    // a: dynamic = closure.env f. The environment record `f` closed over:
-    // the function object's env word, which create.func set once and nothing
-    // changes. Defined only for a closure, so it stands only where the
-    // verifier sees that proved: first in a block whose single predecessor
-    // ends in `br (closure.is f, @T), <this block>, ...`. Loads only.
-    ClosureEnv,
-    // a: dynamic = create.this f. The instance `new f(...)` starts from: a
-    // plain object of `f`'s instance shape (its prototype `f.prototype`, no
-    // properties yet), which is what 10.1.13 OrdinaryCreateFromConstructor
-    // makes for a base class's constructor. Stands only behind a `closure.is
-    // f, @C` that asked as a construction (il.h kClosureIsConstruct), which
-    // is what says `f` has that shape to give. An inlined constructor body's
-    // `this` (lower/inline_guarded.cpp, "constructors"). Allocates: can
-    // collect, cannot throw, runs no user code.
-    CreateThis,
     // object.proto obj, v. An object literal's `__proto__: v` (13.2.5.5 step
     // 6, B.3.1): the fresh object's [[SetPrototypeOf]](v) when v is an object
     // or null, nothing otherwise. Not a property write: the literal's other
@@ -596,50 +454,6 @@ enum class Op : uint8_t {
     // own `__proto__` of this one. Only the colon form with a written name
     // reaches here; a computed, shorthand or method `__proto__` is a define.
     ObjectLitProto,
-    // a: f64 = math.random. A call INFERENCE PROVED reaches the pristine
-    // builtin `Math.random` with no arguments: the runtime's generator called
-    // directly (bronze_math_random_f64), the same state and the same bits the
-    // native answers with, without the global read, the method-call cache and
-    // the native-call entry. Not pure: every one advances the generator, so it
-    // is never merged, hoisted or dropped. Cannot throw and allocates nothing.
-    MathRandom,
-    // a: bool = is.shape b. Whether `b` passes the static-slot guard of the
-    // site whose claim this instruction carries (`staticSlot`,
-    // `staticCellIndex`, `familyLo`/`familySpan`, il.h): a plain object whose
-    // shape is the one the site's cell names, or whose family stamp falls in
-    // the site's range. The guarded-region pass (lower/guard_region.h, "SHAPE
-    // GUARDS") is its only producer: it stands in front of a stretch of the
-    // fast copy in which the same receiver's sites are `shapeGuarded` raw
-    // loads and stores. Loads only; cannot throw, cannot collect, moves no
-    // shape. With no claim (`staticSlot` unset) it is a typed body's exit
-    // waiting for its read's (lower/typed_body_version.h, "READS"), settled
-    // by resolveReadExits before the backend.
-    IsShape,
-    // a: f64 = layout.epoch. The thread's LAYOUT EPOCH (runtime/shape_leave.h,
-    // docs/aot-specialization.md "S1"), which is the prototype-mutation epoch,
-    // as a double (it counts by 2 from 2, so it stays exact far past any run).
-    // Two reads that compare equal (`cmp.eq`) say that nothing in between
-    // broke a watched layout or moved a prototype chain: every shape fact a
-    // static-slot guard established before the first still holds for its
-    // receiver's existing slots, across any calls. One load. Not pure — the
-    // point is to read it again after a call — so, like `math.random`, it
-    // cannot throw but is not in canCollect's list, and is never merged,
-    // hoisted or dropped.
-    LayoutEpoch,
-    // a: f64 = layout.fact b. A LAYOUT FACT (lower/layout_facts.h,
-    // docs/aot-specialization.md "S2"): the layout epoch when `b` passes the
-    // static-slot guard of the claim this instruction carries (the fields
-    // `is.shape` carries), else a value no epoch equals. Its only readers are
-    // the sites it covers — a `shapeGuarded` prop.get / prop.set holding it
-    // as a last operand — and each asks one question of it: does the epoch
-    // still equal it? If so, the receiver still has every slot the shape it
-    // was checked at described, across any calls (S1), and the site is its
-    // bare load or store; if not, the site is its ordinary self. The value is
-    // the epoch word, or 1, which no epoch is, as the f64 of the same bits:
-    // it is compared and never computed with, so nothing converts it. Loads
-    // only, cannot throw; impure like `layout.epoch` (never merged, hoisted or
-    // dropped).
-    LayoutFact,
     // `feedback.record [<value>], <key_const_index>, <immI32: site info>`:
     // hands one observation to the type-feedback recorder
     // (src/runtime/type_feedback.h, docs/type-feedback.md). The key is the
@@ -653,16 +467,6 @@ enum class Op : uint8_t {
     // immortal shape and string memory, allocating nothing on the JS heap. An
     // instrument that could change control flow would be measuring itself.
     FeedbackRecord,
-    // a: bool = is.array b. Whether `b` is an Array exotic object: its heap
-    // kind, fixed when it is allocated, so a test that held once holds for as
-    // long as the same value is in hand, across calls and collections alike.
-    // That is the licence an `elem.get` / `elem.set` on the true edge carries
-    // as kElemFlagArrayReceiver (il_pin.h): its inline path skips the tag and
-    // header tests and keeps every other one (bounds, holes, the props word),
-    // since those change with the array. The typed-loop versioning pass
-    // (lower/typed_loop_version.h, "PLAIN ARRAYS") is its only producer.
-    // Header loads only: cannot throw, cannot collect.
-    IsArray,
     // a: bool = is.plain_array b. Whether `b` is an Array exotic object with
     // no named-property box: no own named property, no integrity level, the
     // realm's Array.prototype as its [[Prototype]] (a subclass instance, a
@@ -682,23 +486,5 @@ inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;
 
 const char* opName(Op op);
 bool isTerminator(Op op);
-
-// The function selector `math.unary` carries in `immI32`. Membership is the
-// soundness line: a function goes on this list only if IEEE 754 defines its
-// result exactly, so backend intrinsic and runtime libm agree bit for bit.
-//
-// From Sin on, the function is the runtime's own f64 kernel
-// (builtin_math.cpp, `bronze_math_<fn>_f64`), the one the builtin's native
-// code calls: the op and a dynamic `Math.<fn>(x)` answer with the same libm
-// call, so neither inference mode can see a different bit. Atan2 takes two
-// operands, y then x, both already f64; Max and Min take
-// two to four, folded left to right as 21.3.2.24/25 do once every argument is
-// a Number (NaN wins, -0 below +0); the backend's select chain is the one the
-// builtins' own speculated calls use.
-enum class MathUnaryFn : uint32_t {
-    Sqrt = 0, Abs = 1, Floor = 2, Ceil = 3, Trunc = 4, Sin = 5, Cos = 6,
-    Exp = 7, Log = 8, Tan = 9, Asin = 10, Acos = 11, Atan = 12, Atan2 = 13,
-    Max = 14, Min = 15, Round = 16
-};
 
 }  // namespace bronze::il

@@ -30,7 +30,6 @@
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
-#include "lower/infer_stats.h"
 #include "lower/lower.h"
 #include "selfhost/selfhost_library.h"
 #include "lower/native_manifest.h"
@@ -152,8 +151,8 @@ int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
-          const std::string& importMapPath, bool inferStats,
-          const std::string& pinsPath, const std::string& censusOutPath,
+          const std::string& importMapPath,
+          const std::string& pinsPath,
           bool pinsAllowObserved, const std::string& nativeManifestPath,
           const std::string& nativeLibPath, const std::string& feedbackOutPath) {
     // The manifests are read before any compilation happens: an unreadable file
@@ -226,10 +225,9 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // IL: `import.meta` resolves its module's URL out of the source set at
     // lowering time, so a null one would make `bronze il` dump a different
     // program from the one `bronze build` compiles.
-    lower::InferStatsCollector statsCollector;
     lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
-    if (std::string err; !prepareFeedback(feedbackOutPath, {}, censusOutPath, feedbackProfile, feedback, err)) {
+    if (std::string err; !prepareFeedback(feedbackOutPath, {}, feedbackProfile, feedback, err)) {
         if (outString) *outString = err;
         else std::fputs(err.c_str(), stderr);
         return 1;
@@ -238,13 +236,9 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
-                                       inferStats ? &statsCollector : nullptr,
-                                       /*assumeNoBigInt=*/true,
                                        pins.empty() ? nullptr : &pins,
-                                       censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*on=*/true},
-                                       nullptr, &feedback);
+                                       &feedback);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -255,12 +249,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     reportWarnings(diags, sources);
     inferred.reset();
     astModule.reset();
-    // The statistics before the dump, not after it: this command's artefact is
-    // megabytes of IL on a real library, and a report that has to be found at
-    // the end of it is a report nobody reads. Both are deterministic, so the
-    // order is a convenience and not a contract.
-    std::string printed = inferStats ? statsCollector.format() : std::string();
-    printed += il::print(*ilModule);
+    std::string printed = il::print(*ilModule);
     if (outString) {
         *outString = printed;
     } else {
@@ -271,16 +260,14 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
-             bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
              const std::string& importMapPath,
-             const std::string& pinsPath, const std::string& censusOutPath,
+             const std::string& pinsPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
-             const std::string& specProfilePath, bool wpoStats,
-             const std::string& wpoStatsFilter, bool wpoStatsPerSite,
+             const std::string& specProfilePath,
              const std::string& feedbackOutPath, const std::string& feedbackInPath,
              const std::string& harvestOutPath, size_t buildThreads) {
     // Two output kinds, named on one command line: a fact about the
@@ -397,32 +384,22 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    lower::InferStatsCollector statsCollector;
     // Read before the compile, like every manifest: a bad profile is a fact
-    // about the invocation.
+    // about the invocation. Nothing consumes it yet: the speculation step that
+    // will is still to be written.
     lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
-    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, censusOutPath,
-                                          feedbackProfile, feedback, err)) {
+    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, feedbackProfile, feedback, err)) {
         if (errOut) *errOut = err;
         else std::fputs(err.c_str(), stderr);
         return 1;
     }
-    // The ahead-of-time front end (lower.h): the whole-program optimizer and
-    // guarded inlining are its, not this caller's. `--wpo-stats` only adds the
-    // census, so the build's output is the same with the flag as without.
-    std::string wpoReport;
+    // The ahead-of-time front end (lower.h).
     lower::AheadOfTimeOptions aot;
     aot.hostGlobals = &hostGlobals;
     aot.pins = pins.empty() ? nullptr : &pins;
     aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
-    aot.censusOutPath = censusOutPath;
     aot.feedback = &feedback;
-    aot.inferStats = inferStats ? &statsCollector : nullptr;
-    aot.wpoStats = wpoStats;
-    aot.wpoStatsPerSite = wpoStatsPerSite;
-    aot.wpoStatsFilter = wpoStatsFilter;
-    aot.wpoReport = &wpoReport;
     aot.selfHostLibrary = selfhost::library();
     auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     timer.mark("lower");
@@ -445,17 +422,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         const auto abs = std::filesystem::absolute(harvestOutPath, ec);
         ilModule->harvestOutPath = ec ? harvestOutPath : abs.string();
     }
-
-    if (inferStats) {
-        std::string statsStr = statsCollector.format();
-        if (statsOut) {
-            *statsOut = statsStr;
-        } else {
-            std::fputs(statsStr.c_str(), stdout);
-        }
-    }
-
-    if (wpoStats) std::fputs(wpoReport.c_str(), stdout);
 
     reportWarnings(diags, sources);
     inferred.reset();
@@ -736,9 +702,7 @@ int runDriver(int argc, char** argv) {
         std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
-        bool inferStats = false;
         std::string pinsPath;
-        std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string feedbackOutPath;
@@ -748,8 +712,6 @@ int runDriver(int argc, char** argv) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
-            } else if (arg == "--infer-stats") {
-                inferStats = true;
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -766,7 +728,6 @@ int runDriver(int argc, char** argv) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
             } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
-                       takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
                 if (!flagErr.empty()) return fail(flagErr);
@@ -804,8 +765,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         if (!feedbackInPath.empty()) return fail("error: --feedback-in is a `build` flag\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats, pinsPath, censusOutPath, pinsAllowObserved,
-                     nativeManifestPath, {}, feedbackOutPath);
+                     pinsPath, pinsAllowObserved, nativeManifestPath, {}, feedbackOutPath);
     }
 
     if (command == "build") {
@@ -820,19 +780,14 @@ int runDriver(int argc, char** argv) {
         bool timings = false;
         bool emitObj = false;
         bool emitShared = false;
-        bool inferStats = false;
         bool retainFnSource = true;
         std::string pinsPath;
-        std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string targetName;
         bool emitDebugInfo = false;
         bool publishModules = false;
         std::string specProfilePath;
-        bool wpoStats = false;
-        bool wpoStatsPerSite = false;
-        std::string wpoStatsFilter;
         std::string feedbackOutPath;
         std::string feedbackInPath;
         std::string harvestOutPath;
@@ -845,12 +800,6 @@ int runDriver(int argc, char** argv) {
                 emitDebugInfo = true;
             } else if (arg == "--no-infer") {
                 infer = false;
-            } else if (arg == "--wpo-stats") {
-                wpoStats = true;
-            } else if (arg.rfind("--wpo-stats=", 0) == 0) {
-                wpoStats = true;
-                wpoStatsPerSite = true;
-                wpoStatsFilter = arg.substr(12);
             } else if (arg == "--target") {
                 if (i + 1 < argc) {
                     targetName = argv[++i];
@@ -864,8 +813,6 @@ int runDriver(int argc, char** argv) {
                 retainFnSource = false;
             } else if (arg == "--timings") {
                 timings = true;
-            } else if (arg == "--infer-stats") {
-                inferStats = true;
             } else if (arg == "--emit-obj") {
                 emitObj = true;
             } else if (arg == "--emit-shared") {
@@ -899,7 +846,6 @@ int runDriver(int argc, char** argv) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
             } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
-                       takeFlagValue(arg, "--census", i, argc, argv, censusOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
                        takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr) ||
                        takeFlagValue(arg, "--harvest-out", i, argc, argv, harvestOutPath, flagErr) ||
@@ -966,12 +912,11 @@ int runDriver(int argc, char** argv) {
             buildThreads = static_cast<size_t>(n);
         }
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
+                        hostGlobalsPath, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, pinsPath,
-                        censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
-                        wpoStatsFilter, wpoStatsPerSite, feedbackOutPath, feedbackInPath, harvestOutPath,
-                        buildThreads);
+                        pinsAllowObserved, nativeManifestPath, {}, {},
+                        targetName, publishModules, emitDebugInfo, specProfilePath,
+                        feedbackOutPath, feedbackInPath, harvestOutPath, buildThreads);
     }
 
     return fail(kUsage);

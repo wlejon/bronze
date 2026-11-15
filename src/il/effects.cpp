@@ -52,31 +52,24 @@ bool canThrow(const Instruction& inst) {
         case Op::NumTruthy:
         case Op::StrictEq:
         case Op::IsNullish:
-        // One unsigned compare against a constant. It is the guarded-region
-        // pass's whole barrier, and a barrier that could raise would need the
-        // slow copy to be reachable from two places rather than one.
+        // One unsigned compare against a constant.
         case Op::IsNumber:
         // A tag test, a kind byte, a length compare and a null check on the
-        // element block. The same reasoning: the guarded-region pass puts it in
-        // front of a run's first read, and a barrier that could raise would
-        // give the slow copy a second way in.
+        // element block.
         case Op::IsDenseArray:
         case Op::TypeOf:
         case Op::Box:
-        // The pin census is an INSTRUMENT (src/runtime/pin_census.h): it
-        // records a tag and returns. An instrument that could change control
-        // flow would be one whose readings are about itself, so it never
-        // raises and the backend emits no exception test after it.
-        case Op::CensusRecord:
-        // The type-feedback recorder (src/runtime/type_feedback.h), for the
-        // census's reason.
+        // The type-feedback recorder (src/runtime/type_feedback.h) is an
+        // INSTRUMENT: it records a tag and returns. An instrument that could
+        // change control flow would be one whose readings are about itself,
+        // so it never raises and the backend emits no exception test after
+        // it.
         case Op::FeedbackRecord:
         // Allocation and the environment: they can collect, and a failure to
         // allocate is fatal rather than catchable (there is no `RangeError:
         // out of memory` in bronze, and inventing one would let a program
         // continue past a heap that could not grow).
         case Op::CreateObject:
-        case Op::CreateThis:
         // Reads the frame header's resume word. `coro.start` and
         // `coro.suspend` are NOT here: the first runs the body and the second
         // hands control to whoever resumes it next, and both reach user code.
@@ -105,55 +98,13 @@ bool canThrow(const Instruction& inst) {
         case Op::ExcTake:
         // A use of its operands and nothing else.
         case Op::KeepAlive:
-        // Loads off the receiver's header and the site's cache words, the
-        // receiver's guarded by its tag.
-        case Op::MethodIcIs:
-        // Loads off a run's cells and the site's cache words.
-        case Op::RunMethodIs:
-        // Loads off the receiver's header, its shape and the site's cell.
-        case Op::AccessorIcIs:
-        // The same loads, and a family stamp's range compare.
-        case Op::IsShape:
-        // Two loads off the receiver's header, the receiver's guarded by its
-        // tag.
+        // Header loads off the receiver, guarded by its tag.
         case Op::IsTypedArray:
-        case Op::IsArray:
         case Op::IsPlainArray:
-        // Header loads, and on a miss a scan of at most
-        // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements that raises nothing.
-        case Op::IsNumberArray:
-        // Loads off the site's cache words, the receiver's header and slot,
-        // and a function object's header and words, each guarded by the tag
-        // and kind tested before it.
-        case Op::MethodSlotFn:
-        case Op::ClosureIs:
-        case Op::ClosureEnv:
-        // Raw bounds-checked loads and stores on a proven view: an invalid
-        // index is NaN or a skipped store, never a throw, and neither op
-        // allocates or reaches user code.
-        case Op::ElemSetTyped:
-        // A machine-number math kernel: no coercion ladder, no user code.
-        case Op::MathUnary:
-        // The generator's next value: no argument to coerce, no user code.
-        // (Deliberately NOT in canCollect's list, though it allocates
-        // nothing: an op that answers no to both reads as pure, re-run on a
-        // fast copy's bailout, and a second draw is not the same program.)
-        case Op::MathRandom:
-        // One load of the thread's epoch word; same reasoning as above: it
-        // must read as impure, so it stays out of canCollect's list.
-        case Op::LayoutEpoch:
-        // A static guard's loads and the same epoch load: impure for the
-        // same reason.
-        case Op::LayoutFact:
         // One aligned load from the module's own template-slot table, at an
         // address the compiler already proved in range.
         case Op::TemplateCached:
             return false;
-        // The same over a view, but a PLAIN ARRAY read applies ToNumber to an
-        // element that is not a Number (il_pin.h, kElemKindPlainArrayF64): a
-        // `valueOf` can run, and a Symbol throws.
-        case Op::ElemGetTyped:
-            return elemGetCoerces(inst);
         // The `+`-chain accumulator. `begin` and `append` ARE 13.15.3 over a
         // boxed pair — every reason `add` can throw, they can, ToPrimitive on a
         // fresh operand included. `end` clears a bit and reads nothing, but it
@@ -179,7 +130,6 @@ bool canThrow(const Instruction& inst) {
         case Op::BitAnd:
         case Op::BitOr:
         case Op::BitXor:
-        case Op::MathImul:
         case Op::Shl:
         case Op::Shr:
         case Op::UShr:
@@ -201,13 +151,8 @@ bool canThrow(const Instruction& inst) {
             // coercion — and ToNumber runs ToPrimitive on an object and throws
             // for a Symbol. `unbox.bool` is ToBoolean, which is total, and
             // `unbox.i32` reads a number it has already tested for; neither
-            // calls anything. The RAW form calls nothing either: its operand is
-            // proven a Number, so ToNumber is the identity and the emitted code
-            // is one bitcast.
-            // The NULLISH-WIDENED form calls nothing either: its operand is one
-            // of a number, `null` or `undefined`, and ToNumber over those three
-            // is a compare and two constants.
-            return inst.type == Type::F64 && !inst.rawUnbox && !inst.nullishUnbox;
+            // calls anything.
+            return inst.type == Type::F64;
         case Op::ToInt32:
             // Same conversion under a different name: 7.1.6 step 1 is ToNumber,
             // so `{} | 0` and `sym | 0` reach user code and the TypeError. Only
@@ -259,13 +204,6 @@ bool canCollect(const Instruction& inst) {
         //
         // One aligned load from the module's own template-slot table.
         case Op::TemplateCached:
-        // Bounds-checked load and store on a view the compiler proved: the
-        // whole point of the pair is that they call nothing, and `canThrow`
-        // says the same about them for the same reason.
-        case Op::ElemSetTyped:
-        // A machine-number kernel. `Math.sin` reaches libm, which allocates
-        // nothing and cannot see a JS heap to move.
-        case Op::MathUnary:
         // A use of its operands that emits no code.
         case Op::KeepAlive:
         // The type-feedback recorder classifies a tag and names a shape or a
@@ -275,20 +213,8 @@ bool canCollect(const Instruction& inst) {
         // backend reading it keeps a receiver proof across one.
         case Op::FeedbackRecord:
         // Tag tests and loads, no allocation.
-        case Op::MethodIcIs:
-        case Op::RunMethodIs:
-        case Op::AccessorIcIs:
-        case Op::IsShape:
         case Op::IsTypedArray:
-        case Op::IsArray:
         case Op::IsPlainArray:
-        // The claim's scan rewrites an Int32 box as a double in place: a
-        // store of a Number, which allocates nothing.
-        case Op::IsNumberArray:
-        // Loads, no allocation.
-        case Op::MethodSlotFn:
-        case Op::ClosureIs:
-        case Op::ClosureEnv:
         // The two control transfers that stay inside the function. A `jump`
         // writes its arguments into the target's block parameters and a `br`
         // picks between two of them; neither allocates and neither can reach
@@ -304,9 +230,6 @@ bool canCollect(const Instruction& inst) {
         case Op::Jump:
         case Op::Branch:
             return false;
-        // As `canThrow` reads it: a plain array's read may call a `valueOf`.
-        case Op::ElemGetTyped:
-            return elemGetCoerces(inst);
         // Boxing a number, a bool or an int is a bitcast and a select
         // (llvm_ops.cpp). A STRING box is not boxing at all — it mints the
         // key's Value through bronze_box_str_key — so it stays a barrier.
@@ -332,16 +255,13 @@ bool canCollect(const Instruction& inst) {
         case Op::BitAnd:
         case Op::BitOr:
         case Op::BitXor:
-        case Op::MathImul:
         case Op::Shl:
         case Op::Shr:
         case Op::UShr:
             return inst.type == Type::Dynamic;
-        // ToNumber over a proven Number is the identity and emits a bitcast;
-        // over anything else it is 7.1.4 and calls. Same split `canThrow`
-        // makes, and for the same operand.
+        // ToNumber is 7.1.4 and calls. Same split `canThrow` makes.
         case Op::Unbox:
-            return inst.type == Type::F64 && !inst.rawUnbox && !inst.nullishUnbox;
+            return inst.type == Type::F64;
         case Op::ToInt32:
             return inst.boxType == Type::Dynamic;
         // The pin barrier's branching forms are one unsigned compare against a

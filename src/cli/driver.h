@@ -40,39 +40,19 @@ int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath
 // it report an unreadable file or a bad line through the same error path as
 // everything else.
 //
-// `inferStats` prepends the same deterministic report `bronze build
-// --infer-stats` prints. It is on this command too because lowering is where
-// the report is GATHERED, and reaching it through `build` makes every reading
-// of it pay for LLVM object emission — seven minutes against six seconds on a
-// library-sized graph, which is the difference between a number a chunk
-// consults and one it measures twice.
-//
 // `pinsPath` is the `--pins` manifest: per-(class, field) declarations
 // inference spends without the proofs it would otherwise demand
 // (types/pins.h). Empty means no manifest, and it travels as the PATH for the
 // same reason `hostGlobalsPath` does.
 //
-// `censusOutPath` is `--census`: it INSTRUMENTS the program at exactly the
-// sites where a manifest could make a claim and no proof does, so that a
-// representative run writes the manifest to that path
-// (src/runtime/pin_census.h). Two compiles and one artefact — a census build
-// is never a build anything is measured on.
-//
-// `pinsAllowObserved` accepts a census entry marked `@observed`: one whose
+// `pinsAllowObserved` accepts a manifest entry marked `@observed`: one whose
 // stores are not all from sites the compiler can type, so a violation of it
 // would be silent rather than a TypeError. Off by default, on purpose.
-//
-// Neither command takes a promise about BigInts: whether `* - / %` over a
-// boxed operand may produce an f64 is the whole-program scan's answer alone
-// (lower/bigint_reach.h), with or without a host boundary. A host that hands
-// a BigInt to a program whose text never mentions one gets ToNumber's
-// TypeError at the operator.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
-          const std::string& importMapPath = {}, bool inferStats = false,
-          const std::string& pinsPath = {},
-          const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
+          const std::string& importMapPath = {},
+          const std::string& pinsPath = {}, bool pinsAllowObserved = false,
           const std::string& nativeManifestPath = {},
           const std::string& nativeLibPath = {},
           // `--feedback-out`: the IL of a type-feedback build
@@ -125,13 +105,11 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
-             bool inferStats = false, std::string* statsOut = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
-             const std::string& pinsPath = {},
-             const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
+             const std::string& pinsPath = {}, bool pinsAllowObserved = false,
              const std::string& nativeManifestPath = {},
              const std::string& nativeLibPath = {},
              // See ModuleOptions::entryResolvesAs: the path `sourcePath`'s own
@@ -151,15 +129,10 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // same program wrote (BRONZE_SPEC_PROFILE_OUT), which lays the
              // build's fast paths out as the JIT's (il2mir/il_spec_profile.h).
              const std::string& specProfilePath = {},
-             // `--wpo-stats[=<substring>]`: print the whole-program analysis's
-             // census of the final IL (src/opt/wpo/wpo.h) to stdout; with a
-             // filter, every site of the functions whose name contains it.
-             bool wpoStats = false, const std::string& wpoStatsFilter = {},
-             bool wpoStatsPerSite = false,
              // `--feedback-out <file.tfb>`: instrument the program so that a
              // run writes a type-feedback profile there; `--feedback-in
-             // <file.tfb>`: read one back for the passes that consume it
-             // (docs/type-feedback.md). Neither changes the build otherwise.
+             // <file.tfb>`: read one back (docs/type-feedback.md). Nothing
+             // consumes a profile yet.
              const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {},
              // `--harvest-out <file.tfb>`: the program writes its inline-cache
              // harvest there at exit (docs/type-feedback.md, "Harvest").

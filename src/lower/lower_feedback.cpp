@@ -48,26 +48,15 @@ il::Instruction makeRecord(const il::FeedbackSite& site, uint32_t fnKey,
     rec.keyIndex = fnKey;
     rec.immI32 = static_cast<int32_t>(
         BRONZE_FEEDBACK_INFO(static_cast<uint32_t>(site.kind), site.ordinal));
-    // The anchor's position, so a record attributes to the line and the
-    // inlined frame of the instruction it observes.
-    if (anchor != nullptr) {
-        rec.span = anchor->span;
-        rec.inlineFrame = anchor->inlineFrame;
-    }
+    // The anchor's position, so a record attributes to the line of the
+    // instruction it observes.
+    if (anchor != nullptr) rec.span = anchor->span;
     return rec;
 }
 
 }  // namespace
 
-bool instrumentFeedback(il::Module& module, const std::string& outPath, std::string* error,
-                        FeedbackStats* stats) {
-    if (!module.censusSites.empty()) {
-        if (error != nullptr) {
-            *error = "--feedback-out cannot instrument a module that also carries a pin census "
-                     "(--census): the two instruments share one runtime channel";
-        }
-        return false;
-    }
+void instrumentFeedback(il::Module& module, const std::string& outPath, FeedbackStats* stats) {
     // Keys first, over the IL as every pass left it: a function's hash is of
     // its uninstrumented body, which is what a reading build will hash.
     const std::vector<std::string> keys = il::feedbackFunctionKeys(module);
@@ -139,7 +128,6 @@ bool instrumentFeedback(il::Module& module, const std::string& outPath, std::str
     module.censusOutPath = outPath;
     module.censusSites = std::move(rows);
     if (stats != nullptr) *stats = local;
-    return true;
 }
 
 }  // namespace bronze::lower

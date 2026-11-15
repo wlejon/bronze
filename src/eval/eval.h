@@ -43,7 +43,6 @@ struct EvalOptions {
     std::vector<modules::ModuleRoot> moduleRoots = {};
     std::filesystem::path entryResolvesAs = {};
     std::string pinsPath = {};
-    std::string censusOutPath = {};
     // No native-manifest option: the evaluator reads the natives this thread's
     // host registered (embed::registerNative) directly, and binds the program
     // to them before it runs.
@@ -209,9 +208,8 @@ BRONZE_EMBED_API void installDefaultDynamicHooks();
 // A script compiled to a loadable native module (DLL / .so / .dylib) instead
 // of being handed to the tiered engine: the front end and inputs are exactly
 // those compileScript uses for the same text and options (eval_internal.h),
-// lowering also runs the whole-program optimizer a `bronze build` runs
-// (lower.h WholeProgramOptions; its claims are guarded, so the program is the
-// same one), and brass's own image writer puts the result on disk
+// lowering is the ahead-of-time front end a `bronze build` runs (lower.h
+// lowerAheadOfTime), and brass's own image writer puts the result on disk
 // (codegen-brass/module_image.h), so building one needs no linker or
 // toolchain on the machine. The module imports the shared runtime: it is
 // loaded into a process that already runs that runtime, never on its own.

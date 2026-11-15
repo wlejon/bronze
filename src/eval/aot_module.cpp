@@ -152,7 +152,8 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         return out;
     }
     if (!options.retainSource) ilModule->sourceTexts.clear();
-    out.feedbackApplied = ilModule->feedbackApplied;
+    // Nothing specializes on a profile yet, so `out.feedbackApplied` stays
+    // false and a profile is recorded as unused below.
 
     BrassBackend backend;
     backend.setEntrySymbol(kEntrySymbol);

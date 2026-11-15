@@ -45,7 +45,12 @@ namespace bronze::il {
 // 34: prop.get no longer carries icAbsent.
 // 35: nor icPolymorphic and icChain.
 // 36: nor icMonomorphic.
-inline constexpr uint32_t kFormatVersion = 36;
+// 37: the optimiser's ops and claims are gone: no static-slot, family,
+//     transition-run, define-add, typed-target, inline-frame or hint fields on
+//     an instruction, no copy class on a block, no typed origin or inline
+//     frames on a function, no class families, layout cells, slot-repr lists,
+//     feedbackApplied or function placement on a module.
+inline constexpr uint32_t kFormatVersion = 37;
 
 std::string serializeModule(const Module& module);
 

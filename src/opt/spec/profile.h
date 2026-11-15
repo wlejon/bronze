@@ -69,7 +69,7 @@ struct FunctionFeedback {
 // An INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"; the runtime's
 // ic_harvest.h writes it): what each IC site's cache held when an ordinary
 // build's run was read back, by IC index. No counts: a cache holds shapes,
-// not executions; feedback_plan.cpp says how a site maps onto the thresholds.
+// not executions.
 struct HarvestWay {
     // Property sites: `own`, `proto`, `absent`, `accessor`, `array`; method
     // sites: `direct`, `slot`, `native`.
