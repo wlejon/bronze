@@ -86,16 +86,6 @@ struct Instruction {
     // that reads it number the same instructions alike; copies share it.
     static constexpr uint32_t kNoSlowSite = UINT32_MAX;
     uint32_t slowSite = kNoSlowSite;
-    // PropGet: inference proved this site's receiver has ONE shape class, so
-    // the backend may inline the cache check instead of calling the helper.
-    // False is always sound — it is the plain call — and an unproven site keeps
-    // it, so the inline form can never degenerate into a polymorphic guard
-    // chain in generated code. It licenses the inline sequence; it does not
-    // remove the guard. The shape word is the runtime's authority and a shape
-    // class can name a layout the runtime never builds (`this.x =...` inside a
-    // branch), so the guard is what makes the proof sound, not a redundancy on
-    // top.
-    bool icMonomorphic = false;
     // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
     // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
     // `MathUtils.generateUUID`, a class name used inside its own body —
@@ -183,7 +173,7 @@ struct Instruction {
     // refuses and which needs no write barrier.
     bool shapeGuarded = false;
     // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
-    // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
+    // at, or `kNoStaticSlot`. Strictly stronger than an identity claim, which is
     // only an identity claim: this says the receiver's class was modellable end
     // to end (every field it installs, in the runtime's own transition order,
     // through the whole `extends` chain) and that this key is one of the own

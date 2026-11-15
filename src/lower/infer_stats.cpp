@@ -53,9 +53,6 @@ void formatCategory(std::string& out, const char* name, const char* nativeLabel,
     if (stats.familySlotCount != 0) {
         out += "    of which family-guarded: " + std::to_string(stats.familySlotCount) + "\n";
     }
-    if (stats.monoOnlyCount != 0) {
-        out += "    mono (annotation only): " + std::to_string(stats.monoOnlyCount) + "\n";
-    }
     out += "    dynamic: " + std::to_string(stats.dynamicCount) + "\n";
     if (!stats.bailReasons.empty()) {
         out += "    top bail reasons:\n";
@@ -93,15 +90,12 @@ ModuleInferStats& InferStatsCollector::getOrCreateModule(uint16_t fileId) {
 void InferStatsCollector::recordPropertyAccess(uint16_t fileId, PropSiteVerdict verdict,
                                                const std::string& bailReason) {
     auto& props = getOrCreateModule(fileId).propertyAccesses;
-    // Three disjoint columns, ranked by what the site's own code does: a
-    // stamped slot is a guard the backend emits, the identity annotation on
-    // its own is not, and a site with neither takes the inline cache and is
-    // asked why.
+    // Two columns, by what the site's own code does: a stamped slot is a
+    // guard the backend emits, and a site without one takes the inline cache
+    // and is asked why.
     if (verdict.emittedClaim) {
         ++props.nativeCount;
         if (verdict.familyGuard) ++props.familySlotCount;
-    } else if (verdict.monomorphic) {
-        ++props.monoOnlyCount;
     } else {
         ++props.dynamicCount;
         if (!bailReason.empty()) {
@@ -363,7 +357,6 @@ std::string InferStatsCollector::format() const {
         formatCategory(out, "Element Operations", "native", mod.elementOps);
 
         totalProps.nativeCount += mod.propertyAccesses.nativeCount;
-        totalProps.monoOnlyCount += mod.propertyAccesses.monoOnlyCount;
         totalProps.familySlotCount += mod.propertyAccesses.familySlotCount;
         totalProps.dynamicCount += mod.propertyAccesses.dynamicCount;
         totalCalls.nativeCount += mod.calls.nativeCount;
@@ -374,8 +367,7 @@ std::string InferStatsCollector::format() const {
 
     out += "\nTotal:\n";
     out += "  Property Accesses: " + std::to_string(totalProps.nativeCount) +
-           " native (emitted claim), " + std::to_string(totalProps.monoOnlyCount) +
-           " mono (annotation only), " + std::to_string(totalProps.dynamicCount) + " dynamic (" +
+           " native (emitted claim), " + std::to_string(totalProps.dynamicCount) + " dynamic (" +
            formatPct(totalProps.nativeCount, totalProps.total()) + " native)\n";
     out += "  Calls:             " + std::to_string(totalCalls.nativeCount) + " native, " +
            std::to_string(totalCalls.dynamicCount) + " dynamic (" +

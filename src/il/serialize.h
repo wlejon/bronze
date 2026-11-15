@@ -44,7 +44,8 @@ namespace bronze::il {
 // 33: Instruction::slowSite, Module::slowSiteCount (il/feedback_site.h).
 // 34: prop.get no longer carries icAbsent.
 // 35: nor icPolymorphic and icChain.
-inline constexpr uint32_t kFormatVersion = 35;
+// 36: nor icMonomorphic.
+inline constexpr uint32_t kFormatVersion = 36;
 
 std::string serializeModule(const Module& module);
 

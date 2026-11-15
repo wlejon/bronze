@@ -93,7 +93,6 @@ public:
                     fact.direct = inst.directTarget != il::Instruction::kNoDirectTarget;
                     fact.directTarget = inst.directTarget;
                     fact.inlined = inst.inlineFrame != 0;
-                    fact.mono = inst.icMonomorphic;
                     if (s_.reachable(f) && s_.blockLive(f, b)) {
                         if (prop) classifyProp(inst, fact);
                         else classifyCall(inst, fact);

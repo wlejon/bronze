@@ -55,7 +55,6 @@ Lowerer::Value Lowerer::emitPrototypeOf(Value ctorVal, il::Function& ilFn) {
     inst.operands = {ctorVal.id};
     inst.keyIndex = getKeyConstantIndex("prototype");
     inst.icIndex = icSiteCounter_++;
-    inst.icMonomorphic = false;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }

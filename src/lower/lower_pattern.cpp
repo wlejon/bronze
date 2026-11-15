@@ -317,7 +317,6 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
             readInst.operands = {source.id};
             readInst.keyIndex = getKeyConstantIndex(std::to_string(i));
             readInst.icIndex = icSiteCounter_++;
-            readInst.icMonomorphic = false;
             emitInst(ilFn, readInst);
             fastArgs.push_back(readId);
         }
@@ -578,7 +577,6 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
             readInst.operands = {source.id};
             readInst.keyIndex = getKeyConstantIndex(elem.key);
             readInst.icIndex = icSiteCounter_++;
-            readInst.icMonomorphic = false;
             if (hasRest) {
                 il::ValueId keyStr = ilFn.valueCount++;
                 il::Instruction keyInst;

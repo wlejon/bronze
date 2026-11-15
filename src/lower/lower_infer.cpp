@@ -195,35 +195,6 @@ const std::string* Lowerer::pristineMathAliasCall(const ast::Expr& call) const {
     return it == inference_->pristineMathAliasCalls.end() ? nullptr : &it->second;
 }
 
-// Whether a property site's receiver is proven to have ONE compile-time object
-// identity, which is what licenses the inlined inline-cache check in the
-// backend.
-//
-// The test is on the RECEIVER, not on where the property is found. A shape
-// class is a claim about the object's layout, and a monomorphic receiver is
-// exactly the condition an inline cache is built for: one shape reaches the
-// site, so one cached entry serves it. Whether the hit is own (depth 0) or up
-// the prototype chain is a fact the runtime discovers and records in the entry,
-// not one the class can answer — `Foo.prototype.m` sits on a different object
-// with a different shape entirely, so demanding the property be at a known
-// index in the receiver's class would exclude every method call, which is the
-// case three.js is made of.
-//
-// A receiver that joins two classes answers `Object` with no class and gets the
-// plain call, so the inline form never becomes a polymorphic guard chain in
-// generated code, which is a named non-goal of inference.
-//
-// This never removes the guard. The proof is over THIS compilation's source,
-// and a shape class collects `this.x =...` assignments unconditionally,
-// including ones inside branches, so a class can name a layout the runtime
-// never actually builds. The emitted sequence is sound only because the shape
-// word is still compared at run time; deleting the compare needs escape
-// analysis, which is outside this phase.
-bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
-    const types::Type t = inferredType(receiver);
-    return t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass;
-}
-
 // Can this site's receiver be a FUNCTION OBJECT — a class constructor, a
 // declared function, a provided global like `Object` — rather than an
 // instance? (`il::Instruction::icFnRecv`.)
@@ -819,7 +790,6 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
 
 void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) {
     PropSiteVerdict verdict;
-    verdict.monomorphic = inst.icMonomorphic;
     if (inst.keyIndex < keyStrings_.size()) {
         if (const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex],
                                               inst.op == il::Op::PropSet)) {
@@ -853,9 +823,7 @@ void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) 
     // site that bailed is asked WHY here for the same reason: a stamped site
     // did not bail, whatever the annotation says.
     recordPropertySite(receiver.span.file, verdict,
-                       verdict.emittedClaim || verdict.monomorphic
-                           ? std::string()
-                           : propBailReason(receiver));
+                       verdict.emittedClaim ? std::string() : propBailReason(receiver));
 }
 
 // --- the direct method-call edge -----------------------------------------

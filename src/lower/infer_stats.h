@@ -14,14 +14,6 @@ struct CategoryStats {
     // Sites whose EMITTED code carries a claim: for a property access, one
     // stamped with a slot, which compiles to a guarded constant-offset access.
     uint32_t nativeCount = 0;
-    // Property sites inference called monomorphic and nothing was emitted for.
-    // Counted apart from `nativeCount` because the annotation changes no
-    // instruction — both llvm_prop_get.cpp and llvm_prop_set.cpp cast it to
-    // void — so folding the two together lets this census move by tens of
-    // sites while the objects it is describing are byte-identical, which is
-    // exactly the reading that misranks a lever. Property accesses only; the
-    // other categories have no such annotation and leave it zero.
-    uint32_t monoOnlyCount = 0;
     uint32_t dynamicCount = 0;
     // Of `nativeCount`, how many guard on a layout FAMILY rather than on
     // one shape's identity. Reported separately because the two are different
@@ -33,11 +25,11 @@ struct CategoryStats {
     // Bail reason -> occurrences count
     std::map<std::string, uint32_t> bailReasons;
 
-    uint32_t total() const { return nativeCount + monoOnlyCount + dynamicCount; }
+    uint32_t total() const { return nativeCount + dynamicCount; }
 };
 
 // What one property site turned out to be, written in one place because the
-// three facts are decided at different points in lowering it and only their
+// facts are decided at different points in lowering it and only their
 // combination says which column the site belongs in.
 struct PropSiteVerdict {
     // The stamping step claimed a slot for this site, so its emitted code
@@ -45,9 +37,6 @@ struct PropSiteVerdict {
     bool emittedClaim = false;
     // That guard admits a class FAMILY rather than one shape's identity.
     bool familyGuard = false;
-    // Inference proved the receiver's identity. On its own this reaches the IL
-    // text and this census and nothing else — see `monoOnlyCount`.
-    bool monomorphic = false;
 };
 
 struct ModuleInferStats {

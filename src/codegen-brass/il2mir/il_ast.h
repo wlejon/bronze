@@ -256,7 +256,6 @@ struct BronzeInstruction {
     // il.h `slowSite`: the instruction's slow-site counter, or kNoSlowSite.
     static constexpr uint32_t kNoSlowSite = UINT32_MAX;
     uint32_t slow_site = kNoSlowSite;
-    bool is_mono = false;
     bool is_fn_recv = false;
     // A read whose receiver inference typed by a class SOMEBODY EXTENDS (`this`
     // in a base-class method, a parameter whose callers named a base): more

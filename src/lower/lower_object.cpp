@@ -696,8 +696,6 @@ Lowerer::Value Lowerer::emitMemberRead(const ast::MemberAccess& memRef, Value ob
     inst.operands = {objBoxed.id};
     inst.keyIndex = keyIdx;
     inst.icIndex = icIdx;
-    const bool mono = monomorphicPropSite(*mem->object);
-    inst.icMonomorphic = mono;
     inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
     Span propSpan = {
         static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
@@ -796,8 +794,6 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     inst.operands = {objBoxed.id};
     inst.keyIndex = *literalKey;
     inst.icIndex = icIdx;
-    const bool mono = monomorphicPropSite(*idxAccess.object);
-    inst.icMonomorphic = mono;
     inst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
     inst.span = idxAccess.index ? idxAccess.index->span : idxAccess.span;
     stampStaticSlot(inst, *idxAccess.object);

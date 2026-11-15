@@ -109,7 +109,6 @@ bool Lowerer::emitKeyedFieldStore(const ast::IndexAccess& idxAccess, Value objBo
         set.operands = {objBoxed.id, storedBoxed.id};
         set.keyIndex = keyIndex;
         set.icIndex = icSiteCounter_++;
-        set.icMonomorphic = monomorphicPropSite(*idxAccess.object);
         set.immI32 = strictFlag();
         stampStaticSlot(set, *idxAccess.object);
         emitInst(ilFn, set);

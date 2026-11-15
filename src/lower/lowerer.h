@@ -228,7 +228,6 @@ private:
 
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
-    bool monomorphicPropSite(const ast::Expr& receiver) const;
     bool functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const;
     bool pristineMathCall(const ast::Expr& call) const;
     // `Math.PI` and the other 21.3.1 constants on the proven builtin: their value.

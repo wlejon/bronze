@@ -244,7 +244,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;  // il_pin.h kPropGetArrayLength
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.static_slot = inst.staticSlot;
@@ -282,7 +281,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
                 out.index = inst.keyIndex;
                 out.depth = inst.icIndex;
                 out.ic_index = inst.icIndex;
-                out.is_mono = inst.icMonomorphic;
                 out.run_cell = inst.transitionRunCell;
                 out.run_length = inst.transitionRunLength;
                 out.run_slot = inst.transitionRunSlot;
@@ -292,7 +290,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             if (!ctx.cacheEvidence() || inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.static_slot = inst.staticSlot;
@@ -523,7 +520,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
@@ -539,7 +535,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
-            out.is_mono = inst.icMonomorphic;
             break;
         case il::Op::ConstructSpread: out.op = il2mir::BronzeOp::ConstructSpread; break;
         case il::Op::CreateArray:

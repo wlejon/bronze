@@ -167,8 +167,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
                 return true;
             }
         }
-        if ((prop_inst.is_mono || prop_inst.static_slot != UINT32_MAX) &&
-            prop_inst.ic_index < prop_lowering_.ic_site_count()) {
+        if (prop_inst.ic_index < prop_lowering_.ic_site_count()) {
             out_kind = ElemRunPeerKind::MonoObj;
             out_elem_idx = 0;
             return true;

@@ -252,10 +252,6 @@ Lowerer::Value Lowerer::emitInlinePropGet(Value receiver, const std::string& key
     inst.operands = {receiver.id};
     inst.keyIndex = getKeyConstantIndex(key);
     inst.icIndex = icSiteCounter_++;
-    // The receiver is one object for the life of the program, so the site sees
-    // one shape unless the program adds a property to the literal — which is
-    // what a monomorphic cache is a claim about, and it is checked either way.
-    inst.icMonomorphic = true;
     // Uncounted, deliberately: the census counts the sites the SOURCE wrote,
     // and this read is already counted where it was written — inside the
     // method, which is still compiled for every caller that does not inline it.

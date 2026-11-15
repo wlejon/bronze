@@ -462,9 +462,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.operands = {thisArgVal.id};
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            const bool mono = monomorphicPropSite(*mem->object);
             recordCall(call->span.file, false, "callee is method / property access");
-            inst.icMonomorphic = mono;
             inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             Span propSpan = {
                 static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
@@ -479,14 +477,12 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             // Direct method call IC path:
             uint32_t keyIdx = getKeyConstantIndex(mem->property);
             uint32_t icIdx = icSiteCounter_++;
-            const bool mono = monomorphicPropSite(*mem->object);
             recordCall(call->span.file, true, "");
 
             il::ValueId callRes = ilFn.valueCount++;
             il::Instruction inst;
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            inst.icMonomorphic = mono;
             inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             Span propSpan = {
                 static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),

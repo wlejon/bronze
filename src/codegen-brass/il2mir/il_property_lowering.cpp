@@ -326,36 +326,29 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // `x.length` where nothing proved what `x` is: an Array answers
     // from its header (10.4.2's exotic `length`, which the runtime's
     // read answers the same way for every array, `arguments`
-    // included), and anything else takes the read it took before.
-    // An array carries no shape, so the cache test below could only ever
-    // miss on one.
-    const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+    // included), and anything else takes the way-0 guard. An array carries
+    // no shape, so the cache test below could only ever miss on one.
     if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
         prop_lowering.key_tag(inst_ast.index) == "length") {
-        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, site && mono,
+        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, static_cast<bool>(site),
                                                    inst_ast.is_family);
     }
     // An image's read: the inline cache test (il_prop_get_inline.cpp).
     if (Value* v = prop_lowering.lower_prop_get_inline(b, obj_val, inst_ast.index, site, lowering->run_once(), carry)) {
         return v;
     }
-    // In process: a site the IL calls monomorphic, and every site of a
-    // program that runs under the tiered pipeline with speculation feedback
-    // (its misses, not inference, decide what tier 2 keeps), gets the way-0
-    // guard and load in front of the helper; a read inference could not type
-    // gets it in a loop, with the scan of the other ways. Elsewhere, and in
-    // code that runs once, the helper, which caches as well.
-    const bool poly = !mono && lowering->in_loop();
-    if (site && (mono || poly) && prop_lowering.enable_inlined_fastpaths() &&
-        inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
+    // In process: the way-0 guard and load in front of the helper. Code that
+    // runs once calls the helper, which caches as well.
+    if (site && prop_lowering.enable_inlined_fastpaths() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
+        !lowering->run_once()) {
         prop_lowering.set_memo_carry(carry);
-        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family || poly);
+        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
     }
     return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
 }
 
 // A write's ordinary sequence: the way-0 inline store (with a constructor's
-// inline transition) for the sites that get one, else the helper. A static
+// inline transition), or the helper for a fresh object's. A static
 // site's guard misses into this.
 void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                            Value* val, const IcSite& site) {
@@ -364,18 +357,13 @@ void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_a
     // The strict flag of an assignment, or kDefineWriteMode for a PropDefine:
     // the helper the miss calls is chosen by it (lower_prop_set).
     const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
-    // The same sites the read inlines (see PropGet) get the inline
-    // own-slot store, less the writes to an object this function just
-    // created. Every write in a class constructor (`this.x = x`) gets
-    // it with the inline shape transition on its miss, which is what
-    // answers those adds on every construction after the first. The
-    // arm is code at every site it is put at: at every write, and at
-    // the literals' adds too, three.js grew by a sixth and its scene
-    // graph ran slower for the instruction cache it took.
-    const bool mono = (inst_ast.is_mono || prop_lowering.feedback_driven()) &&
-                      !lowering->is_fresh_object(inst_ast.operands[0]);
+    // Every write gets the inline own-slot store, less the writes to an
+    // object this function just created; a write in a class constructor
+    // (`this.x = x`) also gets the inline shape transition on its miss, which
+    // is what answers those adds on every construction after the first.
+    const bool fresh = lowering->is_fresh_object(inst_ast.operands[0]);
     const bool adds = lowering->in_class_constructor();
-    if (site && (mono || adds) && prop_lowering.enable_inlined_fastpaths() &&
+    if (site && (!fresh || adds) && prop_lowering.enable_inlined_fastpaths() &&
         prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
         !lowering->run_once()) {
         const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);

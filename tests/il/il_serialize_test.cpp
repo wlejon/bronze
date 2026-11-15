@@ -66,7 +66,6 @@ Module fullModule() {
     inst.boxType = Type::F64;
     inst.keyIndex = 1;
     inst.icIndex = 6;
-    inst.icMonomorphic = true;
     inst.icFnRecv = true;
     inst.rawUnbox = true;
     inst.nullishUnbox = true;

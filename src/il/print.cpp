@@ -239,9 +239,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
-                        // The site inference proved monomorphic: an identity claim about
-                        // the receiver, shown because it is what --infer-stats counts.
-                        if (inst.icMonomorphic) out += ", mono";
                         if (inst.immI32 & kPropGetArrayLength) out += ", array-length";
                         // The receiver is a class- or function-declaration BINDING, so it
                         // can be a function object with members in a statics box: a hint,
@@ -503,7 +500,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         out += ", " + std::to_string(inst.keyIndex) + ", " +
                                std::to_string(inst.icIndex);
-                        if (inst.icMonomorphic) out += ", mono";
                         if (inst.icFnRecv) out += ", fn-recv";
                         if (inst.directTarget != Instruction::kNoDirectTarget) {
                             out += ", direct @" + std::to_string(inst.directTarget);
@@ -528,7 +524,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         out += ", " + std::to_string(inst.keyIndex) + ", " +
                                std::to_string(inst.icIndex);
-                        if (inst.icMonomorphic) out += ", mono";
                         if (inst.operands.size() > 1) {
                             out += ", %" + std::to_string(inst.operands[1]);
                         }

@@ -56,8 +56,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.operands = {objBoxed.id};
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
-            const bool mono = monomorphicPropSite(*mem->object);
-            getInst.icMonomorphic = mono;
             getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
@@ -93,7 +91,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = keyIdx;
             setInst.icIndex = icSiteCounter_++;
-            setInst.icMonomorphic = monomorphicPropSite(*mem->object);
             stampStaticSlot(setInst, *mem->object);
             setInst.immI32 = strictFlag();
             emitInst(ilFn, setInst);
@@ -157,8 +154,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.operands = {objBoxed.id};
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
-            const bool mono = monomorphicPropSite(*mem->object);
-            getInst.icMonomorphic = mono;
             getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
@@ -191,8 +186,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         inst.operands = {objBoxed.id, storedBoxed.id};
         inst.keyIndex = keyIdx;
         inst.icIndex = icSiteCounter_++;
-        const bool monoSet = monomorphicPropSite(*mem->object);
-        inst.icMonomorphic = monoSet;
         stampStaticSlot(inst, *mem->object);
         // The reference this write goes through is strict exactly when the
         // code that wrote it is (13.15.2 PutValue step 6.d), and that is the
@@ -249,8 +242,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.operands = {objBoxed.id};
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
-                const bool mono = monomorphicPropSite(*idxAccess->object);
-                getInst.icMonomorphic = mono;
                 getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
@@ -292,12 +283,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
             il::Instruction setInst;
             if (literalKey) {
-                const bool mono = monomorphicPropSite(*idxAccess->object);
                 setInst.op = il::Op::PropSet;
                 setInst.operands = {objBoxed.id, storedBoxed.id};
                 setInst.keyIndex = *literalKey;
                 setInst.icIndex = icSiteCounter_++;
-                setInst.icMonomorphic = mono;
                 stampStaticSlot(setInst, *idxAccess->object);
             } else {
                 const bool native = provenArrayOrTypedArray(*idxAccess->object);
@@ -369,8 +358,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.operands = {objBoxed.id};
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
-                const bool mono = monomorphicPropSite(*idxAccess->object);
-                getInst.icMonomorphic = mono;
                 getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
@@ -401,12 +388,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         il::Instruction setInst;
         if (literalKey) {
-            const bool mono = monomorphicPropSite(*idxAccess->object);
             setInst.op = il::Op::PropSet;
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
-            setInst.icMonomorphic = mono;
             stampStaticSlot(setInst, *idxAccess->object);
         } else {
             const bool native = provenArrayOrTypedArray(*idxAccess->object);

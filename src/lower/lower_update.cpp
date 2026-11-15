@@ -155,8 +155,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     getInst.operands = {objBoxed.id};
     getInst.keyIndex = keyIdx;
     getInst.icIndex = icSiteCounter_++;
-    const bool mono = monomorphicPropSite(*mem.object);
-    getInst.icMonomorphic = mono;
     getInst.icFnRecv = functionBindingReceiver(*mem.object, keyIdx);
     stampStaticSlot(getInst, *mem.object);
     emitInst(ilFn, getInst);
@@ -181,7 +179,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.operands = {objBoxed.id, storedBoxed.id};
     setInst.keyIndex = keyIdx;
     setInst.icIndex = icSiteCounter_++;
-    setInst.icMonomorphic = mono;
     stampStaticSlot(setInst, *mem.object);
     setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
@@ -248,8 +245,6 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         getInst.operands = {objBoxed.id};
         getInst.keyIndex = *literalKey;
         getInst.icIndex = icSiteCounter_++;
-        const bool mono = monomorphicPropSite(*idxAccess.object);
-            getInst.icMonomorphic = mono;
             getInst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
             stampStaticSlot(getInst, *idxAccess.object);
         } else {
@@ -271,12 +266,10 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
 
         il::Instruction setInst;
         if (literalKey) {
-            const bool mono = monomorphicPropSite(*idxAccess.object);
             setInst.op = il::Op::PropSet;
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
-            setInst.icMonomorphic = mono;
             stampStaticSlot(setInst, *idxAccess.object);
         } else {
             const bool native = provenArrayOrTypedArray(*idxAccess.object);
