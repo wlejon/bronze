@@ -12,7 +12,6 @@
 
 namespace brass {
 class Module;
-class SpecFeedback;
 }
 namespace brass::runtime {
 class FunctionDispatchTable;
@@ -136,10 +135,7 @@ private:
 
     // The pipeline tiers. Destroyed in reverse: the dispatch table first
     // (which stops this program's background compiler, whose installs the
-    // image observes), then the MIR module, then the image the code refers to,
-    // then the speculation counters every tier's code increments in place
-    // (il2mir/il_speculation.h).
-    std::shared_ptr<brass::SpecFeedback> specFeedback_;
+    // image observes), then the MIR module, then the image the code refers to.
     std::unique_ptr<TieredProgramImage> image_;
     std::unique_ptr<brass::Module> mirModule_;
     std::unique_ptr<brass::runtime::FunctionDispatchTable> dispatchTable_;

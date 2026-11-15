@@ -19,8 +19,7 @@ namespace {
 // ToNumber of the Value bits `bits`. A Number's bits are its double, so that
 // operand (nearly every one: `queue.length`, a field holding a double) is a
 // compare and a bitcast; everything else is the helper's ToNumber, which may
-// call user code (an object's ToPrimitive). The test is a speculation site,
-// which tier 2 turns into a guard where the helper never ran.
+// call user code (an object's ToPrimitive).
 Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "unbox_" + std::to_string(cur->parent()->next_block_id());
@@ -32,7 +31,8 @@ Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
     b.position_at_end(cur);
     PropertyLoweringHelper& prop = lowering->prop_lowering();
     Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
+    b.build_br_if(is_num, fast, slow);
+    b.position_at_end(slow);
     prop.slow_arm(b);
     b.build_br(merge, {b.build_call("bronze_unbox_f64", Type::f64(), {bits})});
 
@@ -131,6 +131,15 @@ bool IlLowering::lower_instruction(
                                     "il2mir: exc.take outside a handler block");
             return false;
         }
+        set_inst_result(inst_ast.result_id, res_val, b, val_map);
+        return true;
+    }
+
+    // Speculation (il_lowering_resume.cpp, il_lowering_spec.cpp).
+    if (inst_ast.op == BronzeOp::ResumePoint) return lower_resume_point(inst_ast, b, fn, val_map);
+    if (inst_ast.op == BronzeOp::Leave) return lower_leave(inst_ast, b, fn, val_map);
+    if (is_spec_il_op(inst_ast.op)) {
+        if (!lower_spec_instruction(inst_ast, b, val_map, res_val)) return false;
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
         return true;
     }
@@ -562,6 +571,7 @@ bool IlLowering::lower_instruction(
                     res_val = op0;
                 } else if (op0->defining_instruction() &&
                            op0->defining_instruction()->opcode() == Opcode::bitcast_f64_i64 &&
+                           op0->defining_instruction()->parent() == b.current_block() &&
                            op0->defining_instruction()->operand(0)->type() == Type::i64()) {
                     res_val = op0->defining_instruction()->operand(0);
                 } else {
@@ -590,10 +600,10 @@ bool IlLowering::lower_instruction(
         case BronzeOp::Unbox: {
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            if (inst_ast.result_type == BronzeType::F64 && boxed_f64_source(op0) != nullptr) {
+            if (inst_ast.result_type == BronzeType::F64 && boxed_f64_source(op0, b.current_block()) != nullptr) {
                 // A box made here of a double (an array's header length, a
                 // typed element): that double, whichever unbox this is.
-                res_val = boxed_f64_source(op0);
+                res_val = boxed_f64_source(op0, b.current_block());
             } else if (inst_ast.result_type == BronzeType::F64) {
                 res_val = lower_unbox_f64(this, b, ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::I32) {
@@ -755,7 +765,7 @@ bool IlLowering::lower_instruction(
                                                  : get_args(inst_ast.target, true_bb);
             std::vector<Value*> false_args = swap ? get_args(inst_ast.target, true_bb)
                                                   : get_args(inst_ast.else_target, false_bb);
-            // The branch's ARMS (il_speculation.h): its two edges.
+            // The branch's ARMS (il_property.h arm_begin): its two edges.
             enum : uint32_t { kArmThen = 1, kArmElse };
             // A build that may be harvested marks the edge taken, in a block
             // of the edge's own.

@@ -26,7 +26,6 @@ bool IlLowering::lower_wrapper(size_t i, Module& mod) {
     current_fn_idx_ = i;
     // What the function's body computed at its entry is not the wrapper's.
     current_module_delta_ = nullptr;
-    begin_hoisting(nullptr);
     uint32_t arity = static_cast<uint32_t>(fn_ast.params.size());
     auto it_ar = callee_param_counts_.find(fn_ast.name);
     if (it_ar != callee_param_counts_.end()) {
@@ -44,10 +43,15 @@ bool IlLowering::must_lower_eagerly(size_t i) const {
     if (resolved_names_[i] == "main") return true;
     // brass lowers coroutines once, over the bodies the module has when it
     // starts, pairing every coro_create with its body: both ends are built.
+    // A generic function's resume twin is cut from its body before anything
+    // runs (il_lowering_resume.cpp), so that body is built too.
     if (fn_ast.is_coroutine_body()) return true;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
-            if (inst.op == BronzeOp::CoroStart || inst.op == BronzeOp::CoroSuspend) return true;
+            if (inst.op == BronzeOp::CoroStart || inst.op == BronzeOp::CoroSuspend ||
+                inst.op == BronzeOp::ResumePoint) {
+                return true;
+            }
         }
     }
     return false;
@@ -94,22 +98,9 @@ std::string firstDifference(const std::string& a, const std::string& b) {
 bool IlLowering::build_provided_body(Function& fn, LazyBody& lazy) {
     Module& mod = *fn.parent();
     const bool again = lazy.built;
-    if (again) spec_.begin_replay(lazy.first_site, lazy.sites);
-    else spec_.begin_recording();
     const bool ok = lazy.wrapper ? lower_wrapper(lazy.index, mod) : lower_body(lazy.index, mod, &fn);
-    const bool sites_ok = again ? spec_.end_replay() : spec_.sites_consecutive();
     if (!ok || has_error_) return false;
-    if (!sites_ok) {
-        std::fprintf(stderr, "il2mir: '%.*s' %s\n", static_cast<int>(fn.name().size()), fn.name().data(),
-                     again ? "built again took other speculation sites than its first build"
-                           : "took speculation sites with other bodies' between them");
-        return false;
-    }
-    if (!again) {
-        lazy.built = true;
-        lazy.first_site = spec_.first_site_taken();
-        lazy.sites = spec_.sites_taken();
-    }
+    lazy.built = true;
     if (rebuildCheckEnabled()) {
         // The body, without its header line: the entry is renamed after its
         // first build (BrassBackend).

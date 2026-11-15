@@ -5,7 +5,6 @@
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
 #include "codegen-brass/il2mir/il_pipeline.h"
-#include "codegen-brass/il2mir/il_speculation.h"
 #include "embed/embed.h"
 
 #include "support/diagnostics.h"
@@ -80,11 +79,9 @@ brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
             // its code, and that of every function it reaches, is ready.
             config.enable_background_compile = true;
             config.enable_background_tier1 = true;
-            // A failed guard finishes its call in Tier 0 (a loop in it
-            // interpreted to the end), and a guard that failed twice has
-            // shown its site's feedback was wrong: the code is dropped
-            // then, and the recompile keeps that site a branch
-            // (SpecFeedback::mark_failed), rather than paying three more.
+            // A failed guard of brass's own tier-2 code finishes its call in
+            // Tier 0 (a loop in it interpreted to the end), and code whose
+            // guards failed twice is dropped rather than paying three more.
             config.deopt_threshold = 2;
             break;
     }
@@ -299,17 +296,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // The module's writable tables are per thread (bronze_module_instance):
     // one compiled program runs on any number of threads, each with its own
     // globals and caches, as a worker running the same script does.
-    // Speculation (il2mir/il_speculation.h): the inline fast paths count
-    // their misses here, and tier 2 arms the guards of the ones that stayed
-    // cold.
-    std::shared_ptr<brass::SpecFeedback> spec;
-    {
-        spec = il2mir::make_spec_feedback();
-        backend.setSpecFeedback(spec);
-        // The lowered code holds the counters' addresses: the program owns
-        // them for as long as any of its code can run.
-        prog->specFeedback_ = spec;
-    }
+    backend.setInProcess(true);
     // The inside of eval's "codegen" phase for a tiered program.
     support::PhaseTimer ptimer(support::timingsEnabled(), 4);
     std::vector<uint32_t> globalReadKeys;
@@ -333,16 +320,6 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         // Tier-up and OSR code run the optimizer the whole-program tier runs,
         // one function (or one loop's entry) at a time.
         pipeline.set_tier2_passes(backend.tierUpPasses());
-        pipeline.set_tier2_front_pass([spec](brass::Module& copy) {
-            if (spec) {
-                il2mir::apply_tier2_speculation(copy, *spec);
-            }
-        });
-        if (spec) {
-            // A guard's resume id is its site number, program-wide.
-            pipeline.set_invalidation_observer(
-                [spec](std::string_view, uint32_t resume_id) { spec->mark_failed(resume_id); });
-        }
         brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
         osr.set_threshold(kOsrBackedgeThreshold);
         osr.set_enabled(true);

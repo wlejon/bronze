@@ -26,9 +26,12 @@ int strict_eq_number_side(Value* op0, Value* op1) {
 // the helper for boxed values.
 Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
     BasicBlock* cur = b.current_block();
+    // Each look-through returns a value of this block's making only (a value
+    // from an earlier block may be from before a resume point;
+    // il_lowering_resume.cpp).
     if (is_f64 && v && v->is_instruction()) {
         const brass::Instruction* def = v->defining_instruction();
-        if (def) {
+        if (def && def->parent() == cur) {
             if (def->opcode() == brass::Opcode::sitofp_f64_i32 && def->operand_count() == 1) {
                 return def->operand(0);
             }
@@ -36,7 +39,7 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
                 Value* z = def->operand(0);
                 if (z && z->is_instruction()) {
                     const brass::Instruction* zdef = z->defining_instruction();
-                    if (zdef && zdef->opcode() == brass::Opcode::zext_i64 &&
+                    if (zdef && zdef->parent() == cur && zdef->opcode() == brass::Opcode::zext_i64 &&
                         zdef->operand_count() == 1 && zdef->operand(0)->type() == Type::i32()) {
                         return zdef->operand(0);
                     }
@@ -96,6 +99,26 @@ Value* box_f64_bits(Builder& b, Value* f) {
     Value* bits = b.build_bitcast_i64_f64(f);
     return b.build_select(b.build_ne(f, f), b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)),
                           bits);
+}
+
+Value* boxed_f64_source(Value* v, const BasicBlock* here) {
+    const Instruction* def = v ? v->defining_instruction() : nullptr;
+    if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->operand_count() >= 1) {
+        const Instruction* inner = def->operand(0)->defining_instruction();
+        if (inner && inner->opcode() == Opcode::bitcast_tagged_i64 && inner->operand_count() >= 1) {
+            def = inner->operand(0)->defining_instruction();
+        }
+    }
+    if (!def || def->opcode() != Opcode::select || def->operand_count() < 3) return nullptr;
+    if (here != nullptr && def->parent() != here) return nullptr;
+    const Instruction* nan = def->operand(1)->defining_instruction();
+    if (!nan || nan->opcode() != Opcode::iconst_i64 ||
+        static_cast<uint64_t>(nan->imm_i64()) != BRONZE_ABI_CANONICAL_NAN_BITS) {
+        return nullptr;
+    }
+    const Instruction* bits = def->operand(2)->defining_instruction();
+    if (!bits || bits->opcode() != Opcode::bitcast_i64_f64 || bits->operand(0)->type() != Type::f64()) return nullptr;
+    return bits->operand(0);
 }
 
 bool is_ops_il_op(BronzeOp op) {
@@ -455,7 +478,6 @@ bool lower_ops_instruction(
             return true;
         }
 
-        case BronzeOp::LooseEq: {
         case BronzeOp::LooseEq: {
             Value* op0 = get_opd(0);
             Value* op1 = get_opd(1);

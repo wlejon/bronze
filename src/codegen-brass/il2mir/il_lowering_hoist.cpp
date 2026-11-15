@@ -1,6 +1,12 @@
-// What a function's lowering decides once, at its entry: the values every
-// inline path shares (hoisted), and which of its values are primitive or
-// held tagged.
+// What a function's lowering decides once, before its body: which of its
+// values are primitive or held tagged.
+//
+// The entry computes only the two values every resume point's state carries
+// beside the IL's (the argv block and the module delta, il_lowering_resume.cpp):
+// a function with a `resume.point` is also entered there by its resume twin,
+// which has only the point's state in hand, so anything else the body reads
+// is an IL value or computed where it is read (the IC table's address, once
+// computed at the entry and shared, is now computed per use).
 
 #include "il_lowering.h"
 #include "il_abi.h"
@@ -12,50 +18,11 @@
 
 namespace il2mir {
 
-void IlLowering::begin_hoisting(BasicBlock* block) {
-    hoist_block_ = block;
-    hoist_after_ = block ? block->tail() : nullptr;
-    // An empty block: the values go in front of whatever it gets later.
-    hoist_at_head_ = block && !hoist_after_;
-    for (Value*& v : hoisted_) v = nullptr;
-}
-
-Value* IlLowering::hoisted(Builder& b, Hoist kind) {
-    Value*& slot = hoisted_[static_cast<size_t>(kind)];
-    if (slot) return slot;
-    // With no entry to hoist into (a wrapper), each use computes its own.
-    BasicBlock* resume = b.current_block();
-    if (hoist_block_) {
-        if (hoist_after_) {
-            b.position_after(hoist_after_);
-        } else if (hoist_at_head_ && hoist_block_->head()) {
-            b.position_before(hoist_block_->head());
-        } else {
-            b.position_at_end(hoist_block_);
-        }
-    }
-    Value* v = nullptr;
-    switch (kind) {
-        case Hoist::IcTable:
-            v = module_data_addr(b, "__bronze_ic_table");
-            break;
-        case Hoist::Count:
-            break;
-    }
-    if (!hoist_block_) {
-        return v;
-    }
-    hoist_after_ = v->defining_instruction();
-    b.position_at_end(resume);
-    slot = v;
-    return v;
-}
-
 namespace {
 
 bool is_primitive_result(const BronzeInstruction& inst, const std::unordered_set<uint32_t>& prim_ids) {
     if (inst.result_type == BronzeType::F64 || inst.result_type == BronzeType::I32 ||
-        inst.result_type == BronzeType::Bool) {
+        inst.result_type == BronzeType::Bool || inst.result_type == BronzeType::Ptr) {
         return true;
     }
     switch (inst.op) {

@@ -11,7 +11,6 @@
 
 namespace brass {
 struct PassPipelineOptions;
-class SpecFeedback;
 }
 namespace il2mir {
 struct TranslatorOptions;
@@ -27,6 +26,7 @@ constexpr brass::Type brassTypeOf(il::Type t) noexcept {
         case il::Type::F64: return brass::Type::f64();
         case il::Type::Str: return brass::Type::ptr();
         case il::Type::Dynamic: return brass::Type::i64();
+        case il::Type::Ptr: return brass::Type::i64();
     }
     return brass::Type::i64();
 }
@@ -64,9 +64,10 @@ public:
     void setMachOBuildVersion(const brass::object::MachOBuildVersion& v) { machoVersion_ = v; }
     void setEmitDebugInfo(bool on) { emitDebugInfo_ = on; }
     bool emitDebugInfo() const { return emitDebugInfo_; }
-    // buildMirModule's speculation feedback (il2mir/il_speculation.h): for a
-    // module run in-process by brass's tiered pipeline, never an object file.
-    void setSpecFeedback(std::shared_ptr<brass::SpecFeedback> fb) { specFeedback_ = std::move(fb); }
+    // The module buildMirModule lowers runs in this process, under brass's
+    // tiered pipeline (il2mir::TranslatorOptions::in_process): never an
+    // object file, and never harvested.
+    void setInProcess(bool on) { inProcess_ = on; }
     // Whether the module init registers function source slices
     // (`__bronze_source_text_N` / `__bronze_source_entries_N`). Only an
     // object file (buildObjectFile) defines those tables; a MIR module
@@ -147,7 +148,7 @@ private:
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
-    std::shared_ptr<brass::SpecFeedback> specFeedback_;
+    bool inProcess_ = false;
     // The slow sites the last buildMirModule's lowering armed with a counter
     // (il2mir::TranslatorOptions `slow_armed`), for buildObjectFile to lay out
     // before the counters; null when it counted none.

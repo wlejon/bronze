@@ -5,7 +5,6 @@
 #include "il_translator.h"
 #include "il_property.h"
 #include "il_alloc_lowering.h"
-#include "il_speculation.h"
 #include <brass/mir/builder.hpp>
 #include <brass/core/diagnostics.hpp>
 #include <memory>
@@ -26,6 +25,10 @@ class IlLowering;
 // Dynamic call helper dispatch (`bronze_call_dynamic_0..16` or staged `_n`)
 // (il_lowering_calls.cpp).
 Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering);
+
+// Whether `op` is one of the speculated function's low-level forms
+// (il_lowering_spec.cpp).
+bool is_spec_il_op(BronzeOp op);
 
 class IlLowering {
 public:
@@ -53,7 +56,6 @@ public:
     Value* stage_argv(Builder& b, const std::vector<Value*>& args);
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
-    SpecSiteEmitter& spec() { return spec_; }
     // Makes `inst`'s slow site the one the slow arms lowered next belong to.
     void set_slow_site_of(const BronzeInstruction& inst) {
         std::vector<uint32_t> sites;
@@ -67,7 +69,6 @@ public:
                    ? &current_ast_->functions[current_fn_idx_]
                    : nullptr;
     }
-    BasicBlock* entry_hoist_block() const { return hoist_block_; }
     DiagnosticReporter* diag() const { return diag_; }
     void set_diag(DiagnosticReporter* diag) { diag_ = diag; }
     void set_has_error(bool e) { has_error_ = e; }
@@ -111,19 +112,30 @@ public:
     Value* negated_boolean(Value* cond) const;
 
 private:
-    // Per-function values computed once at the function's entry and shared
-    // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
-    enum class Hoist : uint8_t { IcTable, Count };
-    Value* hoisted(Builder& b, Hoist kind);
-    // Starts a function's hoisting: values go into `block`, after whatever it
-    // holds now.
-    void begin_hoisting(BasicBlock* block);
     // The function's primitive and dynamic values (il_lowering_hoist.cpp).
     void analyze_function(const BronzeFunction& fn_ast);
-    BasicBlock* hoist_block_ = nullptr;
-    Instruction* hoist_after_ = nullptr;
-    bool hoist_at_head_ = false;
-    Value* hoisted_[static_cast<size_t>(Hoist::Count)] = {};
+    // Speculation (il_lowering_resume.cpp): a generic function's resume
+    // point, a speculated function's leave, and the resume twins of the
+    // module's generic functions, cut once every body is lowered.
+    bool lower_resume_point(const BronzeInstruction& inst, Builder& b, Function* fn,
+                            const std::unordered_map<uint32_t, Value*>& val_map);
+    bool lower_leave(const BronzeInstruction& inst, Builder& b, Function* fn,
+                     std::unordered_map<uint32_t, Value*>& val_map);
+    bool build_resume_twins(Module& mod);
+    // Reports `what` at `inst` and fails the lowering (false).
+    bool inst_error(const BronzeInstruction& inst, const std::string& what);
+    // The speculated function's low-level forms (il_lowering_spec.cpp).
+    bool lower_spec_instruction(const BronzeInstruction& inst, Builder& b,
+                                std::unordered_map<uint32_t, Value*>& val_map, Value*& res_val);
+    // The IL type of each of the current function's values, built on first
+    // ask (a resume point's and a leave's state words follow it).
+    const std::unordered_map<uint32_t, BronzeType>& il_types();
+    std::unordered_map<uint32_t, BronzeType> il_types_;
+    bool il_types_built_ = false;
+    // A speculated function's leave buffer (an alloca.tagged in its entry,
+    // as wide as its widest leave's state), or null.
+    Value* leave_state_ = nullptr;
+    uint32_t leave_state_words_ = 0;
     std::unordered_set<uint32_t> primitive_value_ids_;
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
@@ -140,17 +152,13 @@ private:
     // entry built up front in its own arena): AST index, whether it is the
     // wrapper, and what its first build took. brass may release a body once
     // its code exists and ask for it again (Module::release_bodies), and
-    // the body built again must be the first one: the same speculation
-    // sites (whose ids are its guards' resume ids, and whose counters its
-    // code increments), so a deopt from code compiled off either build
-    // finds its guard. BRONZE_MIR_REBUILD_CHECK=1 also keeps each first
-    // build's text and fails a build again that differs from it.
+    // the body built again must be the first one.
+    // BRONZE_MIR_REBUILD_CHECK=1 keeps each first build's text and fails a
+    // build again that differs from it.
     struct LazyBody {
         size_t index = 0;
         bool wrapper = false;
         bool built = false;
-        uint32_t first_site = 0;
-        uint32_t sites = 0;
         std::string first_text;
     };
     std::unordered_map<const Function*, LazyBody> lazy_bodies_;
@@ -202,7 +210,6 @@ private:
     DiagnosticReporter* diag_ = nullptr;
     PropertyLoweringHelper prop_lowering_;
     AllocLoweringHelper alloc_lowering_;
-    SpecSiteEmitter spec_;
     uint32_t current_file_id_ = 0;
     // The debug-context file id of each BronzeModuleAST::source_files entry.
     std::vector<uint32_t> source_file_ids_;

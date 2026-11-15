@@ -19,6 +19,8 @@ Type lower_type(BronzeType t) {
         case BronzeType::F64: return Type::f64();
         case BronzeType::Str: return Type::ptr();
         case BronzeType::Dynamic: return Type::i64();
+        // A raw word (a shape's address): never a root, never tagged.
+        case BronzeType::Ptr: return Type::i64();
         case BronzeType::Unknown: return Type::i64();
     }
     return Type::i64();
@@ -57,15 +59,8 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
 
 IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag)
     : options_(options), diag_(diag), alloc_lowering_(options.enable_tlab) {
-    spec_.set_feedback(options.spec_feedback.get());
-    spec_.set_image_sites(options.twin_exits);
-    prop_lowering_.set_spec(&spec_);
     prop_lowering_.set_inline_sets(!options.enable_census);
-    prop_lowering_.set_in_process(options.spec_feedback != nullptr);
-    prop_lowering_.set_key_names(&options_.key_constants);
-    // The IC table's address is shared, computed once at entry (each site
-    // otherwise computed its realm-relative address afresh).
-    prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
+    prop_lowering_.set_in_process(options.in_process);
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_slow_count_fn([this](Builder& b, uint32_t index) {
             // Lowering may run on several threads.
@@ -73,7 +68,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                 std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
                     .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
             }
-            Value* at = b.build_add(hoisted(b, Hoist::IcTable),
+            Value* at = b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             Value* n = with_alias_class(b.build_load(Type::i64(), at, 0), kSlowCountAliasClass);
             with_alias_class(b.build_store(Type::i64(), at, 0, b.build_add(n, b.build_iconst_i64(1))),
@@ -88,7 +83,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                     .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
             }
             const auto word = [&](uint32_t arm) {
-                return b.build_add(hoisted(b, Hoist::IcTable),
+                return b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                    b.build_iconst_i64(ic_slow_count_offset(site + arm, options_.slow_site_count)));
             };
             Value* last_at = word(kLastShapeArm);
@@ -101,7 +96,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
             with_alias_class(b.build_store(Type::i64(), last_at, 0, now), kSlowCountAliasClass);
         });
     }
-    // ARMS (il_speculation.h). An arm is on the instruction's fast path, so
+    // ARMS (il_property.h arm_begin). An arm is on the instruction's fast path, so
     // its mark is one store of a constant where a slow arm counts.
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_arm_mark_fn([this](Builder& b, uint32_t index) {
@@ -109,7 +104,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
                 std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
                     .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
             }
-            Value* at = b.build_add(hoisted(b, Hoist::IcTable),
+            Value* at = b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             with_alias_class(b.build_store(Type::i64(), at, 0, b.build_iconst_i64(1)), kSlowCountAliasClass);
         });
@@ -121,11 +116,15 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
 
     // A tagged value is the rooted form of a Value's bits: boxing takes the
     // bits as an i64, and box(unbox(x)) is x (x is the one of the two a
-    // collection keeps current).
+    // collection keeps current). Every look-through here returns a value of
+    // the current block's making only: one from an earlier block may be from
+    // before a resume point, where the twin does not have it.
     if (target_type.is_tagged()) {
         Value* bits = ensure_type(val, Type::i64(), b);
         Instruction* def = bits->defining_instruction();
-        if (def && def->opcode() == Opcode::bitcast_i64_tagged) return def->operand(0);
+        if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->parent() == b.current_block()) {
+            return def->operand(0);
+        }
         return b.build_bitcast_tagged_i64(bits);
     }
     if (val->type().is_tagged()) {
@@ -147,9 +146,13 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
         src_type = Type::i64();
     }
     if (src_type == Type::f64() && target_type == Type::i32()) {
-        // The int32 a double was made from is that int32.
+        // The int32 a double was made from is that int32 (made in this
+        // block: a value from before a resume point is not in its state,
+        // il_lowering_resume.cpp).
         if (const Instruction* def = val->defining_instruction()) {
-            if (def->opcode() == Opcode::sitofp_f64_i32) return def->operand(0);
+            if (def->opcode() == Opcode::sitofp_f64_i32 && def->parent() == b.current_block()) {
+                return def->operand(0);
+            }
             if (def->opcode() == Opcode::fconst_f64 && def->imm_f64() >= -2147483648.0 &&
                 def->imm_f64() <= 2147483647.0 && def->imm_f64() == std::trunc(def->imm_f64())) {
                 return b.build_iconst_i32(static_cast<int32_t>(def->imm_f64()));
@@ -169,6 +172,7 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
     if (src_type == Type::f64() && target_type == Type::i64()) {
         if (val->defining_instruction() &&
             val->defining_instruction()->opcode() == Opcode::bitcast_f64_i64 &&
+            val->defining_instruction()->parent() == b.current_block() &&
             val->defining_instruction()->operand(0)->type() == Type::i64()) {
             return val->defining_instruction()->operand(0);
         }

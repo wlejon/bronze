@@ -170,28 +170,24 @@ void register_all_module_external_symbols(brass::Module* mod, const std::string&
 std::string code_ranges_symbol(const std::string& entry_symbol);
 std::string code_range_count_symbol(const std::string& entry_symbol);
 
-// A twinned function `f`'s generic entry `f__generic`, its probe `f__probe`
-// and its entry cell `__bronze_twin_entry_f` (il_speculation.h, "FAILURE
-// POLICY"), which the backend defines in the image's shared data: the
-// address f's direct calls call, f's exits and a probe's calls.
-inline constexpr std::string_view kTwinGenericSuffix = "__generic";
 // The indices one slow site takes (il/feedback_site.h kSlowSiteArms): its
-// slow arm's and its ARMS' (il_speculation.h).
+// slow arm's and its ARMS' (il_property.h arm_begin).
 inline constexpr uint32_t kSlowSiteArms = 8;
 // A named property site's last shape and its count of shape turns
 // (il/feedback_site.h).
 inline constexpr uint32_t kLastShapeArm = 6;
 inline constexpr uint32_t kShapeTurnArm = 7;
-// PROVEN FACTS (il_speculation.h, resolve_fact_markers): the two marker
-// calls of an image's lowering, each taking a fact's id, both gone before
-// any pass runs.
-inline constexpr std::string_view kFactProofSymbol = "__bronze_fact_proof";
-inline constexpr std::string_view kFactProvenSymbol = "__bronze_fact_proven";
-inline constexpr std::string_view kTwinProbeSuffix = "__probe";
-inline constexpr std::string_view kTwinEntryCellPrefix = "__bronze_twin_entry_";
-inline constexpr int32_t kTwinCellEntry = 0;
-inline constexpr int32_t kTwinCellExits = 8;
-inline constexpr int32_t kTwinCellCalls = 16;
-inline constexpr size_t kTwinCellBytes = 24;
+// THE SHAPE CELLS (il.h Module::shapeCells): `__bronze_shape_cells`, one u64
+// per cell in the module's per-thread data, zero until the runtime fills it
+// with the shape the harvest named (bronze_register_shape_cells); and
+// `__bronze_shape_cell_keys`, read-only, each cell's key as a u32 byte length
+// and its bytes, one after another (brass_backend_sections.cpp).
+inline constexpr std::string_view kShapeCellsSymbol = "__bronze_shape_cells";
+inline constexpr std::string_view kShapeCellKeysSymbol = "__bronze_shape_cell_keys";
+
+// The function object's code and environment words (bronze_abi_layout.h,
+// BRONZE_ABI_FN_*): what `fn.code_is` and `fn.env` read.
+constexpr int32_t kBronzeFnCodeOffset = BRONZE_ABI_FN_CODE_OFFSET;
+constexpr int32_t kBronzeFnEnvOffset = BRONZE_ABI_FN_ENV_OFFSET;
 
 } // namespace il2mir

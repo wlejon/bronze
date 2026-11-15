@@ -115,7 +115,7 @@ uint64_t icLayoutDigest(const Module& module);
 // reads it; the passes after it copy an instruction with its index.
 // An instruction takes kSlowSiteArms indices: its own is its slow arm's (the
 // generic fallback), the ones after it the ARMS its lowering names (il2mir
-// il_speculation.h, "ARMS"): the alternatives of an inline path, each marked
+// il_property.h, "ARMS"): the alternatives of an inline path, each marked
 // where it begins.
 inline constexpr uint32_t kSlowSiteArms = 8;
 // Of a named property read's or write's indices, the two a build made to be

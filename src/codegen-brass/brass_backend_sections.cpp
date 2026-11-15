@@ -24,6 +24,12 @@ std::string moduleSymbolName(const std::string& entrySymbol, const std::string& 
     return base + "_" + entrySymbol;
 }
 
+bool spentHarvest(const il::Module& module) {
+    if (!module.shapeCells.empty()) return true;
+    return std::any_of(module.functions.begin(), module.functions.end(),
+                       [](const il::Function& fn) { return fn.isSpeculated(); });
+}
+
 std::string icIdentitySymbol(const std::string& entrySymbol) {
     return entrySymbol.empty() || entrySymbol == "main" || entrySymbol == "bronze_main"
                ? "bronze_object_ic_identity"
@@ -133,6 +139,22 @@ void emitMethodIcSites(ObjectFile& obj, Section& roSec, int32_t roIdx,
                  roSec.data.size() - sitesOffset, SymbolBinding::Local);
 }
 
+// The shape cells' keys (il2mir::kShapeCellKeysSymbol), in cell order: each
+// a u32 byte length and its bytes, which init hands
+// bronze_register_shape_cells with the cells.
+void emitShapeCellKeys(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
+                       const il::Module& module) {
+    if (module.shapeCells.empty()) return;
+    roSec.align_to(4);
+    const size_t at = roSec.data.size();
+    for (const il::Module::ShapeCell& cell : module.shapeCells) {
+        roSec.emit32(static_cast<uint32_t>(cell.key.size()));
+        roSec.emit_bytes(reinterpret_cast<const uint8_t*>(cell.key.data()), cell.key.size());
+    }
+    defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kShapeCellKeysSymbol)), roIdx, at,
+                 roSec.data.size() - at, SymbolBinding::Local);
+}
+
 // The IC IDENTITY record (bronze_abi_layout.h): what a harvest of the module's
 // inline caches is filed under. Local under the module's own name, which init
 // hands `bronze_register_ic_hot`, and exported for a host that loaded the
@@ -142,7 +164,7 @@ void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::s
     roSec.align_to(8);
     const size_t at = roSec.data.size();
     roSec.emit32(BRONZE_ABI_IC_IDENTITY_VERSION);
-    roSec.emit32(module.feedbackApplied ? BRONZE_ABI_IC_IDENTITY_PROFILED : 0u);
+    roSec.emit32(spentHarvest(module) ? BRONZE_ABI_IC_IDENTITY_PROFILED : 0u);
     roSec.emit32(module.icSiteCount);
     roSec.emit32(static_cast<uint32_t>(module.harvestOutPath.size()));
     roSec.emit64(module.icLayoutDigest);
@@ -334,20 +356,13 @@ private:
 }  // namespace
 
 namespace {
-// brass::resume_twin_name's names (il_speculation.cpp make_resume_twins).
+// brass::resume_twin_name's names (il2mir/il_lowering_resume.cpp).
 constexpr std::string_view kTwinSuffix = "__twin";
 bool isResumeTwinName(std::string_view name) {
     return name.size() > kTwinSuffix.size() && name.substr(name.size() - kTwinSuffix.size()) == kTwinSuffix;
 }
 std::string twinFunctionName(std::string_view name) {
     return std::string(name.substr(0, name.size() - kTwinSuffix.size()));
-}
-// A twinned function's generic entry (il_speculation.h, "FAILURE POLICY").
-bool isTwinGenericName(std::string_view name) {
-    return name.size() > il2mir::kTwinGenericSuffix.size() && name.ends_with(il2mir::kTwinGenericSuffix);
-}
-std::string twinGenericFunctionName(std::string_view name) {
-    return std::string(name.substr(0, name.size() - il2mir::kTwinGenericSuffix.size()));
 }
 }  // namespace
 
@@ -463,12 +478,11 @@ void emitPcTablesAndCodeRanges(
         roSec.emit32(static_cast<uint32_t>(cfi.text_size));
         auto itDt = debugTableMap.find(cfi.name);
         roSec.emit32(itDt != debugTableMap.end() ? static_cast<uint32_t>(itDt->second->line_entries().size()) : 0);
-        // A resume twin is the function it finishes, and so is the generic
-        // entry under it: the frame a stack walk passes over at the twin's
-        // caller, as it does the speculated function's.
+        // A resume twin is the function it finishes: the frame a stack walk
+        // passes over at the twin's caller, as it does the speculated
+        // function's.
         const bool twin = isResumeTwinName(cfi.name);
-        auto itDesc = fnToDesc.find(twin ? twinFunctionName(cfi.name)
-                                    : isTwinGenericName(cfi.name) ? twinGenericFunctionName(cfi.name) : cfi.name);
+        auto itDesc = fnToDesc.find(twin ? twinFunctionName(cfi.name) : cfi.name);
         emitPointer(roSec, itDesc != fnToDesc.end() ? itDesc->second : "");
         auto itPc = fnToPcTable.find(cfi.name);
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
@@ -506,20 +520,6 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     dataSec.emit64(0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_slot"), dataIdx, slotOffset, 8,
                  SymbolBinding::Local);
-
-    // Entry cells of the functions with a resume twin (il_speculation.h,
-    // "FAILURE POLICY").
-    for (const auto& cfi : obj.functions) {
-        if (!isTwinGenericName(cfi.name)) continue;
-        const std::string fn = twinGenericFunctionName(cfi.name);
-        dataSec.align_to(8);
-        const size_t cellOffset = dataSec.data.size();
-        emitPointer(dataSec, fn);
-        dataSec.emit64(0);
-        dataSec.emit64(0);
-        defineSymbol(obj, std::string(il2mir::kTwinEntryCellPrefix) + fn, dataIdx, cellOffset,
-                     il2mir::kTwinCellBytes, SymbolBinding::Local);
-    }
 
     dataSec.align_to(4);
     const size_t keyMapOffset = dataSec.data.size();
@@ -565,6 +565,18 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     }
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_global_cache"), dataIdx, cacheOffset,
                  cacheBytes, SymbolBinding::Local);
+
+    // The shape cells (il.h Module::shapeCells; il2mir::kShapeCellsSymbol):
+    // zero, a word no object carries, until the runtime fills one with the
+    // shape its key names. Per thread, as shapes are.
+    if (!module.shapeCells.empty()) {
+        dataSec.align_to(8);
+        const size_t cellsOffset = dataSec.data.size();
+        const size_t cellsBytes = module.shapeCells.size() * sizeof(uint64_t);
+        dataSec.data.resize(cellsOffset + cellsBytes, 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kShapeCellsSymbol)), dataIdx,
+                     cellsOffset, cellsBytes, SymbolBinding::Local);
+    }
 
     // The slow sites' counters (il.h `slowSiteCount`), zero, ending where the
     // table starts (il2mir::ic_slow_count_offset): generated code bumps one
@@ -722,6 +734,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitCensusData(obj, roSec, roIdx, entrySymbol, in.module);
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
     emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module);
+    emitShapeCellKeys(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     emitFileStrings(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles);
     timer.mark("ro tables");

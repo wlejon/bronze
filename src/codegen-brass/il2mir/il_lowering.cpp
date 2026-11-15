@@ -573,7 +573,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // can address is declared here (the entry is always built).
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
-                                 "__bronze_ic_table", "__bronze_module_slot"}) {
+                                 "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }
@@ -605,12 +605,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     brass::lower_coroutines(*mod);
     ltimer.mark("coroutines");
 
-    // 5. An image's guards exit into resume twins, built from the functions
-    // as lowered (il_speculation.h, "IMAGE SITES").
-    if (options_.twin_exits) {
-        make_resume_twins(*mod);
-        ltimer.mark("twins");
-    }
+    // 5. Every generic function's resume twin, cut from its body as lowered
+    // (il_lowering_resume.cpp), before anything optimizes either.
+    if (!build_resume_twins(*mod)) return nullptr;
+    ltimer.mark("twins");
 
     // 6. Optionally optimize module
     if (options_.enable_optimizations) {
@@ -656,32 +654,34 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     create_func_counter_.clear();
     argv_block_ = nullptr;
     argv_block_words_ = 0;
+    leave_state_ = nullptr;
+    leave_state_words_ = 0;
+    il_types_built_ = false;
     current_module_delta_ = nullptr;
-    begin_hoisting(nullptr);
     analyze_function(fn_ast);
 
     // The argv block a call stages its arguments in (il_lowering_calls.h).
-    const uint32_t widest_method_argc = argv_block_words(this, fn_ast);
+    // A speculated function's is also the one its leaves hand their twins
+    // (il_lowering_resume.cpp), so it is as wide as theirs too; and its
+    // leaves' state goes into a buffer as wide as the widest.
+    uint32_t widest_method_argc = argv_block_words(this, fn_ast);
+    uint32_t widest_leave = 0;
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op != BronzeOp::Leave || inst.index >= current_ast_->functions.size()) continue;
+            const uint32_t g_argv = argv_block_words(this, current_ast_->functions[inst.index]);
+            widest_method_argc = std::max(widest_method_argc, g_argv);
+            const uint32_t words = static_cast<uint32_t>(inst.operands.size()) +
+                                   (options_.per_thread_module_data ? 1u : 0u) + (g_argv > 0 ? 1u : 0u);
+            widest_leave = std::max(widest_leave, words);
+        }
+    }
 
     Builder b(mod);
     b.set_function(fn);
     // The lowering spells every tag, offset and limit inline; one of each per
     // block is enough.
     b.set_const_reuse(true);
-    // Every function carries guards (il_speculation.h), a coroutine body
-    // too: brass's coroutine lowering keeps its suspend states out of the
-    // guards' resume ids and adds the frame, and anything it reloads, to
-    // each guard's state, so a deopt finishes the resume in Tier 0 over the
-    // same frame. The argv block is an alloca, which a resume re-creates in
-    // the new frame with its contents.
-    // The entry's symbol differs between a JIT run and an AOT build; its
-    // sites name it kSpecEntryName.
-    const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
-    // In an image a guard exits into the function's resume twin, a second
-    // copy of the function, which a coroutine body and the top level never
-    // have.
-    const bool takes_guards = !options_.twin_exits || (!fn_ast.is_coroutine_body() && !fn_ast.is_toplevel);
-    spec_.begin_function(takes_guards, is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;
@@ -713,6 +713,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         if (widest_method_argc > 0) {
             argv_block_ = b.build_alloca_tagged(widest_method_argc);
             argv_block_words_ = widest_method_argc;
+        }
+        if (widest_leave > 0) {
+            leave_state_ = b.build_alloca_tagged(widest_leave);
+            leave_state_words_ = widest_leave;
         }
         if (options_.pin_tls_register) {
             // The module entry is the one function the runtime calls without
@@ -833,6 +837,16 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_method_ic_rows", Type::void_type(),
                              {table_addr, rows_addr, sites_addr, site_count});
             }
+            // The module's shape cells (il.h Module::shapeCells): the
+            // runtime fills each with the shape its key names, now for one
+            // that exists and when one is made for the rest, before `shape.cell`
+            // reads any (il_abi.h kShapeCellsSymbol).
+            if (options_.shape_cell_count > 0) {
+                Value* cells_addr = module_data_addr(b, std::string(kShapeCellsSymbol));
+                Value* keys_addr = b.build_func_addr(module_sym(std::string(kShapeCellKeysSymbol)));
+                Value* cell_count = b.build_iconst_i32(static_cast<int32_t>(options_.shape_cell_count));
+                b.build_call("bronze_register_shape_cells", Type::void_type(), {cells_addr, keys_addr, cell_count});
+            }
             if (options_.enable_census && options_.census_site_count > 0) {
                 Value* out_path = b.build_func_addr(module_sym("__bronze_census_out_path"));
                 Value* sites_addr = b.build_func_addr(module_sym("__bronze_census_sites"));
@@ -848,9 +862,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_fn_sources", Type::void_type(), {text_addr, text_len, entries_addr, entries_count});
             }
         }
-        // Everything the body shares is computed here, where it dominates
-        // every block, and only once something first asks for it.
-        begin_hoisting(b.current_block());
     }
 
     // 3. Set up non-entry block parameters
@@ -917,7 +928,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     fn->rebuild_cfg_predecessors();
     fn->sort_blocks_rpo();
     fn->rebuild_cfg_predecessors();
-    spec_.finish_function(*fn);
     return true;
 }
 

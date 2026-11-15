@@ -3,7 +3,6 @@
 
 #include "il_abi.h"
 #include "il_property.h"
-#include "il_speculation.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 
@@ -15,21 +14,17 @@ constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 
-// A mapped block a non-object's shape is read through, for a module that runs
-// in this process: its word is never compared (the object test is), only
-// loaded.
+// A mapped block a non-object's header words are read through, for a module
+// that runs in this process: its words are never trusted (the object test
+// is), only loaded. Four words: a function's code word (fn.code_is) is the
+// deepest read through it.
 alignas(16) const uint64_t kNotAnObject[4] = {};
 } // namespace
 
 IcSite PropertyLoweringHelper::ic_site_ref(Builder& b, uint32_t ic_index) {
     if (ic_index >= ic_site_count_) return {};
-    Value* table = nullptr;
-    if (table_base_fn_) {
-        table = table_base_fn_(b);
-    } else {
-        table = b.build_func_addr(ic_table_sym_);
-        if (module_delta_fn_) table = b.build_add(table, module_delta_fn_(b));
-    }
+    Value* table = b.build_func_addr(ic_table_sym_);
+    if (module_delta_fn_) table = b.build_add(table, module_delta_fn_(b));
     return {table, static_cast<int32_t>(static_cast<uint64_t>(ic_index) * kBronzeIcSiteSize), ic_index};
 }
 
@@ -114,12 +109,8 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     Value* hit = nullptr;
     Value* slot_word = nullptr;
     emit_mono_slot_guard(b, shape, is_object, site, hit, slot_word);
-    if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, key_tag(key_index));
-    } else {
-        b.build_br_if(hit, bb_fast, bb_slow);
-        b.position_at_end(bb_slow);
-    }
+    b.build_br_if(hit, bb_fast, bb_slow);
+    b.position_at_end(bb_slow);
     slow_arm(b);
     b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
 
@@ -128,54 +119,6 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
 
     b.position_at_end(bb_merge);
     return merge_val;
-}
-
-namespace {
-// The value a fact is recorded under: `v` behind the bitcasts between `i64`
-// and `tagged`.
-Value* fact_root(Value* v) {
-    for (int hops = 0; hops < 3; ++hops) {
-        const Instruction* def = v->defining_instruction();
-        if (def == nullptr || def->operand_count() != 1 ||
-            (def->opcode() != Opcode::bitcast_i64_tagged && def->opcode() != Opcode::bitcast_tagged_i64)) {
-            break;
-        }
-        v = def->operand(0);
-    }
-    return v;
-}
-// The marks of one value a test asks: the latest ones, each a call until
-// resolve_fact_markers.
-constexpr size_t kProofsAsked = 3;
-}  // namespace
-
-void PropertyLoweringHelper::prove_plain(Builder& b, Value* v) {
-    if (!spec_ || !spec_->image_sites() || v == nullptr) return;
-    const uint32_t id = next_proof_++;
-    b.build_call(kFactProofSymbol, Type::void_type(), {b.build_iconst_i32(static_cast<int32_t>(id))});
-    plain_proofs_[fact_root(v)].push_back(id);
-}
-
-Value* PropertyLoweringHelper::proven_plain(Builder& b, Value* v) {
-    if (v == nullptr) return nullptr;
-    const auto it = plain_proofs_.find(fact_root(v));
-    if (it == plain_proofs_.end()) return nullptr;
-    const std::vector<uint32_t>& ids = it->second;
-    Value* any = nullptr;
-    for (size_t i = ids.size() > kProofsAsked ? ids.size() - kProofsAsked : 0; i < ids.size(); ++i) {
-        Value* p = b.build_call(kFactProvenSymbol, Type::i32(), {b.build_iconst_i32(static_cast<int32_t>(ids[i]))});
-        any = any ? b.build_or(any, p) : p;
-    }
-    return any;
-}
-
-void PropertyLoweringHelper::site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
-                                         const std::vector<Value*>& fast_args) {
-    if (spec_) {
-        spec_->site_branch(b, hit, fast, slow, exits, fast_args);
-    } else {
-        b.build_br_if(hit, fast, fast_args, slow, {});
-    }
 }
 
 void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSite& site) {
@@ -202,15 +145,15 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& is_o
     // runs in this process under the tiered pipeline (feedback-driven, where
     // any receiver reaches here and the fast interpreter runs it too) uses a
     // static zeroed block of this process instead.
+    is_object = is_obj;
+    shape = b.build_load(Type::i64(), object_or_blank(b, ptr, is_object), BRONZE_ABI_OBJ_SHAPE_OFFSET);
+}
+
+Value* PropertyLoweringHelper::object_or_blank(Builder& b, Value* ptr, Value* is_object) {
     Value* not_object = in_process_
         ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
         : b.build_pinned_tls_read();
-    // Past a block that proved the value plain (PROVEN FACTS) the test is
-    // the constant.
-    Value* proven = proven_plain(b, obj);
-    is_object = proven ? b.build_or(proven, is_obj) : is_obj;
-    Value* base = b.build_select(is_object, ptr, not_object);
-    shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    return b.build_select(is_object, ptr, not_object);
 }
 
 void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* is_object, const IcSite& site,
@@ -280,7 +223,6 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_set_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_hit");
-    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
     BasicBlock* bb_slow = b.append_block(prefix + "_miss");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
@@ -296,14 +238,8 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     // Int32 box or generalizes the slot.
     Value* number_store = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     emit_mono_slot_guard(b, shape, is_object, site, hit, slot_word, number_store);
-    // A write's tag is its key after '=', apart from the reads of it.
-    const std::string tag = "=" + std::string(key_tag(key_index));
-    if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, tag);
-    } else {
-        b.build_br_if(hit, bb_fast, bb_slow);
-        b.position_at_end(bb_slow);
-    }
+    b.build_br_if(hit, bb_fast, bb_slow);
+    b.position_at_end(bb_slow);
     slow_arm(b);
     lower_prop_set(b, obj, key_index, val, imm, site_ptr(b, site));
     b.build_br(bb_merge);
@@ -316,11 +252,7 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     if (need_barrier) {
         Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
                                        b.build_iconst_i64(kBronzeObjSlotsOffset));
-        with_alias_class(b.build_store(Type::i64(), slot_addr, 0, val), kObjectSlotAliasClass);
-        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-        b.build_br_if(is_ref, bb_barrier, bb_merge);
-        b.position_at_end(bb_barrier);
-        b.build_write_barrier(slot_addr, val);
+        store_value(b, slot_addr, val, kObjectSlotAliasClass, /*need_barrier=*/true);
         b.build_br(bb_merge);
     } else {
         with_alias_class(b.build_store_indexed(Type::i64(), base, slot_word, 8, kBronzeObjSlotsOffset, val), kObjectSlotAliasClass);
@@ -328,6 +260,26 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     }
 
     b.position_at_end(bb_merge);
+}
+
+void PropertyLoweringHelper::store_value(Builder& b, Value* addr, Value* val, uint8_t alias_class, bool need_barrier,
+                                         const std::function<void(Builder&)>& on_non_number) {
+    with_alias_class(b.build_store(Type::i64(), addr, 0, val), alias_class);
+    if (!need_barrier && !on_non_number) return;
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "store_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_other = b.append_block(prefix + "_ref");
+    BasicBlock* bb_join = b.append_block(prefix + "_done");
+    b.position_at_end(cur);
+    // Every reference is tagged above BRONZE_ABI_NUMBER_MAX_BITS, and so is
+    // every value that is not a Number in its double form.
+    Value* other = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    b.build_br_if(other, bb_other, bb_join);
+    b.position_at_end(bb_other);
+    if (on_non_number) on_non_number(b);
+    if (need_barrier) b.build_write_barrier(addr, val);
+    b.build_br(bb_join);
+    b.position_at_end(bb_join);
 }
 
 void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,

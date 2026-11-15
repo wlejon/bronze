@@ -49,6 +49,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape_cells.h"
 #include "runtime/rt_prop_mega.h"
 #include "runtime/realm.h"
 #include "runtime/root_remset.h"
@@ -156,6 +157,12 @@ static void pushRootShape(Shape* root) {
     if (gcHoldsYoung(root->prototype)) {
         g_youngRootShapes.add(static_cast<uint32_t>(g_rootShapes.size() - 1));
     }
+    rtShapeCellsNoteShape(root);
+}
+
+void rtForEachRootShape(const std::function<void(Shape*)>& fn) {
+    for (Shape* root : g_rootShapes) fn(root);
+    for (Shape* root : g_userPrototypeShapes) fn(root);
 }
 
 Shape* rtNewRootShape(Value proto, uint32_t inlineSlots) {
@@ -206,6 +213,7 @@ static Shape* rootShapeForPrototype(Value proto, bool bare) {
     if (gcHoldsYoung(root->prototype)) {
         g_youngUserPrototypeShapes.add(static_cast<uint32_t>(g_userPrototypeShapes.size() - 1));
     }
+    rtShapeCellsNoteShape(root);
     return root;
 }
 
@@ -446,6 +454,7 @@ void rtInvalidateGlobalCaches() {
 
 void rtDropModuleCellsWithin(const void* begin, size_t size) {
     if (begin && size != 0) rtIcHotDropWithin(begin, size);
+    rtShapeCellsDropWithin(begin, size);
     if (!g_threadModules || !begin || size == 0) return;
     ThreadModuleState& s = *g_threadModules;
     const auto lo = reinterpret_cast<uintptr_t>(begin);
@@ -506,6 +515,7 @@ void rtEnterPermanentModuleScope() { t_stackModuleEpochs.push_back(0); }
 void rtLeavePermanentModuleScope() { eraseLastEpoch(t_stackModuleEpochs, 0); }
 
 static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
+    rtShapeCellsDropEpoch(epoch);
     for (const auto& span : s.moduleFnSlots) {
         if (span.epoch != epoch) continue;
         for (uint64_t i = 0; i < span.count; ++i) {

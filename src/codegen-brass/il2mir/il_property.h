@@ -12,8 +12,6 @@
 
 namespace il2mir {
 
-class SpecSiteEmitter;
-
 // One inline-cache site: its way 0 is at `base + off`. Inline paths load
 // its words at immediate offsets from `base` (the function's one table
 // address); only a helper call needs the site's own address.
@@ -43,42 +41,24 @@ public:
     }
     [[nodiscard]] uint32_t ic_site_count() const noexcept { return ic_site_count_; }
 
-    // PROVEN FACTS (il_speculation.h, resolve_fact_markers), in an image:
-    // `prove_plain` marks the block the builder is in as one only a plain
-    // object `v` reaches, which holds for the rest of the function, a
-    // value's tag and an object's heap kind being fixed at its creation.
-    // `proven_plain` is an i32 for a later receiver test of `v`, 1 where one
-    // of the marked blocks dominates it in the function as finally built
-    // (the speculated copy, whose misses left; rarely the twin, entered at
-    // its resume blocks) and 0 elsewhere, or null with nothing marked.
-    void prove_plain(Builder& b, Value* v);
-    Value* proven_plain(Builder& b, Value* v);
-    // Per function: forgets the proofs of the one before.
-    void clear_facts() {
-        plain_proofs_.clear();
-        next_proof_ = 0;
-    }
-
-    // SpecSiteEmitter::site_branch, for the sites lowered here.
-    void site_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, bool exits,
-                     const std::vector<Value*>& fast_args = {});
-    // SLOW ARMS (il_speculation.h): the instruction being lowered's slow
-    // site, set by IlLowering for every instruction. `slow_branch` is
-    // site_branch to a slow arm, `slow_arm` starts one (its counter in a
-    // build that may be harvested): every slow block of an inline fast path
-    // whose generic code runs the instruction from its start, with nothing
-    // done yet that it would do again.
+    // SLOW ARMS (docs/type-feedback.md, "Slow paths"): the instruction being
+    // lowered's slow site, set by IlLowering for every instruction.
+    // `slow_branch` is `br_if %hit, fast, slow` to a slow arm, `slow_arm`
+    // starts one (its counter in a build that may be harvested): every slow
+    // block of an inline fast path whose generic code runs the instruction
+    // from its start, with nothing done yet that it would do again.
     void set_slow_sites(std::vector<uint32_t> sites) { slow_sites_ = std::move(sites); }
     void slow_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow,
                      const std::vector<Value*>& fast_args = {}) {
-        site_branch(b, hit, fast, slow, /*exits=*/false, fast_args);
+        b.build_br_if(hit, fast, brass::Span<Value* const>(fast_args.data(), fast_args.size()), slow,
+                      brass::Span<Value* const>());
     }
     void slow_arm(Builder& b) {
         if (!slow_count_fn_) return;
         for (const uint32_t site : slow_sites_) slow_count_fn_(b, site);
     }
     void set_slow_count_fn(std::function<void(Builder&, uint32_t)> fn) { slow_count_fn_ = std::move(fn); }
-    // ARMS (il_speculation.h): the alternatives of the instruction's inline
+    // ARMS: the alternatives of the instruction's inline
     // path, each an index after its slow site's (below kSlowSiteArms).
     // `arm_begin` starts one, marking it run in a build that may be
     // harvested.
@@ -102,9 +82,6 @@ public:
     // which the owner of the function being lowered supplies; unset, the
     // symbol's own address is the table.
     void set_module_delta_fn(std::function<Value*(Builder&)> fn) { module_delta_fn_ = std::move(fn); }
-    // The function being lowered hands in its table address, computed once
-    // at its entry; unset, every site computes its own.
-    void set_table_base_fn(std::function<Value*(Builder&)> fn) { table_base_fn_ = std::move(fn); }
 
     // Site `ic_index`, or a null site when the index names none in this
     // module's table (kNoIcIndex, or a module compiled without one).
@@ -140,8 +117,6 @@ public:
     void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
                              const IcSite& site, bool val_is_primitive = false);
 
-    // The speculation sites' emitter (il_speculation.h); unset, plain branches.
-    void set_spec(SpecSiteEmitter* spec) noexcept { spec_ = spec; }
     // Whether writes get lower_prop_set_mono (off while a census counts
     // every write through the helper).
     void set_inline_sets(bool on) noexcept { inline_sets_ = on; }
@@ -150,12 +125,6 @@ public:
     // code may hold this process's addresses.
     void set_in_process(bool on) noexcept { in_process_ = on; }
     [[nodiscard]] bool in_process() const noexcept { return in_process_; }
-    // The module's key constants, which name a property site's tag.
-    void set_key_names(const std::vector<std::string>* names) noexcept { key_names_ = names; }
-    [[nodiscard]] std::string_view key_tag(uint32_t key_index) const noexcept {
-        return key_names_ && key_index < key_names_->size() ? std::string_view((*key_names_)[key_index])
-                                                            : std::string_view();
-    }
 
     // `bronze_elem_get` / `bronze_elem_set` (il_elem_lowering.cpp).
     Value* lower_elem_get(Builder& b, Value* obj, Value* index);
@@ -176,6 +145,12 @@ public:
     Value* typed_array_chain_pristine(Builder& b, Value* ptr, Value* kind);
 
     bool is_known_non_ref(Value* val) const;
+    // Stores the Value bits `val` at `addr` (an access of `alias_class`), then,
+    // where `val` is not a Number in its double form, runs `on_non_number` and
+    // (with `need_barrier`) the write barrier on the store's own address, as
+    // every C++ slot store gives it (HeapValue). The builder leaves in the join.
+    void store_value(Builder& b, Value* addr, Value* val, uint8_t alias_class, bool need_barrier,
+                     const std::function<void(Builder&)>& on_non_number = {});
     Value* box_number(Builder& b, Value* f64_val);
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
@@ -184,6 +159,10 @@ public:
     // and whether it is an object at all; a non-object reads its shape word
     // off a mapped block, and `is_object` false refuses every way.
     void receiver_shape(Builder& b, Value* obj, Value*& is_object, Value*& ptr, Value*& shape);
+    // The base a header word (offset below 32) of the object at `ptr` is read
+    // through: `ptr` where `is_object` holds, else a mapped block, so a read
+    // never goes through a payload that is no pointer.
+    Value* object_or_blank(Builder& b, Value* ptr, Value* is_object);
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
@@ -207,17 +186,12 @@ private:
     void emit_mono_slot_guard(Builder& b, Value* shape, Value* is_object, const IcSite& site,
                               Value*& hit, Value*& slot_word, Value* number_store = nullptr);
 
-    SpecSiteEmitter* spec_ = nullptr;
     bool inline_sets_ = true;
     bool in_process_ = false;
-    const std::vector<std::string>* key_names_ = nullptr;
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
-    std::unordered_map<Value*, std::vector<uint32_t>> plain_proofs_;
-    uint32_t next_proof_ = 0;
     std::function<Value*(Builder&)> module_delta_fn_;
-    std::function<Value*(Builder&)> table_base_fn_;
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
     std::function<void(Builder&, uint32_t)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;

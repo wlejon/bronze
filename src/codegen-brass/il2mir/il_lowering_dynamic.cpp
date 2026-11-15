@@ -12,9 +12,7 @@
 namespace il2mir {
 
 // A dynamic `+ - * /` (`bronze_dynamic_*`): two Numbers compute inline as f64
-// and box the result, NaN canonicalized; anything else takes the helper. The
-// test is a speculation site (il_speculation.h), which tier 2 turns into a
-// guard where the helper never ran.
+// and box the result, NaN canonicalized; anything else takes the helper.
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
                            const char* helper) {
     BasicBlock* cur = b.current_block();
@@ -24,13 +22,14 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i64());
 
-    // The helper's arm is a slow arm (il_speculation.h, "SLOW ARMS"),
-    // counted in a build that may be harvested.
+    // The helper's arm is a slow arm (il_property.h, "SLOW ARMS"), counted
+    // in a build that may be harvested.
     PropertyLoweringHelper& prop = lowering->prop_lowering();
     b.position_at_end(cur);
     Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
     Value* both = b.build_and(b.build_ule(op0, max), b.build_ule(op1, max));
-    lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith, helper);
+    b.build_br_if(both, fast, slow);
+    b.position_at_end(slow);
     prop.slow_arm(b);
     b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
 
@@ -175,7 +174,7 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, PropertyLower
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
 
-    // The compare's ARMS (il_speculation.h): equal bits of a Number, of a
+    // The compare's ARMS (il_property.h arm_begin): equal bits of a Number, of a
     // String or BigInt, or of anything else; two Numbers with different
     // bits; and different bits whose first operand is or is not a String or
     // a BigInt.
@@ -332,7 +331,7 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, PropertyLoweringHelper* arms) 
     static_assert(BRONZE_ABI_TAG_NULL == BRONZE_ABI_TAG_BOOL + 1 && BRONZE_ABI_TAG_UNDEFINED == BRONZE_ABI_TAG_BOOL + 2 &&
                       kUndefinedTag == uint64_t{BRONZE_ABI_TAG_UNDEFINED} << BRONZE_ABI_VALUE_TAG_SHIFT,
                   "Boolean, null and undefined are one range of bits");
-    // Each answer is an ARM (il_speculation.h), marked in its own block in a
+    // Each answer is an ARM (il_property.h arm_begin), marked in its own block in a
     // build that may be harvested.
     enum : uint32_t { kArmFlag = 1, kArmObject, kArmNumber, kArmString };
     const bool marked = arms != nullptr && arms->arms_marked();

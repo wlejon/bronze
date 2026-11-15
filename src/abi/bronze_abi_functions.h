@@ -279,7 +279,6 @@
     X(bronze_method_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_cell_fill,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
-    X(bronze_twin_exit_note,      BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U32)) \
     X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_iter_step,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_iter_value,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
@@ -552,6 +551,13 @@
      * whose module did not make this call (fingerprint pairing guarantees it
      * did). Registration-only, like the value-cell spans it rides on. */ \
     X(bronze_register_method_ic_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_PU64, BRONZE_ABI_U64)) \
+    /* The module's SHAPE CELLS (runtime/shape_cells.h), handed over at module
+     * init: `count` words at `cells` (this instance's `__bronze_shape_cells`,
+     * zero) and their names at `keys` (`__bronze_shape_cell_keys`: per cell a
+     * u32 byte length and the name's bytes). The runtime fills each cell with
+     * the shape its name names, now or when the shape is made; a cell is
+     * written at most once. */ \
+    X(bronze_register_shape_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_PU8, BRONZE_ABI_U32)) \
     /* The module's packed way-0 copies (bronze_abi_layout.h, "the HOT
      * array"), handed over at module init: `siteCount` sites at `icTable`
      * and their rows at `hot`, both this instance's. Registration-only: the

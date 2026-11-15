@@ -15,12 +15,9 @@ struct LoopOptStats;
 struct FmaOptStats;
 struct ParallelLoopStats;
 struct RangeAnalysisStats;
-class SpecFeedback;
 } // namespace brass
 
 namespace il2mir {
-
-using brass::SpecFeedback;
 
 struct FunctionMeta {
     bool needs_env = false;
@@ -167,17 +164,14 @@ struct TranslatorOptions {
     // the cell names. A table's address is then `symbol + delta`. Off (the
     // default, and every standalone brass test) keeps the plain addresses.
     bool per_thread_module_data = false;
-    // The program's speculation feedback (il_speculation.h), for a module
-    // that runs in-process under brass's tiered pipeline: its inline fast
-    // paths count their misses there and carry the guards tier 2 arms. Null
-    // (AOT objects, whole-program tier 2) lowers them as plain branches.
-    std::shared_ptr<SpecFeedback> spec_feedback;
-    // An image for a target whose guards can exit into a resume twin (x64):
-    // each function but the top level and a coroutine body is compiled with
-    // its guards and a twin (il_speculation.h, "IMAGE SITES"). Off, every
-    // site is a branch.
-    bool twin_exits = false;
-    // SLOW SITES (il.h `slowSite`, il_speculation.h "SLOW ARMS"): the module's
+    // The module runs in this process (brass's tiered pipeline), so its code
+    // may hold this process's addresses (il_property.h set_in_process).
+    bool in_process = false;
+    // The module's shape cells (il.h Module::shapeCells): `shape.cell n`
+    // reads word n of `__bronze_shape_cells`, which the entry registers with
+    // the runtime with the cells' keys (il_abi.h kShapeCellsSymbol).
+    uint32_t shape_cell_count = 0;
+    // SLOW SITES (il.h `slowSite`, il_property.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image
     // that may be harvested: one built on no profile) each slow arm bumps its

@@ -23,6 +23,12 @@ std::string moduleSymbolName(const std::string& entrySymbol, const std::string& 
 // `<entry>_ic_identity`, or `bronze_object_ic_identity` for the default entry.
 std::string icIdentitySymbol(const std::string& entrySymbol);
 
+// Whether `module` was built on a harvest: it reads shape cells (il.h
+// Module::shapeCells) or holds speculated functions. Its caches then
+// describe a specialized build, which is never harvested again
+// (BRONZE_ABI_IC_IDENTITY_PROFILED), and its slow arms count nothing.
+bool spentHarvest(const il::Module& module);
+
 // Everything the object carries beside brass's code that the runtime reads by
 // name (bronze_abi.h has each layout); what BrassBackend::buildObjectFile
 // appends after brass has compiled the module.

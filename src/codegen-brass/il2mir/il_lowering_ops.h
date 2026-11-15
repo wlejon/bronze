@@ -16,8 +16,11 @@ bool is_ops_il_op(BronzeOp op);
 // compare and two 64-bit constants, and the form brass's number_bits reads
 // as an ordered Number.
 Value* box_f64_bits(Builder& b, Value* f);
-// The f64 an i64 Value was boxed from by box_f64_bits, or null.
-Value* boxed_f64_source(Value* v);
+// The f64 an i64 Value was boxed from by box_f64_bits, or null. With `here`,
+// only a box made in that block: what a lowering may use in the box's place
+// (one from an earlier block may be from before a resume point, whose state
+// does not carry it; il_lowering_resume.cpp).
+Value* boxed_f64_source(Value* v, const BasicBlock* here = nullptr);
 bool lower_ops_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

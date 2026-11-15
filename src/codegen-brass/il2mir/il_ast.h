@@ -24,6 +24,9 @@ enum class BronzeType {
     F64,
     Str,
     Dynamic,
+    // il::Type::Ptr: a raw machine word no collector reads (a shape's
+    // address), held as an i64.
+    Ptr,
     Unknown
 };
 
@@ -161,6 +164,35 @@ enum class BronzeOp {
     PropDefine,
     ElemDefine,
     ObjectLitProto,
+    // Speculation (il_op.h, "leaving a speculated function"), lowered in
+    // il_lowering_resume.cpp. ResumePoint's and Leave's id is `imm_i64`;
+    // Leave's target G is `callee_name` and its AST index `index`.
+    ResumePoint,
+    Leave,
+    // The speculated function's low-level forms (il_op.h), lowered in
+    // il_lowering_spec.cpp. Their immediates: LoadShape none, ShapeCell the
+    // cell in `imm_i64`, SlotLoad / SlotStore the slot in `imm_i64`, FnCodeIs
+    // the function in `callee_name` and its AST index in `index`.
+    LoadShape,
+    ShapeCell,
+    PtrEq,
+    IsObject,
+    SlotLoad,
+    SlotStore,
+    IsI32,
+    UnboxI32,
+    UnboxF64,
+    I32ToF64,
+    AddWouldOvf,
+    SubWouldOvf,
+    MulWouldOvf,
+    FnCodeIs,
+    FnEnv,
+    ArrayLength,
+    ElemLoad,
+    ElemStore,
+    InBounds,
+    IsHole,
     Unknown
 };
 

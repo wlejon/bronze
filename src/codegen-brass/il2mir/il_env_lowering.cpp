@@ -83,21 +83,9 @@ void IlLowering::lower_env_set(Builder& b, Value* env, uint32_t depth, uint32_t 
                                bool val_is_primitive) {
     Value* rec = env_record_ptr(b, ensure_type(env, Type::i64(), b), depth);
     Value* bits = ensure_type(val, Type::i64(), b);
-    b.build_store(Type::i64(), rec, slot_offset(index), bits);
-    if (val_is_primitive || prop_lowering_.is_known_non_ref(bits)) return;
-
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "env_set_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    b.position_at_end(cur);
-    Value* is_ref = b.build_ugt(bits, iconst64(b, BRONZE_ABI_NUMBER_MAX_BITS));
-    b.build_br_if(is_ref, bb_barrier, bb_merge);
-    b.position_at_end(bb_barrier);
     Value* slot_addr = b.build_add(rec, iconst64(b, static_cast<uint64_t>(slot_offset(index))));
-    b.build_write_barrier(slot_addr, bits);
-    b.build_br(bb_merge);
-    b.position_at_end(bb_merge);
+    prop_lowering_.store_value(b, slot_addr, bits, /*alias_class=*/0,
+                               !val_is_primitive && !prop_lowering_.is_known_non_ref(bits));
 }
 
 }  // namespace il2mir

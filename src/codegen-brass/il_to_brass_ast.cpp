@@ -33,6 +33,7 @@ constexpr il2mir::BronzeType mapType(il::Type t) noexcept {
         case il::Type::F64: return il2mir::BronzeType::F64;
         case il::Type::Str: return il2mir::BronzeType::Str;
         case il::Type::Dynamic: return il2mir::BronzeType::Dynamic;
+        case il::Type::Ptr: return il2mir::BronzeType::Ptr;
     }
     return il2mir::BronzeType::Unknown;
 }
@@ -467,6 +468,51 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PrintSpread: out.op = il2mir::BronzeOp::PrintSpread; break;
         case il::Op::PrintSpreadErr: out.op = il2mir::BronzeOp::PrintSpreadErr; break;
         case il::Op::KeepAlive: out.op = il2mir::BronzeOp::KeepAlive; break;
+
+        // --- Speculation (il_op.h) ---
+        case il::Op::ResumePoint:
+            out.op = il2mir::BronzeOp::ResumePoint;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::Leave:
+            out.op = il2mir::BronzeOp::Leave;
+            out.imm_i64 = inst.immI32;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.index = inst.calleeIndex;
+            break;
+        case il::Op::LoadShape: out.op = il2mir::BronzeOp::LoadShape; break;
+        case il::Op::ShapeCell:
+            out.op = il2mir::BronzeOp::ShapeCell;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::PtrEq: out.op = il2mir::BronzeOp::PtrEq; break;
+        case il::Op::IsObject: out.op = il2mir::BronzeOp::IsObject; break;
+        case il::Op::SlotLoad:
+            out.op = il2mir::BronzeOp::SlotLoad;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::SlotStore:
+            out.op = il2mir::BronzeOp::SlotStore;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::IsI32: out.op = il2mir::BronzeOp::IsI32; break;
+        case il::Op::UnboxI32: out.op = il2mir::BronzeOp::UnboxI32; break;
+        case il::Op::UnboxF64: out.op = il2mir::BronzeOp::UnboxF64; break;
+        case il::Op::I32ToF64: out.op = il2mir::BronzeOp::I32ToF64; break;
+        case il::Op::AddWouldOvf: out.op = il2mir::BronzeOp::AddWouldOvf; break;
+        case il::Op::SubWouldOvf: out.op = il2mir::BronzeOp::SubWouldOvf; break;
+        case il::Op::MulWouldOvf: out.op = il2mir::BronzeOp::MulWouldOvf; break;
+        case il::Op::FnCodeIs:
+            out.op = il2mir::BronzeOp::FnCodeIs;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.index = inst.calleeIndex;
+            break;
+        case il::Op::FnEnv: out.op = il2mir::BronzeOp::FnEnv; break;
+        case il::Op::ArrayLength: out.op = il2mir::BronzeOp::ArrayLength; break;
+        case il::Op::ElemLoad: out.op = il2mir::BronzeOp::ElemLoad; break;
+        case il::Op::ElemStore: out.op = il2mir::BronzeOp::ElemStore; break;
+        case il::Op::InBounds: out.op = il2mir::BronzeOp::InBounds; break;
+        case il::Op::IsHole: out.op = il2mir::BronzeOp::IsHole; break;
     }
 
     return out;

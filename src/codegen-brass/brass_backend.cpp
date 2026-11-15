@@ -368,16 +368,14 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.verify_lowered_module = verifyLowered_;
     options.build_threads = buildThreads_;
     options.lazy_bodies = lazyBodies_ && !optimize;
-    options.spec_feedback = specFeedback_;
-    // Guards that exit into resume twins: x64's backend only, in an image
-    // built on a profile.
-    options.twin_exits = directJsCalls_ && optimize && target_.is_x64() && module.feedbackApplied;
+    options.in_process = inProcess_;
+    options.shape_cell_count = static_cast<uint32_t>(module.shapeCells.size());
     options.slow_site_count = module.slowSiteCount;
     // An image whose caches a harvest may read counts its slow arms too: one
-    // built on no profile, in an object (an in-process tier has no harvest).
+    // built on no harvest, in an object (an in-process tier has no harvest).
     // Which sites it counts goes into the image beside the counters
     // (buildObjectFile).
-    options.count_slow_sites = optimize && !module.feedbackApplied && !specFeedback_;
+    options.count_slow_sites = optimize && !codegen::spentHarvest(module) && !inProcess_;
     options.cache_evidence = options.count_slow_sites && !module.harvestOutPath.empty();
     slowArmed_.reset();
     if (options.count_slow_sites && module.slowSiteCount != 0) {

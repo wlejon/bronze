@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,6 +57,8 @@ Shape* rtRootShapeForPrototype(Value proto);
 // array subclass instance's, a derived class constructor's.
 Shape* rtBareRootShapeForPrototype(Value proto);
 size_t rtUserPrototypeShapeCount();
+// Every root shape of this thread: the builtins' and the user prototypes'.
+void rtForEachRootShape(const std::function<void(Shape*)>& fn);
 
 // The shapes the kinds that are no plain object start at (heap.h
 // carriesShape): an ordinary array's (array.h, also published into the TLS

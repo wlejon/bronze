@@ -14,6 +14,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape_cells.h"
 #include "runtime/shape_leave.h"
 #include "runtime/slot_repr.h"
 
@@ -275,7 +276,8 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
         desired = SlotRepr::Boxed;
         next_shape = boxed_edge;
     }
-    if (next_shape != nullptr) {
+    const bool created = next_shape == nullptr;
+    if (!created) {
         out_slot = next_shape->slot_index;
     } else {
         uint32_t next_slot = nextSlotIndex(is_accessor ? 2u : 1u);
@@ -322,6 +324,8 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // marked when some object first becomes a prototype, which can be long
     // after its transitions were built by unrelated objects.
     if (used_as_prototype) next_shape->used_as_prototype = true;
+    // A new node may be the shape a module's cell waits for (shape_cells.h).
+    if (created) runtime::rtShapeCellsNoteShape(next_shape);
     // Every add to a shape-mode object passes here, so this is where an index
     // key reaching a prototype is seen (dictionary adds: dictDefine).
     noteKeyAddedToPrototype(used_as_prototype, stored);
