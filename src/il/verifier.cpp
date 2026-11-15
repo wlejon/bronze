@@ -510,11 +510,17 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 diags.error(Span{}, "Function " + fn.name + ": method.ic.is takes one operand and is a bool");
                 return false;
             }
+            if (inst.op == Op::RunMethodIs &&
+                (!inst.operands.empty() || inst.type != Type::Bool ||
+                 inst.transitionRunCell == Instruction::kNoTransitionRun)) {
+                diags.error(Span{}, "Function " + fn.name + ": run.method.is names a run, takes no operand and is a bool");
+                return false;
+            }
             if (inst.op == Op::AccessorIcIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
                 diags.error(Span{}, "Function " + fn.name + ": accessor.ic.is takes one operand and is a bool");
                 return false;
             }
-            if ((inst.op == Op::MethodSlotFn || inst.op == Op::ClosureEnv) &&
+            if ((inst.op == Op::MethodSlotFn || inst.op == Op::ClosureEnv || inst.op == Op::CreateThis) &&
                 (inst.operands.size() != 1 || inst.type != Type::Dynamic || inst.result == kNoValue)) {
                 diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                         " takes one operand and is a dynamic value");
@@ -783,6 +789,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                               inst.op == Op::FunctionRef ||
                                               inst.op == Op::CoroStart ||
                                               inst.op == Op::MethodIcIs ||
+                                              inst.op == Op::RunMethodIs ||
                                               inst.op == Op::AccessorIcIs ||
                                               inst.op == Op::ClosureIs;
                 if (!refersToFunction) continue;
@@ -879,15 +886,19 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             " carries an assignment's accessor target or static slot, or no mode");
                     return false;
                 }
-                // A transition run's cells are the same fixed global, and its
-                // extent is instructions of this block.
+                // A transition run's cells are the same fixed global. The
+                // store that heads a run names its extent, instructions of
+                // this block; a guard that asks a run's cells (`closure.is`,
+                // `run.method.is`) names only the run.
+                const bool asksRun = inst.op == Op::ClosureIs || inst.op == Op::RunMethodIs;
                 if (inst.transitionRunCell != Instruction::kNoTransitionRun &&
-                    (inst.op != Op::PropSet ||
+                    ((inst.op != Op::PropSet && !asksRun) ||
                      static_cast<size_t>(inst.transitionRunCell) + Instruction::kTransitionRunCells >
                          module.staticSiteCount ||
-                     inst.transitionRunLength < 2 ||
-                     static_cast<size_t>(&inst - block.instructions.data()) + inst.transitionRunLength >
-                         block.instructions.size())) {
+                     (!asksRun &&
+                      (inst.transitionRunLength < 1 ||
+                       static_cast<size_t>(&inst - block.instructions.data()) + inst.transitionRunLength >
+                           block.instructions.size())))) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                             " names transition run cell " + std::to_string(inst.transitionRunCell) +
                                             " over " + std::to_string(inst.transitionRunLength) +

@@ -8,6 +8,7 @@
 // also why `bronze il` shows the transformed IL: `lowerModule` is the single
 // funnel both `runIl` and `runBuild` come through.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,10 +17,14 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "il/il_pin.h"
 #include "lower/elem_reread.h"
+#include "lower/fresh_instances.h"
+#include "lower/fresh_literals.h"
 #include "lower/function_placement.h"
 #include "lower/guard_region.h"
 #include "lower/guard_region_cfg.h"
@@ -33,6 +38,7 @@
 #include "lower/lower_feedback.h"
 #include "lower/lowerer.h"
 #include "lower/own_callee_calls.h"
+#include "lower/quiet_loop_hoist.h"
 #include "lower/read_cse.h"
 #include "lower/transition_runs.h"
 #include "lower/truth_join_threading.h"
@@ -156,9 +162,13 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     sanitizeLoopInBoundsProofs(mod);
     hoistLoopInvariantProps(mod, &directMethods_);
     eliminateRepeatedReads(mod);
+    foldInlinedCallers(mod, removeUnheldLiterals(mod));
     hoistLoopInvariantTruths(mod);
     GuardRegionStats stats;
-    applyGuardedRegions(mod, &stats);
+    // The loops that make instances of a known class wait for the inliner
+    // (guard_region.h, `deferred`).
+    std::vector<uint32_t> deferredLoops;
+    applyGuardedRegions(mod, &stats, nullptr, nullptr, nullptr, inlineGuarded_ ? &deferredLoops : nullptr);
     if (!probe) guardRegionStatsReport(stats);
     // After the regions, so that a region's fast copy, whose element
     // reads already stand behind `is.number`, is the loop it versions.
@@ -202,12 +212,38 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
                              polyMethods.empty() ? nullptr : &polyMethods,
                              polyOwnCallees.empty() ? nullptr : &polyOwnCallees, &inlinedOwnIcs);
         if (diags.hasErrors()) return false;
-        // An inlined method body's guard gets a cell pair of its own
-        // (runtime/accessor_cell.cpp, `bronze_method_cell_publish`): one per
-        // site and guessed callee, shared by every copy of the guard. Cell 0
-        // is "none", so it is never handed out here.
+        // An inlined method body's guard gets cell pairs of its own
+        // (runtime/accessor_cell.cpp, `bronze_method_cell_publish`), shared
+        // by every copy of the guard: one pair per receiver shape the
+        // profile's run called the guessed callee on at the site (a method
+        // of a base class called on three subclasses takes three), or per
+        // class that inherits the callee where no run was seen, at least
+        // one and at most il::kMaxMethodGuardShapes. The count
+        // rides the guard's immI32. Cell 0 is "none", so it is never handed
+        // out here.
         {
-            std::map<std::pair<uint32_t, uint32_t>, uint32_t> cellOf;
+            std::unordered_map<uint32_t, std::vector<const std::string*>> namesOf;
+            if (plan != nullptr) {
+                for (const auto& [name, index] : plan->callees) namesOf[index].push_back(&name);
+            }
+            const auto shapesSeen = [&](uint32_t ic, uint32_t callee) -> uint32_t {
+                uint32_t n = 0;
+                const auto site = plan != nullptr ? plan->methodReceiversByIc.find(ic)
+                                                  : decltype(plan->methodReceiversByIc.end()){};
+                // A site no run was seen at: the classes that inherit the
+                // callee, each taken for one shape.
+                if (plan == nullptr || site == plan->methodReceiversByIc.end()) {
+                    return directMethods_.inheritingClasses(callee);
+                }
+                const auto names = namesOf.find(callee);
+                if (names == namesOf.end()) return n;
+                for (const std::string* name : names->second) {
+                    const auto seen = site->second.find(*name);
+                    if (seen != site->second.end()) n += seen->second;
+                }
+                return n;
+            };
+            std::map<std::pair<uint32_t, uint32_t>, std::pair<uint32_t, int32_t>> cellOf;
             for (uint32_t f : inlinedInto) {
                 for (il::Block& blk : mod.functions[f].blocks) {
                     for (il::Instruction& inst : blk.instructions) {
@@ -215,15 +251,21 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
                         auto cell = cellOf.find({inst.icIndex, inst.calleeIndex});
                         if (cell == cellOf.end()) {
                             if (mod.staticSiteCount == 0) mod.staticSiteCount = 1;
-                            cell = cellOf.emplace(std::pair{inst.icIndex, inst.calleeIndex}, mod.staticSiteCount).first;
-                            mod.staticSiteCount += 2;
+                            const int32_t shapes = static_cast<int32_t>(std::clamp<uint32_t>(
+                                shapesSeen(inst.icIndex, inst.calleeIndex), 1, il::kMaxMethodGuardShapes));
+                            cell = cellOf.emplace(std::pair{inst.icIndex, inst.calleeIndex},
+                                                  std::pair{mod.staticSiteCount, shapes}).first;
+                            mod.staticSiteCount += 2 * static_cast<uint32_t>(shapes);
                         }
-                        inst.staticCellIndex = cell->second;
+                        inst.staticCellIndex = cell->second.first;
+                        inst.immI32 = cell->second.second;
                     }
                 }
             }
         }
         foldInlinedCallers(mod, inlinedInto);
+        // The literals a method body copied into its caller left unheld.
+        foldInlinedCallers(mod, removeUnheldLiterals(mod));
     }
     for (uint32_t ic : inlinedOwnIcs) ownCallees.erase(ic);
     // The own-slot calls inlining left: a direct entry behind the slot's
@@ -288,6 +330,13 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         GuardRegionStats inlinedRegions;
         applyGuardedRegions(mod, &inlinedRegions, nullptr, &inlinedInto, plan != nullptr ? &missedClaims : nullptr);
         if (!probe) guardRegionStatsReport(inlinedRegions, "guard-inl");
+        // The deferred loops that run left without a region, as the first
+        // run would have taken them.
+        if (!deferredLoops.empty()) {
+            GuardRegionStats lateRegions;
+            applyGuardedRegions(mod, &lateRegions, nullptr, &deferredLoops, nullptr, nullptr, /*plain=*/true);
+            if (!probe) guardRegionStatsReport(lateRegions, "guard-late");
+        }
     }
     // One cell per shape in the functions that will have resume twins
     // (feedback_plan.h, `applyFeedbackLayoutCells`): the hot ones, as the
@@ -316,6 +365,9 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
     // its cells with the original (transition_runs.h).
     markTransitionRuns(mod);
     assignDefineAddCells(mod);
+    // The instances the fast copies make and keep nowhere, which the runs
+    // just marked let them do without (fresh_instances.h).
+    sinkFreshInstances(mod);
     // The exits the typed bodies left in front of their reads, now that every
     // read that will have a claim has it.
     resolveReadExits(mod);
@@ -346,6 +398,9 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         // The element reads a claimed named read stands between
         // (elem_reread.h), on the control flow the threading left.
         eliminateRepeatedElementReads(mod);
+        // What a call-free loop of a fast copy asks on every trip, asked in
+        // front of it (quiet_loop_hoist.h).
+        hoistQuietLoops(mod);
     }
     // Where each function goes in the text (function_placement.h): from the
     // profile when there is one, last of all, as the module now stands.

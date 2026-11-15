@@ -838,6 +838,13 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         out += "method.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
                         if (inst.staticCellIndex != 0) out += ", cell " + std::to_string(inst.staticCellIndex);
+                        if (inst.immI32 > 1) out += ", shapes " + std::to_string(inst.immI32);
+                        break;
+                    case Op::RunMethodIs:
+                        out += "run.method.is run @" + std::to_string(inst.transitionRunCell) + ", " +
+                               std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
+                        if (inst.staticCellIndex != 0) out += ", cell " + std::to_string(inst.staticCellIndex);
+                        if (inst.immI32 > 1) out += ", shapes " + std::to_string(inst.immI32);
                         break;
                     case Op::AccessorIcIs:
                         out += "accessor.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
@@ -850,6 +857,13 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::ClosureIs:
                         out += "closure.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", @" +
                                getFnName(inst.calleeIndex);
+                        if (inst.immI32 == Instruction::kClosureIsConstruct) out += ", construct";
+                        if (inst.transitionRunCell != Instruction::kNoTransitionRun) {
+                            out += ", run @" + std::to_string(inst.transitionRunCell);
+                        }
+                        break;
+                    case Op::CreateThis:
+                        out += "create.this %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
                     case Op::ClosureEnv:
                         out += "closure.env %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);

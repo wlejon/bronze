@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 #include "lower/guard_region.h"
@@ -152,9 +151,22 @@ bool fallbackOfTypedCopies(const il::Function& fn, const RegionPlan& plan) {
            br.elseTarget.block == plan.header && br.target.block != plan.header;
 }
 
+// Whether the region holds a site guarded inlining may copy a body into: a
+// method call, or a `new` whose constructor lowering resolved
+// (direct_method_table.h, resolveConstructs).
+bool holdsInlinableSite(const il::Function& fn, const RegionPlan& plan) {
+    for (il::BlockId b : plan.blocks) {
+        for (const il::Instruction& inst : fn.blocks[b].instructions) {
+            if (inst.op == il::Op::MethodCall) return true;
+            if (inst.op == il::Op::Construct && inst.directTarget != il::Instruction::kNoDirectTarget) return true;
+        }
+    }
+    return false;
+}
+
 bool examineFunction(il::Function& fn, const il::Module& module,
                      GuardRegionStats& stats, const RegionFeedback* feedback, bool afterInlining,
-                     const std::unordered_set<uint32_t>* missedClaims) {
+                     const std::unordered_set<uint32_t>* missedClaims, bool* deferred) {
     const std::vector<std::string>& keys = module.keyConstants;
     size_t originalInsts = 0;
     for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
@@ -184,6 +196,12 @@ bool examineFunction(il::Function& fn, const il::Module& module,
         std::vector<RegionPlan> plans =
             selectRegions(fn, keys, module.slotReprObjectFields, attempt == 0 ? stats : discard, alreadyBuilt, feedback, afterInlining,
                           /*icExits=*/true, missedClaims);
+        if (deferred != nullptr) {
+            const auto left = std::remove_if(plans.begin(), plans.end(),
+                                             [&](const RegionPlan& p) { return holdsInlinableSite(fn, p); });
+            if (left != plans.end()) *deferred = true;
+            plans.erase(left, plans.end());
+        }
         if (plans.empty()) break;
         // The budget below is one for the function. Taken in block order it
         // went to a versioned loop's original, which comes first, and the
@@ -261,7 +279,8 @@ bool examineFunction(il::Function& fn, const il::Module& module,
 }  // namespace
 
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const RegionFeedback* feedback,
-                         const std::vector<uint32_t>* only, const std::unordered_set<uint32_t>* missedClaims) {
+                         const std::vector<uint32_t>* only, const std::unordered_set<uint32_t>* missedClaims,
+                         std::vector<uint32_t>* deferred, bool plain) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
     // A `--census` build is an INSTRUMENT: what it measures is where lowering
@@ -283,10 +302,16 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut, const R
         il::Function& fn = module.functions[f];
         // An inlined body's loop exits through forwarding blocks
         // (guard_region_cfg.h); threaded, its exit edges carry its values.
-        if (only != nullptr && threadForwardingBlocks(fn) != 0) changed = true;
+        const bool afterInlining = only != nullptr && !plain;
+        if (afterInlining && threadForwardingBlocks(fn) != 0) changed = true;
         ++stats.functions;
         const GuardRegionStats before = stats;
-        if (examineFunction(fn, module, stats, feedback, only != nullptr, missedClaims)) changed = true;
+        bool left = false;
+        if (examineFunction(fn, module, stats, feedback, afterInlining, missedClaims,
+                            deferred != nullptr ? &left : nullptr)) {
+            changed = true;
+        }
+        if (left) deferred->push_back(static_cast<uint32_t>(f));
         if (!guardRegionTraceOn()) continue;
         const std::string delta = traceDelta(before, stats);
         if (!delta.empty()) {

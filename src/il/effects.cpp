@@ -76,6 +76,7 @@ bool canThrow(const Instruction& inst) {
         // out of memory` in bronze, and inventing one would let a program
         // continue past a heap that could not grow).
         case Op::CreateObject:
+        case Op::CreateThis:
         // Reads the frame header's resume word. `coro.start` and
         // `coro.suspend` are NOT here: the first runs the body and the second
         // hands control to whoever resumes it next, and both reach user code.
@@ -107,6 +108,8 @@ bool canThrow(const Instruction& inst) {
         // Loads off the receiver's header and the site's cache words, the
         // receiver's guarded by its tag.
         case Op::MethodIcIs:
+        // Loads off a run's cells and the site's cache words.
+        case Op::RunMethodIs:
         // Loads off the receiver's header, its shape and the site's cell.
         case Op::AccessorIcIs:
         // The same loads, and a family stamp's range compare.
@@ -273,6 +276,7 @@ bool canCollect(const Instruction& inst) {
         case Op::FeedbackRecord:
         // Tag tests and loads, no allocation.
         case Op::MethodIcIs:
+        case Op::RunMethodIs:
         case Op::AccessorIcIs:
         case Op::IsShape:
         case Op::IsTypedArray:

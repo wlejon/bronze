@@ -79,13 +79,16 @@ int build(const std::filesystem::path& js, const std::filesystem::path& out, std
         /*wpoStatsPerSite=*/false, feedbackOut, feedbackIn);
 }
 
-// `sum` is reached only through an array, so no proof types its parameters,
-// and it is called once with a string. `o.len()` meets two classes.
+// `sum` is reached only through an array the program holds (its `length` is
+// read, so the literal is not folded away), so no proof types its
+// parameters, and it is called once with a string. `o.len()` meets two
+// classes.
 const char* const kProgram = R"JS(
 class Vec { constructor(x, y) { this.x = x; this.y = y; } len() { return this.x * this.x + this.y * this.y; } }
 class Pt { constructor(x) { this.x = x; } len() { return this.x; } }
 function sum(a, b) { return a + b; }
 const fns = [sum, function (a, b) { return a - b; }];
+if (fns.length !== 2) throw new Error("fns");
 const objs = [];
 for (let i = 0; i < 10; i++) objs.push(i % 2 ? new Vec(i, 1.5) : new Pt(i));
 let acc = 0;

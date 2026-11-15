@@ -54,8 +54,8 @@ bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 // given, names for a call site whose receiver may hold its callee in an own
 // slot the functions whose closures it may hold; each is copied in behind a
 // test of the slot's closure (inline_guarded.cpp, "own callees").
-// `polyMethods` and `polyOwnCallees` name bimorphic sites from feedback whose
-// two callees both come in together, in frequency order. `inlinedOwnIcs`, when
+// `polyMethods` and `polyOwnCallees` name polymorphic sites from feedback whose
+// callees (two to four) all come in together, in frequency order. `inlinedOwnIcs`, when
 // given, receives the IC indices where at least one own-slot closure body was
 // copied in and verified.
 using ClosureGuesses = std::unordered_map<uint32_t, std::vector<uint32_t>>;

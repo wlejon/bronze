@@ -143,7 +143,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         return true;
     };
     const size_t end = inst_idx + first.run_length;
-    if (end > insts.size() || first.run_length < 2 || first.operands.size() != 2) return refuse("overruns its block");
+    if (end > insts.size() || first.run_length < 1 || first.operands.size() != 2) return refuse("overruns its block");
     if (!prop_lowering_.static_cells_cover(first.run_cell, BRONZE_ABI_TRANSITION_RUN_CELLS)) {
         return refuse("is past the module's static cells");
     }
@@ -165,7 +165,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         if (inst.result_id == recv_id) return refuse("redefines its receiver");
         if (inst.result_id != UINT32_MAX) defined.insert(inst.result_id);
     }
-    if (sites.size() < 2 || sites.back() != end - 1) return refuse("does not end at a write");
+    if (sites.empty() || sites.back() != end - 1) return refuse("does not end at a write");
     const uint32_t last_slot = first.run_slot + static_cast<uint32_t>(sites.size()) - 1;
     const bool overflow = last_slot >= kBronzeObjOverflowSlot;
     const uint64_t need = overflow ? last_slot + 1 - kBronzeObjOverflowSlot : 0;

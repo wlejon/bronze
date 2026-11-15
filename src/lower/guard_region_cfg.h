@@ -66,6 +66,16 @@ std::vector<DefSite> computeDefSites(const il::Function& fn);
 // discards its result when this fails.
 bool dominanceHolds(const il::Function& fn);
 
+// Makes every value a region defines leave it on an edge: a value read outside
+// the region directly (a loop's accumulator read after the loop, once
+// `forwardParams` has folded the exit block's parameter into it) becomes a
+// parameter of the exit block that dominates the read, passed on each edge
+// into it. The two copies of a region each define the value under their own
+// name, so an edge argument is the only form both can feed. False, with `fn`
+// as it was, when some outside read has no such block: one a region block's
+// handler reaches, or one below a join of two exits.
+bool closeRegionExits(il::Function& fn, const std::vector<bool>& inRegion);
+
 // Blocks nothing reaches, dropped and the rest renumbered compactly.
 //
 // The ENTRY region is what makes these: its fast copy IS the function's entry,

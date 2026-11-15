@@ -183,6 +183,10 @@ const NativeMethod* rtTypedArrayMethodTable(size_t& count);
 // the hit; a changed epoch re-verifies the thirteen shapes and the four getter
 // slots once and latches the answer.
 bool rtTypedArrayChainPristine(const TypedArrayHeader* view) noexcept;
+// Lockdown's notice that it froze the typed-array family and %ArrayBuffer%:
+// their frozen shapes become the pristine ones the checks compare with.
+void rtTypedArrayIntrinsicsHardened();
+void rtArrayBufferIntrinsicsHardened();
 
 // The above, plus: does `%TypedArray%.prototype[Symbol.iterator]` still hold
 // the intrinsic `values`? What for-of asks before stepping a view's elements

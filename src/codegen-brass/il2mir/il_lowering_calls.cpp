@@ -33,10 +33,12 @@ bool is_call_il_op(BronzeOp op) {
         case BronzeOp::FuncRef:
         case BronzeOp::CreateFunc:
         case BronzeOp::MethodIcIs:
+        case BronzeOp::RunMethodIs:
         case BronzeOp::AccessorIcIs:
         case BronzeOp::MethodSlotFn:
         case BronzeOp::ClosureIs:
         case BronzeOp::ClosureEnv:
+        case BronzeOp::CreateThis:
             return true;
         default:
             return false;
@@ -178,8 +180,9 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
         // The guard's cell pair learns this receiver's shape, when the call
         // just made was of the guessed callee.
         if (const BronzeInstruction* guard = lowering->method_cell_guard(inst);
-            guard && pl.static_cells_cover(guard->static_cell, 2)) {
-            emit_method_cell_fill(lowering, b, recv_after(b), guard->static_cell, inst.index, guard->callee_name);
+            guard && pl.static_cells_cover(guard->static_cell, 2 * method_guard_shapes(*guard))) {
+            emit_method_cell_fill(lowering, b, recv_after(b), guard->static_cell, method_guard_shapes(*guard),
+                                  inst.index, guard->callee_name);
         }
         return generic;
     }
@@ -317,14 +320,15 @@ bool lower_call_instruction(
             // compares where the site's cache entry takes four. The entry
             // still answers what the pair does not hold (a site's second
             // shape; the pair holds one).
-            if (lowering->method_cell_filled(inst_ast) && pl.static_cells_cover(inst_ast.static_cell, 2)) {
+            const uint32_t shapes = method_guard_shapes(inst_ast);
+            if (lowering->method_cell_filled(inst_ast) && pl.static_cells_cover(inst_ast.static_cell, 2 * shapes)) {
                 BasicBlock* cur = b.current_block();
                 const std::string prefix = "mcell_" + std::to_string(cur->parent()->next_block_id());
                 BasicBlock* row_bb = b.append_block(prefix + "_row_cold");
                 BasicBlock* merge = b.append_block(prefix + "_merge");
                 Value* hit = b.add_block_param(merge, Type::i32());
                 b.position_at_end(cur);
-                b.build_br_if(accessor_cell_hit(lowering, b, recv, inst_ast.static_cell, keyed), merge,
+                b.build_br_if(accessor_cell_hit(lowering, b, recv, inst_ast.static_cell, keyed, shapes), merge,
                               {b.build_iconst_i32(1)}, row_bb, {});
                 b.position_at_end(row_bb);
                 Value* row = row_hit();
@@ -335,7 +339,7 @@ bool lower_call_instruction(
                 b.position_at_end(asked);
                 b.build_br_if(row, learn, {}, merge, {b.build_iconst_i32(0)});
                 b.position_at_end(learn);
-                emit_method_cell_learn(lowering, b, recv, keyed, inst_ast.static_cell,
+                emit_method_cell_learn(lowering, b, recv, keyed, inst_ast.static_cell, shapes,
                                        lowering->method_cell_key(inst_ast), inst_ast.callee_name);
                 b.build_br(merge, {b.build_iconst_i32(1)});
                 learn->set_cold();
@@ -367,14 +371,51 @@ bool lower_call_instruction(
         }
         case BronzeOp::ClosureIs: {
             Value* f = ensure_type(get_opd(0), Type::i64());
-            res_val = direct_method_ic_here(lowering) ? lower_closure_is(lowering, b, f, inst_ast.callee_name)
-                                                      : b.build_iconst_i32(0);
+            res_val = direct_method_ic_here(lowering)
+                          ? lower_closure_is(lowering, b, f, inst_ast.callee_name, /*construct=*/inst_ast.imm_i64 == 1,
+                                             inst_ast.run_cell)
+                          : b.build_iconst_i32(0);
             if (lowering) lowering->memo_keep();
             break;
         }
         case BronzeOp::ClosureEnv: {
             res_val = lower_closure_env(b, ensure_type(get_opd(0), Type::i64()));
             if (lowering) lowering->memo_keep();
+            break;
+        }
+        case BronzeOp::CreateThis: {
+            res_val = lower_create_this(lowering, b, ensure_type(get_opd(0), Type::i64()));
+            break;
+        }
+
+        // `method.ic.is` of an instance nothing made (il.h `Op::RunMethodIs`):
+        // the keyed shape is the one the run's cells end at, read while they
+        // are of this epoch. The pair where the slow copy's miss fills it,
+        // else the site's cache row; neither learns here, having no receiver.
+        case BronzeOp::RunMethodIs: {
+            Value* site = lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr;
+            if (!site) {
+                res_val = b.build_iconst_i32(0);
+                break;
+            }
+            PropertyLoweringHelper& pl = lowering->prop_lowering();
+            const int32_t word = static_cast<int32_t>(sizeof(uint64_t));
+            Value* cells = b.build_add(pl.static_cells_addr(b),
+                                       b.build_iconst_i64(static_cast<int64_t>(uint64_t{inst_ast.run_cell} * sizeof(uint64_t))));
+            Value* keyed = b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_END * word);
+            Module* mod = b.current_block()->parent()->parent();
+            Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                             : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+            Value* live = b.build_and(
+                b.build_eq(b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_EPOCH * word),
+                           b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF)),
+                b.build_ugt(keyed, b.build_iconst_i64(1)));
+            const uint32_t shapes = method_guard_shapes(inst_ast);
+            Value* hit = lowering->method_cell_filled(inst_ast) && pl.static_cells_cover(inst_ast.static_cell, 2 * shapes)
+                             ? accessor_cell_hit(lowering, b, nullptr, inst_ast.static_cell, keyed, shapes)
+                             : direct_method_ic_hit(b, keyed, site, pl.method_row(b, inst_ast.ic_index),
+                                                    inst_ast.callee_name);
+            res_val = b.build_and(live, hit);
             break;
         }
 

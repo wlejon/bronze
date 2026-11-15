@@ -208,6 +208,7 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             for (const HarvestWay& way : site.ways) {
                 shapes.counts[way.receiver] += share;
                 callees.counts[way.callee] += share;
+                if (way.form == "direct") ++plan.methodReceiversByIc[ic][way.callee];
             }
             if (more) {
                 shapes.counts["*other*"] += W - share * n;

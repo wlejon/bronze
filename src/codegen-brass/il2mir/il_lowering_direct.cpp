@@ -491,17 +491,37 @@ Value* enter_slot_callee(Builder& b, Value* callee, Value* recv, uint32_t argc,
 // through its payload with no select in the address. The IL branches on the
 // answer next (`closure.is` is always followed by its `br`), so the constant
 // no is threaded straight to the branch's other side.
-Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee) {
-    (void)lowering;
+Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee,
+                        bool construct, uint32_t run_cell) {
     const std::string prefix = block_prefix(b, "closis");
     BasicBlock* cur = b.current_block();
     BasicBlock* no = b.append_block(prefix + "_no");
     BasicBlock* join = b.append_block(prefix + "_join");
     Value* result = b.add_block_param(join, Type::i32());
     b.position_at_end(cur);
-    const EntryTest t = entry_test_br(b, tls_block(b), fn_val, kCallMask, kCallBits, no);
+    const EntryTest t = entry_test_br(b, tls_block(b), fn_val, construct ? kConstructMask : kCallMask,
+                                      construct ? kConstructBits : kCallBits, no);
     Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
-    b.build_br(join, {b.build_and(t.ok, b.build_eq(code, b.build_func_addr("__wrapper_" + callee)))});
+    Value* ok = b.build_and(t.ok, b.build_eq(code, b.build_func_addr("__wrapper_" + callee)));
+    if (construct) {
+        Value* shape = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
+        ok = b.build_and(ok, b.build_ne(shape, b.build_iconst_i64(0)));
+        if (run_cell != BronzeInstruction::kNoTransitionRun) {
+            // For a run (il.h `Op::ClosureIs`): the instance would start at
+            // the shape the run was published from, at this epoch. The shape
+            // word is read through the cell, which a zero instance shape
+            // never equals once published and equals unpublished only with
+            // `ok` already false.
+            Value* cells = b.build_add(lowering->prop_lowering().static_cells_addr(b),
+                                       b.build_iconst_i64(static_cast<int64_t>(uint64_t{run_cell} * sizeof(uint64_t))));
+            const int32_t word = static_cast<int32_t>(sizeof(uint64_t));
+            ok = b.build_and(ok, b.build_eq(shape, b.build_load(Type::i64(), cells,
+                                                                 BRONZE_ABI_TRANSITION_RUN_START * word)));
+            ok = b.build_and(ok, b.build_eq(b.build_load(Type::i64(), cells, BRONZE_ABI_TRANSITION_RUN_EPOCH * word),
+                                            b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF)));
+        }
+    }
+    b.build_br(join, {ok});
     b.position_at_end(no);
     b.build_br(join, {b.build_iconst_i32(0)});
     b.position_at_end(join);
@@ -511,6 +531,25 @@ Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const s
 Value* lower_closure_env(Builder& b, Value* fn_val) {
     Value* ptr = b.build_xor(fn_val, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     return b.build_load(Type::i64(), ptr, BRONZE_ABI_FN_ENV_OFFSET);
+}
+
+Value* lower_create_this(IlLowering* lowering, Builder& b, Value* fn_val) {
+    const std::string prefix = block_prefix(b, "newthis");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    slow->set_cold();
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    b.position_at_end(cur);
+    Value* fn = b.build_xor(fn_val, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* shape = b.build_load(Type::i64(), fn, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
+    Value* obj = lowering->alloc_lowering().bump_plain_object(b, shape, b.build_iconst_i32(1), slow, fast);
+    b.build_br(merge, {obj});
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_call("bronze_create_this", Type::i64(), {fn_val})});
+    b.position_at_end(merge);
+    return result;
 }
 
 Value* lower_construct_direct(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& boxed_args) {

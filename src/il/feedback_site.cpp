@@ -48,7 +48,7 @@ bool observesResult(const Instruction& inst) {
 bool namesCallee(Op op) {
     switch (op) {
         case Op::Call: case Op::CreateFunction: case Op::FunctionRef: case Op::CoroStart:
-        case Op::MethodIcIs: case Op::AccessorIcIs: case Op::ClosureIs:
+        case Op::MethodIcIs: case Op::RunMethodIs: case Op::AccessorIcIs: case Op::ClosureIs:
             return true;
         default:
             return false;

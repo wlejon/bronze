@@ -249,6 +249,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     if (!ctorVal) return std::nullopt;
     ilModule_.functions[lastClosureFnIndex_].displayName = shownName.empty() ? "<anonymous>" : shownName;
     ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_CONSTRUCTOR;
+    if (!hasSuper) directMethods_.recordClassConstructor(name, lastClosureFnIndex_);
     if (const uint32_t cap = classInstanceInlineSlots(name); cap != 0) {
         ilModule_.functions[lastClosureFnIndex_].fnFlags |= cap << BRONZE_ABI_FN_INLINE_SLOTS_SHIFT;
     }

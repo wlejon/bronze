@@ -65,82 +65,97 @@ Function* accessor_target(IlLowering* lowering, const BronzeInstruction& inst, B
     return nullptr;
 }
 
-// The fill after a miss's ordinary access: the publish, only while the cell
-// speaks for some other epoch (runtime/accessor_cell.cpp). `obj` must be bits
-// read after the access, which may have collected. Leaves the builder after it.
+// The fill after a miss's ordinary access: the publish, only while a cell
+// pair speaks for some other epoch (runtime/accessor_cell.cpp), into the
+// first of the `shapes` pairs at `cell` that does. `obj` must be bits read
+// after the access, which may have collected. Leaves the builder after it.
 //
 // `member` is the publish's: 0 a getter, 1 a setter, 2 a method
 // (`bronze_method_cell_publish`).
-void emit_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
-                    const std::string& callee, int member) {
+void emit_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t shapes,
+                    uint32_t key_index, const std::string& callee, int member) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
-    BasicBlock* cur = b.current_block();
     const std::string prefix = block_prefix(b, "cell_fill");
     // Named cold, which brass's block layout reads (codegen/block_layout.cpp):
     // a fill runs once per site and epoch, and is no part of any trace.
-    BasicBlock* call = b.append_block(prefix + "_call_cold");
+    BasicBlock* cur = b.current_block();
     BasicBlock* done = b.append_block(prefix + "_done");
-    b.position_at_end(cur);
-    Value* cells = pl.static_cells_addr(b);
-    const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
-    Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* stale = b.build_ne(b.build_load(Type::i64(), cells, off + 8), epoch);
-    b.build_br_if(stale, call, done);
-    b.position_at_end(call);
-    Value* key = lowering->get_key_id(b, key_index);
-    Value* addr = b.build_add(cells, b.build_iconst_i64(off));
-    Value* code = b.build_func_addr("__wrapper_" + callee);
-    if (member == 2) {
-        b.build_call("bronze_method_cell_publish", Type::void_type(), {obj, key, addr, code});
-    } else {
-        b.build_call("bronze_accessor_cell_publish", Type::void_type(),
-                     {obj, key, addr, code, b.build_iconst_i32(member)});
+    for (uint32_t k = 0; k < shapes; ++k) {
+        BasicBlock* call = b.append_block(prefix + "_call_cold");
+        BasicBlock* next = k + 1 < shapes ? b.append_block(prefix + "_next_cold") : done;
+        b.position_at_end(cur);
+        Value* cells = pl.static_cells_addr(b);
+        const int32_t off = static_cast<int32_t>((cell + 2 * k) * sizeof(uint64_t));
+        Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
+        Value* stale = b.build_ne(b.build_load(Type::i64(), cells, off + 8), epoch);
+        b.build_br_if(stale, call, next);
+        b.position_at_end(call);
+        Value* key = lowering->get_key_id(b, key_index);
+        Value* addr = b.build_add(cells, b.build_iconst_i64(off));
+        Value* code = b.build_func_addr("__wrapper_" + callee);
+        if (member == 2) {
+            b.build_call("bronze_method_cell_publish", Type::void_type(), {obj, key, addr, code});
+        } else {
+            b.build_call("bronze_accessor_cell_publish", Type::void_type(),
+                         {obj, key, addr, code, b.build_iconst_i32(member)});
+        }
+        b.build_br(done);
+        call->set_cold();
+        if (next != done) next->set_cold();
+        cur = next;
     }
-    b.build_br(done);
-    call->set_cold();
     b.position_at_end(done);
 }
 
 void emit_accessor_fill(IlLowering* lowering, Builder& b, Value* obj, const BronzeInstruction& inst,
                         const std::string& callee, bool setter) {
-    emit_cell_fill(lowering, b, obj, inst.static_cell, inst.index, callee, setter ? 1 : 0);
+    emit_cell_fill(lowering, b, obj, inst.static_cell, 1, inst.index, callee, setter ? 1 : 0);
 }
 
 }  // namespace
 
-void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
-                           const std::string& callee) {
-    emit_cell_fill(lowering, b, obj, cell, key_index, callee, 2);
+void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t shapes,
+                           uint32_t key_index, const std::string& callee) {
+    emit_cell_fill(lowering, b, obj, cell, shapes, key_index, callee, 2);
+}
+
+uint32_t method_guard_shapes(const BronzeInstruction& inst) {
+    const bool method = inst.op == BronzeOp::MethodIcIs || inst.op == BronzeOp::RunMethodIs;
+    return method && inst.imm_i64 > 1 ? static_cast<uint32_t>(inst.imm_i64) : 1;
 }
 
 void emit_method_cell_learn(IlLowering* lowering, Builder& b, Value* obj, Value* keyed, uint32_t cell,
-                            uint32_t key_index, const std::string& callee) {
+                            uint32_t shapes, uint32_t key_index, const std::string& callee) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
-    BasicBlock* cur = b.current_block();
     const std::string prefix = block_prefix(b, "cell_learn");
-    BasicBlock* store = b.append_block(prefix + "_store_cold");
-    BasicBlock* call = b.append_block(prefix + "_call_cold");
+    BasicBlock* cur = b.current_block();
     BasicBlock* done = b.append_block(prefix + "_done_cold");
-    b.position_at_end(cur);
-    Value* cells = pl.static_cells_addr(b);
-    const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
-    Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-    Value* current = b.build_eq(b.build_load(Type::i64(), cells, off + 8), epoch);
-    // 0 is empty and 1 a refusal (runtime/accessor_cell.cpp); a shape is neither.
-    Value* names = b.build_ugt(b.build_load(Type::i64(), cells, off), b.build_iconst_i64(1));
-    b.build_br_if(b.build_and(current, names), store, call);
-    b.position_at_end(store);
-    b.build_store(Type::i64(), cells, off, keyed);
-    b.build_br(done);
-    b.position_at_end(call);
-    Value* key = lowering->get_key_id(b, key_index);
-    Value* addr = b.build_add(cells, b.build_iconst_i64(off));
-    b.build_call("bronze_method_cell_publish", Type::void_type(),
-                 {obj, key, addr, b.build_func_addr("__wrapper_" + callee)});
-    b.build_br(done);
-    store->set_cold();
-    call->set_cold();
     done->set_cold();
+    for (uint32_t k = 0; k < shapes; ++k) {
+        BasicBlock* call = b.append_block(prefix + "_call_cold");
+        BasicBlock* named = b.append_block(prefix + "_named_cold");
+        call->set_cold();
+        named->set_cold();
+        b.position_at_end(cur);
+        Value* cells = pl.static_cells_addr(b);
+        const int32_t off = static_cast<int32_t>((cell + 2 * k) * sizeof(uint64_t));
+        Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
+        Value* current = b.build_eq(b.build_load(Type::i64(), cells, off + 8), epoch);
+        // 0 is empty and 1 a refusal (runtime/accessor_cell.cpp); a shape is neither.
+        Value* names = b.build_ugt(b.build_load(Type::i64(), cells, off), b.build_iconst_i64(1));
+        b.build_br_if(b.build_and(current, names), named, call);
+        b.position_at_end(call);
+        Value* key = lowering->get_key_id(b, key_index);
+        Value* addr = b.build_add(cells, b.build_iconst_i64(off));
+        b.build_call("bronze_method_cell_publish", Type::void_type(),
+                     {obj, key, addr, b.build_func_addr("__wrapper_" + callee)});
+        b.build_br(done);
+        cur = named;
+    }
+    // Every pair names a shape at this epoch: the first takes this one.
+    b.position_at_end(cur);
+    b.build_store(Type::i64(), pl.static_cells_addr(b), static_cast<int32_t>(cell * sizeof(uint64_t)), keyed);
+    b.build_br(done);
     b.position_at_end(done);
 }
 
@@ -162,7 +177,8 @@ bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst) {
     return true;
 }
 
-Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed) {
+Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed,
+                         uint32_t shapes) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     Value* cells = pl.static_cells_addr(b);
     const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
@@ -177,7 +193,12 @@ Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t
     // The cell word is loaded right in front of its one compare, so the
     // compare takes it as a memory operand.
     if (!keyed) keyed = pl.keyed_shape(b, recv);
-    return b.build_eq(keyed, b.build_load(Type::i64(), cells, off));
+    Value* hit = b.build_eq(keyed, b.build_load(Type::i64(), cells, off));
+    for (uint32_t k = 1; k < shapes; ++k) {
+        const int32_t at = off + static_cast<int32_t>(2 * k * sizeof(uint64_t));
+        hit = b.build_or(hit, b.build_eq(keyed, b.build_load(Type::i64(), cells, at)));
+    }
+    return hit;
 }
 
 Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* obj,

@@ -82,6 +82,15 @@ void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds);
 // `other` row. Cold (a helper's miss path); called only while armed.
 void rtIcHarvestNoteUncached(const uint64_t* site);
 
+// A method call's miss just latched way 0 of `site`. A method site holds two
+// ways, so one that meets three receivers keeps evicting, and its table at
+// the fold names only the last two: every latch is remembered here instead,
+// and the fold writes each as a way of the site. With them the site's rows
+// are every plain receiver and callee it met, however many, which is what
+// lets a build inline all three bodies of a three-class call. Per thread,
+// until the site's table is folded; cold; called only while armed.
+void rtIcHarvestNoteMethodLatch(const uint64_t* site);
+
 // Folds this thread's live instances, then writes every harvested module's
 // file. The number of files written.
 int rtIcHarvestWriteAll();

@@ -87,6 +87,11 @@ inline constexpr int32_t kElemFlagWordViewReceiver = 1 << 19;
 // Number it is, with no receiver test and no other arm.
 inline constexpr int32_t kPropGetArrayLength = 1;
 
+// The most receiver shapes one `method.ic.is` guard's cells hold: the guard's
+// `immI32` says how many pairs it has (0 reads as one), each one compare on
+// the guard's path.
+inline constexpr uint32_t kMaxMethodGuardShapes = 4;
+
 // `is.typed_array`'s kind selector for "a word view" (Int32Array,
 // Uint32Array, Float32Array or Float64Array, the element kinds 5..8 of
 // abi/bronze_abi_layout.h): outside every element kind's number, below

@@ -59,7 +59,8 @@ struct Loop {
 
 class Versioner {
 public:
-    Versioner(il::Function& fn, const std::vector<std::string>& keys) : fn_(fn), keys_(keys) {}
+    Versioner(il::Function& fn, const std::vector<std::string>& keys)
+        : fn_(fn), keys_(keys), original_(static_cast<il::BlockId>(fn.blocks.size())) {}
 
     // The original loops of the versions made for a proven kind.
     const std::vector<il::BlockId>& coldBlocks() const { return cold_; }
@@ -300,7 +301,8 @@ private:
             return false;
         };
         std::vector<int32_t> kinds;
-        for (const auto& blk : fn_.blocks) {
+        for (il::BlockId b = 0; b < original_; ++b) {
+            const auto& blk = fn_.blocks[b];
             for (const auto& inst : blk.instructions) {
                 if ((inst.op != il::Op::ElemGetTyped && inst.op != il::Op::ElemSetTyped) || inst.operands.empty() ||
                     !sameReceiver(inst.operands[0])) {
@@ -330,7 +332,8 @@ private:
         // invariant receiver by a Number index is flagged as an Array's, for
         // a loop no typed op anywhere says is over a view.
         bool arrayPlan = !provenKind && !arrayOps.empty();
-        for (const auto& blk : fn_.blocks) {
+        for (il::BlockId b = 0; b < original_; ++b) {
+            const auto& blk = fn_.blocks[b];
             for (const auto& inst : blk.instructions) {
                 if ((inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) && !inst.operands.empty() &&
                     std::binary_search(arrayReceivers.begin(), arrayReceivers.end(), inst.operands[0])) {
@@ -898,6 +901,10 @@ private:
 
     il::Function& fn_;
     const std::vector<std::string>& keys_;
+    // The blocks the function came with. A typed op names its receiver's
+    // kind only there: one in a copy this pass made sits behind that copy's
+    // own entry test, and says nothing of a second loop over the same value.
+    const il::BlockId original_;
     const std::vector<NumCompare>* numCompares_ = nullptr;
     // The plain Array copy's tested receivers, whose `length` reads in it are
     // the header's (il_pin.h kPropGetArrayLength).

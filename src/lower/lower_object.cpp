@@ -525,6 +525,12 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
             auto it = functionIndices_.find(ident->name);
             if (it != functionIndices_.end()) {
                 inst.directTarget = it->second;
+            } else {
+                // A class of that name may be lowered later: the name stays
+                // on the site for the whole module to answer
+                // (direct_method_table.h, resolveConstructs).
+                inst.keyIndex = getKeyConstantIndex(ident->name);
+                inst.immI32 = il::Instruction::kConstructNamed;
             }
         }
     }

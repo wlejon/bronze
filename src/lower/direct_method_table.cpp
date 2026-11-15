@@ -49,6 +49,31 @@ void DirectMethodTable::recordClassMethod(const std::string& className,
     }
 }
 
+void DirectMethodTable::recordClassConstructor(const std::string& className, uint32_t fnIndex) {
+    if (!className.empty()) classConstructors_[className] = fnIndex;
+}
+
+void DirectMethodTable::resolveConstructs(il::Module& ilModule) const {
+    if (classConstructors_.empty()) return;
+    for (auto& fn : ilModule.functions) {
+        for (auto& block : fn.blocks) {
+            for (auto& inst : block.instructions) {
+                if (inst.op != il::Op::Construct || inst.immI32 != il::Instruction::kConstructNamed ||
+                    inst.directTarget != il::Instruction::kNoDirectTarget ||
+                    inst.keyIndex >= ilModule.keyConstants.size()) {
+                    continue;
+                }
+                const std::string& name = ilModule.keyConstants[inst.keyIndex];
+                if (ambiguousClasses_.count(name) != 0) continue;
+                const auto ctor = classConstructors_.find(name);
+                if (ctor != classConstructors_.end() && ctor->second < ilModule.functions.size()) {
+                    inst.directTarget = ctor->second;
+                }
+            }
+        }
+    }
+}
+
 void DirectMethodTable::recordClassSuper(const std::string& className,
                                          const std::string& superName) {
     if (className.empty()) return;
@@ -112,6 +137,36 @@ bool DirectMethodTable::isMethodSealedOnSubclasses(uint32_t icIndex) const {
         if (cur != subCls && declaredClasses_.count(cur) == 0) return false;
     }
     return true;
+}
+
+uint32_t DirectMethodTable::inheritingClasses(uint32_t fnIndex) const {
+    const std::string* declarer = nullptr;
+    const std::string* method = nullptr;
+    for (const auto& [cls, methods] : classMethods_) {
+        for (const auto& [name, idx] : methods) {
+            if (idx != fnIndex) continue;
+            declarer = &cls;
+            method = &name;
+        }
+    }
+    if (declarer == nullptr) return 0;
+    uint32_t count = 0;
+    for (const std::string& start : declaredClasses_) {
+        std::string cls = start;
+        for (size_t hops = 0; hops < 64 && !cls.empty(); ++hops) {
+            if (cls == *declarer) {
+                ++count;
+                break;
+            }
+            if (const auto it = classMethods_.find(cls); it != classMethods_.end() && it->second.count(*method) != 0) {
+                break;
+            }
+            const auto up = classSuper_.find(cls);
+            if (up == classSuper_.end()) break;
+            cls = up->second;
+        }
+    }
+    return count;
 }
 
 void DirectMethodTable::resolve(il::Module& ilModule) const {

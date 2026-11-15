@@ -308,6 +308,11 @@ struct Instruction {
     //   kMethodPolyShapes a type-feedback profile saw the site meet more than
     //                     one receiver shape: a way-0 miss tests the cache's
     //                     way 1 at the site before the method stub.
+    // `closure.is` asked as a construction (il_op.h), and a `new` whose callee
+    // was written as a plain name, which `keyIndex` then holds
+    // (direct_method_table.h, resolveConstructs).
+    static constexpr int32_t kClosureIsConstruct = 1;
+    static constexpr int32_t kConstructNamed = 1;
     static constexpr int32_t kMethodRecvArray = 1;
     static constexpr int32_t kMethodOwnCallee = 2;
     static constexpr int32_t kMethodPolyShapes = 4;

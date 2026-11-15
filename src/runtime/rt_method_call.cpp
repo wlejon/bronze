@@ -464,13 +464,19 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
 void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
                           const InlineCache& probe, uint32_t keyIndex) {
     // While harvesting: a call that missed and latched nothing met a receiver
-    // the site's ways cannot hold (ic_harvest.h rtIcHarvestNoteUncached).
+    // the site's ways cannot hold (ic_harvest.h rtIcHarvestNoteUncached), and
+    // one that latched is a way the site had, kept past its eviction
+    // (rtIcHarvestNoteMethodLatch).
     if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr) {
         constexpr size_t kWays0 = BRONZE_ABI_METHOD_IC_EPOCH_WORD + 1;
         uint64_t before[kWays0];
         std::memcpy(before, icEntry, sizeof before);
         latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
-        if (std::memcmp(before, icEntry, sizeof before) == 0) rtIcHarvestNoteUncached(icEntry);
+        if (std::memcmp(before, icEntry, sizeof before) == 0) {
+            rtIcHarvestNoteUncached(icEntry);
+        } else {
+            rtIcHarvestNoteMethodLatch(icEntry);
+        }
     } else {
         latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
     }

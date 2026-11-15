@@ -51,6 +51,9 @@ public:
     // not a computed key: none of those is reachable as `recv.<name>`).
     void recordClassMethod(const std::string& className, const std::string& superName,
                            const std::string& method, uint32_t fnIndex);
+    // A class with no `extends` and the function that is its constructor: the
+    // callee `new Name(...)` guesses (resolveConstructs).
+    void recordClassConstructor(const std::string& className, uint32_t fnIndex);
     // The name a class extends, so the resolver can walk to the nearest
     // declaration without asking inference a second time.
     void recordClassSuper(const std::string& className, const std::string& superName);
@@ -74,6 +77,13 @@ public:
     // point at which both halves exist. It only writes `directTarget`; a site
     // it cannot resolve is the site it already was.
     void resolve(il::Module& ilModule) const;
+
+    // Stamps `directTarget` on every `new Name(...)` whose name (the site's
+    // key, il.h kConstructNamed) is that of exactly one declared class, a
+    // base class: the constructor a binding of that name most likely holds.
+    // A guess like a method site's: guarded inlining tests the function
+    // object in hand against it (il_op.h, closure.is as a construction).
+    void resolveConstructs(il::Module& ilModule) const;
 
     // Stamps every property read and write whose receiver's class declares
     // (at or above it, with no method of that name in between) an accessor
@@ -125,6 +135,13 @@ public:
     // module overrides the method.
     bool isMethodSealedOnSubclasses(uint32_t icIndex) const;
 
+    // How many declared classes call `fnIndex` for the name it is declared
+    // under: the class that declares it and every class below that with no
+    // declaration of the name between. 0 for a function that is no class
+    // method. What a guard on that callee may meet as receivers when no
+    // profile says (lower_final_passes.cpp, the guard's cell pairs).
+    uint32_t inheritingClasses(uint32_t fnIndex) const;
+
 private:
     // Whether one class is the other or an ancestor of it, by the recorded
     // extends links; an unknown class (empty) is related to every class.
@@ -152,6 +169,7 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, AccessorPair>> classAccessors_;
     std::unordered_map<std::string, std::unordered_map<std::string, uint32_t>> classMethods_;
     std::unordered_map<std::string, std::string> classSuper_;
+    std::unordered_map<std::string, uint32_t> classConstructors_;
     std::unordered_set<std::string> declaredClasses_;
     std::unordered_set<std::string> ambiguousClasses_;
     // shown name -> the class bindings that show it.

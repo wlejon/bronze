@@ -160,13 +160,13 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                 }
                 case Op::ClosureIs: case Op::IsNumber: case Op::IsDenseArray: case Op::IsNumberArray:
                 case Op::IsShape: case Op::IsArray: case Op::IsPlainArray: case Op::IsTypedArray: case Op::LayoutEpoch:
-                case Op::LayoutFact: case Op::MethodIcIs: case Op::AccessorIcIs:
+                case Op::LayoutFact: case Op::MethodIcIs: case Op::RunMethodIs: case Op::AccessorIcIs:
                     if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                     break;
                 case Op::ClosureEnv: { CVal v = CVal::makeI64(0); v.envId = opV(0).envId; vals[inst.result] = v; break; }
                 case Op::ClassExtend:
                 case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
-                case Op::CreateObject: case Op::CreateArray: {
+                case Op::CreateObject: case Op::CreateArray: case Op::CreateThis: {
                     uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
                     heap[oid].props["length"] = CVal::makeI64(std::max(0, inst.immI32));
                     vals[inst.result] = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));

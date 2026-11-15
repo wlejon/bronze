@@ -280,6 +280,100 @@ bool dominanceHolds(const il::Function& fn) {
     return true;
 }
 
+bool closeRegionExits(il::Function& fn, const std::vector<bool>& inRegion) {
+    const Cfg cfg = buildCfg(fn);
+    const std::vector<DefSite> defs = computeDefSites(fn);
+    const size_t n = fn.blocks.size();
+    const auto inside = [&](il::BlockId b) { return b < inRegion.size() && inRegion[b]; };
+    const auto regionValue = [&](il::ValueId v) {
+        return v < defs.size() && defs[v].block != il::kNoBlock && inside(defs[v].block);
+    };
+    // The exit blocks: outside, entered from the region alone, no handler.
+    std::vector<uint8_t> handler(n, 0);
+    for (const auto& block : fn.blocks) {
+        if (block.handler != il::kNoBlock && block.handler < n) handler[block.handler] = 1;
+    }
+    std::vector<il::BlockId> exits;
+    for (size_t t = 0; t < n; ++t) {
+        if (inside(static_cast<il::BlockId>(t)) || handler[t] || cfg.preds[t].empty()) continue;
+        bool all = true;
+        for (il::BlockId p : cfg.preds[t]) all = all && inside(p);
+        if (all) exits.push_back(static_cast<il::BlockId>(t));
+    }
+    // Each outside read of a region value, with the exit that dominates it.
+    struct Read {
+        il::BlockId exit;
+        il::ValueId value;
+    };
+    std::vector<Read> reads;
+    std::vector<il::BlockId> exitOf(n, il::kNoBlock);
+    for (size_t u = 0; u < n; ++u) {
+        if (inside(static_cast<il::BlockId>(u)) || cfg.rpoIndex[u] == UINT32_MAX) continue;
+        bool known = false;
+        const auto note = [&](il::ValueId v) {
+            if (!regionValue(v)) return true;
+            if (!known) {
+                known = true;
+                for (il::BlockId t : exits) {
+                    if (!cfg.dominates(t, static_cast<il::BlockId>(u))) continue;
+                    if (exitOf[u] != il::kNoBlock) return false;
+                    exitOf[u] = t;
+                }
+            }
+            if (exitOf[u] == il::kNoBlock) return false;
+            for (const Read& r : reads) {
+                if (r.exit == exitOf[u] && r.value == v) return true;
+            }
+            reads.push_back({exitOf[u], v});
+            return true;
+        };
+        for (const auto& inst : fn.blocks[u].instructions) {
+            for (il::ValueId v : inst.operands) {
+                if (!note(v)) return false;
+            }
+            for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                for (il::ValueId v : t->args) {
+                    if (!note(v)) return false;
+                }
+            }
+        }
+    }
+    if (reads.empty()) return true;
+
+    std::vector<il::Type> types(fn.valueCount, il::Type::Dynamic);
+    for (const auto& block : fn.blocks) {
+        for (const auto& param : block.params) types[param.id] = param.type;
+        for (const auto& inst : block.instructions) {
+            if (inst.result != il::kNoValue) types[inst.result] = inst.type;
+        }
+    }
+    for (const Read& r : reads) {
+        const il::ValueId param = fn.valueCount++;
+        fn.blocks[r.exit].params.push_back(il::BlockParam{param, types[r.value]});
+        for (size_t u = 0; u < n; ++u) {
+            // An edge into the exit passes the region's value; everything the
+            // exit dominates reads the parameter.
+            const bool renames = !inside(static_cast<il::BlockId>(u)) && exitOf[u] == r.exit;
+            for (auto& inst : fn.blocks[u].instructions) {
+                if (renames) {
+                    for (il::ValueId& v : inst.operands) {
+                        if (v == r.value) v = param;
+                    }
+                }
+                for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                    if (renames) {
+                        for (il::ValueId& v : t->args) {
+                            if (v == r.value) v = param;
+                        }
+                    }
+                    if (t->block == r.exit) t->args.push_back(r.value);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 void orderAfterDominators(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
     const Cfg cfg = buildCfg(fn);
     const size_t n = fn.blocks.size();

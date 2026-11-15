@@ -333,12 +333,12 @@ TEST_CASE("a method with no `this` in it still gets a receiver when it uses supe
 }
 
 TEST_CASE("a destructuring assignment reads the whole right side before writing") {
-    // `[a, b] = [b, a]` is a swap only if this holds. The array is built first,
-    // and every `iter.at` reads THAT array — so no target write can be seen by
-    // a later read.
+    // `[a, b] = s` reads both elements of `s` before it writes either target:
+    // every arm passes the two values it read to the block that assigns them.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
-    const auto optMod = parseAndLower("let a = 1;\nlet b = 2;\n[a, b] = [b, a];\n", diags, buf);
+    const auto optMod = parseAndLower(
+        "function f(a, b, s) { [a, b] = s; return a - b; }\nprint(f(1, 2, [3, 4]));\n", diags, buf);
 
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
@@ -346,16 +346,20 @@ TEST_CASE("a destructuring assignment reads the whole right side before writing"
     // The source is checked once, up front, so a later element read cannot
     // blame for-of for a destructuring failure.
     CHECK(printed.find("pattern.check %2, array") != std::string::npos);
-    // One iterator over that array, stepped once per element, and closed at
-    // the end because the pattern stopped before the source was exhausted
-    // (ECMA-262 8.6.2 step 5). Every read names the SAME record, which is
-    // what makes the swap a swap.
-    CHECK(printed.find("iter.open %5") != std::string::npos);
-    CHECK(printed.find("%8: bool = iter.step %6") != std::string::npos);
-    CHECK(printed.find("%7: dynamic = iter.value %6") != std::string::npos);
-    CHECK(printed.find("%10: bool = iter.step %6") != std::string::npos);
-    CHECK(printed.find("%9: dynamic = iter.value %6") != std::string::npos);
-    CHECK(printed.find("iter.close %6, abrupt") != std::string::npos);
+    // An Array that holds both elements answers them as two reads, with no
+    // iterator (lower_pattern.cpp).
+    CHECK(printed.find("%6: bool = is.dense_array %3, 1") != std::string::npos);
+    CHECK(printed.find("jump b5(%7, %8)") != std::string::npos);
+    // Any other source: one iterator over it, stepped once per element, and
+    // closed at the end because the pattern stopped before the source was
+    // exhausted (ECMA-262 8.6.2 step 5). Every read names the SAME record.
+    CHECK(printed.find("%16: dynamic = iter.open %3") != std::string::npos);
+    CHECK(printed.find("%17: bool = iter.step %16") != std::string::npos);
+    CHECK(printed.find("%18: dynamic = iter.value %16") != std::string::npos);
+    CHECK(printed.find("%19: bool = iter.step %16") != std::string::npos);
+    CHECK(printed.find("%20: dynamic = iter.value %16") != std::string::npos);
+    CHECK(printed.find("iter.close %16, abrupt") != std::string::npos);
+    CHECK(printed.find("jump b5(%18, %20)") != std::string::npos);
 }
 
 TEST_CASE("object rest into a property reference lowers to object.rest and prop.set") {

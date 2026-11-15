@@ -442,6 +442,33 @@ bool reverifyPristine() {
     return ok;
 }
 
+}  // namespace
+
+// Lockdown froze the family (lockdown.cpp), and freezing an object gives it
+// another shape: the shapes recorded when the family was built are no longer
+// the ones its objects have, so the first re-verification after any
+// prototype anywhere changed would find every one of them "modified" and
+// answer no from then on, sending each `view.length` through the getter.
+// What is frozen is pristine for good; the shapes it has now are the ones to
+// compare with.
+void rtTypedArrayIntrinsicsHardened() {
+    if (!g_family.proto.isObject()) return;
+    g_family.protoPristineShape = g_family.proto.asObject<ObjectHeader>()->shape;
+    g_family.ctorBoxPristineShape =
+        g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    for (size_t k = 0; k < kKindCount; ++k) {
+        ViewIntrinsics& kind = g_views[k];
+        kind.protoPristineShape = kind.proto.asObject<ObjectHeader>()->shape;
+        kind.ctorBoxPristineShape =
+            kind.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    }
+    g_family.pristine = true;
+    g_family.pristineEpoch = protoMutationEpoch();
+    publishLatch();
+}
+
+namespace {
+
 // 7.3.22 SpeciesConstructor(O, defaultConstructor).
 Value speciesConstructor(Rooted<Value>& exemplar, Value defaultCtor) {
     Rooted<Value> fallback{defaultCtor};

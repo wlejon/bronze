@@ -490,8 +490,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 mem->span.file
             };
             inst.span = propSpan;
-            const bool isNumRet = (mem->property == "charCodeAt");
-            inst.type = isNumRet ? il::Type::F64 : il::Type::Dynamic;
+            inst.type = il::Type::Dynamic;
             inst.result = callRes;
 
             if (spreadArgs) {
@@ -517,7 +516,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 recordMethodCallSite(inst, *mem->object, mem->property);
             }
             emitInst(ilFn, inst);
-            return Value{callRes, isNumRet ? il::Type::F64 : il::Type::Dynamic};
+            return Value{callRes, il::Type::Dynamic};
         }
     } else if (const auto* idx = dynamic_cast<const ast::IndexAccess*>(call->callee.get())) {
         // `o[k](...)` — the same rule as `o.m(...)`: 13.3.6.1 evaluates the

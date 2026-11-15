@@ -963,7 +963,8 @@ bool IlLowering::lower_instruction(
                     }
                     hit = test->op == BronzeOp::IsShape
                               ? prop_lowering_.lower_is_shape(b, obj, keyed, StaticSlotSite::of(*test))
-                              : accessor_cell_hit(this, b, obj, test->static_cell, keyed);
+                              : accessor_cell_hit(this, b, obj, test->static_cell, keyed,
+                                                  method_guard_shapes(*test));
                 }
                 spec_.site_branch(b, hit, stays, leaves, /*exits=*/true, stay_args);
                 break;

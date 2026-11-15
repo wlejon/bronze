@@ -10,6 +10,10 @@ namespace bronze::lower {
 
 bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionStats& stats,
                         std::vector<uint8_t>& alreadyBuilt) {
+    if (!plan.entryRegion && !closeRegionExits(fn, plan.inRegion)) {
+        ++stats.refusedSsa;
+        return false;
+    }
     const il::Function& src = fn;
     const Cfg cfg = buildCfg(src);
     const std::vector<DefSite> defs = computeDefSites(src);
@@ -908,10 +912,11 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             ++stats.refusedEntrySplit;
             return false;
         }
-        // A loop region's repair can put a join's parameter in a block
-        // numbered after the latch that reads it.
-        if ((plan.feedback || plan.repairLoopNames) && !plan.entryRegion) orderAfterDominators(rewritten, built);
     }
+    // A loop region's blocks can be numbered before a dominator of theirs: a
+    // repaired join's parameter after the latch that reads it, or an inlined
+    // body's arm after the point it rejoins at.
+    if (!plan.entryRegion) orderAfterDominators(rewritten, built);
     if (!dominanceHolds(rewritten)) {
         ++stats.refusedSsa;
         return false;

@@ -108,8 +108,14 @@ Value* enter_slot_callee(Builder& b, Value* callee, Value* recv, uint32_t argc,
 // ClosureIs / ClosureEnv; lower/inline_guarded.cpp builds them). `keyed` is
 // the receiver's keyed shape, often the shape memo's.
 Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site, Value* row);
-Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee);
+// `construct` asks the test as a construction (il_op.h): the vetted
+// constructor's flags, and an instance shape for `create.this`.
+Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee,
+                        bool construct = false, uint32_t run_cell = BronzeInstruction::kNoTransitionRun);
 Value* lower_closure_env(Builder& b, Value* fn_val);
+// `create.this f` behind such a test: a plain object of `f`'s instance shape,
+// bumped inline, or made by the runtime when the thread's window is full.
+Value* lower_create_this(IlLowering* lowering, Builder& b, Value* fn_val);
 
 // `new ctor(...args)`: a vetted constructor (bronze_construct has taken its
 // plain path once) that compiled code may enter gets its instance bumped

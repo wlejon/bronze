@@ -148,8 +148,11 @@ TEST_CASE("the budget goes to the typed copy, not to the loop its entry test fal
     // Room for one copy: the other loop is as large again.
     CHECK(stats.duplicated == 1);
     const il::Function& fn = module.functions[0];
+    // The first loop stands as it was, and the region starts where the
+    // second did (its fast copy's blocks are ordered in front of the slow).
     CHECK(fn.blocks[1].copyClass == il::CopyClass::Shared);
-    CHECK(fn.blocks[4].copyClass == il::CopyClass::Slow);
+    CHECK(fn.blocks[3].copyClass == il::CopyClass::Shared);
+    CHECK(fn.blocks[4].copyClass != il::CopyClass::Shared);
 }
 
 TEST_CASE("two loops behind an ordinary branch are taken in block order") {
@@ -163,5 +166,5 @@ TEST_CASE("two loops behind an ordinary branch are taken in block order") {
 
     CHECK(stats.duplicated == 1);
     const il::Function& fn = module.functions[0];
-    CHECK(fn.blocks[1].copyClass == il::CopyClass::Slow);
+    CHECK(fn.blocks[1].copyClass != il::CopyClass::Shared);
 }

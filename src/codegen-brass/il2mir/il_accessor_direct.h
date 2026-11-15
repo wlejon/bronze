@@ -24,14 +24,24 @@ bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst);
 // i1; `accessor.ic.is` is exactly this. `keyed`, when given, is `recv`'s
 // keyed shape from the shape memo (il_shape_memo.cpp), which the guard then
 // compares instead of reading the receiver's header and shape again.
-Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed = nullptr);
+//
+// A method guard's cell is `shapes` pairs in a row (method_guard_shapes), and
+// the answer is whether any names the shape: one compare each, no branch
+// between them.
+Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed = nullptr,
+                         uint32_t shapes = 1);
+
+// How many cell pairs the guard `inst` has: a `method.ic.is` says in its
+// immediate (lower_final_passes.cpp), every other guard has one.
+uint32_t method_guard_shapes(const BronzeInstruction& inst);
 
 // The fill of an inlined method body's cell pair after its guard's miss ran
 // the generic call (runtime/accessor_cell.cpp, `bronze_method_cell_publish`):
 // the publish, only while the cell speaks for another epoch. `obj` is the
 // receiver's bits read after the call. Leaves the builder after it.
-void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t key_index,
-                           const std::string& callee);
+// Of the guard's `shapes` pairs, the first that does is the one published.
+void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_t cell, uint32_t shapes,
+                           uint32_t key_index, const std::string& callee);
 
 // What a method guard does when its cell pair said no and the site's cache
 // entry said yes: the pair learns this receiver's shape. The pair holds one
@@ -42,9 +52,12 @@ void emit_method_cell_fill(IlLowering* lowering, Builder& b, Value* obj, uint32_
 // the site kept the entry filled. A pair that names a shape at this epoch
 // takes the new one as a store (the entry's hit is the pair's own claim:
 // this shape resolves the key to the guessed code now); any other pair is
-// published by the runtime, which lists it for the epoch's reset.
+// published by the runtime, which lists it for the epoch's reset. Of
+// `shapes` pairs the first that names no shape now is published, and only
+// when every one names a shape does the first take the store: a site that
+// meets more shapes than its profile gave it pairs for.
 void emit_method_cell_learn(IlLowering* lowering, Builder& b, Value* obj, Value* keyed, uint32_t cell,
-                            uint32_t key_index, const std::string& callee);
+                            uint32_t shapes, uint32_t key_index, const std::string& callee);
 
 // What a direct accessor site does on a miss: the ordinary read (`get`) or
 // write (`set`), and the receiver's bits read afresh after it, for the fill.

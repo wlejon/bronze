@@ -434,6 +434,7 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
             case Op::LayoutEpoch:
             case Op::LayoutFact:
             case Op::MethodIcIs:
+            case Op::RunMethodIs:
             case Op::AccessorIcIs:
                 if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
                 break;

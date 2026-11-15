@@ -192,6 +192,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::LayoutEpoch:
                 case Op::LayoutFact:
                 case Op::MethodIcIs:
+                case Op::RunMethodIs:
                 case Op::AccessorIcIs:
                     if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
                     break;

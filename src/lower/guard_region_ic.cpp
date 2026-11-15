@@ -30,7 +30,8 @@ std::vector<uint32_t> entryCounts(const il::Function& fn) {
 }
 
 // Whether block `b` ends in the guard of an inlined body whose miss is the
-// original site: `g = *.ic.is recv` and `br g, body, miss`, with `miss` a
+// original site: `g = *.ic.is recv` (or `closure.is callee`, for a call or a
+// construction) and `br g, body, miss`, with `miss` a
 // region block only this branch enters and whose first instruction is the
 // call or access the guard stands for, on the same receiver. The backend
 // reads the same shape to find a guard's miss (il_shape_memo.cpp,
@@ -40,7 +41,9 @@ bool icExitSite(const il::Function& fn, const std::vector<uint32_t>& entries, co
     if (insts.size() < 2) return false;
     const il::Instruction& term = insts.back();
     const il::Instruction& guard = insts[insts.size() - 2];
-    if (guard.op != il::Op::MethodIcIs && guard.op != il::Op::AccessorIcIs) return false;
+    if (guard.op != il::Op::MethodIcIs && guard.op != il::Op::AccessorIcIs && guard.op != il::Op::ClosureIs) {
+        return false;
+    }
     if (term.op != il::Op::Branch || term.operands.size() != 1 || guard.operands.empty() ||
         guard.result == il::kNoValue || term.operands[0] != guard.result) {
         return false;
@@ -53,6 +56,7 @@ bool icExitSite(const il::Function& fn, const std::vector<uint32_t>& entries, co
     const il::Instruction& site = fn.blocks[miss].instructions.front();
     if (site.operands.empty() || site.operands[0] != guard.operands[0]) return false;
     if (guard.op == il::Op::MethodIcIs) return site.op == il::Op::MethodCall && site.icIndex == guard.icIndex;
+    if (guard.op == il::Op::ClosureIs) return site.op == il::Op::Call || site.op == il::Op::Construct;
     return (site.op == il::Op::PropGet || site.op == il::Op::PropSet) &&
            site.directTarget != il::Instruction::kNoDirectTarget && site.staticCellIndex == guard.staticCellIndex;
 }
@@ -89,14 +93,18 @@ void planIcExits(const il::Function& fn, const std::function<bool(il::BlockId)>&
         const uint32_t index = static_cast<uint32_t>(block.instructions.size()) - 2;
         std::vector<uint32_t>& points = plan.splitsOf[b];
         std::vector<RegionPlan::RunGuard>& runs = plan.runGuardsOf[b];
-        // The exit's point is its own. A point already at the guard, or a run
-        // whose span the guard stands in, keeps the block as it is.
+        // The exit's point is its own. A point already at the guard keeps the
+        // block as it is. A run whose span the guard stands in ends in front
+        // of the guard instead: its value tests are of values the run read,
+        // which the guard, a bool, is not one of, so they ask the same there.
         bool taken = false;
+        size_t spanned = SIZE_MAX;
         for (size_t j = 0; j < points.size(); ++j) {
             if (points[j] == index) taken = true;
-            if (j < runs.size() && runs[j].isRun() && index > points[j] && index <= runs[j].guardIndex) taken = true;
+            if (j < runs.size() && runs[j].isRun() && index > points[j] && index <= runs[j].guardIndex) spanned = j;
         }
         if (taken || concatOpenAt(block, index) || !served(b)) continue;
+        if (spanned != SIZE_MAX) runs[spanned].guardIndex = index;
         const auto at = static_cast<std::ptrdiff_t>(std::lower_bound(points.begin(), points.end(), index) -
                                                     points.begin());
         points.insert(points.begin() + at, index);

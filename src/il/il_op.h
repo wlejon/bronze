@@ -491,6 +491,13 @@ enum class Op : uint8_t {
     // which is what its direct edge already tests. The guard of an inlined
     // method body (lower/inline_guarded.cpp). Loads only; cannot throw.
     MethodIcIs,
+    // a: bool = run.method.is run @R, <ic_site_index>, @callee. `method.ic.is`
+    // asked of an instance nothing made (lower/fresh_instances.h): the shape
+    // transition run R ends at (il.h `transitionRunCell`; the run's cells,
+    // still of this prototype-mutation epoch) stands for the receiver's, so
+    // the answer is the one the object the run would have built gets. No
+    // operands: the cells are the whole question. Loads only; cannot throw.
+    RunMethodIs,
     // a: bool = accessor.ic.is recv, <cell>, @callee. Whether the receiver is
     // a plain object whose shape the site's ACCESSOR CELL (two words from
     // static cell `cell`: a shape and the prototype-mutation epoch it was
@@ -555,6 +562,16 @@ enum class Op : uint8_t {
     // (BRONZE_ABI_FN_FLAG_DIRECT_CALL set, CLASS_CTOR clear) whose code is
     // @callee's: a closure of that function, whatever environment it closed
     // over. A bound function, a Proxy, a native or any other value is no.
+    // Asked as a CONSTRUCTION (immI32 kClosureIsConstruct) it is whether
+    // `new f` may enter that code with a fresh plain instance: the same
+    // function test with the class-constructor bit free and the
+    // construction vetted (bronze_abi.h, the inline `new` contract), so `f`
+    // has an instance shape for `create.this`.
+    // A construction asked FOR A RUN (`transitionRunCell` set) also asks that
+    // the run's cells were published from `f`'s instance shape at this
+    // prototype-mutation epoch: that the constructor's adds, on the instance
+    // `create.this f` would make now, are the run's plain stores, running no
+    // code (lower/fresh_instances.h).
     // Loads only: cannot throw, cannot collect.
     ClosureIs,
     // a: dynamic = closure.env f. The environment record `f` closed over:
@@ -563,6 +580,15 @@ enum class Op : uint8_t {
     // verifier sees that proved: first in a block whose single predecessor
     // ends in `br (closure.is f, @T), <this block>, ...`. Loads only.
     ClosureEnv,
+    // a: dynamic = create.this f. The instance `new f(...)` starts from: a
+    // plain object of `f`'s instance shape (its prototype `f.prototype`, no
+    // properties yet), which is what 10.1.13 OrdinaryCreateFromConstructor
+    // makes for a base class's constructor. Stands only behind a `closure.is
+    // f, @C` that asked as a construction (il.h kClosureIsConstruct), which
+    // is what says `f` has that shape to give. An inlined constructor body's
+    // `this` (lower/inline_guarded.cpp, "constructors"). Allocates: can
+    // collect, cannot throw, runs no user code.
+    CreateThis,
     // object.proto obj, v. An object literal's `__proto__: v` (13.2.5.5 step
     // 6, B.3.1): the fresh object's [[SetPrototypeOf]](v) when v is an object
     // or null, nothing otherwise. Not a property write: the literal's other

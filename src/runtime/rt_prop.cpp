@@ -815,6 +815,13 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                         return rtTypedArrayElement(objVal, idx).rawBits();
                 }
             }
+        } else if (objVal.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+            // Any other Number key of a typed array (negative, fractional,
+            // NaN, past 2^32 - 2): its string is a CanonicalNumericIndexString
+            // that is no valid integer index, which 10.4.5.4 answers
+            // `undefined` without asking the prototype chain. `pp[i - 1]` at
+            // i = 0 is this read.
+            return BRONZE_ABI_UNDEFINED_BITS;
         }
     }
 

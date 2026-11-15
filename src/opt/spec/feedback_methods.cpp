@@ -2,6 +2,7 @@
 // direct targets (B), applied before the passes that copy bodies, and the
 // profiled `call.dynamic` callee a closure split takes.
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,28 +26,31 @@ uint32_t calleeOf(const FeedbackPlan& plan, const NameCounts& names) {
     return it == plan.callees.end() ? kNone : it->second;
 }
 
-// Two distinct compiled callees that together account for at least
-// `kDominantPercent` of `names`, ordered more frequent first.
-bool bimorphicCallees(const FeedbackPlan& plan, const NameCounts& names, uint32_t (&out)[2]) {
-    if (names.total < kMinExecutions) return false;
-    std::pair<uint64_t, const std::string*> top[2] = {{0, nullptr}, {0, nullptr}};
+// The distinct compiled callees, at most `kMaxPolyCallees` and at least two,
+// that together account for at least `kDominantPercent` of `names`, most
+// frequent first: the fewest that reach it.
+inline constexpr size_t kMaxPolyCallees = 4;
+
+std::vector<uint32_t> polyCallees(const FeedbackPlan& plan, const NameCounts& names) {
+    if (names.total < kMinExecutions) return {};
+    std::vector<std::pair<uint64_t, const std::string*>> seen;
     for (const auto& [name, count] : names.counts) {
-        if (count == 0 || name == "*other*") continue;
-        if (count > top[0].first) {
-            top[1] = top[0];
-            top[0] = {count, &name};
-        } else if (count > top[1].first) {
-            top[1] = {count, &name};
-        }
+        if (count != 0 && name != "*other*") seen.push_back({count, &name});
     }
-    if (top[0].second == nullptr || top[1].second == nullptr) return false;
-    if ((top[0].first + top[1].first) * 100 < names.total * kDominantPercent) return false;
-    const auto c0 = plan.callees.find(*top[0].second);
-    const auto c1 = plan.callees.find(*top[1].second);
-    if (c0 == plan.callees.end() || c1 == plan.callees.end() || c0->second == c1->second) return false;
-    out[0] = c0->second;
-    out[1] = c1->second;
-    return true;
+    std::sort(seen.begin(), seen.end(), [](const auto& a, const auto& b) {
+        return a.first != b.first ? a.first > b.first : *a.second < *b.second;
+    });
+    std::vector<uint32_t> out;
+    uint64_t covered = 0;
+    for (const auto& [count, name] : seen) {
+        if (out.size() == kMaxPolyCallees) return {};
+        const auto c = plan.callees.find(*name);
+        if (c == plan.callees.end() || std::find(out.begin(), out.end(), c->second) != out.end()) return {};
+        out.push_back(c->second);
+        covered += count;
+        if (out.size() >= 2 && covered * 100 >= names.total * kDominantPercent) return out;
+    }
+    return {};
 }
 
 // Where a method site's receivers held its key, from the shapes the run saw
@@ -75,7 +79,7 @@ KeyHome methodKeyHome(const FeedbackPlan& plan, uint32_t ic, const std::string& 
     return all_lack ? KeyHome::Inherited : KeyHome::Unknown;
 }
 
-// For a bimorphic site, both guards must use the same dispatch form: either
+// For a polymorphic site, every guard must use the same dispatch form: either
 // every major receiver shape is plain and holds the key as its own (AllOwn ->
 // slot closure guards), or every major receiver shape is plain and lacks it
 // (AllInherited / InheritedOrTruncated -> method-cache direct guards). A site
@@ -180,21 +184,22 @@ void applyFeedbackDirectMethods(il::Module& mod, const FeedbackPlan& plan, std::
                         inst.immI32 |= il::Instruction::kMethodOwnCallee;
                         if (stats) ++stats->ownSlotSites;
                     }
-                    uint32_t pair[2];
-                    if (bimorphicCallees(plan, it->second, pair) && inst.keyIndex < mod.keyConstants.size()) {
+                    const std::vector<uint32_t> callees = polyCallees(plan, it->second);
+                    if (!callees.empty() && inst.keyIndex < mod.keyConstants.size()) {
                         const PolyShapeHome polyHome =
                             polyMethodShapeHome(plan, inst.icIndex, mod.keyConstants[inst.keyIndex]);
                         if (polyHome == PolyShapeHome::AllOwn) {
                             ownCallees.erase(inst.icIndex);
-                            if (polyOwnCallees) (*polyOwnCallees)[inst.icIndex] = {pair[0], pair[1]};
+                            if (polyOwnCallees) (*polyOwnCallees)[inst.icIndex] = callees;
                         } else if (polyHome == PolyShapeHome::AllInherited ||
                                    ((polyHome == PolyShapeHome::InheritedOrTruncated ||
                                      polyHome == PolyShapeHome::NoShapes) &&
                                     !predicted && !own_hint)) {
-                            if (fitsDirectMethod(mod, inst, pair[0]) && fitsDirectMethod(mod, inst, pair[1])) {
+                            if (std::all_of(callees.begin(), callees.end(),
+                                            [&](uint32_t c) { return fitsDirectMethod(mod, inst, c); })) {
                                 ownCallees.erase(inst.icIndex);
                                 inst.immI32 &= ~il::Instruction::kMethodOwnCallee;
-                                if (polyMethods) (*polyMethods)[inst.icIndex] = {pair[0], pair[1]};
+                                if (polyMethods) (*polyMethods)[inst.icIndex] = callees;
                             }
                         }
                     }

@@ -1,6 +1,7 @@
 #include "runtime/ic_harvest.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -48,8 +49,10 @@ struct Site {
     // A property read whose four ways were all in use: it met at least four
     // shapes, and the stub's table answered the rest.
     bool full = false;
-    // The stub's table answered the site (a method site, or a property write
-    // that overflowed its BRONZE_ABI_IC_SET_WAYS ways): more shapes than its ways.
+    // The stub's table answered the site (a property write that overflowed
+    // its BRONZE_ABI_IC_SET_WAYS ways): more shapes than its ways. Never a
+    // method site, whose ways here are every latch it made
+    // (rtIcHarvestNoteMethodLatch).
     bool mega = false;
     // rtIcHarvestNoteUncached: the times the site met a receiver no way of
     // it could hold, written as the site's `other` row.
@@ -116,6 +119,11 @@ std::atomic<bool> g_armed{false};
 // instance holding the site is folded (a table is per thread and realm, and
 // folded on its thread).
 thread_local std::unordered_map<const uint64_t*, uint64_t> t_uncached;
+// rtIcHarvestNoteMethodLatch's ways: the site, then the shape, code and arity
+// words latched. Bounded, so a site that never settles cannot grow it without
+// limit; past the bound a site reads as the ways its table holds.
+thread_local std::set<std::array<uint64_t, 4>> t_latched;
+constexpr size_t kMaxLatched = 1u << 16;
 
 struct Identity {
     uint32_t flags = 0;
@@ -443,6 +451,12 @@ void rtIcHarvestNoteUncached(const uint64_t* site) {
     if (site != nullptr && rtIcHotCovers(site)) ++t_uncached[site];
 }
 
+void rtIcHarvestNoteMethodLatch(const uint64_t* site) {
+    if (site == nullptr || !rtIcHotCovers(site) || t_latched.size() >= kMaxLatched) return;
+    t_latched.insert({reinterpret_cast<uint64_t>(site), site[0], site[BRONZE_ABI_METHOD_IC_CODE_WORD],
+                      site[BRONZE_ABI_METHOD_IC_ARITY_WORD]});
+}
+
 bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
     Identity id;
     if (!readIdentity(identity, id) || (id.flags & BRONZE_ABI_IC_IDENTITY_PROFILED) != 0) return false;
@@ -499,6 +513,17 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         uncached.emplace_back(static_cast<uint64_t>(it->first - table) / kWords, it->second);
         it = t_uncached.erase(it);
     }
+    // The same for its remembered latches: the site's index and the way.
+    std::vector<std::array<uint64_t, 4>> latched;
+    {
+        const auto lo = t_latched.lower_bound({reinterpret_cast<uint64_t>(table), 0, 0, 0});
+        const auto hi = t_latched.lower_bound({reinterpret_cast<uint64_t>(table + siteCount * kWords), 0, 0, 0});
+        for (auto it = lo; it != hi; ++it) {
+            latched.push_back({((*it)[0] - reinterpret_cast<uint64_t>(table)) / (kWords * 8), (*it)[1], (*it)[2],
+                               (*it)[3]});
+        }
+        t_latched.erase(lo, hi);
+    }
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return;
     State& s = *g_state;
@@ -515,6 +540,13 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         Site& site = m->ics[static_cast<uint32_t>(i)];
         site.method = isMethod(i);
         site.uncached += count;
+        s.dirty = true;
+    }
+    for (const auto& way : latched) {
+        if (!isMethod(way[0])) continue;
+        Site& site = m->ics[static_cast<uint32_t>(way[0])];
+        site.method = true;
+        foldMethodWay(s, site, way[1], way[2], way[3]);
         s.dirty = true;
     }
     // The slow counters end where the table starts. Taken, and cleared so a
@@ -566,11 +598,6 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
                           words[BRONZE_ABI_METHOD_IC_ARITY_WORD]);
             foldMethodWay(s, site, words[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD],
                           words[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD], words[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD]);
-            // Both ways missed a relatch period's worth of calls: fewer is a
-            // site of two receivers that met a third while starting up (or
-            // whose entries a prototype change made stale once), which still
-            // reads as the two it holds.
-            if (words[BRONZE_ABI_METHOD_IC_MEGA_COUNT_WORD] >= BRONZE_ABI_METHOD_IC_MEGA_RELATCH) site.mega = true;
         } else {
             foldProperty(s, site, words);
         }

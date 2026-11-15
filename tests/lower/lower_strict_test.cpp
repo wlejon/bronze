@@ -57,9 +57,10 @@ TEST_CASE("a property write carries the mode of the code it is written in") {
 
     // The object literal's own property is a DEFINITION in both (il.h
     // kWriteDefine, 2): CreateDataPropertyOrThrow on an object it has just
-    // created, not a reference for strictness to be a property of.
-    CHECK(has(sloppy, "prop.set %2, 0, %1, 0, 2\n"));
-    CHECK(has(strict, "prop.set %3, 1, %2, 0, 2\n"));
+    // created, not a reference for strictness to be a property of. (A lone
+    // definition is a transition run of one, il_op.h.)
+    CHECK(has(sloppy, "prop.set %2, 0, %1, 0, 2, run "));
+    CHECK(has(strict, "prop.set %3, 1, %2, 0, 2, run "));
     // The assignment after it is the only instruction that differs.
     CHECK(has(sloppy, "prop.set %2, 0, %4, 1, 0\n"));
     CHECK(has(strict, "prop.set %3, 1, %5, 1, 1\n"));

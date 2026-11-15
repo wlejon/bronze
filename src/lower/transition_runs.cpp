@@ -114,10 +114,14 @@ void markTransitionRuns(il::Module& module) {
         // parameter. The guard does not care which object it is — it asks the
         // receiver's own header and shape — so any object a base returns is a
         // receiver the run's checks already sort.
+        // An inlined constructor body's receiver is the instance
+        // `create.this` made for it (inline_guarded.cpp, "constructors"), in
+        // whatever function the body was copied into.
         auto ownReceiver = [&](il::ValueId recv) {
             if (recv == thisValue) return true;
-            if (!constructs) return false;
             const auto def = facts.defOp.find(recv);
+            if (def != facts.defOp.end() && def->second == il::Op::CreateThis) return true;
+            if (!constructs) return false;
             return def != facts.defOp.end() &&
                    (def->second == il::Op::SuperCall || def->second == il::Op::SuperCallSpread);
         };
@@ -170,7 +174,7 @@ void markTransitionRuns(il::Module& module) {
                     }
                     if (inst.result != il::kNoValue) defined.insert(inst.result);
                 }
-                if (sites.size() < 2) continue;
+                if (sites.empty()) continue;
 
                 bool consecutive = true;
                 for (size_t k = 0; k < sites.size(); ++k) {

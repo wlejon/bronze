@@ -55,7 +55,7 @@ inline constexpr size_t kClosureGuardInstructions = 3;
 inline constexpr size_t kChainedClosureGuardInstructions = 2;
 
 // How a body is entered (Inliner::inlineAt).
-enum class Form { Method, Closure, Exact, Literal };
+enum class Form { Method, Closure, Exact, Literal, Construct };
 
 struct SplicePlan {
     Form form = Form::Method;
@@ -97,6 +97,7 @@ private:
                                const il::Instruction& inst, size_t available, SplicePlan& splice, size_t& grows) const;
     uint32_t closureCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, const il::Instruction& inst,
                            uint32_t& next) const;
+    uint32_t constructCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst) const;
 
     size_t growthOf(uint32_t callee, size_t extra) const;
     void markLoops(const il::Function& fn) { inLoop_ = loopBlocks(fn); }
@@ -119,6 +120,7 @@ private:
     std::vector<uint8_t> closureCandidate_;
     std::vector<uint8_t> exactCandidate_;
     std::vector<uint8_t> literalCandidate_;
+    std::vector<uint8_t> constructCandidate_;
     std::vector<uint8_t> calleeHasLoop_;
     std::unordered_map<il::ValueId, std::pair<uint32_t, il::ValueId>> literals_;
     // Per block: how many of its first call's closure or method targets an

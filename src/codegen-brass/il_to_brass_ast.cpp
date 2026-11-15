@@ -583,6 +583,15 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.ic_index = inst.icIndex;
             out.static_cell = inst.staticCellIndex;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::RunMethodIs:
+            out.op = il2mir::BronzeOp::RunMethodIs;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.ic_index = inst.icIndex;
+            out.static_cell = inst.staticCellIndex;
+            out.imm_i64 = inst.immI32;
+            out.run_cell = inst.transitionRunCell;
             break;
         case il::Op::MethodSlotFn:
             out.op = il2mir::BronzeOp::MethodSlotFn;
@@ -590,9 +599,12 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::ClosureIs:
             out.op = il2mir::BronzeOp::ClosureIs;
+            out.imm_i64 = inst.immI32;
             out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.run_cell = inst.transitionRunCell;
             break;
         case il::Op::ClosureEnv: out.op = il2mir::BronzeOp::ClosureEnv; break;
+        case il::Op::CreateThis: out.op = il2mir::BronzeOp::CreateThis; break;
         case il::Op::AccessorIcIs:
             out.op = il2mir::BronzeOp::AccessorIcIs;
             out.callee_name = ctx.fnName(inst.calleeIndex);

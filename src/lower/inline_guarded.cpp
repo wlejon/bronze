@@ -17,7 +17,7 @@
 // itself. Every new block takes B's handler, so a throw anywhere in the body
 // or in the slow call leaves to wherever a throw out of the call would have.
 //
-// A bimorphic site chains two guards over the same IC (`MethodIcIs` across the
+// A polymorphic site chains its guards over the same IC (`MethodIcIs` across the
 // site's two direct ways, or `MethodSlotFn` followed by two `ClosureIs` tests),
 // leaving S as the fallback call after the second miss.
 //
@@ -185,6 +185,17 @@ Inliner::Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBl
     noteGuessed(polyOwnCallees_);
     exactCandidate_.assign(module.functions.size(), 0);
     literalCandidate_.assign(module.functions.size(), 0);
+    constructCandidate_.assign(module.functions.size(), 0);
+    std::vector<uint8_t> constructed(module.functions.size(), 0);
+    for (const il::Function& f : module.functions) {
+        for (const auto& blk : f.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::Construct && inst.directTarget < constructed.size()) {
+                    constructed[inst.directTarget] = 1;
+                }
+            }
+        }
+    }
     calleeHasLoop_.assign(module.functions.size(), 0);
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const il::Function& f = module.functions[i];
@@ -199,7 +210,26 @@ Inliner::Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBl
                 0) {
             literalCandidate_[i] = 1;
         }
-        if (candidate_[i] || closureCandidate_[i] || exactCandidate_[i] || literalCandidate_[i]) {
+        // A constructor some `new` names, whose every return is of nothing or
+        // of `undefined`: the construction's value is then the instance.
+        if (constructed[i] && isCandidate(f, true)) {
+            std::unordered_set<il::ValueId> undefined;
+            for (const auto& blk : f.blocks) {
+                for (const auto& inst : blk.instructions) {
+                    if (inst.op == il::Op::ConstUndefined && inst.result != il::kNoValue) undefined.insert(inst.result);
+                }
+            }
+            bool plain = true;
+            for (const auto& blk : f.blocks) {
+                for (const auto& inst : blk.instructions) {
+                    if (inst.op != il::Op::Ret || inst.operands.empty() || inst.operands[0] == il::kNoValue) continue;
+                    if (undefined.count(inst.operands[0]) == 0) plain = false;
+                }
+            }
+            if (plain) constructCandidate_[i] = 1;
+        }
+        if (candidate_[i] || closureCandidate_[i] || exactCandidate_[i] || literalCandidate_[i] ||
+            constructCandidate_[i]) {
             originals_[i] = f;
             const auto lb = loopBlocks(f);
             if (std::any_of(lb.begin(), lb.end(), [](uint8_t v) { return v != 0; })) {
@@ -381,6 +411,13 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                         }
                     }
                     if (callee == kNone) {
+                        const uint32_t c = constructCallee(fn, fnIdx, inst);
+                        if (c != kNone && (grows = roomFor(c, kClosureGuardInstructions, /*exactCall=*/false)) != 0) {
+                            callee = c;
+                            splice = SplicePlan{Form::Construct, 0, /*moreTries=*/false, 0};
+                        }
+                    }
+                    if (callee == kNone) {
                         const uint32_t m = eligibleCallee(fn, fnIdx, inst);
                         if (m != kNone && (grows = roomFor(m, 0, /*exactCall=*/false)) != 0) {
                             callee = m;
@@ -394,7 +431,7 @@ size_t Inliner::inlineInto(uint32_t fnIdx, std::unordered_set<uint32_t>* inlined
                     if (callee == kNone) continue;
                 }
                 if (trace()) {
-                    static const char* const kForm[] = {"", "closure ", "exact ", "literal "};
+                    static const char* const kForm[] = {"", "closure ", "exact ", "literal ", "new "};
                     std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s%s\n", fn.name.c_str(),
                                  kForm[static_cast<int>(splice.form)], module_.functions[callee].name.c_str(),
                                  instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops",
@@ -494,7 +531,7 @@ uint32_t Inliner::polyMethodCallee(const il::Function& fn, uint32_t fnIdx, il::B
     const auto& targets = it->second;
     const uint32_t k = b < methodTried_.size() ? methodTried_[b] : 0;
     if (k >= targets.size()) return kNone;
-    // At the first arm, require every arm of the bimorphic site to pass
+    // At the first arm, require every arm of the polymorphic site to pass
     // eligibility and fit together so a 50/50 split never leaves half its
     // calls behind a guard miss.
     const size_t start = k == 0 ? 0 : k;
@@ -506,7 +543,7 @@ uint32_t Inliner::polyMethodCallee(const il::Function& fn, uint32_t fnIdx, il::B
     }
     if (total > available) {
         if (trace()) {
-            std::fprintf(stderr, "[inline] %s: no room for bimorphic method site (%zu > %zu)\n", fn.name.c_str(),
+            std::fprintf(stderr, "[inline] %s: no room for polymorphic method site (%zu > %zu)\n", fn.name.c_str(),
                          total, available);
         }
         return kNone;
@@ -555,7 +592,7 @@ uint32_t Inliner::polyClosureCallee(const il::Function& fn, uint32_t fnIdx, il::
     }
     if (total > available) {
         if (trace()) {
-            std::fprintf(stderr, "[inline] %s: no room for bimorphic closure site (%zu > %zu)\n", fn.name.c_str(),
+            std::fprintf(stderr, "[inline] %s: no room for polymorphic closure site (%zu > %zu)\n", fn.name.c_str(),
                          total, available);
         }
         return kNone;
@@ -564,6 +601,30 @@ uint32_t Inliner::polyClosureCallee(const il::Function& fn, uint32_t fnIdx, il::
     grows = growthOf(chosen, reuseHere ? kChainedClosureGuardInstructions : kClosureGuardInstructions);
     splice = SplicePlan{Form::Closure, k + 1, k + 1 < targets.size(), total - grows};
     return chosen;
+}
+
+// CONSTRUCTORS. A `new F(...)` whose callee the module names (il.h
+// `directTarget`: a function declaration's name, or a base class's by
+// direct_method_table.h resolveConstructs) takes that constructor's body
+// behind `closure.is F, @C` asked as a construction, with `create.this F` for
+// its `this`. The guard's miss is the original `new`.
+uint32_t Inliner::constructCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst) const {
+    if (inst.op != il::Op::Construct || inst.operands.empty() || inst.operands.size() - 1 > kMaxArgs) return kNone;
+    const uint32_t target = inst.directTarget;
+    if (target >= constructCandidate_.size() || !constructCandidate_[target] || target == originOf(fnIdx)) {
+        return kNone;
+    }
+    if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
+    for (il::ValueId v : inst.operands) {
+        if (v >= types_.size() || types_[v] != il::Type::Dynamic) return kNone;
+    }
+    if (calleeHasLoop_[target] && instructionCount(originals_[target]) > kTinyCalleeInstructions) return kNone;
+    size_t depth = 0;
+    for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) {
+        if (fn.inlineFrames[f - 1].callee == target) return kNone;
+        ++depth;
+    }
+    return depth < kMaxDepth ? target : kNone;
 }
 
 // OWN CALLEES. A `method.call` whose key the program stores closures under

@@ -13,6 +13,7 @@
 #include "runtime/realm.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
@@ -103,6 +104,8 @@ void rtLockdown() {
 
         rtHarden(obj.get());
     }
+    rtTypedArrayIntrinsicsHardened();
+    rtArrayBufferIntrinsicsHardened();
     g_lockedDown = true;
     // The realms that exist already; one made from now on pins them itself.
     bronze::rtPinLockedGlobals();

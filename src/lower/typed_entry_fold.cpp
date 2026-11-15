@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,10 @@ namespace bronze::lower {
 //   strict.eq undefined, undefined -> true;   is.nullish undefined|null -> true
 //     (an omitted parameter reads `const.undefined`, and these are its
 //     defaulted-parameter tests)
+//   add | sub | mul | div (box.f64 x), (box.f64 y) -> box.f64 of that on x and y
+//     (what a read of a removed literal's fields leaves, fresh_literals.h)
+//   a dynamic block parameter every edge passes a Number -> box.f64 of an f64
+//     parameter (foldNumberParams: an accumulator such reads feed)
 //   br <const>                  -> jump to the arm it names
 //
 // and, given the module's key constants, the tests a self-hosted builtin's
@@ -254,6 +259,198 @@ uint32_t foldValues(il::Function& fn, const std::vector<std::string>* keys) {
         }
     }
     if (renamed) applyRename(fn, to);
+    return folds;
+}
+
+// A dynamic `+ - * /` whose operands are both boxed Numbers is the Number
+// operation on what they box: ToPrimitive and ToNumeric of a Number are the
+// Number, and `+` of two of them never concatenates.
+uint32_t foldBoxedArithmetic(il::Function& fn) {
+    const Defs d = collectDefs(fn);
+    uint32_t folds = 0;
+    // The rewritten blocks are swapped in after the walk: `d` points into
+    // the instructions it reads.
+    std::vector<std::pair<size_t, std::vector<il::Instruction>>> rebuilt;
+    for (size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+        const auto& insts = fn.blocks[bi].instructions;
+        std::vector<il::Instruction> out;
+        bool any = false;
+        for (const il::Instruction& inst : insts) {
+            const bool arith = (inst.op == il::Op::Add || inst.op == il::Op::Sub || inst.op == il::Op::Mul ||
+                                inst.op == il::Op::Div) &&
+                               inst.type == il::Type::Dynamic && inst.operands.size() == 2 &&
+                               inst.result != il::kNoValue;
+            const il::Instruction* a = arith ? boxDef(d, inst.operands[0]) : nullptr;
+            const il::Instruction* b = arith ? boxDef(d, inst.operands[1]) : nullptr;
+            if (a == nullptr || b == nullptr || a->boxType != il::Type::F64 || b->boxType != il::Type::F64) {
+                out.push_back(inst);
+                continue;
+            }
+            il::Instruction op;
+            op.op = inst.op;
+            op.type = il::Type::F64;
+            op.result = fn.valueCount++;
+            op.operands = {a->operands[0], b->operands[0]};
+            il::Instruction box;
+            box.op = il::Op::Box;
+            box.type = il::Type::Dynamic;
+            box.boxType = il::Type::F64;
+            box.result = inst.result;
+            box.operands = {op.result};
+            out.push_back(std::move(op));
+            out.push_back(std::move(box));
+            any = true;
+            ++folds;
+        }
+        if (any) rebuilt.emplace_back(bi, std::move(out));
+    }
+    for (auto& [bi, insts] : rebuilt) fn.blocks[bi].instructions = std::move(insts);
+    return folds;
+}
+
+// A dynamic block parameter that only ever holds a Number is an f64
+// parameter, boxed where it is read: `s` in `s += o.a + o.b` once the reads
+// are known Numbers. Found optimistically, as a loop needs: every dynamic
+// parameter of a block that is no handler starts as a Number, a value is one
+// when it is a `box.f64`, such a parameter, or a dynamic `+ - * /` of two
+// values that are, and a parameter some edge passes anything else leaves the
+// set, until nothing changes.
+//
+// The parameter p becomes `p = box.f64 q` at the top of its block, q the new
+// f64 parameter, which makes the arithmetic that named p arithmetic on boxes
+// (foldBoxedArithmetic); each edge then passes what its argument boxes.
+uint32_t foldNumberParams(il::Function& fn) {
+    std::vector<uint8_t> handler(fn.blocks.size(), 0);
+    for (const auto& block : fn.blocks) {
+        if (block.handler != il::kNoBlock && block.handler < handler.size()) handler[block.handler] = 1;
+    }
+    std::vector<uint8_t> number(fn.valueCount, 0);
+    bool any = false;
+    for (size_t b = 1; b < fn.blocks.size(); ++b) {
+        if (handler[b]) continue;
+        for (const auto& bp : fn.blocks[b].params) {
+            if (bp.type == il::Type::Dynamic && bp.id < number.size()) {
+                number[bp.id] = 1;
+                any = true;
+            }
+        }
+    }
+    if (!any) return 0;
+    {
+        const Defs d = collectDefs(fn);
+        // Whether `v` is a Number given the parameters still in the set.
+        const auto isNumber = [&](il::ValueId v) {
+            std::vector<il::ValueId> work{v};
+            for (size_t n = 0; n < work.size() && n < 64; ++n) {
+                const il::ValueId x = work[n];
+                if (x >= number.size()) return false;
+                if (number[x]) continue;
+                const il::Instruction* def = d.inst[x];
+                if (def == nullptr) return false;
+                if (def->op == il::Op::Box && def->boxType == il::Type::F64 && def->operands.size() == 1) continue;
+                const bool arith = (def->op == il::Op::Add || def->op == il::Op::Sub || def->op == il::Op::Mul ||
+                                    def->op == il::Op::Div) &&
+                                   def->type == il::Type::Dynamic && def->operands.size() == 2;
+                if (!arith) return false;
+                work.push_back(def->operands[0]);
+                work.push_back(def->operands[1]);
+            }
+            return work.size() < 64;
+        };
+        for (bool changed = true; changed;) {
+            changed = false;
+            const auto check = [&](const il::BlockTarget& target) {
+                if (target.block >= fn.blocks.size()) return;
+                const auto& params = fn.blocks[target.block].params;
+                for (size_t i = 0; i < params.size(); ++i) {
+                    if (params[i].id >= number.size() || !number[params[i].id]) continue;
+                    if (i < target.args.size() && isNumber(target.args[i])) continue;
+                    number[params[i].id] = 0;
+                    changed = true;
+                }
+            };
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block.instructions) {
+                    if (inst.op == il::Op::Jump) check(inst.target);
+                    if (inst.op == il::Op::Branch) {
+                        check(inst.target);
+                        check(inst.elseTarget);
+                    }
+                }
+            }
+        }
+    }
+    uint32_t folds = 0;
+    for (size_t b = 1; b < fn.blocks.size(); ++b) {
+        il::Block& block = fn.blocks[b];
+        std::vector<il::Instruction> boxes;
+        for (auto& bp : block.params) {
+            if (bp.id >= number.size() || !number[bp.id]) continue;
+            il::Instruction box;
+            box.op = il::Op::Box;
+            box.type = il::Type::Dynamic;
+            box.boxType = il::Type::F64;
+            box.result = bp.id;
+            bp.id = fn.valueCount++;
+            bp.type = il::Type::F64;
+            box.operands = {bp.id};
+            boxes.push_back(std::move(box));
+            ++folds;
+        }
+        block.instructions.insert(block.instructions.begin(), std::make_move_iterator(boxes.begin()),
+                                  std::make_move_iterator(boxes.end()));
+    }
+    if (folds == 0) return 0;
+    while (foldBoxedArithmetic(fn) != 0) {
+    }
+    // Each edge into an f64 parameter passes what its argument boxes; the
+    // analysis left only arguments the fold above made boxes. Read off first:
+    // the rewrite below moves the instructions.
+    std::vector<il::ValueId> boxed(fn.valueCount, il::kNoValue);
+    std::vector<uint8_t> isF64(fn.valueCount, 0);
+    for (size_t p = 0; p < fn.params.size() && p < isF64.size(); ++p) isF64[p] = fn.params[p].type == il::Type::F64;
+    for (const auto& block : fn.blocks) {
+        for (const auto& bp : block.params) isF64[bp.id] = bp.type == il::Type::F64;
+        for (const auto& inst : block.instructions) {
+            if (inst.result == il::kNoValue) continue;
+            isF64[inst.result] = inst.type == il::Type::F64;
+            if (inst.op == il::Op::Box && inst.boxType == il::Type::F64 && inst.operands.size() == 1) {
+                boxed[inst.result] = inst.operands[0];
+            }
+        }
+    }
+    for (auto& block : fn.blocks) {
+        std::vector<il::Instruction> out;
+        out.reserve(block.instructions.size());
+        for (auto& inst : block.instructions) {
+            const auto unboxArgs = [&](il::BlockTarget& target) {
+                if (target.block >= fn.blocks.size()) return;
+                const auto& params = fn.blocks[target.block].params;
+                for (size_t i = 0; i < params.size() && i < target.args.size(); ++i) {
+                    if (params[i].type != il::Type::F64) continue;
+                    const il::ValueId arg = target.args[i];
+                    if (arg >= boxed.size() || isF64[arg]) continue;
+                    if (boxed[arg] != il::kNoValue) {
+                        target.args[i] = boxed[arg];
+                        continue;
+                    }
+                    il::Instruction unbox;
+                    unbox.op = il::Op::Unbox;
+                    unbox.type = il::Type::F64;
+                    unbox.result = fn.valueCount++;
+                    unbox.operands = {arg};
+                    target.args[i] = unbox.result;
+                    out.push_back(std::move(unbox));
+                }
+            };
+            if (inst.op == il::Op::Jump || inst.op == il::Op::Branch) {
+                unboxArgs(inst.target);
+                if (inst.op == il::Op::Branch) unboxArgs(inst.elseTarget);
+            }
+            out.push_back(std::move(inst));
+        }
+        block.instructions = std::move(out);
+    }
     return folds;
 }
 
@@ -555,7 +752,8 @@ uint32_t foldTypedEntry(il::Function& fn, const il::Module* module) {
     uint32_t folds = 0;
     for (;;) {
         const uint32_t decided =
-            foldValues(fn, keys) + foldBranches(fn) + (module != nullptr ? foldArrayFacts(fn, *module) : 0);
+            foldValues(fn, keys) + foldBoxedArithmetic(fn) + foldNumberParams(fn) + foldBranches(fn) +
+            (module != nullptr ? foldArrayFacts(fn, *module) : 0);
         folds += decided;
         const bool pruned = pruneBlocks(fn);
         const bool forwarded = forwardParams(fn);

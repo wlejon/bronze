@@ -652,6 +652,18 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
 
+// `create.this f` (il_op.h) off the inline path: generated code reaches this
+// only behind the construction test of `f`, a function object the plain path
+// above vetted, so the instance is that path's own allocation.
+uint64_t bronze_create_this(uint64_t fnBits) {
+    recordHelperCall("bronze_create_this");
+    Rooted<Value> fnRoot{Value(fnBits)};
+    ObjectHeader* instance =
+        ObjectHeader::create(rtHeap(), rtArena(), fnRoot.get().asObject<FunctionHeader>()->instance_shape);
+    instance->header.flags = HeapKind::Plain;
+    return Value::fromObject(instance).rawBits();
+}
+
 // ---- Environment records: `depth` parent hops, then `index` ----
 
 uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {

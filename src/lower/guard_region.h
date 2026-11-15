@@ -410,9 +410,22 @@ inline constexpr uint64_t kFeedbackHotExecutions = 256;
 //
 // `missedClaims`, with `only`: a profile was read, and these are the claimed
 // sites it saw miss (`RegionPlan::missedClaims`).
+//
+// `deferred`, on the first static run: a loop holding a method call, or a
+// `new` with a known constructor, is left alone, and its function's index
+// goes here. Guarded inlining copies the bodies those sites call into that
+// loop, and the run after it builds the region whose fast copy has their
+// guards as exits: a body's miss then leaves the fast copy instead of
+// rejoining it with a call's result, which is what keeps the numbers behind
+// it doubles, lets an instance go unmade (fresh_instances.h) and leaves a
+// loop that runs no code (quiet_loop_hoist.h). A region built now would be
+// the one copy pair the loop gets, with the inlined bodies' joins in it. `plain`, with `only`: the
+// functions are examined as the first run would, for the deferred loops
+// inlining left as they were.
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr,
                          const RegionFeedback* feedback = nullptr, const std::vector<uint32_t>* only = nullptr,
-                         const std::unordered_set<uint32_t>* missedClaims = nullptr);
+                         const std::unordered_set<uint32_t>* missedClaims = nullptr,
+                         std::vector<uint32_t>* deferred = nullptr, bool plain = false);
 
 // Prints the counters to stderr under `BRONZE_GUARDED_REGION_STATS=1`, and does
 // nothing otherwise. `label` names the run (`guard`, `guard-fb`).
@@ -735,9 +748,9 @@ bool planShapeGuards(const il::Function& fn, const std::vector<il::Type>& types,
 // ---------------------------------------------------------------------------
 // IC EXITS
 //
-// An inlined method or accessor body stands behind its site's guard
-// (inline_guarded.cpp): `g = method.ic.is recv` or `g = accessor.ic.is recv`,
-// then `br g, body, miss`, where the miss block holds the original call or
+// An inlined method, accessor, closure or constructor body stands behind its
+// site's guard (inline_guarded.cpp): `g = method.ic.is recv`,
+// `g = accessor.ic.is recv` or `g = closure.is callee`, then `br g, body, miss`, where the miss block holds the original call or
 // access and both ways meet again at the block the rest of the caller went to.
 // The miss can run any code, so past that join nothing the hit knew about any
 // object is still known, and no value live across the diamond can stay out of

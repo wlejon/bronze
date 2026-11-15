@@ -82,9 +82,13 @@ size_t Inliner::growthOf(uint32_t callee, size_t extra) const {
 
 void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calleeIdx, const SplicePlan& splice) {
     const Form form = splice.form;
-    const bool closure = form == Form::Closure;
+    // A constructor's body is entered as a closure's is, behind a test of the
+    // function object, with a fresh instance for its `this`.
+    const bool construct = form == Form::Construct;
+    const bool closure = form == Form::Closure || construct;
     const bool unguarded = form == Form::Exact || form == Form::Literal;
-    const bool reuseSlotFn = closure && i == 0 && b < closureSlotFn_.size() && closureSlotFn_[b] != il::kNoValue;
+    const bool reuseSlotFn =
+        form == Form::Closure && i == 0 && b < closureSlotFn_.size() && closureSlotFn_[b] != il::kNoValue;
     const il::ValueId priorSlotFn = reuseSlotFn ? closureSlotFn_[b] : il::kNoValue;
     const il::Function& callee = originals_[calleeIdx];
     const il::Instruction call = fn.blocks[b].instructions[i];
@@ -208,13 +212,15 @@ void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calle
     };
     const size_t firstSource = callee.firstSourceParam();
     il::ValueId envValue = il::kNoValue;
+    il::ValueId thisValue = il::kNoValue;  // a constructor body's instance
     if (form == Form::Exact) {
         // A direct call's operands are its callee's parameters.
         for (size_t p = 0; p < callee.params.size(); ++p) vm[p] = call.operands[p];
     } else {
         // A call.dynamic's callee and `this` come before its arguments.
         const size_t self = form == Form::Literal ? 1 : 0;
-        if (callee.needsThis) vm[firstSource - 1] = call.operands[self];
+        if (construct) thisValue = fresh(fn, il::Type::Dynamic);
+        if (callee.needsThis) vm[firstSource - 1] = construct ? thisValue : call.operands[self];
         if (closure && callee.needsEnv) vm[0] = envValue = fresh(fn, il::Type::Dynamic);
         if (form == Form::Literal && callee.needsEnv) vm[0] = literals_.at(call.operands[0]).second;
         for (size_t p = firstSource; p < callee.params.size(); ++p) {
@@ -243,7 +249,7 @@ void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calle
         enter.target.block = base;
         fn.blocks[b].instructions.push_back(std::move(enter));
     } else if (closure) {
-        il::ValueId slotFnValue = priorSlotFn;
+        il::ValueId slotFnValue = construct ? call.operands[0] : priorSlotFn;
         if (slotFnValue == il::kNoValue) {
             il::Instruction slotFn = callSiteInst(il::Op::MethodSlotFn);
             slotFn.type = il::Type::Dynamic;
@@ -253,12 +259,13 @@ void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calle
             slotFn.keyIndex = call.keyIndex;
             fn.blocks[b].instructions.push_back(std::move(slotFn));
         }
-        if (splice.moreTries) closureSlotFn_[slow] = slotFnValue;
+        if (splice.moreTries && !construct) closureSlotFn_[slow] = slotFnValue;
         il::Instruction is = callSiteInst(il::Op::ClosureIs);
         is.type = il::Type::Bool;
         is.result = fresh(fn, il::Type::Bool);
         is.operands = {slotFnValue};
         is.calleeIndex = calleeIdx;
+        if (construct) is.immI32 = il::Instruction::kClosureIsConstruct;
         il::Instruction br = callSiteInst(il::Op::Branch);
         br.operands = {is.result};
         br.target.block = envBlock;
@@ -269,6 +276,13 @@ void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calle
             env.result = envValue;
             env.operands = {slotFnValue};
             fn.blocks[envBlock].instructions.push_back(std::move(env));
+        }
+        if (construct) {
+            il::Instruction self = callSiteInst(il::Op::CreateThis);
+            self.type = il::Type::Dynamic;
+            self.result = thisValue;
+            self.operands = {slotFnValue};
+            fn.blocks[envBlock].instructions.push_back(std::move(self));
         }
         il::Instruction enter = callSiteInst(il::Op::Jump);
         enter.target.block = base;
@@ -309,7 +323,11 @@ void Inliner::inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calle
                 jump.inlineFrame = frame;
                 jump.target = il::BlockTarget{tail, {}};
                 jump.elseTarget = il::BlockTarget{};
-                if (call.result != il::kNoValue) {
+                if (call.result != il::kNoValue && construct) {
+                    // The body returns no object (constructCallee), so the
+                    // construction's value is its instance.
+                    jump.target.args.push_back(thisValue);
+                } else if (call.result != il::kNoValue) {
                     il::ValueId v = (!src.operands.empty() && src.operands[0] != il::kNoValue) ? map(src.operands[0])
                                                                                                 : il::kNoValue;
                     if (v == il::kNoValue) {

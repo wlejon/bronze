@@ -117,6 +117,11 @@ struct FeedbackPlan {
     std::unordered_map<uint32_t, NameCounts> shapesByIc;   // prop.get / prop.set receivers
     std::unordered_map<uint32_t, NameCounts> methodsByIc;  // method.call callees
     std::unordered_map<uint32_t, NameCounts> methodShapesByIc;  // method.call receivers
+    // How many receiver shapes a harvested method site latched DIRECT for
+    // each callee name: `c.update()` over three subclasses of the class that
+    // defines `update` is three for it. An inlined body's guard holds that
+    // many shapes (lower_final_passes.cpp, the guard's cell pairs).
+    std::unordered_map<uint32_t, std::map<std::string, uint32_t>> methodReceiversByIc;
     // Property sites whose harvested cache held two shapes under one name:
     // the same keys in the same order, laid out differently (a slot's
     // representation, an attribute), so one identity cell answers one of them.

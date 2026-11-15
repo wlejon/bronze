@@ -265,10 +265,14 @@ bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
 bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
                                 const PatternTarget& target, il::Function& ilFn) {
     const auto isSimplePositional = [&]() {
-        if (!target.declare) return false;
         if (pattern.elements.empty() || pattern.elements.size() > 8) return false;
         for (const auto& elem : pattern.elements) {
             if (elem.isRest || elem.target != nullptr) return false;
+            // An assignment's elements are read before the first of them is
+            // written, where 13.15.5.5 writes each as it is read: the same
+            // thing when every target is a name with no default, since
+            // writing a binding reads nothing of the source (`[a, b] = [b, a]`).
+            if (!target.declare && (elem.pattern || elem.defaultValue || elem.name.empty())) return false;
         }
         return true;
     };

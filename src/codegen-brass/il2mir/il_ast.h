@@ -173,6 +173,9 @@ enum class BronzeOp {
     PrintSpreadErr,
     KeepAlive,
     MethodIcIs,
+    // `method.ic.is` of the shape a transition run ends at (il.h
+    // `Op::RunMethodIs`): `run_cell` names the run, no operand.
+    RunMethodIs,
     AccessorIcIs,
     IsTypedArray,
     IsArray,
@@ -180,6 +183,7 @@ enum class BronzeOp {
     MethodSlotFn,
     ClosureIs,
     ClosureEnv,
+    CreateThis,
     // `prop.set` / `elem.set` in kWriteDefine mode (il.h): CreateDataPropertyOrThrow.
     // Their own ops here so that no assignment fast path — a static slot, an
     // accessor call, an index run, a typed store — can match one by its op.

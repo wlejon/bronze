@@ -320,6 +320,9 @@
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_dynamic_call,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_construct,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    /* `create.this f` when the inline bump had no room: a plain object of the
+     * vetted constructor `f`'s instance shape. */ \
+    X(bronze_create_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     /* The one function object for a mention of a declaration. The last argument
      * is the calling module's own {code, value} cache slot for this mention, or
      * null: the runtime's native-builtin interning has no module to hold a slot

@@ -158,6 +158,7 @@ const char* opName(Op op) {
         case Op::PrintSpreadErr: return "print.spread.err";
         case Op::KeepAlive: return "keep.alive";
         case Op::MethodIcIs: return "method.ic.is";
+        case Op::RunMethodIs: return "run.method.is";
         case Op::AccessorIcIs: return "accessor.ic.is";
         case Op::IsTypedArray: return "is.typed_array";
         case Op::IsNumberArray: return "is.number_array";
@@ -166,6 +167,7 @@ const char* opName(Op op) {
         case Op::MethodSlotFn: return "method.slot.fn";
         case Op::ClosureIs: return "closure.is";
         case Op::ClosureEnv: return "closure.env";
+        case Op::CreateThis: return "create.this";
         case Op::ObjectLitProto: return "object.proto";
     }
     return "?";

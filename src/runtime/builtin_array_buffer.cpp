@@ -391,6 +391,16 @@ void ensureArrayBufferIntrinsics() {
 
 }  // namespace
 
+// Lockdown froze %ArrayBuffer% and its prototype, which gave each another
+// shape (rtTypedArrayIntrinsicsHardened says why that matters): the shapes
+// they have now are the pristine ones.
+void rtArrayBufferIntrinsicsHardened() {
+    if (!g_buffer.proto.isObject()) return;
+    g_buffer.protoPristineShape = g_buffer.proto.asObject<ObjectHeader>()->shape;
+    g_buffer.ctorBoxPristineShape =
+        g_buffer.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+}
+
 Value rtArrayBufferConstructor(const std::string& name) {
     if (name != "ArrayBuffer") return Value::fromUndefined();
     ensureArrayBufferIntrinsics();

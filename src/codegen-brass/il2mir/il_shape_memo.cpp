@@ -169,7 +169,8 @@ void IlLowering::find_guard_misses(const BronzeFunction& fn_ast) {
     // pair is one site and one callee, so both ask it the same question.
     for (const BronzeBlock& blk : fn_ast.blocks) {
         for (const BronzeInstruction& inst : blk.instructions) {
-            if (inst.op == BronzeOp::MethodIcIs && filled_cells.count(inst.static_cell) != 0) {
+            const bool method = inst.op == BronzeOp::MethodIcIs || inst.op == BronzeOp::RunMethodIs;
+            if (method && filled_cells.count(inst.static_cell) != 0) {
                 method_cells_filled_.insert(&inst);
             }
         }
