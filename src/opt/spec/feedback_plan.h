@@ -86,12 +86,6 @@ struct NumberCounts {
     uint64_t bools = 0, objects = 0, undefineds = 0, nulls = 0;
 };
 
-// What a property read returned: how often, and how often `undefined`.
-struct ReadResults {
-    uint64_t total = 0;
-    uint64_t undefineds = 0;
-};
-
 // The executions a harvested site is taken to stand for (feedback_plan.cpp,
 // "Harvest"): a cache holds what a site met, not how often, so a filled one
 // counts as a site that ran past every threshold here, its shapes sharing
@@ -123,7 +117,6 @@ struct FeedbackPlan {
     std::unordered_map<uint32_t, NameCounts> shapesByIc;   // prop.get / prop.set receivers
     std::unordered_map<uint32_t, NameCounts> methodsByIc;  // method.call callees
     std::unordered_map<uint32_t, NameCounts> methodShapesByIc;  // method.call receivers
-    std::unordered_map<uint32_t, ReadResults> readResultsByIc;  // prop.get results
     // Property sites whose harvested cache held two shapes under one name:
     // the same keys in the same order, laid out differently (a slot's
     // representation, an attribute), so one identity cell answers one of them.
@@ -191,8 +184,6 @@ struct FeedbackApplyStats {
     uint32_t stampsWithdrawn = 0;  //    predicted identity claims on a site the run met several shapes at
     uint32_t numberHints = 0;      // C: numeric ops hinted
     uint32_t truthHints = 0;       // C: truthiness unboxes hinted with the kinds they saw
-    uint32_t chainReads = 0;       // E: reads given an inline way chain (icChain)
-    uint32_t chainProto = 0;       //    of them, with the one-link prototype arm
     uint32_t ownCallees = 0;       // B: method.call sites split on an own slot's closure
     uint32_t ownSlotSites = 0;     // B: own-slot sites with no one closure, dispatched at the site
     uint32_t nativeTargetsDropped = 0;  // B: predicted direct targets the run saw a native callee at
@@ -203,7 +194,6 @@ struct FeedbackApplyStats {
     // The profiled executions the claims cover, each identity counted once
     // however many copies of it were claimed.
     uint64_t shapeExecutions = 0, methodExecutions = 0, closureExecutions = 0, hintExecutions = 0;
-    uint64_t chainExecutions = 0;
 };
 
 // B, method calls: a direct target for each method.call whose callee the
@@ -231,9 +221,7 @@ uint32_t profiledClosureTarget(const il::Module& mod, const FeedbackPlan& plan, 
 
 // A and C over the finished module: a guarded static-slot claim for each
 // property site left without one whose receivers had one dominant shape, and
-// `numberHint` on each numeric op whose every Dynamic operand was a Number;
-// and E, an inline way chain (`icChain`) on each read that met 1..4 plain
-// shapes.
+// `numberHint` on each numeric op whose every Dynamic operand was a Number.
 //
 // `missedClaims` receives the inline-cache index of every claimed property
 // site the run saw a receiver at that its claim does not answer: a shape with

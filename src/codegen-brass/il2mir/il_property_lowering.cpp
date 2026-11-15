@@ -298,9 +298,8 @@ constexpr uint64_t kMaxInlineDispIndex = (uint64_t{INT32_MAX} - kBronzeHdrBytes)
 
 Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
-// A read's ordinary sequence: the `length` arms, the way-0 inline cache for
-// the sites that get one, else the helper. A static site's guard misses into
-// this.
+// A read's ordinary sequence: the `length` arms, then the inline cache test.
+// A static site's guard misses into this.
 Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                                const IcSite& site, const MemoCarry* carry = nullptr);
 
@@ -324,48 +323,33 @@ Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst
 Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                                const IcSite& site, const MemoCarry* carry) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
-    // A site the IL calls monomorphic gets the way-0 guard-and-load
-    // in front of the helper: one compare against the most recently
-    // installed shape (the helper fills move-to-front), never a
-    // chain over the other ways. Every site could carry it — the
-    // guard is correct for any receiver — but each one is a merge
-    // GVN-PRE re-walks the function for, and on three.js putting it
-    // at every read doubled the optimized compile for a gain the
-    // `mono` sites alone already deliver. A program that runs under
-    // the tiered pipeline with speculation feedback inlines every
-    // site: its misses, not inference, decide what tier 2 keeps, and
-    // only hot functions are optimized at all. Code that runs once
-    // (IlLowering::run_once) calls the helper, which caches as well.
-    const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
-    if (Value* v = prop_lowering.lower_prop_get_chain(b, obj_val, inst_ast, site, lowering->run_once(), carry)) return v;
     // `x.length` where nothing proved what `x` is: an Array answers
     // from its header (10.4.2's exotic `length`, which the runtime's
     // read answers the same way for every array, `arguments`
     // included), and anything else takes the read it took before.
-    // An array is never a plain object, so the mono guard below could
-    // only ever miss on one.
+    // An array carries no shape, so the cache test below could only ever
+    // miss on one.
+    const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
     if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
         prop_lowering.key_tag(inst_ast.index) == "length") {
-        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site,
-                                                   site && (mono || inst_ast.is_poly),
-                                                   inst_ast.is_family || inst_ast.is_poly);
+        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, site && mono,
+                                                   inst_ast.is_family);
     }
-    // A read inference could not type, in a loop: the way-0 guard and the
-    // scan of the other ways, inline, in front of the out-of-line site. Its
-    // receivers are what the program's data holds (`basePos[i].x` over
-    // object literals, `children[i].matrixWorldAutoUpdate` over a scene's meshes),
-    // so one site meets a few shapes, which the scan answers without the
-    // call, its caller-saved spills and its root-slot clears. Outside loops
-    // the call stays: there the inline form is only size and compile time.
-    // A read the whole-program optimizer predicts polymorphic (il.h
-    // `icPolymorphic`) gets the same form wherever it is.
-    const bool loop_poly = !mono && lowering->in_loop();
-    const bool poly = loop_poly || inst_ast.is_poly;
+    // An image's read: the inline cache test (il_prop_get_inline.cpp).
+    if (Value* v = prop_lowering.lower_prop_get_inline(b, obj_val, inst_ast.index, site, lowering->run_once(), carry)) {
+        return v;
+    }
+    // In process: a site the IL calls monomorphic, and every site of a
+    // program that runs under the tiered pipeline with speculation feedback
+    // (its misses, not inference, decide what tier 2 keeps), gets the way-0
+    // guard and load in front of the helper; a read inference could not type
+    // gets it in a loop, with the scan of the other ways. Elsewhere, and in
+    // code that runs once, the helper, which caches as well.
+    const bool poly = !mono && lowering->in_loop();
     if (site && (mono || poly) && prop_lowering.enable_inlined_fastpaths() &&
         inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
         prop_lowering.set_memo_carry(carry);
-        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
-                                                 inst_ast.is_family || poly);
+        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family || poly);
     }
     return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
 }

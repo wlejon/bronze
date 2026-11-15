@@ -62,7 +62,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_prop_stubs.cpp
     il2mir/il_method_site.cpp
     il2mir/il_is_array.cpp
-    il2mir/il_prop_get_chain.cpp
+    il2mir/il_prop_get_inline.cpp
     il2mir/il_prop_get_fast.cpp
     il2mir/il_prop_set_fast.cpp
     il2mir/il_lowering_coro.cpp

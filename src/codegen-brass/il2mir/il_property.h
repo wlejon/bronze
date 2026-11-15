@@ -440,14 +440,13 @@ public:
     Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
                                bool expect_poly = false);
 
-    // A read a profile saw meet 1..4 shapes (il.h `icChain`,
-    // il_prop_get_chain.cpp): that many ways compared inline, the matching
-    // one's own data slot, negative entry or (kChainProto) one-link
-    // prototype data answered there, the stub for the rest. An image's only:
-    // null (nothing emitted) for a read without a chain, a site or IC stubs,
-    // and for code that runs once.
-    Value* lower_prop_get_chain(Builder& b, Value* obj, const BronzeInstruction& inst_ast, const IcSite& site,
-                                bool run_once, const MemoCarry* carry);
+    // The inline cache test of an image's read (il_prop_get_inline.cpp): the
+    // site's first two ways compared inline, the matching one's own data
+    // slot, negative entry or one-link prototype data answered there, the
+    // stub for the rest. Null (nothing emitted) for a read without a site or
+    // IC stubs, in process, and for code that runs once.
+    Value* lower_prop_get_inline(Builder& b, Value* obj, uint32_t key_index, const IcSite& site, bool run_once,
+                                 const MemoCarry* carry);
 
     // The memo carry the next mono or absent read takes (and clears), so
     // that the read keeps the shape memo across its join; null leaves the

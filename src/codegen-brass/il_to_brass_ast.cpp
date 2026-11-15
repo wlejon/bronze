@@ -255,8 +255,6 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
                 out.is_family = inst.familyLo != il::Instruction::kNoFamily;
                 out.shape_guarded = inst.shapeGuarded;
             }
-            out.is_poly = inst.icPolymorphic;
-            out.ic_chain = inst.icChain;
             out.number_bits = inst.numberBits;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);

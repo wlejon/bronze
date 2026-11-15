@@ -96,13 +96,6 @@ struct Instruction {
     // branch), so the guard is what makes the proof sound, not a redundancy on
     // top.
     bool icMonomorphic = false;
-    // PropGet: a PREDICTION (src/opt/wpo) that this site meets a few shapes,
-    // each holding the key as an own data property, at slots that need not
-    // agree. The backend gives it the way-0 test and the inline scan of the
-    // cache's other ways in front of the helper, as it does a read whose
-    // receiver class has subclasses. The ways are what the runtime filled, so
-    // a wrong prediction costs the scan's loads and never an answer.
-    bool icPolymorphic = false;
     // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
     // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
     // `MathUtils.generateUUID`, a class name used inside its own body —
@@ -354,22 +347,6 @@ struct Instruction {
     static constexpr uint8_t kTruthUndefined = 4;
     static constexpr uint8_t kTruthNull = 8;
     uint8_t truthHint = 0;
-    // PropGet: a HINT from a type-feedback profile, the receiver shapes the
-    // site met (1..4, at least 1% of its executions each): the backend tests
-    // that many of the cache's ways inline, in fill order, answering an own
-    // data slot or, while the prototype epoch holds, a negative entry from
-    // whichever names the receiver's shape, and with kChainProto also a data
-    // property one prototype link up; the stub after. The ways are what the
-    // runtime filled, so a wrong hint costs the tests and never an answer.
-    // kChainNotOwnFirst: most of the run's reads came through a shape whose
-    // key list lacks the key, so the answer past the receiver's own slots is
-    // laid out as the fall-through; kChainProtoFirst: of those, most read a
-    // value (the prototype arm), not `undefined`. Layout only.
-    static constexpr uint8_t kChainWaysMask = 7;
-    static constexpr uint8_t kChainProto = 8;
-    static constexpr uint8_t kChainNotOwnFirst = 16;
-    static constexpr uint8_t kChainProtoFirst = 32;
-    uint8_t icChain = 0;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //

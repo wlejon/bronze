@@ -242,14 +242,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         // The site inference proved monomorphic: an identity claim about
                         // the receiver, shown because it is what --infer-stats counts.
                         if (inst.icMonomorphic) out += ", mono";
-                        if (inst.icPolymorphic) out += ", poly";
                         if (inst.immI32 & kPropGetArrayLength) out += ", array-length";
-                        if (inst.icChain != 0) {
-                            out += ", chain " + std::to_string(inst.icChain & Instruction::kChainWaysMask);
-                            if (inst.icChain & Instruction::kChainProto) out += "+proto";
-                            if (inst.icChain & Instruction::kChainNotOwnFirst) out += " notown-first";
-                            if (inst.icChain & Instruction::kChainProtoFirst) out += " proto-first";
-                        }
                         // The receiver is a class- or function-declaration BINDING, so it
                         // can be a function object with members in a statics box: a hint,
                         // not a proof, but it decides whether the backend emits the arm

@@ -258,7 +258,6 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
                 (!write || stored.count(held->first) != 0 || !lastKeyIs(held->first, key))) {
                 plan.shapesByIc[ic].counts[held->first] += W;
                 plan.shapesByIc[ic].total += W;
-                if (!write) plan.readResultsByIc[ic].total += W;
                 ++plan.stats.harvestPhased;
                 continue;
             }
@@ -290,11 +289,6 @@ void planHarvest(const il::Module& probe, const Harvest& harvest, FeedbackPlan& 
             total = W;
         }
         counts.total += total;
-        if (!write) {
-            ReadResults& results = plan.readResultsByIc[ic];
-            results.total += total;
-            for (const auto& [receiver, absent] : receivers) results.undefineds += absent ? share : 0;
-        }
     }
 }
 
@@ -372,11 +366,6 @@ FeedbackPlan planFeedback(const il::Module& probe, const TypeProfile& profile, s
                     ++plan.stats.shapeSites;
                     break;
                 case il::FeedbackKind::Result:
-                    if (inst.op == il::Op::PropGet) {
-                        ReadResults& r = plan.readResultsByIc[inst.icIndex];
-                        r.total += fb.total;
-                        r.undefineds += fb.tags[BRONZE_FEEDBACK_TAG_UNDEFINED];
-                    }
                     break;
                 case il::FeedbackKind::Method:
                     addNames(plan.methodShapesByIc[inst.icIndex], fb.shapes, fb.total);
@@ -432,8 +421,7 @@ std::string feedbackReport(const FeedbackPlan& plan, const FeedbackApplyStats& s
     out += "feedback: C number hints " + n(stats.numberHints) + ", truthiness hints " + n(stats.truthHints) +
            "; profiled executions " +
            n(stats.hintExecutions) + "\n";
-    out += "feedback: E inline way chains " + n(stats.chainReads) + " (prototype arm " + n(stats.chainProto) +
-           "; profiled executions " + n(stats.chainExecutions) + "), own-slot callees " + n(stats.ownCallees) +
+    out += "feedback: E own-slot callees " + n(stats.ownCallees) +
            ", own-slot sites " + n(stats.ownSlotSites) + ", native-callee targets dropped " +
            n(stats.nativeTargetsDropped) + "\n";
     out += "feedback: F accessor targets get " + n(stats.accessorGets) + ", set " + n(stats.accessorSets) +

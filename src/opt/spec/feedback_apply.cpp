@@ -234,81 +234,6 @@ public:
         if (hinted_.insert(it->first).second) stats_.hintExecutions += c.total;
     }
 
-    // E: a read's inline way chain (il.h `icChain`). Every read the run met
-    // with one to four shapes, each at least 1% of its executions, and
-    // nothing else: a site of more shapes is the stub's (its table probe),
-    // and one a static claim answers needs no chain for its one shape. The
-    // prototype arm goes where the run read a value that is not `undefined`
-    // through a shape whose complete key list lacks the key: a data property
-    // up the chain (WebGL's constants, on the context's prototype).
-    void chain(il::Instruction& inst) {
-        if (inst.op != il::Op::PropGet || inst.icChain != 0 || inst.operands.empty() ||
-            inst.keyIndex >= mod_.keyConstants.size()) {
-            return;
-        }
-        const std::string& key = mod_.keyConstants[inst.keyIndex];
-        if (key == "length" || il::parseIndexKey(key)) return;
-        const auto it = plan_.shapesByIc.find(inst.icIndex);
-        if (it == plan_.shapesByIc.end() || it->second.total < kMinExecutions) return;
-        const NameCounts& names = it->second;
-        // The shapes past the 1% line count toward the ways tested, not
-        // toward the limit: a rare shape installed late moves the common
-        // ones down a way each. A receiver that is no plain object, or a
-        // dictionary, holds no way and goes to the stub.
-        uint32_t significant = 0, plain = 0;
-        bool lacking = false;
-        bool allInFamily =
-            inst.staticSlot != il::Instruction::kNoStaticSlot && inst.familyLo != il::Instruction::kNoFamily;
-        uint64_t ownReads = 0, lackingReads = 0;
-        std::vector<std::string_view> keys;
-        for (const auto& [name, count] : names.counts) {
-            const bool major = count * 100 >= names.total;
-            bool complete = false;
-            if (name == "*other*") {
-                if (major) return;
-                if (count != 0) allInFamily = false;
-                continue;
-            }
-            uint32_t inlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
-            if (!shapeKeys(name, keys, complete, &inlineSlots)) {
-                if (count != 0) allInFamily = false;
-                continue;
-            }
-            if (allInFamily && count != 0) {
-                uint32_t shapeLo = 0, shapeSpan = 0;
-                if (!complete ||
-                    !familyOf(keys, inlineSlots, inst.staticSlot, inst.keyIndex, /*write=*/false, &shapeLo,
-                              &shapeSpan) ||
-                    shapeLo < inst.familyLo || shapeLo + shapeSpan > inst.familyLo + inst.familySpan) {
-                    allInFamily = false;
-                }
-            }
-            ++plain;
-            if (!major) continue;
-            if (++significant > 4) return;
-            bool has = false;
-            for (std::string_view k : keys) has = has || k == key;
-            if (complete && !has) lacking = true;
-            (complete && !has ? lackingReads : ownReads) += count;
-        }
-        if (significant == 0 || allInFamily || (plain == 1 && inst.staticSlot != il::Instruction::kNoStaticSlot)) {
-            return;
-        }
-        uint8_t chain = static_cast<uint8_t>(std::min<uint32_t>(plain, 4));
-        const auto rt = plan_.readResultsByIc.find(inst.icIndex);
-        if (lacking && rt != plan_.readResultsByIc.end() && rt->second.undefineds < rt->second.total) {
-            chain |= il::Instruction::kChainProto;
-            ++stats_.chainProto;
-            if (rt->second.undefineds * 2 < rt->second.total) chain |= il::Instruction::kChainProtoFirst;
-        }
-        // Where most reads lack the key, the answer past the own slots is the
-        // one laid out in line (a three.js `object.isInstancedMesh` test).
-        if (lackingReads > ownReads) chain |= il::Instruction::kChainNotOwnFirst;
-        inst.icChain = chain;
-        ++stats_.chainReads;
-        if (chainedIcs_.insert(inst.icIndex).second) stats_.chainExecutions += names.total;
-    }
-
     // C: one numeric op.
     void hint(il::Instruction& inst, const std::vector<uint8_t>& observable) {
         if (inst.numberHint || !il::observesOperandTags(inst)) return;
@@ -447,7 +372,6 @@ private:
     FeedbackApplyStats& stats_;
     std::unordered_map<std::string, uint32_t> keyIndex_;
     std::unordered_set<uint32_t> claimedIcs_;
-    std::unordered_set<uint32_t> chainedIcs_;
     std::set<ValueKey> hinted_;
 };
 
@@ -597,7 +521,6 @@ void applyFeedbackClaimsAndHints(il::Module& mod, const FeedbackPlan& plan, Feed
                 il::Instruction& inst = block.instructions[i];
                 if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) && interior[i] == 0) {
                     writer.claim(inst, observable);
-                    writer.chain(inst);
                     if (missedClaims != nullptr && writer.missed(inst)) missedClaims->insert(inst.icIndex);
                 } else {
                     writer.hint(inst, observable);

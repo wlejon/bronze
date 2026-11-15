@@ -67,14 +67,12 @@ Module fullModule() {
     inst.keyIndex = 1;
     inst.icIndex = 6;
     inst.icMonomorphic = true;
-    inst.icPolymorphic = true;
     inst.icFnRecv = true;
     inst.rawUnbox = true;
     inst.nullishUnbox = true;
     inst.rawBox = true;
     inst.numberBits = true;
     inst.truthHint = Instruction::kTruthBool | Instruction::kTruthUndefined;
-    inst.icChain = 3 | Instruction::kChainProto;
     inst.staticSlot = 2;
     inst.staticCellIndex = 1;
     inst.familyLo = 0;
@@ -124,10 +122,8 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.callEnvHops == a.callEnvHops);
     CHECK(b.nullishUnbox);
     CHECK(b.rawBox);
-    CHECK(b.icPolymorphic);
     CHECK(b.numberBits);
     CHECK(b.truthHint == a.truthHint);
-    CHECK(b.icChain == (3 | Instruction::kChainProto));
     CHECK(b.typedTarget == 0);
     CHECK(back.functions[0].typedOrigin == 1);
     CHECK(back.functions[0].typedArgc == 1);

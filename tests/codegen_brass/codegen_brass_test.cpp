@@ -255,7 +255,7 @@ TEST_CASE("a read site's stub answers hits without a call and hands the rest to 
     for (brass::BasicBlock* bb : reader->blocks()) {
         for (brass::Instruction* inst : *bb) {
             if (inst->opcode() != brass::Opcode::call) continue;
-            if (inst->symbol() == "__bronze_prop_get_ic") ++stub_calls;
+            if (inst->symbol() == "__bronze_prop_get_ic_front") ++stub_calls;
             CHECK(inst->symbol() != "__bronze_prop_get_slow");
         }
     }

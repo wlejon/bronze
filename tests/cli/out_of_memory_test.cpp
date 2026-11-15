@@ -96,7 +96,12 @@ TEST_CASE("an exhausted heap throws a catchable RangeError and the program goes 
         "  console.log('intact=' + ok);\n"
         "  return held;\n"
         "}\n"
-        "function scrub(n, a, b, c, d) { return n === 0 ? a + b + c + d : scrub(n - 1, n, n, n, n) + 0; }\n"
+        // Its arguments are read after the call, so each frame writes them to
+        // its slots: a frame that spills nothing leaves the words it covers
+        // as they were.
+        "function scrub(n, a, b, c, d) {\n"
+        "  return n === 0 ? a + b + c + d : scrub(n - 1, n, n + 1, n + 2, n + 3) + a + b + c + d;\n"
+        "}\n"
         "const held = fill();\n"
         "scrub(2000, 0, 0, 0, 0);\n"
         // Let go, and the heap is usable again: a second fill of half the size.

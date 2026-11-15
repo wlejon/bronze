@@ -29,7 +29,6 @@ struct InstructionMirror {
     uint32_t icIndex;
     uint32_t slowSite;
     bool icMonomorphic;
-    bool icPolymorphic;
     bool icFnRecv;
     bool rawUnbox;
     bool nullishUnbox;
@@ -52,7 +51,6 @@ struct InstructionMirror {
     bool envImmutable;
     bool numberHint;
     uint8_t truthHint;
-    uint8_t icChain;
     uint32_t callEnvHops;
     uint32_t inlineFrame;
     Span span;
@@ -313,11 +311,9 @@ enum InstBits : uint64_t {
     kHasDefineAdd = 1u << 27,
     kNumberBits = 1u << 28,
     kStaticSlotGuessed = 1u << 29,
-    kIcPolymorphic = 1u << 30,
     kShapeGuarded = uint64_t{1} << 32,
     kNumberHint = uint64_t{1} << 33,
     kHasTruthHint = uint64_t{1} << 34,
-    kHasIcChain = uint64_t{1} << 35,
     kRawBox = uint64_t{1} << 36,
     kHasSlowSite = uint64_t{1} << 37,
     kKnownBits = (uint64_t{1} << 38) - 1,
@@ -366,7 +362,6 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
     if (inst.icMonomorphic) m |= kIcMonomorphic;
-    if (inst.icPolymorphic) m |= kIcPolymorphic;
     if (inst.icFnRecv) m |= kIcFnRecv;
     if (inst.rawUnbox) m |= kRawUnbox;
     if (inst.nullishUnbox) m |= kNullishUnbox;
@@ -377,7 +372,6 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.envImmutable) m |= kEnvImmutable;
     if (inst.numberHint) m |= kNumberHint;
     if (inst.truthHint != 0) m |= kHasTruthHint;
-    if (inst.icChain != 0) m |= kHasIcChain;
 
     w.u8(static_cast<uint8_t>(inst.op));
     w.u8(static_cast<uint8_t>(inst.type));
@@ -411,7 +405,6 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     }
     if (m & kHasDefineAdd) w.var(inst.defineAddCell);
     if (m & kHasTruthHint) w.var(inst.truthHint);
-    if (m & kHasIcChain) w.var(inst.icChain);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -461,11 +454,6 @@ void readInstruction(Reader& r, Instruction& inst) {
         if (h == 0 || h > 15) r.fail("bad truthiness hint");
         inst.truthHint = static_cast<uint8_t>(h);
     }
-    if (m & kHasIcChain) {
-        const uint32_t c = r.u32();
-        if (c == 0 || c > 15 || (c & Instruction::kChainWaysMask) > 4) r.fail("bad inline-cache chain");
-        inst.icChain = static_cast<uint8_t>(c);
-    }
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());
@@ -478,7 +466,6 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasTarget) readTarget(r, inst.target);
     if (m & kHasElse) readTarget(r, inst.elseTarget);
     inst.icMonomorphic = (m & kIcMonomorphic) != 0;
-    inst.icPolymorphic = (m & kIcPolymorphic) != 0;
     inst.icFnRecv = (m & kIcFnRecv) != 0;
     inst.rawUnbox = (m & kRawUnbox) != 0;
     inst.nullishUnbox = (m & kNullishUnbox) != 0;

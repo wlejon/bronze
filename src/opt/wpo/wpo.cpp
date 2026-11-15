@@ -45,18 +45,13 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
         for (const StampEntry& e : plan->entries) byLoc[{e.fn, e.block, e.inst}] = &e;
         std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint32_t> directAt;
         for (const DirectEntry& d : plan->directs) directAt[{d.fn, d.block, d.inst}] = d.target;
-        std::set<std::tuple<uint32_t, uint32_t, uint32_t>> polyAt;
-        for (const PolyEntry& p : plan->polys) polyAt.insert({p.fn, p.block, p.inst});
         for (SiteFact& f : facts) {
             if (auto d = directAt.find({f.fn, f.block, f.inst}); d != directAt.end()) {
                 f.wpoStamp = "direct " + mod.functions[d->second].name;
                 continue;
             }
             auto it = byLoc.find({f.fn, f.block, f.inst});
-            if (it == byLoc.end()) {
-                if (polyAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "poly";
-                continue;
-            }
+            if (it == byLoc.end()) continue;
             f.wpoStamp = it->second->form == StampForm::Identity
                              ? "identity"
                              : "family " + std::to_string(it->second->familyLo) + "+" +
@@ -83,11 +78,10 @@ bool matchesFilter(const std::string& name, const std::string& filter) {
 std::string stampReport(const il::Module& mod, const StampPlan& plan, const BuildOptions& opts) {
     uint32_t identity = 0, family = 0;
     struct Row {
-        uint32_t identity = 0, family = 0, direct = 0, poly = 0;
+        uint32_t identity = 0, family = 0, direct = 0;
     };
     std::map<uint32_t, Row> perFn;
     for (const DirectEntry& d : plan.directs) ++perFn[d.fn].direct;
-    for (const PolyEntry& p : plan.polys) ++perFn[p.fn].poly;
     for (const StampEntry& e : plan.entries) {
         auto& row = perFn[e.fn];
         if (e.form == StampForm::Identity) {
@@ -110,16 +104,12 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
            std::to_string(plan.callCandidates) + " single-callee sites without one (lowering's guess withdrawn at " +
            std::to_string(plan.callWithdrawn) + "); refused: the callee may sit in an own slot " +
            std::to_string(plan.callOwnHeld) + ", the callee's parameters " + std::to_string(plan.callRefused) + "\n";
-    out += "wpo-stamp: predicted polymorphic reads " + std::to_string(plan.polys.size()) + " of " +
-           std::to_string(plan.polyCandidates) + " own-data reads without a claim; more receivers than cache ways " +
-           std::to_string(plan.polyTooMany) + "\n";
     if (!opts.perSite) return out;
     for (const auto& [fn, row] : perFn) {
         const std::string& name = mod.functions[fn].name;
         if (!matchesFilter(name, opts.filter)) continue;
         out += "wpo-stamp-fn " + name + " identity " + std::to_string(row.identity) + " family " +
-               std::to_string(row.family) + " direct " + std::to_string(row.direct) + " poly " +
-               std::to_string(row.poly) + "\n";
+               std::to_string(row.family) + " direct " + std::to_string(row.direct) + "\n";
     }
     return out;
 }

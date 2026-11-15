@@ -175,7 +175,7 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     // site keeps the method cache alone.
     if (inst.directTarget != il::Instruction::kNoDirectTarget && fact.call != CallClass::Single &&
         overriddenBelow(s, inst.keyIndex, inst.directTarget)) {
-        plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+        plan.withdrawn.push_back(SiteEntry{fact.fn, fact.block, fact.inst});
         ++plan.callWithdrawn;
         return;
     }
@@ -185,7 +185,7 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     // it) and that subclasses override is no prediction to stand on.
     if (fact.call == CallClass::UnknownTarget && overriddenBelow(s, inst.keyIndex, target)) {
         if (inst.directTarget != il::Instruction::kNoDirectTarget) {
-            plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+            plan.withdrawn.push_back(SiteEntry{fact.fn, fact.block, fact.inst});
             ++plan.callWithdrawn;
         }
         return;
@@ -197,7 +197,7 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
         // and a dead inlined body at the site, in front of the dispatch it
         // falls back to anyway.
         if (inst.directTarget == target) return;
-        plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+        plan.withdrawn.push_back(SiteEntry{fact.fn, fact.block, fact.inst});
         ++plan.callWithdrawn;
     }
     ++plan.callCandidates;
@@ -323,30 +323,6 @@ void planAccessor(const Solver& s, const SiteFact& fact, StampPlan& plan) {
     plan.accessorCalls.push_back(DirectEntry{fact.fn, fact.block, fact.inst, chosen});
 }
 
-// A read the static claims left alone: marked polymorphic when every
-// predicted receiver holds the key as an own data property and the cache's
-// ways can hold one shape per receiver. A read inference already calls
-// monomorphic keeps its way-0 form unless more than one receiver reaches it.
-void planPoly(const il::Module& mod, const SiteFact& fact, StampPlan& plan) {
-    if (fact.op != il::Op::PropGet) return;
-    if (fact.ownOrAbsent) return;
-    const bool ownEverywhere = fact.prop == PropClass::SlotDiffers || fact.prop == PropClass::NotInPrefix ||
-                               fact.prop == PropClass::SameSlot || fact.prop == PropClass::SameSlotEscaped;
-    if (!ownEverywhere) return;
-    const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
-    if (inst.staticSlot != il::Instruction::kNoStaticSlot || inst.directTarget != il::Instruction::kNoDirectTarget ||
-        inst.icPolymorphic || inst.operands.empty() || il::parseIndexKey(mod.keyConstants[inst.keyIndex])) {
-        return;
-    }
-    if (inst.icMonomorphic && fact.receivers < 2) return;
-    ++plan.polyCandidates;
-    if (fact.receivers > BRONZE_ABI_IC_WAYS) {
-        ++plan.polyTooMany;
-        return;
-    }
-    plan.polys.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
-}
-
 }  // namespace
 
 StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const std::vector<SiteFact>& facts) {
@@ -456,11 +432,6 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
         e.familySpan = hi - lo;
         plan.entries.push_back(e);
     }
-    std::set<std::tuple<uint32_t, uint32_t, uint32_t>> stamped;
-    for (const StampEntry& e : plan.entries) stamped.insert({e.fn, e.block, e.inst});
-    for (const SiteFact& fact : facts) {
-        if (!fact.isCall && stamped.count({fact.fn, fact.block, fact.inst}) == 0) planPoly(mod, fact, plan);
-    }
     return plan;
 }
 
@@ -482,7 +453,7 @@ bool familyClaimFor(const il::Module& mod, const std::vector<uint32_t>& slots, u
 }
 
 void applyDirects(il::Module& mod, const StampPlan& plan) {
-    for (const PolyEntry& w : plan.withdrawn) {
+    for (const SiteEntry& w : plan.withdrawn) {
         il::Instruction& inst = mod.functions[w.fn].blocks[w.block].instructions[w.inst];
         inst.directTarget = il::Instruction::kNoDirectTarget;
         inst.typedTarget = il::Instruction::kNoDirectTarget;
@@ -494,9 +465,6 @@ void applyDirects(il::Module& mod, const StampPlan& plan) {
 
 void applyStamps(il::Module& mod, const StampPlan& plan) {
     applyDirects(mod, plan);
-    for (const PolyEntry& p : plan.polys) {
-        mod.functions[p.fn].blocks[p.block].instructions[p.inst].icPolymorphic = true;
-    }
     for (const StampEntry& e : plan.entries) {
         il::Instruction& inst = mod.functions[e.fn].blocks[e.block].instructions[e.inst];
         inst.staticSlot = e.slot;

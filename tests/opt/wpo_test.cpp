@@ -573,33 +573,6 @@ TEST_CASE("a new of a function that returns another object yields that object al
     CHECK(x.prop == PropClass::SingleShape);
 }
 
-TEST_CASE("a read of two shapes with the key at different slots is marked polymorphic") {
-    DiagnosticSink diags;
-    SourceBuffer buf("test.ts", "");
-    auto mod = lower_test::inferAndLower(
-        "class A { constructor() { this.a = 1; this.k = 2; } }\n"
-        "class B { constructor() { this.k = 3; } }\n"
-        "function rk(o) { return o.k; }\n"
-        "console.log(rk(new A()) + rk(new B()));\n",
-        diags, buf);
-    REQUIRE(mod.has_value());
-    optimizeForBuild(*mod, BuildOptions{});
-    const il::Function* rk = functionNamed(*mod, "rk");
-    REQUIRE(rk != nullptr);
-    const il::Instruction* read = nullptr;
-    for (const auto& block : rk->blocks) {
-        for (const auto& inst : block.instructions) {
-            if (inst.op == il::Op::PropGet) read = &inst;
-        }
-    }
-    REQUIRE(read != nullptr);
-    CHECK(read->icPolymorphic);
-    CHECK(read->staticSlot == il::Instruction::kNoStaticSlot);
-    CHECK(il::print(*mod).find(", poly") != std::string::npos);
-    DiagnosticSink vdiags;
-    CHECK(il::verify(*mod, vdiags));
-}
-
 TEST_CASE("a target only the prediction knows reaches guarded inlining") {
     // Two classes declare `get1`, so lowering guesses no target for the call
     // on the captured `cur`; the prediction sees only A's instances there.

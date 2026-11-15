@@ -282,7 +282,7 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
             if (namesCallee(inst.op)) h.str(fnName(inst.calleeIndex));
             if (inst.directTarget != Instruction::kNoDirectTarget) h.str(fnName(inst.directTarget));
             if (inst.typedTarget != Instruction::kNoDirectTarget) h.str(fnName(inst.typedTarget));
-            h.u64((inst.icMonomorphic ? 1u : 0u) | (inst.icPolymorphic ? 2u : 0u) |
+            h.u64((inst.icMonomorphic ? 1u : 0u) |
                   (inst.icFnRecv ? 8u : 0u) | (inst.rawUnbox ? 16u : 0u) |
                   (inst.nullishUnbox ? 32u : 0u) | (inst.numberBits ? 64u : 0u) |
                   (inst.shapeGuarded ? 128u : 0u) | (inst.staticSlotGuessed ? 256u : 0u) |

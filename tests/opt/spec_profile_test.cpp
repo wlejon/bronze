@@ -499,7 +499,6 @@ TEST_CASE("feedback apply: polymorphic class-family reads and writes get family 
     spec::applyFeedbackClaimsAndHints(mod, plan, &stats);
     CHECK(stats.shapeFamily == 2);
     CHECK(stats.shapeIdentity == 0);
-    CHECK(stats.chainReads == 0);
 
     for (const auto& b : stepFn->blocks) {
         for (const auto& inst : b.instructions) {
@@ -508,7 +507,6 @@ TEST_CASE("feedback apply: polymorphic class-family reads and writes get family 
                 CHECK(inst.staticSlotGuessed);
                 CHECK(inst.familyLo != il::Instruction::kNoFamily);
                 CHECK(inst.familySpan >= 1);
-                CHECK(inst.icChain == 0);
             }
             if (inst.icIndex == setIc && inst.op == il::Op::PropSet) {
                 CHECK(inst.staticSlot == 0);

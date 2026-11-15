@@ -273,24 +273,6 @@ the plan where each claim has to be made:
   ToBoolean out cold. This covers presence tests (`if (material.map)`),
   flag fields, and the joins of `a && b`, whose profile is usually
   {Boolean, undefined}.
-- **E, inline way chains** (with A, after `wpo::optimizeForBuild`): a
-  `prop.get` of a named key whose receivers were one to four plain shapes
-  (each at least 1%, no `*other*`, no dictionary) gets `icChain`
-  (`chain N[+proto]` in `bronze il`): the backend compares the receiver's
-  shape with that many of the site's cache ways inline, in fill order, and
-  answers from the way that matches, an own data slot, a negative entry at
-  the current prototype epoch (`undefined`), or with `+proto` (some receiver
-  lacked the key and the read returned something else) a data slot one
-  prototype link up at the current epoch. The ways are laid out by what the
-  profile saw answer: when more reads met a receiver lacking the key than one
-  holding it, the past-the-own-slots path is the fall-through (`notown-first`),
-  and when the prototype answered most of them, rather than `undefined`, the
-  one-link-up read comes before the negative entry (`proto-first`). Only the
-  order changes; every test still runs. Everything else is the property
-  stub, laid out cold (`il_prop_get_chain.cpp`), through its move-to-front
-  entry: a mega-table answer at a full site goes into way 0, so a site whose
-  ways warm-up shapes filled comes to hold the shapes it meets now. A site
-  of one shape that A already claimed is left to its claim.
 - **F, accessor targets** (right after lowering's own accessor guess,
   `resolveAccessors`, before guarded inlining, so the inliner copies the
   getter or setter in): a `prop.get` / `prop.set` of a named key with no
@@ -506,12 +488,10 @@ families off the plan: where a property site met several shapes that all begin
 with the keys of the shortest (a base class's method run on the base and its
 subclasses, whose constructors the compiler could not model), that key list
 joins `classFamilies`, the runtime stamps every shape that begins with it, and
-the site is claimed by one range test (consumer A's family form) in place of a
-chain. A list related to a family the lowering proved is left out.
+the site is claimed by one range test (consumer A's family form). A list related to a family the lowering proved is left out.
 
 - a single held receiver is dominant (consumers A and F);
-- two or three receivers are a chain (E). Four receivers fill the cache, so
-  that site is marked `full`;
+- four receivers fill the cache, so that site is marked `full`;
 - two receivers at a method site get poly receivers or a direct target (B).
 
 **What it cannot see**, and what that costs:
