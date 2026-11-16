@@ -2,11 +2,14 @@
 
 #include "opt/pipeline/pipeline.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "il/print.h"
 #include "il/verifier.h"
 
 namespace bronze::opt {
@@ -20,6 +23,13 @@ bool verified(const il::Module& module, const OptimizeOptions& options, const ch
     if (il::verify(module, diags)) return true;
     // The verifier's own messages say what; this says where in the pipeline.
     diags.error(Span{}, std::string("IL verification failed ") + when);
+    // BRONZE_OPT_FAIL_DUMP=<file>: the module as the failing stage left it.
+    if (const char* path = std::getenv("BRONZE_OPT_FAIL_DUMP"); path != nullptr && *path != 0) {
+        if (std::FILE* f = std::fopen(path, "w")) {
+            std::fputs(il::print(module).c_str(), f);
+            std::fclose(f);
+        }
+    }
     return false;
 }
 
@@ -60,7 +70,15 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
 
     // Always run: it also clears every call's resumeAfter, which the
     // redundancy pass would otherwise leave naming a point it deletes.
+    if (anySpeculated && !verified(module, options, "after speculation")) {
+        result.ok = false;
+        return result;
+    }
     result.inlined = inliner::inlineModule(module, options.inlining);
+    if (!verified(module, options, "after inlining")) {
+        result.ok = false;
+        return result;
+    }
 
     RedundancyOptions redundancy;
     redundancy.maxRounds = options.maxRounds;
@@ -70,10 +88,14 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     redundancy.removeUnnamedResumePoints = true;
     if (anySpeculated) redundancy.preheaderResume = loopEntryResumes(module);
     result.redundancy = runRedundancyModule(module, redundancy);
+    if (!verified(module, options, "after the redundancy pass")) {
+        result.ok = false;
+        return result;
+    }
 
     if (anySpeculated) result.repr = selectRepresentationsModule(module, redundancy);
 
-    if (!verified(module, options, "after optimisation")) result.ok = false;
+    if (!verified(module, options, "after representation selection")) result.ok = false;
     return result;
 }
 

@@ -196,6 +196,35 @@ bool sweepDeadValues(JobContext& ctx) {
     return changed;
 }
 
+// Whether a parameter of `f` is read anywhere but in f's own jump: by an
+// instruction or an edge of a block f dominates. Bypassing f would leave such
+// a use without a definition.
+bool paramsUsedBeyondJump(const il::Function& fn, BlockId f) {
+    const il::Block& block = fn.blocks[f];
+    if (block.params.empty()) return false;
+    auto isParam = [&](ValueId v) {
+        for (const il::BlockParam& p : block.params) {
+            if (p.id == v) return true;
+        }
+        return false;
+    };
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        for (const il::Instruction& inst : fn.blocks[b].instructions) {
+            for (ValueId v : inst.operands) {
+                if (isParam(v)) return true;
+            }
+            if (b == f) continue;
+            for (ValueId v : inst.target.args) {
+                if (isParam(v)) return true;
+            }
+            for (ValueId v : inst.elseTarget.args) {
+                if (isParam(v)) return true;
+            }
+        }
+    }
+    return false;
+}
+
 // A block that only jumps on, and may be bypassed (see the header); kNoBlock
 // when there is none.
 BlockId findForwarder(const il::Function& fn, const Cfg& cfg, const DomTree& dom,
@@ -208,6 +237,7 @@ BlockId findForwarder(const il::Function& fn, const Cfg& cfg, const DomTree& dom
         if (jump.op != Op::Jump) continue;
         const BlockId t = jump.target.block;
         if (t == f || cfg.inEdges(f).empty()) continue;
+        if (paramsUsedBeyondJump(fn, f)) continue;
         bool header = false;
         for (BlockId p : cfg.preds(t)) header |= dom.dominates(t, p);
         if (header) continue;
