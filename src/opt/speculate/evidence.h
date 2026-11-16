@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "il/feedback_site.h"
 #include "il/il.h"
 #include "opt/spec/profile.h"
@@ -58,12 +59,18 @@ inline constexpr uint32_t kElemArmArray = 1;
 inline constexpr uint32_t kElemArmView = 2;
 inline constexpr uint32_t kElemArmGrow = 3;
 inline constexpr uint32_t kElemArmMiss = 4;
-// In a build made to be harvested the typed-array arm is split by the view's
-// element kind: kElemArmView is a Float32 view, these the others; and an
-// index at or past a view's length marks kElemArmMiss.
-inline constexpr uint32_t kElemArmViewF64 = 5;
-inline constexpr uint32_t kElemArmViewI32 = 6;
-inline constexpr uint32_t kElemArmViewOther = 7;
+// In a build made to be harvested every typed-array access marks
+// kElemArmView and the bits of its element kind's code (an index into
+// kElemViewKinds) mark these; a kind with no code, and an index at or past a
+// view's length, mark kElemArmMiss.
+inline constexpr uint32_t kElemArmKindBit0 = 5;
+inline constexpr uint32_t kElemArmKindBit1 = 6;
+inline constexpr uint32_t kElemArmKindBit2 = 7;
+inline constexpr int32_t kElemViewKinds[8] = {
+    BRONZE_ABI_TA_KIND_FLOAT32, BRONZE_ABI_TA_KIND_FLOAT64, BRONZE_ABI_TA_KIND_INT32,
+    BRONZE_ABI_TA_KIND_UINT32,  BRONZE_ABI_TA_KIND_UINT16,  BRONZE_ABI_TA_KIND_INT16,
+    BRONZE_ABI_TA_KIND_UINT8,   BRONZE_ABI_TA_KIND_UINT8CLAMPED,
+};
 // A `.length` read's arms (il2mir il_ic_lowering.cpp lower_length_get): an
 // Array's, a String's or a typed array's header answered it.
 inline constexpr uint32_t kLengthArmArray = 1;
@@ -112,7 +119,7 @@ enum class SiteKind : uint8_t {
     ElemRead,     // elem.get (or prop.get of an index key) of a dense Array or a typed array
     ElemWrite,    // elem.set (or prop.set of an index key): an existing element of either
     ArrayLength,  // prop.get "length" of an Array
-    MathCall,     // method.call of a Math intrinsic
+    MathCall,     // method.call or call.dynamic of a Math intrinsic
     // A member found above the receiver, one function per receiver shape
     // (1..kMaxChainShapes), each behind a member cell (member_call.cpp):
     MemberMethod,  // method.call of a method in a prototype's data property
@@ -145,6 +152,11 @@ struct SitePlan {
     // per receiver shape the harvest held (a function may repeat).
     uint32_t callee = kNoFunction;
     std::vector<uint32_t> callees;
+    // MethodProto: a way of the harvest was a `slot` way, whose callee is the
+    // one the cache latched first and never compared again, so a callee the
+    // list lacks is no evidence against it: the last identity test's failure
+    // calls generically and stays in S (method_call.cpp).
+    bool calleesOpen = false;
     // Arith: one mask per operand, and the form chosen from them.
     std::vector<uint8_t> operandTags;
     ArithForm form = ArithForm::Int;
@@ -195,6 +207,9 @@ private:
                                        uint32_t index) const;
     // The callee a harvested slow site entered, when it entered one only.
     uint32_t harvestedCallee(const il::Instruction& inst) const;
+    // The harvest's name for the one callee a call site ever held, whether
+    // or not its helper ran (a native is called through it).
+    const std::string* harvestedCalleeName(const il::Instruction& inst) const;
     std::optional<SitePlan> planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                      BlockId block, uint32_t index) const;
     std::optional<SitePlan> planArith(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
@@ -217,6 +232,7 @@ private:
     const spec::SiteFeedback* recorded(uint32_t fn, uint32_t ordinal) const;
     const spec::HarvestSite* harvested(uint32_t icIndex) const;
     bool slowRan(uint32_t slowIndex) const;
+    uint64_t slowCount(uint32_t slowIndex) const;
     bool slowArmed(uint32_t slowSite) const;
     // The module function a profile's callee name names, if exactly one.
     uint32_t calleeByRecordedName(const std::string& name) const;

@@ -84,6 +84,75 @@ Value* view_data(Builder& b, Value* ptr) {
     return b.build_add(data, byte_offset);
 }
 
+Value* view_element_load(Builder& b, Value* data, Value* idx, int kind) {
+    switch (kind) {
+        case BRONZE_ABI_TA_KIND_FLOAT64:
+            return typed(b, b.build_load_indexed(Type::f64(), data, idx, 8));
+        case BRONZE_ABI_TA_KIND_FLOAT32:
+            return b.build_fpext_f64_f32(typed(b, b.build_load_indexed(Type::f32(), data, idx, 4)));
+        case BRONZE_ABI_TA_KIND_INT32:
+            return typed(b, b.build_load_indexed(Type::i32(), data, idx, 4));
+        case BRONZE_ABI_TA_KIND_UINT32:
+            return b.build_sitofp_f64_i64(b.build_zext_i64(typed(b, b.build_load_indexed(Type::i32(), data, idx, 4))));
+        case BRONZE_ABI_TA_KIND_UINT16:
+            return b.build_trunc_i32(load_u16(b, data, idx));
+        case BRONZE_ABI_TA_KIND_INT16:
+            return b.build_trunc_i32(sign_extend(b, load_u16(b, data, idx), 16));
+        case BRONZE_ABI_TA_KIND_INT8:
+            return b.build_trunc_i32(
+                sign_extend(b, b.build_zext_i64(typed(b, b.build_load_indexed(Type::i8(), data, idx, 1))), 8));
+        default:  // UINT8, UINT8CLAMPED
+            return b.build_trunc_i32(b.build_zext_i64(typed(b, b.build_load_indexed(Type::i8(), data, idx, 1))));
+    }
+}
+
+void view_element_store(Builder& b, Value* data, Value* idx, int kind, Value* v) {
+    switch (kind) {
+        case BRONZE_ABI_TA_KIND_FLOAT64:
+            with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, v), kTypedElementAliasClass);
+            return;
+        case BRONZE_ABI_TA_KIND_FLOAT32:
+            with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4, b.build_fptrunc_f32_f64(v)),
+                             kTypedElementAliasClass);
+            return;
+        case BRONZE_ABI_TA_KIND_INT32:
+        case BRONZE_ABI_TA_KIND_UINT32:
+            with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, v), kTypedElementAliasClass);
+            return;
+        case BRONZE_ABI_TA_KIND_INT16:
+        case BRONZE_ABI_TA_KIND_UINT16: {
+            Value* n = b.build_zext_i64(v);
+            with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 2, 0, b.build_trunc_i8(n)),
+                             kTypedElementAliasClass);
+            with_alias_class(
+                b.build_store_indexed(Type::i8(), data, idx, 2, 1, b.build_trunc_i8(b.build_lshr(n, imm(b, 8)))),
+                kTypedElementAliasClass);
+            return;
+        }
+        case BRONZE_ABI_TA_KIND_UINT8CLAMPED: {
+            // ToUint8Clamp (7.1.12): NaN and anything not above 0 is 0, from
+            // 255 up 255, else the nearest integer, a tie to the even one.
+            Value* above0 = b.build_slt(b.build_fconst_f64(0.0), v);
+            Value* c = b.build_select(b.build_slt(v, b.build_fconst_f64(255.0)), v, b.build_fconst_f64(255.0));
+            Value* f = b.build_floor_f64(c);
+            Value* d = b.build_sub(c, f);
+            Value* fi = b.build_fptosi_i32(f);
+            Value* odd = b.build_ne(b.build_and(fi, b.build_iconst_i32(1)), b.build_iconst_i32(0));
+            Value* half = b.build_fconst_f64(0.5);
+            Value* up = b.build_or(b.build_slt(half, d), b.build_and(b.build_eq(d, half), odd));
+            Value* r = b.build_add(fi, b.build_select(up, b.build_iconst_i32(1), b.build_iconst_i32(0)));
+            r = b.build_select(above0, r, b.build_iconst_i32(0));
+            with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 1, b.build_trunc_i8(b.build_zext_i64(r))),
+                             kTypedElementAliasClass);
+            return;
+        }
+        default:  // INT8, UINT8
+            with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 1, b.build_trunc_i8(b.build_zext_i64(v))),
+                             kTypedElementAliasClass);
+            return;
+    }
+}
+
 // (obj, idx, key) -> the element as a Number.
 void build_view_get_stub(Function* fn) {
     Builder b(*fn->parent());
@@ -105,35 +174,9 @@ void build_view_get_stub(Function* fn) {
     Value* data = view_data(b, ptr);
     Value* idx = b.build_zext_i64(idx32);
     kind_switch(b, kind, kKinds, helper, "vg", [&](int k) {
-        Value* f = nullptr;
-        switch (k) {
-            case BRONZE_ABI_TA_KIND_FLOAT64:
-                f = typed(b, b.build_load_indexed(Type::f64(), data, idx, 8));
-                break;
-            case BRONZE_ABI_TA_KIND_FLOAT32:
-                f = b.build_fpext_f64_f32(typed(b, b.build_load_indexed(Type::f32(), data, idx, 4)));
-                break;
-            case BRONZE_ABI_TA_KIND_INT32:
-                f = b.build_sitofp_f64_i32(typed(b, b.build_load_indexed(Type::i32(), data, idx, 4)));
-                break;
-            case BRONZE_ABI_TA_KIND_UINT32:
-                f = b.build_sitofp_f64_i64(b.build_zext_i64(typed(b, b.build_load_indexed(Type::i32(), data, idx, 4))));
-                break;
-            case BRONZE_ABI_TA_KIND_UINT16:
-                f = b.build_sitofp_f64_i64(load_u16(b, data, idx));
-                break;
-            case BRONZE_ABI_TA_KIND_INT16:
-                f = b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx), 16));
-                break;
-            case BRONZE_ABI_TA_KIND_INT8:
-                f = b.build_sitofp_f64_i64(
-                    sign_extend(b, b.build_zext_i64(typed(b, b.build_load_indexed(Type::i8(), data, idx, 1))), 8));
-                break;
-            default:  // UINT8, UINT8CLAMPED
-                f = b.build_sitofp_f64_i64(b.build_zext_i64(typed(b, b.build_load_indexed(Type::i8(), data, idx, 1))));
-                break;
-        }
-        b.build_ret(box_f64_bits(b, f));
+        Value* v = view_element_load(b, data, idx, k);
+        if (v->type() == Type::i32()) v = b.build_sitofp_f64_i32(v);
+        b.build_ret(box_f64_bits(b, v));
     });
 
     b.position_at_end(helper);
@@ -143,7 +186,7 @@ void build_view_get_stub(Function* fn) {
 
 // (obj, idx, key, val, strict) -> void: a Number stored as the kind
 // converts it (ToInt32-family modular truncation for the integer kinds,
-// rounding to float for Float32).
+// rounding to float for Float32, ToUint8Clamp for Uint8Clamped).
 void build_view_set_stub(Function* fn) {
     Builder b(*fn->parent());
     b.set_function(fn);
@@ -168,25 +211,14 @@ void build_view_set_stub(Function* fn) {
     Value* idx = b.build_zext_i64(idx32);
     Value* f = b.build_bitcast_f64_i64(val);
     // An integer kind's value: the double truncated toward zero, modulo
-    // 2^bits, which an i64 conversion then a narrowing store is for every
-    // double below 2^63 in magnitude. NaN, the infinities and the rest are
-    // the helper's (their ToInt32 is 0 or a reduction an i64 cannot hold).
+    // 2^bits, which an i64 conversion's low bits are for every double below
+    // 2^63 in magnitude. NaN, the infinities and the rest are the helper's
+    // (their ToInt32 is 0 or a reduction an i64 cannot hold).
     Value* in_range = b.build_ult(b.build_and(val, imm(b, 0x7FFFFFFFFFFFFFFFLL)), imm(b, 0x43E0000000000000LL));
     kind_switch(b, kind, kKinds, helper, "vs", [&](int k) {
-        if (k == BRONZE_ABI_TA_KIND_FLOAT64) {
-            with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, f), kTypedElementAliasClass);
+        if (k == BRONZE_ABI_TA_KIND_FLOAT64 || k == BRONZE_ABI_TA_KIND_FLOAT32 || k == BRONZE_ABI_TA_KIND_UINT8CLAMPED) {
+            view_element_store(b, data, idx, k, f);
             b.build_ret_void();
-            return;
-        }
-        if (k == BRONZE_ABI_TA_KIND_FLOAT32) {
-            with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4, b.build_fptrunc_f32_f64(f)),
-                             kTypedElementAliasClass);
-            b.build_ret_void();
-            return;
-        }
-        if (k == BRONZE_ABI_TA_KIND_UINT8CLAMPED) {
-            // Rounding half to even into [0, 255] is the helper's.
-            b.build_br(helper);
             return;
         }
         BasicBlock* cur = b.current_block();
@@ -194,26 +226,7 @@ void build_view_set_stub(Function* fn) {
         b.position_at_end(cur);
         b.build_br_if(in_range, conv, helper);
         b.position_at_end(conv);
-        Value* n = b.build_fptosi_i64(f);
-        switch (k) {
-            case BRONZE_ABI_TA_KIND_INT32:
-            case BRONZE_ABI_TA_KIND_UINT32:
-                with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, b.build_trunc_i32(n)),
-                                 kTypedElementAliasClass);
-                break;
-            case BRONZE_ABI_TA_KIND_INT16:
-            case BRONZE_ABI_TA_KIND_UINT16:
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 2, 0, b.build_trunc_i8(n)),
-                                 kTypedElementAliasClass);
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 2, 1,
-                                                       b.build_trunc_i8(b.build_lshr(n, imm(b, 8)))),
-                                 kTypedElementAliasClass);
-                break;
-            default:  // INT8, UINT8
-                with_alias_class(b.build_store_indexed(Type::i8(), data, idx, 1, b.build_trunc_i8(n)),
-                                 kTypedElementAliasClass);
-                break;
-        }
+        view_element_store(b, data, idx, k, b.build_trunc_i32(b.build_fptosi_i64(f)));
         b.build_ret_void();
     });
 

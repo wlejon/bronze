@@ -41,47 +41,57 @@ Value* tls_block_word(Builder& b, int32_t off) {
 }
 
 // The typed-array arm of an element access. A build made to be harvested
-// marks it by the view's element kind (il_abi.h kElemArmView for Float32,
-// kElemArmViewF64, kElemArmViewI32, kElemArmViewOther) and marks
-// kElemArmMiss for an index at or past the view's length; any other build
-// marks kElemArmView alone.
+// counts kElemArmView and, for each set bit of the view kind's code (il_abi.h
+// kElemViewKinds), that bit's arm; a kind with no code and an index at or past
+// the view's length mark kElemArmMiss. Any other build marks kElemArmView.
 void mark_view_arm(PropertyLoweringHelper& prop, Builder& b, Value* ptr, Value* idx, const std::string& prefix) {
     if (!prop.evidence_marked()) {
         prop.arm_begin(b, kElemArmView);
         return;
     }
-    struct Case {
-        int32_t kind;
-        uint32_t arm;
-    };
-    const Case cases[] = {{BRONZE_ABI_TA_KIND_FLOAT32, kElemArmView},
-                          {BRONZE_ABI_TA_KIND_FLOAT64, kElemArmViewF64},
-                          {BRONZE_ABI_TA_KIND_INT32, kElemArmViewI32}};
+    // Per bit, the kinds whose code has it set; and the kinds with a code.
+    uint32_t bitKinds[3] = {0, 0, 0};
+    uint32_t coded = 0;
+    for (uint32_t code = 0; code < 8; ++code) {
+        coded |= 1u << kElemViewKinds[code];
+        for (uint32_t bit = 0; bit < 3; ++bit) {
+            if ((code >> bit) & 1u) bitKinds[bit] |= 1u << kElemViewKinds[code];
+        }
+    }
+    const uint32_t bitArms[3] = {kElemArmKindBit0, kElemArmKindBit1, kElemArmKindBit2};
     // append_block moves the cursor, so every block is made first.
     BasicBlock* at = b.current_block();
-    BasicBlock* hits[3];
-    BasicBlock* nexts[3];
+    BasicBlock* known = b.append_block(prefix + "_vknown");
+    BasicBlock* sets[3];
+    BasicBlock* afters[3];
     for (int i = 0; i < 3; ++i) {
-        hits[i] = b.append_block(prefix + "_vk" + std::to_string(cases[i].kind));
-        nexts[i] = b.append_block(prefix + "_vkn" + std::to_string(cases[i].kind));
+        sets[i] = b.append_block(prefix + "_vbit" + std::to_string(i));
+        afters[i] = b.append_block(prefix + "_vbitn" + std::to_string(i));
     }
-    BasicBlock* done = b.append_block(prefix + "_vkdone");
     BasicBlock* miss = b.append_block(prefix + "_vmiss");
+    BasicBlock* bounds = b.append_block(prefix + "_vbounds");
     BasicBlock* in = b.append_block(prefix + "_vin");
 
     b.position_at_end(at);
     Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
     Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
+    // The kind's bit in a mask of kinds: below 32, so the shift is defined.
+    Value* kindBit = b.build_shl(b.build_iconst_i32(1), kind);
+    const auto in_mask = [&](uint32_t mask) {
+        return b.build_ne(b.build_and(kindBit, b.build_iconst_i32(static_cast<int32_t>(mask))), b.build_iconst_i32(0));
+    };
+    b.build_br_if(in_mask(coded), known, miss);
+    b.position_at_end(known);
+    prop.arm_count(b, kElemArmView);
     for (int i = 0; i < 3; ++i) {
-        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(cases[i].kind)), hits[i], nexts[i]);
-        b.position_at_end(hits[i]);
-        prop.arm_begin(b, cases[i].arm);
-        b.build_br(done);
-        b.position_at_end(nexts[i]);
+        b.build_br_if(in_mask(bitKinds[i]), sets[i], afters[i]);
+        b.position_at_end(sets[i]);
+        prop.arm_count(b, bitArms[i]);
+        b.build_br(afters[i]);
+        b.position_at_end(afters[i]);
     }
-    prop.arm_begin(b, kElemArmViewOther);
-    b.build_br(done);
-    b.position_at_end(done);
+    b.build_br(bounds);
+    b.position_at_end(bounds);
     b.build_br_if(b.build_ult(idx, vlen), in, miss);
     b.position_at_end(miss);
     prop.arm_begin(b, kElemArmMiss);

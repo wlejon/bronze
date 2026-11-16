@@ -4,7 +4,9 @@
 // Boolean the same way, so a branch on either is a branch on `eq c, 0`.
 // When c is known to be 0 or 1 that is the branch on c with its targets
 // swapped (il_lowering_inst.cpp, Branch), which leaves brass a compare to
-// fuse in place of a compare, its zero extension and a test of that.
+// fuse in place of a compare, its zero extension and a test of that. The
+// look-through stops at the current block, as every look-through of the
+// lowering does (il_lowering_resume.cpp).
 
 #include "il_lowering.h"
 
@@ -47,9 +49,11 @@ bool IlLowering::is_zero_one(const Value* v) const {
     return d->opcode() == Opcode::or_ && is_zero_one(d->operand(0)) && is_zero_one(d->operand(1));
 }
 
-Value* IlLowering::negated_boolean(Value* cond) const {
+Value* IlLowering::negated_boolean(Value* cond, const BasicBlock* here) const {
     const Instruction* d = cond && cond->is_instruction() ? cond->defining_instruction() : nullptr;
-    if (!d || d->opcode() != Opcode::eq || d->operand_count() != 2) return nullptr;
+    // Only a negation made in this block: one made further up may sit before
+    // a resume point, whose state holds the negation and not what it read.
+    if (!d || d->parent() != here || d->opcode() != Opcode::eq || d->operand_count() != 2) return nullptr;
     Value* a = d->operand(0);
     Value* b = d->operand(1);
     if (is_iconst(b, 0) && is_zero_one(a)) return a;

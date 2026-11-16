@@ -97,16 +97,21 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
         });
     }
     // ARMS (il_property.h arm_begin). An arm is on the instruction's fast path, so
-    // its mark is one store of a constant where a slow arm counts.
+    // its mark is one store of a constant where a slow arm counts; a counted
+    // arm (arm_count) adds one.
     if (options.count_slow_sites && options.slow_site_count != 0) {
-        prop_lowering_.set_arm_mark_fn([this](Builder& b, uint32_t index) {
+        prop_lowering_.set_arm_mark_fn([this](Builder& b, uint32_t index, bool count) {
             if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
                 std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
                     .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
             }
             Value* at = b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
-            with_alias_class(b.build_store(Type::i64(), at, 0, b.build_iconst_i64(1)), kSlowCountAliasClass);
+            Value* now = b.build_iconst_i64(1);
+            if (count) {
+                now = b.build_add(with_alias_class(b.build_load(Type::i64(), at, 0), kSlowCountAliasClass), now);
+            }
+            with_alias_class(b.build_store(Type::i64(), at, 0, now), kSlowCountAliasClass);
         });
     }
 }

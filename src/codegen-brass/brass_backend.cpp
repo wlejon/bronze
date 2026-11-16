@@ -1,6 +1,7 @@
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_debug.h"
 #include "codegen-brass/brass_backend_sections.h"
+#include "codegen-brass/deopt_sites.h"
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
@@ -381,6 +382,25 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.member_cells.reserve(module.memberCells.size());
     for (const il::Module::MemberCell& c : module.memberCells) {
         options.member_cells.push_back({static_cast<uint32_t>(c.kind), c.keyIndex, c.group, c.groupSize});
+    }
+    // The deopt counters (deopt_sites.h): the twins' exit counts and the
+    // speculated functions' retire test.
+    {
+        const codegen::DeoptSites deopt = codegen::collectDeoptSites(module, uniqueNames);
+        options.deopt_generic_count = static_cast<uint32_t>(deopt.generics.size());
+        options.deopt_site_count = static_cast<uint32_t>(deopt.sites.size());
+        for (uint32_t slot = 0; slot < deopt.sites.size(); ++slot) {
+            const codegen::DeoptSite& site = deopt.sites[slot];
+            auto& meta = options.deopt_generic[uniqueNames[site.function]];
+            meta.rank = site.generic;
+            meta.slots[site.resumeId] = slot;
+        }
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            const il::Function& fn = module.functions[i];
+            if (fn.isSpeculated() && options.deopt_generic.count(uniqueNames[fn.speculatedFrom])) {
+                options.deopt_speculated[uniqueNames[i]] = uniqueNames[fn.speculatedFrom];
+            }
+        }
     }
     options.slow_site_count = module.slowSiteCount;
     // An image whose caches a harvest may read counts its slow arms too: one

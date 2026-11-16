@@ -328,48 +328,26 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         }
         // f64|i32 = typed.load %ta, %i, <kind>: the element at the view's data
         // address (its buffer's bytes plus its byte offset, il_view_stubs.cpp
-        // view_data): movss + cvtss2sd, movsd, or mov.
+        // view_data), as the kind reads (view_element_load): movss + cvtss2sd,
+        // movsd, mov, or a byte load widened.
         case BronzeOp::TypedLoad: {
             if (!need(2)) return false;
-            Value* data = view_data(b, object_address(b, bits(0)));
-            Value* idx = b.build_zext_i64(i32(1));
-            switch (inst.imm_i64) {
-                case BRONZE_ABI_TA_KIND_FLOAT32:
-                    res_val = b.build_fpext_f64_f32(with_alias_class(b.build_load_indexed(Type::f32(), data, idx, 4),
-                                                                     kTypedElementAliasClass));
-                    return true;
-                case BRONZE_ABI_TA_KIND_FLOAT64:
-                    res_val = with_alias_class(b.build_load_indexed(Type::f64(), data, idx, 8), kTypedElementAliasClass);
-                    return true;
-                case BRONZE_ABI_TA_KIND_INT32:
-                    res_val = with_alias_class(b.build_load_indexed(Type::i32(), data, idx, 4), kTypedElementAliasClass);
-                    return true;
-                default:
-                    return inst_error(inst, "typed.load of an element kind it has no form for");
-            }
+            const auto kind = static_cast<int>(inst.imm_i64);
+            if (kind > BRONZE_ABI_TA_KIND_FLOAT64) return inst_error(inst, "typed.load of an element kind it has no form for");
+            res_val = view_element_load(b, view_data(b, object_address(b, bits(0))), b.build_zext_i64(i32(1)), kind);
+            return true;
         }
         // typed.store %ta, %i, %v, <kind>: the store at typed.load's address,
-        // a Float32 element rounded from the double (cvtsd2ss).
+        // converted as the kind takes it (view_element_store).
         case BronzeOp::TypedStore: {
             if (!need(3)) return false;
-            Value* data = view_data(b, object_address(b, bits(0)));
-            Value* idx = b.build_zext_i64(i32(1));
-            switch (inst.imm_i64) {
-                case BRONZE_ABI_TA_KIND_FLOAT32:
-                    with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4,
-                                                           b.build_fptrunc_f32_f64(ensure_type(opd[2], Type::f64(), b))),
-                                     kTypedElementAliasClass);
-                    return true;
-                case BRONZE_ABI_TA_KIND_FLOAT64:
-                    with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, ensure_type(opd[2], Type::f64(), b)),
-                                     kTypedElementAliasClass);
-                    return true;
-                case BRONZE_ABI_TA_KIND_INT32:
-                    with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, i32(2)), kTypedElementAliasClass);
-                    return true;
-                default:
-                    return inst_error(inst, "typed.store of an element kind it has no form for");
-            }
+            const auto kind = static_cast<int>(inst.imm_i64);
+            if (kind > BRONZE_ABI_TA_KIND_FLOAT64) return inst_error(inst, "typed.store of an element kind it has no form for");
+            const bool f64 = kind == BRONZE_ABI_TA_KIND_FLOAT32 || kind == BRONZE_ABI_TA_KIND_FLOAT64 ||
+                             kind == BRONZE_ABI_TA_KIND_UINT8CLAMPED;
+            view_element_store(b, view_data(b, object_address(b, bits(0))), b.build_zext_i64(i32(1)), kind,
+                               f64 ? ensure_type(opd[2], Type::f64(), b) : i32(2));
+            return true;
         }
         // bool = fn.native_is %f, <intrinsic>: fn.code_is against the
         // runtime's exported native (`callee_name`) instead of a module

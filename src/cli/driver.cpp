@@ -245,13 +245,16 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
         else std::fputs(err.c_str(), stderr);
         return 1;
     }
-    auto ilModule = lower::lowerModule(*astModule, diags,
-                                       inferred ? &*inferred : nullptr,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals,
-                                       &sources,
-                                       pins.empty() ? nullptr : &pins,
-                                       nativeManifest ? &*nativeManifest : nullptr,
-                                       &feedback);
+    // The ahead-of-time front end, as `bronze build` runs it: the same IL,
+    // and so the same IC layout digest a harvest of the build is checked
+    // against.
+    lower::AheadOfTimeOptions aot;
+    aot.hostGlobals = &hostGlobals;
+    aot.pins = pins.empty() ? nullptr : &pins;
+    aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
+    aot.feedback = &feedback;
+    aot.selfHostLibrary = selfhost::library();
+    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;

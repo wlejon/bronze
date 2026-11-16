@@ -402,10 +402,11 @@ thread_local Value g_mathObject = Value::fromUndefined();
 // ones, so every tier answers alike. `sqrt` and `abs` have no kernel because
 // they are single instructions.
 //
-// sin, cos, asin, atan and atan2 are brass's trig runtime
-// (brass/runtime/fast_trig.hpp): V8's fdlibm-derived ieee754 functions, so
-// they give node's bits, and faster than the platform libm's, which saves and
-// restores the FP environment on every call.
+// sin, cos, tan, asin, acos, atan, atan2, exp and log are brass's math
+// runtime (brass/runtime/fast_trig.hpp): V8's fdlibm-derived ieee754
+// functions, so they give node's bits (the platform libm's differ in the last
+// bit on a few percent of arguments), with no FP-environment save and
+// restore.
 
 extern "C" double bronze_math_sin_f64(double x) { return brass::math::sin_f64(x); }
 extern "C" double bronze_math_cos_f64(double x) { return brass::math::cos_f64(x); }
@@ -421,11 +422,11 @@ extern "C" void bronze_math_sincos_f64(double x, void* out) {
 // il_lowering_calls.cpp): each function object's code is the boxed wrapper
 // below, and the wrapper and the site's fast path call the one kernel, so the
 // two cannot differ in a bit.
-extern "C" double bronze_math_exp_f64(double x) { return std::exp(x); }
-extern "C" double bronze_math_log_f64(double x) { return std::log(x); }
-extern "C" double bronze_math_tan_f64(double x) { return std::tan(x); }
+extern "C" double bronze_math_exp_f64(double x) { return brass::math::exp_f64(x); }
+extern "C" double bronze_math_log_f64(double x) { return brass::math::log_f64(x); }
+extern "C" double bronze_math_tan_f64(double x) { return brass::math::tan_f64(x); }
 extern "C" double bronze_math_asin_f64(double x) { return brass::math::asin_f64(x); }
-extern "C" double bronze_math_acos_f64(double x) { return std::acos(x); }
+extern "C" double bronze_math_acos_f64(double x) { return brass::math::acos_f64(x); }
 extern "C" double bronze_math_atan_f64(double x) { return brass::math::atan_f64(x); }
 extern "C" double bronze_math_atan2_f64(double y, double x) { return brass::math::atan2_f64(y, x); }
 

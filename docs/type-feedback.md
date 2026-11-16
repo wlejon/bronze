@@ -109,8 +109,11 @@ Per site the recorder keeps:
   keys are the own keys in insertion order, every one of them (version 1
   showed 32, then `+N`). A dictionary
   is `<prototype>{dict}`. A receiver that is not a plain object is named by
-  kind (`array`, `function`, `number`, ...). Shapes that differ only in
-  attributes or slot representation share a name;
+  kind (`array`, `function`, `number`, ...). A key is spelled `!k` when it
+  is a data property that is not writable and `&k` when it is an accessor
+  pair, so a reader knows which slots it may store into and where the slot
+  rule (one slot per data property) holds. Shapes that differ only in
+  enumerability, configurability or slot representation share a name;
 - **targets** (target and method sites): `<name>@<8 hex digits>`, the
   function's `name` and an FNV-1a hash of its source text (what a reading
   build can compute for an IL function from `sourceBegin..sourceEnd`), or

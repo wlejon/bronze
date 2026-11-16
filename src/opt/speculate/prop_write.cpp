@@ -30,10 +30,15 @@
 //
 //     guard is.object %obj
 //     guard ptr.eq (load.shape %obj), (shape.cell from)
+//         failing: ptr.eq (load.shape %obj), (shape.cell to) ? slot.store %obj, k, %v
+//                                                             : leave
 //     guard proto.cell c                  ; exit: proto.publish c, then leave
 //     slot.store %obj, k, %v
 //     shape.store %obj, (shape.cell to)
 //
+// The `to` arm (cold) is a PROPERTY WRITE: the cache way an add fills is the
+// one every later store to the key on an object at `to` hits, so one `own`
+// way stands for both.
 // Why exact: an object at `from` is a plain, extensible object (a
 // non-extensible one is a dictionary, which no cell resolves to) without the
 // key. Cell c (il.h Module::protoCells, runtime/transition_cells.cpp) is
@@ -81,7 +86,33 @@ void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan) {
     cell.slot = to.slot;
     const auto c = static_cast<int32_t>(protoCellFor(ctx.module, cell));
 
-    guardShape(b, object, from.key);
+    // A receiver already at `to` stores into the slot, as a PROPERTY WRITE
+    // does: the way an add fills is the one later stores to the key hit, so
+    // the harvest's `own` way names both. That arm is off the add's failing
+    // edge, cold, so an add the redundancy pass proves (a constructor's run of
+    // adds) keeps one test.
+    const ValueId shape = emitShapeOf(b, object);
+    const BlockId adds = b.newBlock();
+    const BlockId stored = b.newBlock();
+    const BlockId stores = b.newBlock();
+    const BlockId join = b.newBlock();
+    b.context().speculated.blocks[stored].cold = true;
+    b.context().speculated.blocks[stores].cold = true;
+    b.branch(emitShapeIs(b, shape, from.key), adds, {}, stored, {});
+    b.moveTo(stored);
+    b.branch(emitShapeIs(b, b.emit(il::Op::LoadShape, il::Type::Ptr, {object}), to.key), stores, {},
+             b.exitBefore(), {});
+    b.moveTo(stores);
+    {
+        il::Instruction store;
+        store.op = il::Op::SlotStore;
+        store.type = il::Type::Void;
+        store.operands = {object, value};
+        store.immI32 = to.slot;
+        b.emitInst(std::move(store));
+    }
+    b.jump(join);
+    b.moveTo(adds);
     il::Instruction publish;
     publish.op = il::Op::ProtoPublish;
     publish.type = il::Type::Void;
@@ -98,6 +129,8 @@ void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan) {
     b.emitInst(std::move(store));
     const ValueId toShape = b.emit(il::Op::ShapeCell, il::Type::Ptr, {}, static_cast<int32_t>(cell.toCell));
     b.emit(il::Op::ShapeStore, il::Type::Void, {object, toShape});
+    b.jump(join);
+    b.moveTo(join);
     b.finish();
     ++ctx.stats.propAdds;
 }

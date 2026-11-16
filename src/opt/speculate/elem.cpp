@@ -30,15 +30,18 @@
 //     guard !is.hole old               ; the element exists
 //     elem.store %a, x, %v
 //
-// Typed read / write (one element kind: Float32, Float64, Int32):
+// Typed read / write (one element kind with a code, il2mir il_abi.h
+// kElemViewKinds: every kind but Int8, Float16 and the BigInt kinds):
 //     guard is.typed_array %a, kind    ; the kind is fixed: a value fact
 //     x as above (or const.i32 k)
 //     n = typed.length %a
 //     guard in.bounds x, n
-//     v = typed.load %a, x, kind       ; f64 (float kinds) or i32 ; r = box v
+//     v = typed.load %a, x, kind       ; f64 (float kinds, Uint32) or i32 ; r = box v
 //   or, a write:
-//     guard is.number %v ; f = unbox.f64.unchecked %v ; (Int32: t = to.int32 f)
-//     typed.store %a, x, f|t, kind
+//     guard is.number %v ; f = unbox.f64.unchecked %v
+//     (an integer kind but Uint8Clamped: t = to.int32 f)
+//     typed.store %a, x, f|t, kind     ; the low bits, or f rounded (Float32)
+//                                      ; or clamped (Uint8Clamped)
 //
 // Length:
 //     guard is.array %a ; n = array.length %a ; guard n >= 0 ; r = box.i32 n
@@ -54,14 +57,15 @@
 // rules out every integrity level and the hazard any defined element), so
 // OrdinarySet stores it in place. A typed array's integer-indexed [[Get]] /
 // [[Set]] (10.4.5) of a valid index is the element read / the element write of
-// ToNumber(v) converted to the kind (a Number's ToNumber is itself; Int32's
-// conversion is ToInt32), and an index below the view's length is valid. An
+// ToNumber(v) converted to the kind (a Number's ToNumber is itself; an
+// integer kind's conversion keeps the low bits of ToInt32, Uint8Clamped's is
+// ToUint8Clamp), and an index below the view's length is valid. An
 // Array's `length` is its own non-configurable data property, the length
 // word. A hole, an index out of bounds, another receiver and a non-Number
 // stored to a view are what the generic op handles differently, and all
 // leave. Everything before the last guard is a test or a load, so a failure
 // re-runs the generic instruction in G. Writes that grow the array, holes,
-// defines, and the other typed element kinds stay generic.
+// defines, and the typed element kinds with no code stay generic.
 
 #include "abi/bronze_abi.h"
 #include "opt/speculate/sites.h"
@@ -99,7 +103,22 @@ ValueId guardTyped(GuardBuilder& b, const SitePlan& plan, ValueId view, ValueId 
     return x;
 }
 
-il::Type typedValueType(int32_t kind) { return kind == BRONZE_ABI_TA_KIND_INT32 ? il::Type::I32 : il::Type::F64; }
+// typed.load's result (il_op.h): f64 for the float kinds and Uint32, whose
+// elements an i32 does not hold, i32 for the other integer kinds.
+il::Type typedValueType(int32_t kind) {
+    return kind == BRONZE_ABI_TA_KIND_FLOAT32 || kind == BRONZE_ABI_TA_KIND_FLOAT64 || kind == BRONZE_ABI_TA_KIND_UINT32
+               ? il::Type::F64
+               : il::Type::I32;
+}
+
+// What typed.store takes for the kind: the double for the float kinds and
+// Uint8Clamped (whose rounding the store does), the ToInt32 of it for the
+// integer kinds, whose low bits are ToInt16's, ToUint8's, ... (7.1.6-7.1.11:
+// each is the same modular reduction to fewer bits).
+bool storesDouble(int32_t kind) {
+    return kind == BRONZE_ABI_TA_KIND_FLOAT32 || kind == BRONZE_ABI_TA_KIND_FLOAT64 ||
+           kind == BRONZE_ABI_TA_KIND_UINT8CLAMPED;
+}
 
 }  // namespace
 
@@ -147,7 +166,7 @@ void rewriteElem(RewriteContext& ctx, const SitePlan& plan) {
         const ValueId x = guardTyped(b, plan, array, index);
         b.guard(b.emit(il::Op::IsNumber, il::Type::Bool, {value}));
         ValueId stored = b.emit(il::Op::UnboxF64, il::Type::F64, {value});
-        if (plan.viewKind == BRONZE_ABI_TA_KIND_INT32) {
+        if (!storesDouble(plan.viewKind)) {
             il::Instruction conv;
             conv.op = il::Op::ToInt32;
             conv.type = il::Type::I32;

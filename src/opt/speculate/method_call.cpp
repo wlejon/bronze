@@ -15,13 +15,19 @@
 //     guard is.object %recv
 //     guard ptr.eq (load.shape %recv), (shape.cell n)
 //     m = slot.load %recv, k
-//     guard fn.code_is m, @entry(f)               ; leaves IN FRONT of the site
-//     r = call @entry(f)(...)
+//     br (fn.code_is m, @entry(f)), direct, other
+//   direct: r1 = call @entry(f)(...) ; jump join(r1)
+//   other:  r2 = call.dynamic m, %recv, a0, ... ; jump join(r2)   (cold)
 //
-// Everything before the last guard is a test or a load an own data property
-// licenses (prop_read.cpp says why the slot is the property), so a failure at
-// any of them leaves with nothing observable done and G re-runs the whole
-// `method.call`.
+// Everything before the identity test is a test or a load an own data
+// property licenses (prop_read.cpp says why the slot is the property), so a
+// failure at either guard leaves with nothing observable done and G re-runs
+// the whole `method.call`. The identity test does not leave: the slot holds
+// the method, so calling whatever it holds is the generic operation's Call. A
+// harvest's `slot` way names the callee the cache latched first, and the
+// cache's hits load the slot without comparing it, so objects of one shape
+// holding different functions there (one setter per uniform type) are no
+// evidence against it; they take the cold arm and stay in S.
 //
 // MethodProto — anything else with one callee, typically a method found on
 // the prototype chain:
@@ -54,6 +60,11 @@
 //   next1: br (fn.code_is m, @entry(f2)), arm2, exit
 //   ...
 // The same reasoning holds per arm; only the last test's failure exits.
+//
+// When a way of the harvest was a `slot` way (SitePlan::calleesOpen: the
+// cache never compared that callee after latching it), the last failure is
+// not evidence against S: it makes the same generic call in a cold arm into
+// the join and stays in S.
 
 #include "opt/speculate/sites.h"
 
@@ -72,8 +83,24 @@ void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan) {
         assert(plan.shapes.size() == 1);
         guardShape(b, receiver, plan.shapes.front().key);
         const ValueId method = b.emit(il::Op::SlotLoad, il::Type::Dynamic, {receiver}, plan.shapes.front().slot);
-        b.guard(emitCodeIs(b, method, plan.callee));
-        emitDirectCall(b, plan.callee, method, receiver, args);
+        const BlockId direct = b.newBlock();
+        const BlockId other = b.newBlock();
+        const BlockId join = b.newBlock();
+        ctx.speculated.blocks[other].cold = true;
+        if (site.result != il::kNoValue) b.resultParam(join);
+        b.branch(emitCodeIs(b, method, plan.callee), direct, {}, other, {});
+        b.moveTo(direct);
+        const ValueId r = emitDirectCallValue(b, plan.callee, method, receiver, args);
+        b.jump(join, site.result != il::kNoValue ? std::vector<ValueId>{r} : std::vector<ValueId>{});
+        b.moveTo(other);
+        il::Instruction call;
+        call.op = il::Op::DynamicCall;
+        call.type = il::Type::Dynamic;
+        call.operands = {method, receiver};
+        call.operands.insert(call.operands.end(), args.begin(), args.end());
+        const ValueId t = b.emitInst(std::move(call));
+        b.jump(join, site.result != il::kNoValue ? std::vector<ValueId>{t} : std::vector<ValueId>{});
+        b.moveTo(join);
         b.finish();
         ++ctx.stats.methodCalls;
         return;
@@ -87,38 +114,49 @@ void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan) {
     read.icIndex = ctx.newIcSite();
     const ValueId method = b.emitInst(std::move(read));
 
-    // The exit's work: the rest of the generic operation.
-    il::Instruction rest;
-    rest.op = il::Op::DynamicCall;
-    rest.type = il::Type::Dynamic;
-    rest.result = b.freshValue(il::Type::Dynamic);
-    rest.operands = {method, receiver};
-    rest.operands.insert(rest.operands.end(), args.begin(), args.end());
-    const ValueId restResult = rest.result;
-    std::vector<il::Instruction> work;
-    work.push_back(std::move(rest));
-    const BlockId exit = b.exitAfter(std::move(work), restResult);
-
-    if (plan.callees.empty()) {
-        b.guardTo(emitCodeIs(b, method, plan.callee), true, exit);
-        emitDirectCall(b, plan.callee, method, receiver, args);
-        b.finish();
-        ++ctx.stats.methodCalls;
-        return;
-    }
-
-    // Several callees: one identity test per arm, in the harvest's order,
-    // the last one's failure leaving; each arm a direct call into the join.
+    // The rest of the generic operation, for a method none of the tests
+    // named: in the exit, which then leaves after the site, or (calleesOpen)
+    // in a cold arm into the join.
+    auto rest = [&]() {
+        il::Instruction call;
+        call.op = il::Op::DynamicCall;
+        call.type = il::Type::Dynamic;
+        call.result = b.freshValue(il::Type::Dynamic);
+        call.operands = {method, receiver};
+        call.operands.insert(call.operands.end(), args.begin(), args.end());
+        return call;
+    };
     const BlockId join = b.newBlock();
     if (site.result != il::kNoValue) b.resultParam(join);
-    for (size_t k = 0; k < plan.callees.size(); ++k) {
+    BlockId exit = il::kNoBlock;
+    if (plan.calleesOpen) {
+        exit = b.newBlock();
+        ctx.speculated.blocks[exit].cold = true;
+        const BlockId arms = b.cursor();
+        b.moveTo(exit);
+        const ValueId t = b.emitInst(rest());
+        b.jump(join, site.result != il::kNoValue ? std::vector<ValueId>{t} : std::vector<ValueId>{});
+        b.moveTo(arms);
+    } else {
+        il::Instruction call = rest();
+        const ValueId restResult = call.result;
+        std::vector<il::Instruction> work;
+        work.push_back(std::move(call));
+        exit = b.exitAfter(std::move(work), restResult);
+    }
+
+    // One identity test per arm, in the harvest's order, the last one's
+    // failure going to `exit`; each arm a direct call into the join.
+    std::vector<uint32_t> callees = plan.callees;
+    if (callees.empty()) callees.push_back(plan.callee);
+    for (size_t k = 0; k < callees.size(); ++k) {
         const BlockId arm = b.newBlock();
-        const bool last = k + 1 == plan.callees.size();
+        const bool last = k + 1 == callees.size();
         const BlockId next = last ? exit : b.newBlock();
-        b.branch(emitCodeIs(b, method, plan.callees[k]), arm, {}, next, {});
-        ++ctx.stats.guards;
+        b.branch(emitCodeIs(b, method, callees[k]), arm, {}, next, {});
+        if (!plan.calleesOpen) ++ctx.stats.guards;
         b.moveTo(arm);
-        const ValueId r = emitDirectCallValue(b, plan.callees[k], method, receiver, args);
+        const ValueId r = emitDirectCallValue(b, callees[k], method, receiver, args);
         b.jump(join, site.result != il::kNoValue ? std::vector<ValueId>{r} : std::vector<ValueId>{});
         if (!last) b.moveTo(next);
     }

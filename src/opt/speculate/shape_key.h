@@ -10,9 +10,11 @@
 //
 // with the own keys in the order they were added, every one of them, and the
 // `#N` part only for an inline capacity other than the default
-// (BRONZE_ABI_OBJ_INLINE_SLOTS). A dictionary is `<prototype>{dict}`; a
-// receiver that is no plain object is named by its kind (`array`,
-// `function`, `number`, ...) and has no braces at all.
+// (BRONZE_ABI_OBJ_INLINE_SLOTS). A key is spelled `!k` when it is a data
+// property that is not writable and `&k` when it is an accessor pair. A
+// dictionary is `<prototype>{dict}`; a receiver that is no plain object is
+// named by its kind (`array`, `function`, `number`, ...) and has no braces at
+// all.
 //
 // THE SLOT RULE. Shape::placeSlot (runtime/shape.h) gives the K-th property of
 // an object with N inline Values slot K when K < N and
@@ -49,19 +51,27 @@ namespace bronze::opt::speculate {
 struct ShapeName {
     std::string prototype;     // the part before `#` / `{`
     uint32_t inlineSlots = 0;  // N: the `#N` capacity, else the default
-    std::vector<std::string> keys;
+    std::vector<std::string> keys;  // without their `!`
+    std::vector<bool> readOnly;     // per key: spelled `!k`
 };
 
 // Parses a plain-object shape name. Nullopt for anything this step will not
 // speculate on: a kind word, `*other*`, a dictionary, a symbol key
-// (`@@symbol`, which names no particular symbol), an empty key, more than one
-// `{`, a missing closing `}`, or a capacity past BRONZE_ABI_OBJ_OVERFLOW_SLOT.
+// (`@@symbol`, which names no particular symbol), an accessor key (`&k`,
+// two slots wide), an empty key, more than one `{`, a missing closing `}`,
+// or a capacity past BRONZE_ABI_OBJ_OVERFLOW_SLOT.
 std::optional<ShapeName> parseShapeName(std::string_view name);
+
+// The name of the shape with the first `keyCount` keys of `shape`, spelled as
+// the runtime spells it.
+std::string shapeNameWithKeys(const ShapeName& shape, size_t keyCount);
 
 // The slot of `key` in a shape so named, by the slot rule; nullopt when the
 // key is not one of its own keys or appears more than once (which only an
-// ambiguous name can show).
+// ambiguous name can show). A read may load it.
 std::optional<int32_t> ownSlot(const ShapeName& shape, std::string_view key);
+// ownSlot for a store: nullopt as well when the key is not writable.
+std::optional<int32_t> writableSlot(const ShapeName& shape, std::string_view key);
 
 // Whether a property key is one a shape can hold at all: not empty and not a
 // canonical array index (`"0"`, `"17"`), which an object keeps among its

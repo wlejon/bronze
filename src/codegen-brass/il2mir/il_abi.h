@@ -185,13 +185,20 @@ inline constexpr uint32_t kElemArmArray = 1;
 inline constexpr uint32_t kElemArmView = 2;
 inline constexpr uint32_t kElemArmGrow = 3;
 inline constexpr uint32_t kElemArmMiss = 4;
-// A build made to be harvested splits the typed-array arm by element kind:
-// kElemArmView is then a Float32 view, these the others, and it marks
-// kElemArmMiss for a view index at or past the length (il_elem_lowering.cpp
-// mark_view_arm).
-inline constexpr uint32_t kElemArmViewF64 = 5;
-inline constexpr uint32_t kElemArmViewI32 = 6;
-inline constexpr uint32_t kElemArmViewOther = 7;
+// A build made to be harvested names the view's element kind too: every
+// typed-array access marks kElemArmView, and the bits of its kind's code
+// (kElemViewKinds' index) mark kElemArmKindBit0..2, so a site that met one
+// kind has each bit arm's count either zero or kElemArmView's. A kind with no
+// code (Int8, Float16, the BigInt kinds) and a view index at or past the
+// length mark kElemArmMiss (il_elem_lowering.cpp mark_view_arm).
+inline constexpr uint32_t kElemArmKindBit0 = 5;
+inline constexpr uint32_t kElemArmKindBit1 = 6;
+inline constexpr uint32_t kElemArmKindBit2 = 7;
+inline constexpr int32_t kElemViewKinds[8] = {
+    BRONZE_ABI_TA_KIND_FLOAT32, BRONZE_ABI_TA_KIND_FLOAT64, BRONZE_ABI_TA_KIND_INT32,
+    BRONZE_ABI_TA_KIND_UINT32,  BRONZE_ABI_TA_KIND_UINT16,  BRONZE_ABI_TA_KIND_INT16,
+    BRONZE_ABI_TA_KIND_UINT8,   BRONZE_ABI_TA_KIND_UINT8CLAMPED,
+};
 // A dynamic numeric op's arms (il_lowering_numeric.cpp; opt/speculate/
 // evidence.h kArithArmNumbers and on): its Numbers computed inline, per
 // operand one that was no int32, and a Number result that was no int32.

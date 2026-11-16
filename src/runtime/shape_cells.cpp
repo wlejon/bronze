@@ -3,6 +3,7 @@
 #include "runtime/shape_cells.h"
 
 #include "abi/bronze_abi.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
@@ -91,15 +92,30 @@ bool eligible(const Shape* shape) {
         shape->has_symbol_keys || shape->double_slots != 0 || shape->object_slots != 0) {
         return false;
     }
+    // Over Object.prototype only the literal roots' trees: a builtin's own
+    // root over it (Math's, JSON's, an iterator result's) names its shapes
+    // `Object{...}` too, and the cell is for the objects a program makes.
+    const Shape* root = shape->root;
+    if (root != nullptr && !rtIsPlainObjectRoot(root) &&
+        root->prototypeValue().rawBits() == rtObjectPrototypeIfBuilt().rawBits()) {
+        return false;
+    }
+    // A read-only data property is one slot like any other: its name spells
+    // it `!k` (type_feedback.cpp shapeText), and compiled code stores only
+    // into the keys its name spells writable.
     for (const Shape* n = shape; n != nullptr && n->parent != nullptr; n = n->parent) {
-        if (n->accessor || !n->writable || n->repr != SlotRepr::Boxed || !n->key.isString()) return false;
+        if (n->accessor || n->repr != SlotRepr::Boxed || !n->key.isString()) return false;
     }
     return true;
 }
 
-bool keyIs(PropertyKey key, const std::string& name) {
-    const StringHeader* s = key.string();
-    return s != nullptr && rtUtf8Chars(s) == name;
+// Whether a data transition adds the key a name spells (`!k` when it is not
+// writable).
+bool keyIs(const ShapeTransition& t, const std::string& spelled) {
+    const StringHeader* s = t.key.string();
+    if (s == nullptr) return false;
+    if (t.writable) return rtUtf8Chars(s) == spelled;
+    return !spelled.empty() && spelled.front() == '!' && rtUtf8Chars(s) == std::string_view(spelled).substr(1);
 }
 
 // The eligible shape under `root` whose keys are `keys[at..]` added in order
@@ -107,7 +123,7 @@ bool keyIs(PropertyKey key, const std::string& name) {
 const Shape* descend(const Shape* from, const std::vector<std::string>& keys, size_t at) {
     if (at == keys.size()) return eligible(from) ? from : nullptr;
     for (const ShapeTransition& t : from->transitions) {
-        if (t.accessor || !t.writable || t.repr != SlotRepr::Boxed || !keyIs(t.key, keys[at])) continue;
+        if (t.accessor || t.repr != SlotRepr::Boxed || !keyIs(t, keys[at])) continue;
         if (const Shape* found = descend(t.next_shape, keys, at + 1)) return found;
     }
     return nullptr;
@@ -133,7 +149,8 @@ void rtShapeCellsNoteShape(const Shape* shape) {
     if (shape->parent != nullptr) {
         const StringHeader* s = shape->key.string();
         if (s == nullptr) return;
-        last = rtUtf8Chars(s);
+        // Spelled as the name spells it (type_feedback.cpp shapeText).
+        last = (shape->writable ? "" : "!") + rtUtf8Chars(s);
     }
     const auto it = r.byLastKey.find(last);
     if (it == r.byLastKey.end()) return;

@@ -122,6 +122,12 @@ bool Evidence::slowRan(uint32_t slowIndex) const {
     return harvest_ != nullptr && harvest_->slow.count(slowIndex) != 0;
 }
 
+uint64_t Evidence::slowCount(uint32_t slowIndex) const {
+    if (harvest_ == nullptr) return 0;
+    const auto it = harvest_->slow.find(slowIndex);
+    return it != harvest_->slow.end() ? it->second : 0;
+}
+
 bool Evidence::slowArmed(uint32_t slowSite) const {
     if (harvest_ == nullptr || harvest_->slowSites != module_.slowSiteCount) return false;
     const size_t word = slowSite / 64;
@@ -308,7 +314,7 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
     }
     const std::optional<ShapeName> shape = parseShapeName(name);
     if (!shape) return std::nullopt;
-    const std::optional<int32_t> slot = ownSlot(*shape, key);
+    const std::optional<int32_t> slot = writableSlot(*shape, key);
     if (!slot) return std::nullopt;
 
     SitePlan plan;
@@ -363,9 +369,11 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
                 plan.callees.push_back(f);
             }
             plan.kind = SiteKind::MethodProto;
+            plan.calleesOpen = anySlot;
             return plan;
         }
         plan.callee = calleeByHarvestName(callees.front());
+        plan.calleesOpen = anySlot;
         if (anySlot && h->ways.size() == 1) ownShape = h->ways.front().receiver;
     } else {
         const auto methodSites = refs.at(block, index, il::FeedbackKind::Method);
@@ -398,27 +406,42 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
 // A method call whose every way's callee was one Math function the runtime
 // exports (il::Intrinsic; ic_harvest.cpp names it `intrinsic:Math.<name>`),
 // called with exactly the arguments its computed form takes.
+namespace {
+
+// The il::Intrinsic a harvest's callee name `intrinsic:Math.<name>` names,
+// when its computed form takes `argc` arguments; -1 otherwise.
+int32_t intrinsicNamed(const std::string& callee, size_t argc) {
+    static const std::string kPrefix = "intrinsic:Math.";
+    if (callee.compare(0, kPrefix.size(), kPrefix) != 0) return -1;
+    for (int32_t i = 0; i < il::kIntrinsicCount; ++i) {
+        const il::IntrinsicInfo* info = il::intrinsicInfo(i);
+        if (kPrefix + info->name != callee) continue;
+        return argc == info->arity ? i : -1;
+    }
+    return -1;
+}
+
+SitePlan mathCallPlan(int32_t intrinsic, BlockId block, uint32_t index) {
+    SitePlan plan;
+    plan.kind = SiteKind::MathCall;
+    plan.block = block;
+    plan.index = index;
+    plan.intrinsic = intrinsic;
+    return plan;
+}
+
+}  // namespace
+
 std::optional<SitePlan> Evidence::planIntrinsic(const spec::HarvestSite& h, size_t argc, BlockId block,
                                                 uint32_t index) const {
-    static const std::string kPrefix = "intrinsic:Math.";
     std::string name;
     for (const spec::HarvestWay& way : h.ways) {
-        if (way.callee.compare(0, kPrefix.size(), kPrefix) != 0) return std::nullopt;
         if (!name.empty() && way.callee != name) return std::nullopt;
         name = way.callee;
     }
-    for (int32_t i = 0; i < il::kIntrinsicCount; ++i) {
-        const il::IntrinsicInfo* info = il::intrinsicInfo(i);
-        if (kPrefix + info->name != name) continue;
-        if (argc != info->arity) return std::nullopt;
-        SitePlan plan;
-        plan.kind = SiteKind::MathCall;
-        plan.block = block;
-        plan.index = index;
-        plan.intrinsic = i;
-        return plan;
-    }
-    return std::nullopt;
+    const int32_t intrinsic = intrinsicNamed(name, argc);
+    if (intrinsic < 0) return std::nullopt;
+    return mathCallPlan(intrinsic, block, index);
 }
 
 // An assignment that added the key: a harvest's single `own` way for a write
@@ -436,11 +459,8 @@ std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string
     if (!slot || *slot >= static_cast<int32_t>(to->inlineSlots) || *slot >= BRONZE_ABI_OBJ_OVERFLOW_SLOT) {
         return std::nullopt;
     }
-    std::string fromName = to->prototype;
-    if (to->inlineSlots != BRONZE_ABI_OBJ_INLINE_SLOTS) fromName += "#" + std::to_string(to->inlineSlots);
-    fromName += "{";
-    for (size_t k = 0; k + 1 < to->keys.size(); ++k) fromName += (k ? "," : "") + to->keys[k];
-    fromName += "}";
+    if (to->readOnly.back()) return std::nullopt;
+    const std::string fromName = shapeNameWithKeys(*to, to->keys.size() - 1);
     SitePlan plan;
     plan.kind = SiteKind::PropAdd;
     plan.block = block;
@@ -460,18 +480,23 @@ std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string
 // for the instance, and before the first construction of a constructor vets
 // it (bronze_construct), so for one the helper's count says nothing; the
 // turns alone name the callee.
-uint32_t Evidence::harvestedCallee(const il::Instruction& inst) const {
+const std::string* Evidence::harvestedCalleeName(const il::Instruction& inst) const {
     if (harvest_ == nullptr || inst.slowSite == il::Instruction::kNoSlowSite ||
         !slowArmed(inst.slowSite + il::kShapeTurnArm)) {
-        return kNoFunction;
+        return nullptr;
     }
     const auto turns = harvest_->slow.find(inst.slowSite + il::kShapeTurnArm);
     const auto last = harvest_->callees.find(inst.slowSite + il::kLastShapeArm);
-    if ((inst.op != il::Op::Construct && slowRan(inst.slowSite)) || turns == harvest_->slow.end() ||
-        turns->second != 1 || last == harvest_->callees.end()) {
+    if (turns == harvest_->slow.end() || turns->second != 1 || last == harvest_->callees.end()) return nullptr;
+    return &last->second;
+}
+
+uint32_t Evidence::harvestedCallee(const il::Instruction& inst) const {
+    if (inst.op != il::Op::Construct && inst.slowSite != il::Instruction::kNoSlowSite && slowRan(inst.slowSite)) {
         return kNoFunction;
     }
-    return calleeByHarvestName(last->second);
+    const std::string* name = harvestedCalleeName(inst);
+    return name != nullptr ? calleeByHarvestName(*name) : kNoFunction;
 }
 
 // A `new` whose callee was always one function, entered inline (G's
@@ -515,6 +540,11 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
         }
         callee = calleeByRecordedName(site->soleTarget());
     } else {
+        // A Math function held in a variable (`const cos = Math.cos`).
+        if (const std::string* name = harvestedCalleeName(inst)) {
+            const int32_t intrinsic = intrinsicNamed(*name, inst.operands.size() - 2);
+            if (intrinsic >= 0) return mathCallPlan(intrinsic, block, index);
+        }
         callee = harvestedCallee(inst);
     }
     if (callee == kNoFunction || !directCallFits(module_.functions[callee], inst.operands.size() - 2)) {
@@ -616,9 +646,10 @@ Evidence::ArmEvidence Evidence::armEvidence(const il::Instruction& inst) const {
 
 // An element access the harvested build answered one way every time: the
 // site was armed, its generic fallback never ran, nor (a write) its append,
-// nor did a read or write of a view find its index out of bounds; and either
-// its Array arm ran and no typed-array arm did, or exactly one typed-array arm
-// of one element kind (Float32, Float64, Int32) ran and the Array arm did not.
+// nor did a read or write of a view find its index out of bounds or a kind
+// with no code; and either its Array arm ran and its typed-array arm did not,
+// or the typed-array arm did, the Array arm did not, and its kind-bit arms
+// name one element kind (il2mir il_abi.h kElemViewKinds).
 // The fallback is where every other receiver, an index past the length, a
 // hole and a non-index key went, so none came. `o[k]` with an index key `k`
 // (a prop.get / prop.set) is the same access at a constant index.
@@ -626,23 +657,26 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
                                            uint32_t index) const {
     const uint32_t site = inst.slowSite;
     if (site == il::Instruction::kNoSlowSite || !slowArmed(site)) return std::nullopt;
-    if (slowRan(site) || slowRan(site + kElemArmGrow) || slowRan(site + kElemArmMiss) ||
-        slowRan(site + kElemArmViewOther)) {
-        return std::nullopt;
-    }
+    if (slowRan(site) || slowRan(site + kElemArmGrow) || slowRan(site + kElemArmMiss)) return std::nullopt;
     const bool array = slowRan(site + kElemArmArray);
-    const bool f32 = slowRan(site + kElemArmView);
-    const bool f64 = slowRan(site + kElemArmViewF64);
-    const bool i32 = slowRan(site + kElemArmViewI32);
-    if (int(array) + int(f32) + int(f64) + int(i32) != 1) return std::nullopt;
+    const uint64_t views = slowCount(site + kElemArmView);
+    if (array == (views != 0)) return std::nullopt;
 
     SitePlan plan;
     plan.block = block;
     plan.index = index;
-    plan.viewKind = array ? kDenseArray
-                  : f32   ? BRONZE_ABI_TA_KIND_FLOAT32
-                  : f64   ? BRONZE_ABI_TA_KIND_FLOAT64
-                          : BRONZE_ABI_TA_KIND_INT32;
+    plan.viewKind = kDenseArray;
+    if (views != 0) {
+        // One kind: every bit arm counted none or all of the views.
+        uint32_t code = 0;
+        const uint32_t bitArms[3] = {kElemArmKindBit0, kElemArmKindBit1, kElemArmKindBit2};
+        for (uint32_t bit = 0; bit < 3; ++bit) {
+            const uint64_t n = slowCount(site + bitArms[bit]);
+            if (n != 0 && n != views) return std::nullopt;
+            if (n != 0) code |= 1u << bit;
+        }
+        plan.viewKind = kElemViewKinds[code];
+    }
     const bool keyed = inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet;
     if (!keyed) {
         const std::optional<int32_t> k = indexKey(module_.keyConstants[inst.keyIndex]);

@@ -12,10 +12,11 @@
 // shape's for the life of the thread. A cell no shape fills stays zero, which
 // no object's shape word is, so the code comparing with it always leaves.
 //
-// Only a shape whose every property a slot load and a slot store may touch
-// directly fills a cell: shared (no dictionary, nobody's prototype, no
-// sentinel), every node a writable data property boxed in its slot, and no
-// symbol key. A name that only such a shape could carry is what the
+// Only a shape whose every property a slot load may touch directly fills a
+// cell: shared (no dictionary, nobody's prototype, no sentinel), every node a
+// data property boxed in its slot, and no symbol key. A data property that is
+// not writable is spelled `!k` in the name, so the speculated code knows not
+// to store into it. A name that only such a shape could carry is what the
 // speculated code assumed; an ineligible shape under the name leaves the cell
 // to a later one.
 

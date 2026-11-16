@@ -1,6 +1,7 @@
 #include "codegen-brass/brass_backend_sections.h"
 
 #include "abi/bronze_abi.h"
+#include "codegen-brass/deopt_sites.h"
 #include "codegen-brass/il2mir/il_abi.h"
 #include "il/feedback_site.h"
 #include "support/source.h"
@@ -502,7 +503,7 @@ void emitPcTablesAndCodeRanges(
 }
 
 void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::Module& module,
-                     size_t globalCacheCount, const std::vector<uint64_t>* slowArmed) {
+                     size_t globalCacheCount, const std::vector<uint64_t>* slowArmed, size_t deoptWords) {
     const std::string dataSecName = ".data";
     Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -606,6 +607,15 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
         dataSec.data.resize(cellOffset + cellBytes, 0);
         defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kMemberCellsSymbol)), dataIdx,
                      cellOffset, cellBytes, SymbolBinding::Local);
+    }
+
+    // The deopt counters (codegen-brass/deopt_sites.h): zero, per thread.
+    if (deoptWords != 0) {
+        dataSec.align_to(8);
+        const size_t at = dataSec.data.size();
+        dataSec.data.resize(at + deoptWords * sizeof(uint64_t), 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_deopt_counts"), dataIdx, at,
+                     deoptWords * sizeof(uint64_t), SymbolBinding::Local);
     }
 
     // The slow sites' counters (il.h `slowSiteCount`), zero, ending where the
@@ -767,6 +777,10 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitShapeCellKeys(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     emitFileStrings(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles);
+    const DeoptSites deopt = collectDeoptSites(in.module, in.uniqueNames);
+    if (!deopt.sites.empty()) {
+        emitStringSymbol(obj, roSec, roIdx, moduleSymbolName(entrySymbol, "__bronze_deopt_sites"), deopt.text);
+    }
     timer.mark("ro tables");
 
     const auto fnToDesc = emitFunctionDescriptors(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
@@ -774,7 +788,8 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
 
     emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, timer);
 
-    emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount, in.slowArmed);
+    emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount, in.slowArmed,
+                    deopt.sites.empty() ? 0 : deopt.generics.size() + deopt.sites.size());
     demoteInternalSymbols(obj, entrySymbol);
     timer.mark("data section");
 

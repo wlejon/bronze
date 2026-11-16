@@ -198,6 +198,21 @@ struct TranslatorOptions {
         uint32_t group_size = 1;
     };
     std::vector<MemberCellMeta> member_cells;
+    // THE DEOPT COUNTERS (codegen-brass/deopt_sites.h): `__bronze_deopt_counts`
+    // holds one RETIRE word per generic function with resume points (by
+    // rank), then one counter per point (by slot). A generic function's twin
+    // bumps, at the entry of point `id`, the point's counter and the
+    // function's retire word; a speculated function whose G has rank r goes
+    // to G at its entry once word r reaches `deopt_retire_after`.
+    struct DeoptFunctionMeta {
+        uint32_t rank = 0;
+        std::unordered_map<uint32_t, uint32_t> slots;  // resume id -> slot
+    };
+    std::unordered_map<std::string, DeoptFunctionMeta> deopt_generic;  // by G's name
+    std::unordered_map<std::string, std::string> deopt_speculated;     // S's name -> G's name
+    uint32_t deopt_generic_count = 0;
+    uint32_t deopt_site_count = 0;
+    uint64_t deopt_retire_after = 1000;
     // SLOW SITES (il.h `slowSite`, il_property.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image

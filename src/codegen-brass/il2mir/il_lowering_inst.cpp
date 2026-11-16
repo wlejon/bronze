@@ -740,7 +740,7 @@ bool IlLowering::lower_instruction(
             // c's own compare, and the side the front end named first stays
             // the likely one (`if (a !== b)`'s body is the rare side).
             bool swap = false;
-            if (Value* inner = negated_boolean(cond)) {
+            if (Value* inner = negated_boolean(cond, b.current_block())) {
                 cond = inner;
                 swap = true;
             }

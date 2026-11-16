@@ -243,14 +243,75 @@ bool IlLowering::lower_resume_call(const BronzeInstruction& inst, Builder& b, Fu
     return true;
 }
 
+// RETIRING S: AOT cannot re-profile, so a speculated function whose guards
+// keep failing stops being entered. Its G's twin counts every exit into the
+// G's retire word (build_resume_twins); at S's entry, once the word has
+// reached TranslatorOptions::deopt_retire_after, the call goes to G with S's
+// own arguments and S returns what G does. A load, a compare and a branch the
+// predictor learns per call; the call in the cold block does not count as one
+// of S's for its stack check (G checks its own). Direct calls and function objects keep naming
+// S; copies of S inlined into other functions are not covered and keep
+// counting through their resume.calls.
+BasicBlock* IlLowering::lower_retired_entry(const std::string& fn_name, const std::vector<Value*>& params, Builder& b) {
+    const auto s = options_.deopt_speculated.find(fn_name);
+    if (s == options_.deopt_speculated.end()) return nullptr;
+    const auto g = options_.deopt_generic.find(s->second);
+    if (g == options_.deopt_generic.end()) return nullptr;
+    Function* fn = b.current_block()->parent();
+    Function* gen = fn->parent()->get_function(s->second);
+    if (gen == nullptr) return nullptr;
+    Value* base = module_data_addr(b, "__bronze_deopt_counts");
+    Value* word = b.build_load(Type::i64(), base, static_cast<int32_t>(g->second.rank * 8));
+    Value* retired = b.build_uge(word, b.build_iconst_i64(static_cast<int64_t>(options_.deopt_retire_after)));
+    BasicBlock* here = b.current_block();
+    BasicBlock* to_g = b.append_block("retired");
+    to_g->set_cold();
+    BasicBlock* body = b.append_block("speculated");
+    b.position_at_end(here);
+    b.build_br_if(retired, to_g, body);
+    b.position_at_end(to_g);
+    Value* r = b.build_call(s->second, gen->return_type(), Span<Value* const>(params.data(), params.size()));
+    if (fn->return_type().is_void()) {
+        b.build_ret_void();
+    } else {
+        b.build_ret(ensure_type(r, fn->return_type(), b));
+    }
+    retired_entry_bb_ = to_g;
+    b.position_at_end(body);
+    return body;
+}
+
 bool IlLowering::build_resume_twins(Module& mod) {
     std::vector<Function*> generic;
     for (Function* fn : mod.functions()) {
         if (fn && !fn->resume_points().empty() && !fn->has_coro_frame_layout()) generic.push_back(fn);
     }
+    // Nothing of the last lowered function's entry is in a twin: the deopt
+    // counters' address loads the delta afresh.
+    current_module_delta_ = nullptr;
     for (Function* fn : generic) {
         std::string why;
-        if (brass::build_resume_twin(*fn, mod, brass::resume_twin_name(fn->name()), {}, &why) == nullptr) {
+        // THE DEOPT COUNTERS (TranslatorOptions::deopt_generic): each entry a
+        // failed guard reaches bumps its point's counter and the function's
+        // retire word. In the twin only, so S's fast path pays nothing.
+        brass::ResumeTwinOptions twin_options;
+        const auto meta = options_.deopt_generic.find(std::string(fn->name()));
+        if (meta != options_.deopt_generic.end()) {
+            const TranslatorOptions::DeoptFunctionMeta& m = meta->second;
+            twin_options.on_exit = [this, &m](Builder& b, uint32_t id) {
+                const auto slot = m.slots.find(id);
+                if (slot == m.slots.end()) return;
+                Value* base = module_data_addr(b, "__bronze_deopt_counts");
+                auto bump = [&](uint32_t word) {
+                    const auto at = static_cast<int32_t>(word * 8);
+                    Value* n = b.build_load(Type::i64(), base, at);
+                    b.build_store(Type::i64(), base, at, b.build_add(n, b.build_iconst_i64(1)));
+                };
+                bump(m.rank);
+                bump(options_.deopt_generic_count + slot->second);
+            };
+        }
+        if (brass::build_resume_twin(*fn, mod, brass::resume_twin_name(fn->name()), twin_options, &why) == nullptr) {
             has_error_ = true;
             if (diag_) {
                 diag_->error(SourceLocation("", 0, 0),

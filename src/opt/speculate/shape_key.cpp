@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 
 #include "abi/bronze_abi_layout.h"
 
@@ -51,12 +52,29 @@ std::optional<ShapeName> parseShapeName(std::string_view name) {
     if (body.empty()) return out;  // `{}`: a shape with no own keys
     for (size_t at = 0; at <= body.size();) {
         const size_t comma = std::min(body.find(',', at), body.size());
-        const std::string_view key = body.substr(at, comma - at);
+        std::string_view key = body.substr(at, comma - at);
+        if (!key.empty() && key.front() == '&') return std::nullopt;
+        const bool readOnly = !key.empty() && key.front() == '!';
+        if (readOnly) key.remove_prefix(1);
         if (key.empty() || key == "@@symbol") return std::nullopt;
         out.keys.emplace_back(key);
+        out.readOnly.push_back(readOnly);
         at = comma + 1;
     }
     return out;
+}
+
+std::string shapeNameWithKeys(const ShapeName& shape, size_t keyCount) {
+    std::string name = shape.prototype;
+    if (shape.inlineSlots != BRONZE_ABI_OBJ_INLINE_SLOTS) name += "#" + std::to_string(shape.inlineSlots);
+    name += "{";
+    for (size_t k = 0; k < keyCount && k < shape.keys.size(); ++k) {
+        if (k != 0) name += ",";
+        if (shape.readOnly[k]) name += "!";
+        name += shape.keys[k];
+    }
+    name += "}";
+    return name;
 }
 
 std::optional<int32_t> ownSlot(const ShapeName& shape, std::string_view key) {
@@ -72,6 +90,15 @@ std::optional<int32_t> ownSlot(const ShapeName& shape, std::string_view key) {
     const size_t slot = k < n ? k : BRONZE_ABI_OBJ_OVERFLOW_SLOT + (k - n);
     if (slot > static_cast<size_t>(INT32_MAX)) return std::nullopt;
     return static_cast<int32_t>(slot);
+}
+
+std::optional<int32_t> writableSlot(const ShapeName& shape, std::string_view key) {
+    const std::optional<int32_t> slot = ownSlot(shape, key);
+    if (!slot) return std::nullopt;
+    for (size_t k = 0; k < shape.keys.size(); ++k) {
+        if (shape.keys[k] == key && shape.readOnly[k]) return std::nullopt;
+    }
+    return slot;
 }
 
 bool isNamedKey(std::string_view key) {

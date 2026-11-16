@@ -270,9 +270,15 @@ std::string shapeText(const Shape* sh, std::unordered_map<const Shape*, std::str
         name += "dict";
     } else {
         std::vector<std::string> keys;
+        // A key's spelling carries what its slot is: `&k` an accessor pair
+        // (two slots), `!k` a data property that is not writable; a plain
+        // `k` is a writable data property. Two shapes whose keys differ only
+        // in those attributes are told apart, and a compiler reading the name
+        // knows which slots a write may store into (opt/speculate/shape_key.h).
         for (const Shape* n = sh; n != nullptr && n->parent != nullptr; n = n->parent) {
-            if (StringHeader* ks = n->key.string()) keys.push_back(rtUtf8Chars(ks));
-            else keys.push_back("@@symbol");
+            const char* mark = n->accessor ? "&" : (n->writable ? "" : "!");
+            if (StringHeader* ks = n->key.string()) keys.push_back(mark + rtUtf8Chars(ks));
+            else keys.push_back(std::string(mark) + "@@symbol");
         }
         std::reverse(keys.begin(), keys.end());
         for (size_t i = 0; i < keys.size(); ++i) {

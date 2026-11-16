@@ -602,7 +602,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
                                  "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells",
-                                 "__bronze_literal_shapes", "__bronze_proto_cells", "__bronze_member_cells"}) {
+                                 "__bronze_literal_shapes", "__bronze_proto_cells", "__bronze_member_cells",
+                                 "__bronze_deopt_counts"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }
@@ -736,11 +737,13 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     if (!fn_ast.blocks.empty() && block_map.count(fn_ast.blocks[0].id)) {
         BasicBlock* entry_bb = block_map[fn_ast.blocks[0].id];
         if (fn_ast.is_coroutine_body()) coro_frame_val_ = b.add_block_param(entry_bb, Type::gcref());
+        std::vector<Value*> entry_params;
         for (size_t i = 0; i < fn_ast.params.size(); ++i) {
             uint32_t param_id = fn_ast.params[i].first;
             Type param_type = lower_abi_type(fn_ast.params[i].second);
             Value* param_val = b.add_block_param(entry_bb, param_type);
             val_map[param_id] = param_val;
+            entry_params.push_back(param_val);
         }
 
         b.position_at_end(entry_bb);
@@ -817,6 +820,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 current_module_delta_ = load_module_delta(b);
             }
         }
+        retired_entry_bb_ = nullptr;
+        if (BasicBlock* body = lower_retired_entry(fn_name, entry_params, b)) {
+            block_map[fn_ast.blocks[0].id] = body;
+        }
         if (fn_name == "main") {
             // The module's code ranges first, before anything here can
             // allocate: their stack maps are how a collection finds the
@@ -864,6 +871,16 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* identity_addr = b.build_func_addr(module_sym("__bronze_ic_identity"));
                 b.build_call("bronze_register_ic_hot", Type::void_type(),
                              {table_addr, hot_addr, site_count, identity_addr});
+            }
+            // The deopt counters (TranslatorOptions::deopt_generic) with the
+            // text naming each, for the report at exit.
+            if (options_.deopt_site_count > 0) {
+                Value* counts_addr = module_data_addr(b, "__bronze_deopt_counts");
+                Value* text_addr = b.build_func_addr(module_sym("__bronze_deopt_sites"));
+                b.build_call("bronze_register_deopt_counts", Type::void_type(),
+                             {counts_addr, text_addr, b.build_iconst_i32(static_cast<int32_t>(options_.deopt_generic_count)),
+                              b.build_iconst_i32(static_cast<int32_t>(options_.deopt_site_count)),
+                              b.build_iconst_i64(static_cast<int64_t>(options_.deopt_retire_after))});
             }
             // The method-call sites' rows (bronze_abi_layout.h, "the METHOD
             // ROWS"), kept by the runtime's latches the same way.
@@ -946,7 +963,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         // unless the body made a call.
         bool has_call = false;
         for (BasicBlock* bb : fn->blocks()) {
-            if (bb == stack_check_overflow_bb_) continue;
+            if (bb == stack_check_overflow_bb_ || bb == retired_entry_bb_) continue;
             for (Instruction* inst = bb->head(); inst && !has_call; inst = inst->next()) {
                 has_call = inst->is_call();
             }

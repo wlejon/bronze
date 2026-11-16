@@ -65,10 +65,14 @@ public:
     // ARMS: the alternatives of the instruction's inline
     // path, each an index after its slow site's (below kSlowSiteArms).
     // `arm_begin` starts one, marking it run in a build that may be
-    // harvested.
-    void set_arm_mark_fn(std::function<void(Builder&, uint32_t)> mark) { arm_mark_fn_ = std::move(mark); }
+    // harvested; `arm_count` adds one to its word instead, where the reader
+    // compares counts (a typed-array access's kind bits, il_abi.h).
+    void set_arm_mark_fn(std::function<void(Builder&, uint32_t, bool)> mark) { arm_mark_fn_ = std::move(mark); }
     void arm_begin(Builder& b, uint32_t arm) {
-        if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm);
+        if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm, false);
+    }
+    void arm_count(Builder& b, uint32_t arm) {
+        if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm, true);
     }
     // Whether arm_begin marks here: a build that may be harvested, at an
     // instruction with a site of its own.
@@ -219,7 +223,7 @@ private:
     std::function<Value*(Builder&)> module_delta_fn_;
     std::function<std::string(const char*)> module_sym_fn_;
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
-    std::function<void(Builder&, uint32_t)> arm_mark_fn_;
+    std::function<void(Builder&, uint32_t, bool)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
     std::function<void(Builder&, uint32_t, Value*)> shape_turn_fn_;
 };

@@ -27,6 +27,7 @@ add_library(bronze_codegen_brass STATIC
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
     brass_tiered_image.cpp
+    deopt_sites.cpp
     il_to_brass_ast.cpp
     module_image.cpp
     # il2mir: the bronze IL → brass MIR translator.

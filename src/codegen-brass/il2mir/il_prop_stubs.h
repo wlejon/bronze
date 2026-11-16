@@ -40,6 +40,14 @@ void build_view_get_stub(Function* fn);
 // The first byte of typed-array view `ptr`'s window (its buffer's store plus
 // its byteOffset): what an element access indexes.
 Value* view_data(Builder& b, Value* ptr);
+// Element `idx` (i64) of a view of element kind `kind` at `data`, as
+// `typed.load` gives it (il_op.h): f64 for Float32, Float64 and Uint32, i32
+// for the other integer kinds. Not for Float16 or the BigInt kinds.
+Value* view_element_load(Builder& b, Value* data, Value* idx, int kind);
+// Stores `v` as element `idx`, as `typed.store` takes it: an f64 for the
+// float kinds and for Uint8Clamped (rounded half to even into [0, 255], NaN
+// to 0), an i32 whose low bits the integer kinds keep.
+void view_element_store(Builder& b, Value* data, Value* idx, int kind, Value* v);
 constexpr const char* kViewSetStub = "__bronze_view_set_stub";
 void build_view_set_stub(Function* fn);
 
