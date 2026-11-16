@@ -4,6 +4,7 @@
 #include "il_abi.h"
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace il2mir {
 
@@ -107,11 +108,18 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
     Value* result = b.add_block_param(merge, Type::i32());
     if (is_f64) slow->set_cold();
 
+    // The conversion first: cvttsd2si answers INT64_MIN for NaN (every boxed
+    // non-Number is a NaN as a double), the infinities and |v| >= 2^63, and
+    // otherwise the truncation, whose low 32 bits are ToInt32. So one test of
+    // its answer (`cmp i, 1; jo` in the backend) replaces the range test of
+    // v's bits, and -2^63 itself, the one Number answered as INT64_MIN, takes
+    // the slow path, which handles it.
     b.position_at_end(cur);
-    Value* bits = is_f64 ? b.build_bitcast_i64_f64(v) : v;
-    b.build_br_if(int32_convertible(b, bits), fast, slow);
+    Value* wide = b.build_fptosi_i64(is_f64 ? v : b.build_bitcast_f64_i64(v));
+    b.build_br_if(b.build_eq(wide, b.build_iconst_i64(std::numeric_limits<int64_t>::min())), slow, fast);
 
     b.position_at_end(slow);
+    Value* bits = is_f64 ? b.build_bitcast_i64_f64(v) : v;
     if (is_f64) {
         // ECMA-262 7.1.6 for |v| >= 2^63, NaN, or ±Inf:
         // For 2^63 <= |v| < 2^84 (0x43E0000000000000 <= abs_bits < 0x4530000000000000),
@@ -135,7 +143,7 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
     }
 
     b.position_at_end(fast);
-    b.build_br(merge, {inline_to_int32(b, is_f64 ? v : b.build_bitcast_f64_i64(v))});
+    b.build_br(merge, {b.build_trunc_i32(wide)});
 
     b.position_at_end(merge);
     return result;

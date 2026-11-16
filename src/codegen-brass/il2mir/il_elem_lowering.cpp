@@ -603,24 +603,35 @@ Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint
     Value* is_arr = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
     b.build_br_if(is_arr, bb_arr, {}, bb_merge, {b.build_iconst_i32(0)});
 
+    // Each test its own branch (a compare and a jump; the guard reading the
+    // merged answer is threaded to the edges), where an `and` of them was
+    // materialized as setcc / movzx / and once one of its values had a
+    // second reader (the claim path's `dense`).
+    BasicBlock* bb_len = b.append_block(prefix + "_len");
+    BasicBlock* bb_yes = b.append_block(prefix + "_yes");
     b.position_at_end(bb_arr);
     Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
     Value* mask = tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF);
     Value* has_elems = b.build_eq(b.build_and(elems, mask), iconst(b, kObjectTagBits));
+    b.build_br_if(has_elems, bb_len, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_len);
     Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
-    Value* dense = b.build_and(has_elems, in_bounds);
+    b.build_br_if(in_bounds, numbers ? bb_check : bb_yes, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_yes);
+    b.build_br(bb_merge, {b.build_iconst_i32(1)});
     if (!numbers) {
-        b.build_br(bb_merge, {dense});
         b.position_at_end(bb_merge);
         return result;
     }
+    // Dense: the NUMBERS bit answers yes, else the claim does.
+    b.position_at_end(bb_check);
     Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
     Value* has_numbers =
         b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)), b.build_iconst_i32(0));
-    b.build_br_if(b.build_and(dense, has_numbers), bb_merge, {b.build_iconst_i32(1)}, bb_check, {});
-    b.position_at_end(bb_check);
-    b.build_br_if(dense, bb_claim, {}, bb_merge, {b.build_iconst_i32(0)});
+    b.build_br_if(has_numbers, bb_yes, {}, bb_claim, {});
     b.position_at_end(bb_claim);
     Value* claimed = b.build_call("bronze_array_claim_numbers", Type::i32(), {obj});
     b.build_br(bb_merge, {b.build_ne(claimed, b.build_iconst_i32(0))});
