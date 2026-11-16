@@ -1,4 +1,6 @@
 #include "il_lowering.h"
+#include "il_call_entry.h"
+#include "il_prop_stubs.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_ops.h"
 #include "il_lowering_calls.h"
@@ -313,6 +315,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // Register external runtime helper functions
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
     prop_lowering_.set_key_map_sym(module_sym("__bronze_key_map"));
+    prop_lowering_.set_module_sym_fn([this](const char* base) { return module_sym(base); });
     prop_lowering_.set_ic_table(module_sym("__bronze_ic_table"), options_.ic_site_count);
     if (options_.per_thread_module_data) {
         prop_lowering_.set_module_delta_fn([this](Builder& b) { return module_delta(b); });
@@ -532,6 +535,31 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
+    // The module's stubs: the trampoline protected blocks enter code through
+    // (il_call_entry.h) and the property stubs (il_prop_stubs.h).
+    {
+        const Type tramp_params[] = {Type::ptr(), Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
+        build_enter_code_trampoline(
+            mod->create_function(module_sym(kEnterCodeTrampoline), Type::i64(), Span<const Type>(tramp_params, 5)));
+        const Type get_params[] = {Type::i64(), Type::i32(), Type::ptr()};
+        build_prop_get_stub(mod->create_function(module_sym(kPropGetStub), Type::i64(), Span<const Type>(get_params, 3)));
+        const Type set_params[] = {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()};
+        build_prop_set_stub(
+            mod->create_function(module_sym(kPropSetStub), Type::void_type(), Span<const Type>(set_params, 5)),
+            module_sym(kSetterCallStub));
+        const Type setter_params[] = {Type::i64(), Type::i64(), Type::i64()};
+        build_setter_call_stub(
+            mod->create_function(module_sym(kSetterCallStub), Type::void_type(), Span<const Type>(setter_params, 3)));
+        const Type view_get_params[] = {Type::i64(), Type::i32(), Type::i64()};
+        build_view_get_stub(
+            mod->create_function(module_sym(kViewGetStub), Type::i64(), Span<const Type>(view_get_params, 3)));
+        const Type view_set_params[] = {Type::i64(), Type::i32(), Type::i64(), Type::i64(), Type::i32()};
+        build_view_set_stub(
+            mod->create_function(module_sym(kViewSetStub), Type::void_type(), Span<const Type>(view_set_params, 5)));
+        const Type method_params[] = {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()};
+        build_method_call_stub(
+            mod->create_function(module_sym(kMethodCallStub), Type::i64(), Span<const Type>(method_params, 5)));
+    }
     ltimer.mark("declare");
     // 2. Lower each function body, or leave it lazy (il_lowering_lazy.cpp).
     lazy_bodies_.clear();

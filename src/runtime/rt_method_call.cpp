@@ -62,9 +62,15 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
 // when compiled code may call it without the runtime (bronze_abi.h,
 // BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT). Both are facts about the function
 // object the entry latches, which the entry's guard keeps the one it calls.
+//
+// A compiled callee entered directly records arity 0: its wrapper reads an
+// absent argument as undefined itself (bronze_abi.h, "padding a short call"),
+// so generated code's one test, `(word ^ direct bit) <= argc`, enters it for
+// any argument count. A native keeps its arity, which it may read argv up to.
 uint64_t directArityWord(const FunctionHeader* fn) {
-    return static_cast<uint64_t>(fn->arity) |
-           (rtEntersWithoutScope(fn) ? BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT : 0);
+    if (!rtEntersWithoutScope(fn)) return fn->arity;
+    const uint64_t arity = fn->isNativeCode() ? fn->arity : 0;
+    return arity | BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT;
 }
 
 static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE,

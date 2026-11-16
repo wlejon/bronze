@@ -22,10 +22,6 @@ Type lower_type(BronzeType t);
 Type lower_abi_type(BronzeType t);
 class IlLowering;
 
-// Dynamic call helper dispatch (`bronze_call_dynamic_0..16` or staged `_n`)
-// (il_lowering_calls.cpp).
-Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering);
-
 // Whether `op` is one of the speculated function's low-level forms
 // (il_lowering_spec.cpp).
 bool is_spec_il_op(BronzeOp op);
@@ -55,6 +51,9 @@ public:
     // address, or 0 for no arguments.
     Value* stage_argv(Builder& b, const std::vector<Value*>& args);
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
+    // Whether the instruction being lowered is in a block with a handler,
+    // where a call must be one route_exception_edges can make an invoke of.
+    bool in_protected_block() const { return in_protected_block_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
     // Makes `inst`'s slow site the one the slow arms lowered next belong to.
     void set_slow_site_of(const BronzeInstruction& inst) {
@@ -214,6 +213,7 @@ private:
     Value* handler_exception(uint32_t block_id) const;
     std::unordered_map<uint32_t, Value*> handler_exc_;
     std::vector<std::pair<BasicBlock*, uint32_t>> protected_blocks_;
+    bool in_protected_block_ = false;
 
     TranslatorOptions options_;
     DiagnosticReporter* diag_ = nullptr;

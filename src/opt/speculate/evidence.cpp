@@ -320,22 +320,34 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     return plan;
 }
 
-// A plain call whose callee was always one function (a recorded Target site;
-// a harvest has no call cache).
+// A plain call whose callee was always one function: a recorded Target
+// site's, or a harvest's callee turns (il/feedback_site.h kLastShapeArm) —
+// the site's code entered one callee directly, once it first changed from
+// none, and its helper never ran.
 std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                            BlockId block, uint32_t index) const {
     if (inst.operands.size() < 2) return std::nullopt;
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }
+    uint32_t callee = kNoFunction;
     const auto targetSites = refs.at(block, index, il::FeedbackKind::Target);
-    if (targetSites.size() != 1) return std::nullopt;
-    const spec::SiteFeedback* site = recorded(fn, targetSites.front()->ordinal);
-    if (site == nullptr || site->tagMask() != kTagBit(BRONZE_FEEDBACK_TAG_FUNCTION) ||
-        !namesComplete(site->targets)) {
-        return std::nullopt;
+    if (targetSites.size() == 1) {
+        const spec::SiteFeedback* site = recorded(fn, targetSites.front()->ordinal);
+        if (site == nullptr || site->tagMask() != kTagBit(BRONZE_FEEDBACK_TAG_FUNCTION) ||
+            !namesComplete(site->targets)) {
+            return std::nullopt;
+        }
+        callee = calleeByRecordedName(site->soleTarget());
+    } else if (inst.slowSite != il::Instruction::kNoSlowSite && slowArmed(inst.slowSite + il::kShapeTurnArm)) {
+        const auto turns = harvest_->slow.find(inst.slowSite + il::kShapeTurnArm);
+        const auto last = harvest_->callees.find(inst.slowSite + il::kLastShapeArm);
+        if (slowRan(inst.slowSite) || turns == harvest_->slow.end() || turns->second != 1 ||
+            last == harvest_->callees.end()) {
+            return std::nullopt;
+        }
+        callee = calleeByHarvestName(last->second);
     }
-    const uint32_t callee = calleeByRecordedName(site->soleTarget());
     if (callee == kNoFunction || !directCallFits(module_.functions[callee], inst.operands.size() - 2)) {
         return std::nullopt;
     }
@@ -349,10 +361,15 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
 
 // Numbers in, from the recorded VALUE sites: one per Dynamic operand, in
 // operand order (il/feedback_site.cpp). An operand qualifies when every value
-// it held was a Number; a typed operand counts as its type.
+// it held was a Number; a typed operand counts as its type. With no recorded
+// site, a harvest's arms say the same of a `+ - * /` whose helper never ran
+// and whose Numbers arm did: each operand an int32 unless its double arm ran.
 std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                             BlockId block, uint32_t index) const {
     const auto valueSites = refs.at(block, index, il::FeedbackKind::Value);
+    const bool armed = valueSites.empty() && inst.operands.size() == 2 &&
+                       inst.slowSite != il::Instruction::kNoSlowSite && slowArmed(inst.slowSite) &&
+                       !slowRan(inst.slowSite) && slowRan(inst.slowSite + kArithArmNumbers);
     std::vector<uint8_t> tags;
     size_t next = 0;
     for (ValueId v : inst.operands) {
@@ -361,6 +378,12 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
             case il::Type::F64: tags.push_back(kTagDouble); continue;
             case il::Type::Dynamic: break;
             default: return std::nullopt;
+        }
+        if (armed) {
+            const uint32_t arm = tags.empty() ? kArithArmDouble0 : kArithArmDouble1;
+            tags.push_back(slowRan(inst.slowSite + arm) ? kTagDouble : kTagInt);
+            ++next;
+            continue;
         }
         if (next >= valueSites.size() || valueSites[next]->value != v) return std::nullopt;
         const spec::SiteFeedback* site = recorded(fn, valueSites[next++]->ordinal);
@@ -388,12 +411,14 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
 
 // An element access the harvested build answered from an Array every time:
 // the site was armed, its generic fallback never ran, its Array arm ran and
-// its typed-array arm did not. The fallback is where every other receiver, an
-// index past the length, a hole and a non-index key went, so none came.
+// its typed-array arm did not, nor (a write) its append. The fallback is where
+// every other receiver, an index past the length, a hole and a non-index key
+// went, so none came.
 std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
                                            uint32_t index) const {
     if (inst.slowSite == il::Instruction::kNoSlowSite || !slowArmed(inst.slowSite)) return std::nullopt;
-    if (slowRan(inst.slowSite) || !slowRan(inst.slowSite + kElemArmArray) || slowRan(inst.slowSite + kElemArmView)) {
+    if (slowRan(inst.slowSite) || !slowRan(inst.slowSite + kElemArmArray) || slowRan(inst.slowSite + kElemArmView) ||
+        slowRan(inst.slowSite + kElemArmGrow)) {
         return std::nullopt;
     }
     SitePlan plan;

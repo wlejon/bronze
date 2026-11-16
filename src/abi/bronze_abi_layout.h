@@ -863,6 +863,11 @@
  * cannot say which node introduced a bit, which is what the generalization
  * rebuild and the census both need. */
 #define BRONZE_ABI_SHAPE_REPR_OFFSET        72
+/* Shape::repr_generalized (bool): set on a DOUBLE or OBJECT node whose slot
+ * has generalized once, after which an add takes the boxed edge instead
+ * (shape.h). Compiled code's add (il2mir/il_prop_stubs.cpp) refuses a node
+ * that carries it, as the runtime's transition hit does. */
+#define BRONZE_ABI_SHAPE_REPR_GENERALIZED_OFFSET 73
 #define BRONZE_ABI_SLOT_REPR_BOXED           0
 #define BRONZE_ABI_SLOT_REPR_DOUBLE          1
 #define BRONZE_ABI_SLOT_REPR_OBJECT          2

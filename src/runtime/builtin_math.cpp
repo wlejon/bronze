@@ -40,7 +40,10 @@ namespace {
 
 double argAt(uint32_t argc, const uint64_t* argv, uint32_t i) {
     if (i >= argc) return std::numeric_limits<double>::quiet_NaN();
-    return rtToNumber(Value(argv[i]));
+    // The Number every call of a Math function passes, without the call.
+    const Value v(argv[i]);
+    if (v.isNumber()) return v.asNumber();
+    return rtToNumber(v);
 }
 
 // JS Math.min/Math.max are not std::min/std::max: NaN anywhere wins, and

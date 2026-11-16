@@ -660,9 +660,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             }
 
             // The fixed-operand call forms end at sixteen arguments — the
-            // last helper of each ladder is `bronze_call_dynamic_16`,
-            // `bronze_construct_16`, `bronze_super_call_16` (abi/bronze_abi.h)
-            // — and brass answers a longer list with `undefined` and no call.
+            // last helper of the super-call ladder is `bronze_super_call_16`
+            // (abi/bronze_abi.h), and every form is bounded alike.
             // The lowerer hands a longer list to the `*.spread` form as one
             // array (`Lowerer::argsTakeArrayPath`); this is what says so.
             {

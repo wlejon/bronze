@@ -101,6 +101,7 @@ bool IlLowering::lower_instruction(
 ) {
     Value* res_val = nullptr;
     set_slow_site_of(inst_ast);
+    in_protected_block_ = handler_exception(handler_id) != nullptr;
 
     auto get_val_by_id = [&](uint32_t id) -> Value* {
         return this->get_val_by_id(id, b, val_map);

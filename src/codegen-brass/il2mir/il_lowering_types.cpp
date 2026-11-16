@@ -76,7 +76,6 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
         });
     }
     if (options.cache_evidence && options.slow_site_count != 0) {
-        prop_lowering_.set_elem_arms(true);
         prop_lowering_.set_shape_turn_fn([this](Builder& b, uint32_t site, Value* keyed) {
             const uint32_t index = site + kShapeTurnArm;
             if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {

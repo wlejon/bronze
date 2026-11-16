@@ -3,6 +3,7 @@
 
 #include "il_abi.h"
 #include "il_property.h"
+#include "il_prop_stubs.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 
@@ -112,7 +113,8 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     b.build_br_if(hit, bb_fast, bb_slow);
     b.position_at_end(bb_slow);
     slow_arm(b);
-    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site)});
+    b.build_br(bb_merge, {b.build_call(stub_sym(kPropGetStub), Type::i64(),
+                                       {obj, runtime_key(b, key_index), site_ptr(b, site)})});
 
     b.position_at_end(bb_fast);
     b.build_br(bb_merge, {load_slot_br(b, ptr, slot_word)});
@@ -130,6 +132,11 @@ void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSi
     Value* shape = nullptr;
     receiver_shape(b, obj, is_object, ptr, shape);
     shape_turn_fn_(b, slow_sites_[0], b.build_select(is_object, shape, b.build_iconst_i64(0)));
+}
+
+void PropertyLoweringHelper::count_callee_turn(Builder& b, Value* code) {
+    if (!shape_turn_fn_ || slow_sites_.size() != 1) return;
+    shape_turn_fn_(b, slow_sites_[0], b.build_or(code, b.build_iconst_i64(int64_t{1} << kLastCalleeBit)));
 }
 
 void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& is_object, Value*& ptr, Value*& shape) {
@@ -195,7 +202,7 @@ Value* PropertyLoweringHelper::load_slot(Builder& b, Value* ptr, Value* slot_wor
 // the object, and the overflow block is read only for a slot that is in it,
 // with no select in the address the value is loaded through. The builder
 // leaves in the join.
-Value* PropertyLoweringHelper::load_slot_br(Builder& b, Value* ptr, Value* slot_word) {
+Value* PropertyLoweringHelper::load_slot_at(Builder& b, Value* ptr, Value* slot_word) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "slot_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* bb_in = b.append_block(prefix + "_inline");
@@ -213,6 +220,24 @@ Value* PropertyLoweringHelper::load_slot_br(Builder& b, Value* ptr, Value* slot_
     b.build_br(bb_join, {b.build_load_indexed(Type::i64(), overflow, slot_word, 8, kBronzeObjSlotsOffset - kShift)});
     b.position_at_end(bb_join);
     return val;
+}
+
+Value* PropertyLoweringHelper::slot_address(Builder& b, Value* ptr, Value* slot_word) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "slotat_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_out = b.append_block(prefix + "_overflow");
+    BasicBlock* bb_join = b.append_block(prefix + "_base");
+    Value* base = b.add_block_param(bb_join, Type::i64());
+    b.position_at_end(cur);
+    b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjOverflowSlot)), bb_join, {ptr}, bb_out, {});
+    b.position_at_end(bb_out);
+    Value* overflow = b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
+                                  b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjOverflowSlot * 8 - kBronzeHdrBytes;
+    b.build_br(bb_join, {b.build_sub(overflow, b.build_iconst_i64(kShift))});
+    b.position_at_end(bb_join);
+    return b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
+                       b.build_iconst_i64(kBronzeObjSlotsOffset));
 }
 
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
@@ -241,7 +266,8 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     b.build_br_if(hit, bb_fast, bb_slow);
     b.position_at_end(bb_slow);
     slow_arm(b);
-    lower_prop_set(b, obj, key_index, val, imm, site_ptr(b, site));
+    b.build_call(stub_sym(kPropSetStub), Type::void_type(),
+                 {obj, runtime_key(b, key_index), val, site_ptr(b, site), b.build_iconst_i32(static_cast<int32_t>(imm))});
     b.build_br(bb_merge);
 
     // The store, then the barrier for a value that is not a Number (every

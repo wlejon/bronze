@@ -17,6 +17,10 @@ class PropertyLoweringHelper;
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
                            const char* helper);
 Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper);
+// A dynamic `%`: a non-negative int32-valued Number by a positive one is an
+// integer remainder (no -0, no NaN to make); anything else is
+// bronze_dynamic_mod.
+Value* lower_dynamic_mod(Builder& b, Value* op0, Value* op1);
 // `arms`: the instruction's slow arm (il_property.h slow_branch), the
 // helper's call here and in lower_dynamic_truthy.
 Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, PropertyLoweringHelper* arms = nullptr);

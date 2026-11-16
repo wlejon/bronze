@@ -176,12 +176,24 @@ inline constexpr uint32_t kSlowSiteArms = 8;
 // A named property site's last shape and its count of shape turns
 // (il/feedback_site.h).
 inline constexpr uint32_t kLastShapeArm = 6;
-// An element read's or write's arms (opt/speculate/evidence.h kElemArmArray,
-// kElemArmView): an in-bounds present element of a dense Array at an int32
-// index, and a typed array. Anything else counts the site's slow arm.
+// An element read's or write's arms (opt/speculate/evidence.h kElemArmArray
+// and on): an in-bounds present element of a dense Array at an int32 index, a
+// typed array, a write that appended at the length (inline, within the
+// capacity), and a read of an Array that found no element there (which goes
+// on to count the slow arm). Anything else counts the site's slow arm only.
 inline constexpr uint32_t kElemArmArray = 1;
 inline constexpr uint32_t kElemArmView = 2;
+inline constexpr uint32_t kElemArmGrow = 3;
+inline constexpr uint32_t kElemArmMiss = 4;
+// A dynamic `+ - * /`'s arms (opt/speculate/evidence.h kArithArmNumbers and
+// on): two Numbers computed inline, and per operand one that was no int32.
+inline constexpr uint32_t kArithArmNumbers = 1;
+inline constexpr uint32_t kArithArmDouble0 = 2;
+inline constexpr uint32_t kArithArmDouble1 = 3;
 inline constexpr uint32_t kShapeTurnArm = 7;
+// The bit a call site's kLastShapeArm word carries beside bit 63 when it holds
+// a callee's code pointer rather than a shape (il/feedback_site.h).
+inline constexpr uint32_t kLastCalleeBit = 62;
 // THE SHAPE CELLS (il.h Module::shapeCells): `__bronze_shape_cells`, one u64
 // per cell in the module's per-thread data, zero until the runtime fills it
 // with the shape the harvest named (bronze_register_shape_cells); and

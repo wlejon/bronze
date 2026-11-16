@@ -565,6 +565,7 @@ static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
 // read — pinning it now is what keeps a later reorder a build break.
 static_assert(offsetof(Shape, double_slots) == BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
 static_assert(offsetof(Shape, repr) == BRONZE_ABI_SHAPE_REPR_OFFSET);
+static_assert(offsetof(Shape, repr_generalized) == BRONZE_ABI_SHAPE_REPR_GENERALIZED_OFFSET);
 static_assert(offsetof(Shape, object_slots) == BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET);
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop

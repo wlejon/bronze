@@ -283,11 +283,12 @@ static_assert(offsetof(FunctionHeader, statics_materialized) == BRONZE_ABI_FN_FL
 
 // Whether compiled code may call `fn`'s code without the runtime: the
 // predicate the method-call latch records in BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT.
-// A compiled function says so in its flags (BRONZE_ABI_FN_FLAG_DIRECT_CALL,
-// set by the compiler; a class constructor never, since a call of one must
-// throw); a native qualifies unless it reads the new.target scope, which the
-// Object constructor alone does (builtin_object_methods.cpp) and which a direct
-// entry would leave at the enclosing construction's.
+// The function says so in its flags (BRONZE_ABI_FN_FLAG_DIRECT_CALL, no
+// CLASS_CTOR, since a call of a class constructor must throw): set by the
+// compiler on a compiled function, and by FunctionHeader::create on every
+// native but the Object constructor, the one native that reads the
+// new.target scope a direct entry would leave at the enclosing
+// construction's (builtin_object_methods.cpp).
 bool rtEntersWithoutScope(const FunctionHeader* fn) noexcept;
 
 // The trampoline (enter_js_msvc_x64.asm / enter_js.S): saves the caller's

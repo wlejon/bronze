@@ -5,6 +5,9 @@
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 
+#include <cstdint>
+#include <string>
+
 namespace il2mir {
 
 // The inline-cache paths: il_ic_lowering.cpp. lower_elem_get /
@@ -30,6 +33,28 @@ bool is_property_il_op(BronzeOp op) {
     }
 }
 
+namespace {
+
+// Whether key constant `key_index` is a canonical array index below 2^31
+// ("0", "17"; not "01" or "-1"): a property named by one is the element
+// `o[k]` reads and writes, whatever the receiver.
+bool index_key(const IlLowering* lowering, uint32_t key_index, int32_t& out) {
+    const auto& keys = lowering->options().key_constants;
+    if (key_index >= keys.size()) return false;
+    const std::string& k = keys[key_index];
+    if (k.empty() || k.size() > 10 || (k.size() > 1 && k[0] == '0')) return false;
+    int64_t v = 0;
+    for (char c : k) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (c - '0');
+    }
+    if (v > INT32_MAX) return false;
+    out = static_cast<int32_t>(v);
+    return true;
+}
+
+}  // namespace
+
 bool lower_property_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,
@@ -54,6 +79,12 @@ bool lower_property_instruction(
         // helper alone for a read with no cache.
         case BronzeOp::PropGet: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
+            // `a[0]`: an index-named read is the element read, which no
+            // shape way can answer.
+            if (int32_t k = 0; index_key(lowering, inst_ast.index, k)) {
+                res_val = prop_lowering.lower_elem_get(b, obj_val, b.build_iconst_i32(k));
+                return true;
+            }
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             if (site && inst_ast.index != PropertyLoweringHelper::kNoKey) {
                 res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
@@ -74,6 +105,19 @@ bool lower_property_instruction(
             // The strict flag of an assignment, or kDefineWriteMode for a
             // PropDefine: the helper the miss calls is chosen by it.
             const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
+            // An index-named assignment is the element write. An array
+            // literal's element (kLiteralElementWriteMode) and any other
+            // index-named definition stay bronze_prop_define's, which
+            // defines rather than assigns.
+            if (int32_t k = 0; strict < kDefineWriteMode && index_key(lowering, inst_ast.index, k)) {
+                prop_lowering.lower_elem_set(b, obj_val, b.build_iconst_i32(k), val, strict);
+                return true;
+            }
+            if (int32_t k = 0; strict == kLiteralElementWriteMode && index_key(lowering, inst_ast.index, k)) {
+                prop_lowering.lower_literal_element(b, obj_val, k, inst_ast.index, val,
+                                                    site ? prop_lowering.site_ptr(b, site) : nullptr);
+                return true;
+            }
             if (site && prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey) {
                 prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site,
                                                   lowering->is_primitive_value(inst_ast.operands[1]));

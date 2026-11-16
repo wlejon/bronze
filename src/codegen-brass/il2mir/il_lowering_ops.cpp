@@ -283,7 +283,7 @@ bool lower_ops_instruction(
             if (res_type == Type::i64()) {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = b.build_call("bronze_dynamic_mod", Type::i64(), {op0, op1});
+                res_val = lower_dynamic_mod(b, op0, op1);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 op1 = lowering->ensure_type(op1, Type::f64(), b);

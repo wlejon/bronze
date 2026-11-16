@@ -188,8 +188,12 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * Why entering directly is the same call. What the runtime path does that a
  * direct entry skips, and what makes each unobservable for such a function:
  *   - NewTargetScope(undefined) for a call: only a read of the scope sees it,
- *     and the body has none (natives never carry the flag, so the Object
- *     constructor's read cannot be reached this way either);
+ *     and the body has none. A NATIVE carries the flag too (set by
+ *     FunctionHeader::create), every one but the Object constructor, whose
+ *     read of the scope is the one a native makes; its realm slot is 0, which
+ *     a direct call's realm test answers as "any realm" only with the
+ *     native's arity at most the argument count, since C++ reads argv up to
+ *     its arity unpadded;
  *   - CalleeRealmScope: enters nothing when the callee's realm is the current
  *     one, which the caller checks against bronze_tls_block.realm_slot (a
  *     function's realm slot is the top 24 bits of the word at

@@ -127,6 +127,10 @@ inline constexpr uint32_t kSlowSiteArms = 8;
 // another ever after turned twice (its first receiver, and the first of the
 // later shape), and one that meets both for good turns each time they
 // alternate.
+// A call.dynamic or a construct keeps its CALLEE TURNS the same way: the last
+// callee its code entered directly (its code pointer, with bit 62 set as well
+// as bit 63) and the times that callee changed; a call the helper made (any
+// callee the inline test refused) is its slow arm's count instead.
 inline constexpr uint32_t kLastShapeArm = 6;
 inline constexpr uint32_t kShapeTurnArm = 7;
 void numberSlowSites(Module& module);

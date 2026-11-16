@@ -30,6 +30,10 @@ public:
     static constexpr uint32_t kNoKey = 0xFFFFFFFFu;
 
     [[nodiscard]] const std::string& key_map_sym() const noexcept { return key_map_sym_; }
+    // The module's name for one of its own functions (IlLowering::module_sym):
+    // what a stub call names.
+    void set_module_sym_fn(std::function<std::string(const char*)> fn) { module_sym_fn_ = std::move(fn); }
+    [[nodiscard]] std::string stub_sym(const char* base) const { return module_sym_fn_ ? module_sym_fn_(base) : base; }
     void set_key_map_sym(std::string sym) { key_map_sym_ = std::move(sym); }
 
     // The module's inline-cache table: `site_count` sites of
@@ -76,6 +80,14 @@ public:
     // bit. `fn(b, slow site, keyed shape)`.
     void set_shape_turn_fn(std::function<void(Builder&, uint32_t, Value*)> fn) { shape_turn_fn_ = std::move(fn); }
     void count_shape_turn(Builder& b, Value* obj, const IcSite& site);
+    // The same for a call or a `new` its code enters directly: `code`, the
+    // callee's code pointer, kept with kLastCalleeBit beside bit 63 and a
+    // turn counted when it is not the last one's (the harvest's `callee` row).
+    void count_callee_turn(Builder& b, Value* code);
+    // Whether this is a build made to be harvested at an instruction with a
+    // site of its own: where evidence that costs more than a store on the
+    // fast path (shape and callee turns, operand kinds) is kept.
+    [[nodiscard]] bool evidence_marked() const noexcept { return shape_turn_fn_ && arms_marked(); }
 
     // With per-thread module data (TranslatorOptions::per_thread_module_data)
     // the table's address is the symbol plus the calling thread's delta,
@@ -126,17 +138,14 @@ public:
     void set_in_process(bool on) noexcept { in_process_ = on; }
     [[nodiscard]] bool in_process() const noexcept { return in_process_; }
 
-    // `bronze_elem_get` / `bronze_elem_set` (il_elem_lowering.cpp).
+    // `o[i]` read and written (il_elem_lowering.cpp): an Array's element and
+    // a typed array's inline or through the module's view stubs, the
+    // helpers bronze_elem_get / bronze_elem_set behind them.
     Value* lower_elem_get(Builder& b, Value* obj, Value* index);
-    // In an image built to be harvested (cache_evidence; set_elem_arms), the
-    // ARM an element access takes, marked in front of its helper call: what
-    // the speculation step's guards for it would have passed (kElemArmArray),
-    // a typed array (kElemArmView), or anything else (the slow arm). Not in
-    // other images: the classification is code of its own in front of every
-    // access, not a mark on a path the access takes anyway.
-    void mark_elem_arm(Builder& b, Value* obj, Value* index, bool write);
-    void set_elem_arms(bool on) { elem_arms_ = on; }
     void lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict);
+    // An array literal's element `k` (key constant `key_index`) defined on
+    // the fresh array, bronze_prop_define behind it (`site` or null).
+    void lower_literal_element(Builder& b, Value* obj, int32_t k, uint32_t key_index, Value* val, Value* site);
 
     // `is.dense_array`: whether `obj` is an Array with an elements block and
     // `max_index < length`.
@@ -178,7 +187,11 @@ public:
     Value* load_slot(Builder& b, Value* ptr, Value* slot_word);
     // load_slot as a branch on the slot word (inline or overflow), leaving
     // the builder in the join: for a point that may be split.
-    Value* load_slot_br(Builder& b, Value* ptr, Value* slot_word);
+    Value* load_slot_br(Builder& b, Value* ptr, Value* slot_word) { return load_slot_at(b, ptr, slot_word); }
+    static Value* load_slot_at(Builder& b, Value* ptr, Value* slot_word);
+    // The address of slot `slot_word` of the object at `ptr`, by a branch on
+    // the slot word as load_slot_at reads it.
+    static Value* slot_address(Builder& b, Value* ptr, Value* slot_word);
 
 private:
     // A site's way-0 shape and slot words, from its packed row
@@ -200,10 +213,10 @@ private:
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
     std::function<Value*(Builder&)> module_delta_fn_;
+    std::function<std::string(const char*)> module_sym_fn_;
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
     std::function<void(Builder&, uint32_t)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
-    bool elem_arms_ = false;
     std::function<void(Builder&, uint32_t, Value*)> shape_turn_fn_;
 };
 

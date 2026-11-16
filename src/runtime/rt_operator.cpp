@@ -55,7 +55,13 @@ namespace {
 // all and convert to +0, which is what makes `NaN | 0` zero rather than
 // undefined behaviour.
 int32_t toInt32(double d) {
-    if (!std::isfinite(d) || d == 0.0) return 0;
+    // Below 2^63 in magnitude the truncation fits an int64_t, whose low 32
+    // bits are the modulo-2^32 reduction: every double a program's integer
+    // arithmetic makes, without fmod.
+    if (std::fabs(d) < 9223372036854775808.0) {
+        return static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(d)));
+    }
+    if (!std::isfinite(d)) return 0;
     const double truncated = std::trunc(d);
     // std::fmod keeps the sign of the dividend, so the residue is in
     // (-2^32, 2^32); the cast to uint32_t is the modulo-2^32 reduction and
@@ -647,6 +653,12 @@ int32_t bronze_to_int32(uint64_t bits) {
     // `"12" & 10` is 8, not NaN-and-therefore-0 — and where an object runs
     // ToPrimitive, so `({valueOf: () => 5}) | 0` is 5. Only the boxed form of
     // `to.int32` reaches here, and `il::canThrow` marks exactly that form.
+    // A Number needs no ToNumber: natives (Math.imul) call this per operand.
+    if (bits <= BRONZE_ABI_NUMBER_MAX_BITS) {
+        double d;
+        std::memcpy(&d, &bits, sizeof d);
+        return toInt32(d);
+    }
     return toInt32(rtToNumber(Value(bits)));
 }
 

@@ -17,8 +17,8 @@
 //
 // The parser is strict, like every reader in bronze: an unknown version, a
 // malformed line or a row outside a function is an error naming the line, not
-// a skipped row. Versions 1 and 2 are read; 2 lists every key of a shape
-// (1 cut the list at 32 with `,+N`) and may carry a harvest.
+// a skipped row. Versions 1 to 6 are read (bronze_feedback_site.h says what
+// each added).
 
 #include <array>
 #include <cstdint>
@@ -105,6 +105,12 @@ struct Harvest {
     // slow-site index of the word that held it (il/feedback_site.h
     // kLastShapeArm); `*other*` for one that was no plain object.
     std::map<uint32_t, std::string> last;
+    // The `callee` rows: a call's or a `new`'s last callee its code entered
+    // directly, by the slow-site index of the word that held it (the same
+    // kLastShapeArm word a named site keeps its shape in); `*other*` for one
+    // with no source name (a native). The site's kShapeTurnArm count is how
+    // many times its callee changed, the first included.
+    std::map<uint32_t, std::string> callees;
     // The run's samples (runtime/harvest_sampler.h): per function, by the
     // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
     // many of the sampler's interrupts its code took.

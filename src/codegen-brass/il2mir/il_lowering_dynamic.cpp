@@ -36,12 +36,71 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
     b.position_at_end(fast);
     Value* f0 = b.build_bitcast_f64_i64(op0);
     Value* f1 = b.build_bitcast_f64_i64(op1);
+    // The operands' KINDS, in a build made to be harvested: the Numbers arm,
+    // then per operand an arm marked when it held a Number that is no int32
+    // (a fraction, -0, NaN, the infinities, or past the range): what a build
+    // on the harvest reads as the operand's tag (opt/speculate/evidence.cpp
+    // planArith).
+    if (prop.evidence_marked()) {
+        prop.arm_begin(b, kArithArmNumbers);
+        const uint32_t arms[2] = {kArithArmDouble0, kArithArmDouble1};
+        Value* fs[2] = {f0, f1};
+        Value* ops[2] = {op0, op1};
+        for (int i = 0; i < 2; ++i) {
+            BasicBlock* at = b.current_block();
+            BasicBlock* mark = b.append_block(prefix + "_dbl" + std::to_string(i));
+            BasicBlock* next = b.append_block(prefix + "_kind" + std::to_string(i));
+            b.position_at_end(at);
+            Value* in_range = int32_convertible(b, ops[i]);
+            Value* exact = b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(inline_to_int32(b, fs[i]))), fs[i]);
+            Value* neg_zero = b.build_eq(ops[i], b.build_iconst_i64(INT64_MIN));
+            Value* is_int = b.build_and(b.build_and(in_range, exact), b.build_xor(neg_zero, b.build_iconst_i32(1)));
+            b.build_br_if(is_int, next, mark);
+            b.position_at_end(mark);
+            prop.arm_begin(b, arms[i]);
+            b.build_br(next);
+            b.position_at_end(next);
+        }
+    }
     Value* f = op == BronzeOp::Add ? b.build_add(f0, f1)
              : op == BronzeOp::Sub ? b.build_sub(f0, f1)
              : op == BronzeOp::Mul ? b.build_mul(f0, f1)
                                    : b.build_sdiv(f0, f1);
     b.build_br(merge, {box_f64_bits(b, f)});
 
+    b.position_at_end(merge);
+    return result;
+}
+
+Value* lower_dynamic_mod(Builder& b, Value* op0, Value* op1) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "mod_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* ints = b.append_block(prefix + "_ints");
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    slow->set_cold();
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_and(int32_convertible(b, op0), int32_convertible(b, op1)), ints, slow);
+    b.position_at_end(ints);
+    Value* f0 = b.build_bitcast_f64_i64(op0);
+    Value* f1 = b.build_bitcast_f64_i64(op1);
+    Value* i0 = inline_to_int32(b, f0);
+    Value* i1 = inline_to_int32(b, f1);
+    // Exact int32 values (the round trip), the dividend >= 0 and the divisor
+    // > 0: the sign bit of the bits rules out -0 as well as the negatives.
+    Value* exact = b.build_and(b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i0)), f0),
+                               b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i1)), f1));
+    Value* signs = b.build_and(b.build_sge(op0, b.build_iconst_i64(0)), b.build_sgt(i1, b.build_iconst_i32(0)));
+    b.build_br_if(b.build_and(exact, signs), fast, slow);
+    b.position_at_end(fast);
+    Value* r = b.build_smod(i0, i1);
+    b.build_br(merge, {b.build_bitcast_i64_f64(b.build_sitofp_f64_i64(b.build_sext_i64(r)))});
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_call("bronze_dynamic_mod", Type::i64(), {op0, op1})});
     b.position_at_end(merge);
     return result;
 }

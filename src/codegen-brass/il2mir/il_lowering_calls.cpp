@@ -1,6 +1,7 @@
 #include "il_lowering_calls.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include "il_call_entry.h"
 #include <brass/mir/module.hpp>
 #include <cctype>
 #include <cstdlib>
@@ -29,30 +30,20 @@ bool is_call_il_op(BronzeOp op) {
     }
 }
 
-Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering) {
-    size_t argc = dyn_args.size() > 2 ? dyn_args.size() - 2 : 0;
-    if (argc <= 16) {
-        std::string helper = "bronze_call_dynamic_" + std::to_string(argc);
-        return b.build_call(helper, Type::i64(), Span<Value* const>(dyn_args.data(), dyn_args.size()));
-    }
-    Value* argv = lowering->stage_argv(b, std::vector<Value*>(dyn_args.begin() + 2, dyn_args.end()));
-    Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-    return b.build_call("bronze_call_dynamic_n", Type::i64(), {dyn_args[0], dyn_args[1], argc_val, argv});
-}
-
-// One alloca.tagged of the widest such call's arguments, so they stay rooted,
-// and are updated, while the callee or the helper can collect. Nested calls
-// cannot overlap: an argument is a value already computed by the time its call
-// stores it, and the stores happen right before the call.
+// One alloca.tagged of the widest call's arguments, so they stay rooted, and
+// are updated, while the callee or the helper can collect: every call, method
+// call and `new` stages its arguments (il_call_entry.cpp), and so does a
+// super call past the fixed-arity helpers. Nested calls cannot overlap: an
+// argument is a value already computed by the time its call stores it, and
+// the stores happen right before the call.
 uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& fn_ast) {
     uint32_t widest = 0;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
-            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest) widest = inst.param_count;
-            if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
-                inst.param_count > 16 && inst.param_count > widest) {
-                widest = inst.param_count;
-            }
+            const bool stages = inst.op == BronzeOp::MethodCall || inst.op == BronzeOp::Construct ||
+                                inst.op == BronzeOp::CallDynamic ||
+                                (inst.op == BronzeOp::SuperCall && inst.param_count > 16);
+            if (stages && inst.param_count > widest) widest = inst.param_count;
         }
     }
     return widest;
@@ -84,21 +75,9 @@ bool lower_call_instruction(
     switch (inst_ast.op) {
         case BronzeOp::Construct: {
             Value* ctor = ensure_type(get_opd(0), Type::i64());
-            uint32_t argc = inst_ast.param_count;
-            if (argc <= 16) {
-                std::vector<Value*> call_args = {ctor};
-                for (uint32_t i = 0; i < argc; ++i) {
-                    call_args.push_back(ensure_type(get_opd(1 + i), Type::i64()));
-                }
-                std::string helper = "bronze_construct_" + std::to_string(argc);
-                res_val = b.build_call(helper, Type::i64(), call_args);
-            } else {
-                std::vector<Value*> args;
-                for (uint32_t i = 0; i < argc; ++i) args.push_back(get_opd(1 + i));
-                Value* argv = lowering->stage_argv(b, args);
-                Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                res_val = b.build_call("bronze_construct_n", Type::i64(), {ctor, argc_val, argv});
-            }
+            std::vector<Value*> args;
+            for (uint32_t i = 0; i < inst_ast.param_count; ++i) args.push_back(get_opd(1 + i));
+            res_val = lower_construct_inline(lowering, b, ctor, args);
             break;
         }
 
@@ -109,24 +88,18 @@ bool lower_call_instruction(
             break;
         }
 
-        // The site's method cache through bronze_call_method, or, with no
+        // The site's method cache inline (il_call_entry.cpp), or, with no
         // site, the method read and called.
         case BronzeOp::MethodCall: {
             Value* recv = ensure_type(get_opd(0), Type::i64());
-            const uint32_t argc = inst_ast.param_count;
             std::vector<Value*> args;
-            for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
-            Value* key_id = lowering ? lowering->get_key_id(b, inst_ast.index) : b.build_iconst_i32(inst_ast.index);
-            if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
-                Value* argv = lowering->stage_argv(b, args);
-                Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                res_val = b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site});
+            for (size_t a = 0; a < inst_ast.param_count; ++a) args.push_back(get_opd(1 + a));
+            Value* key_id = lowering->get_key_id(b, inst_ast.index);
+            if (lowering->prop_lowering().ic_site_ref(b, inst_ast.ic_index)) {
+                res_val = lower_method_call_inline(lowering, b, recv, key_id, args, inst_ast.ic_index);
             } else {
                 Value* method = b.build_call("bronze_prop_get", Type::i64(), {recv, key_id, b.build_iconst_i64(0)});
-                recv = ensure_type(get_opd(0), Type::i64());
-                std::vector<Value*> dyn_args = {method, recv};
-                for (Value* arg : args) dyn_args.push_back(ensure_type(arg, Type::i64()));
-                res_val = build_call_dynamic(b, dyn_args, lowering);
+                res_val = lower_call_dynamic_inline(lowering, b, method, ensure_type(get_opd(0), Type::i64()), args);
             }
             break;
         }
@@ -191,12 +164,9 @@ bool lower_call_instruction(
         case BronzeOp::CallDynamic: {
             Value* callee_val = ensure_type(get_opd(0), Type::i64());
             Value* this_val = ensure_type(get_opd(1), Type::i64());
-            uint32_t argc = inst_ast.param_count;
-            std::vector<Value*> dyn_args = {callee_val, this_val};
-            for (size_t a = 0; a < argc; ++a) {
-                dyn_args.push_back(ensure_type(get_opd(2 + a), Type::i64()));
-            }
-            res_val = build_call_dynamic(b, dyn_args, lowering);
+            std::vector<Value*> args;
+            for (size_t a = 0; a < inst_ast.param_count; ++a) args.push_back(get_opd(2 + a));
+            res_val = lower_call_dynamic_inline(lowering, b, callee_val, this_val, args);
             break;
         }
 

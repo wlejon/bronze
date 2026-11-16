@@ -101,8 +101,11 @@
  * paths"), which an older harvest lacks, so a build on one keeps every slow
  * arm in line; 5 adds, in a build made to be harvested, the count of a
  * named site's shape turns among the `slow` rows and its last receiver's
- * shape as a `last` row, without which a build reads no site as a phase. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 5u
+ * shape as a `last` row, without which a build reads no site as a phase; 6
+ * adds the `callee` row, a call's or a `new`'s last directly entered callee
+ * (its count of callee turns among the `slow` rows), without which a build
+ * plans a plain call from a recorded profile only. */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 6u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

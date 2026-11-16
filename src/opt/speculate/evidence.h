@@ -50,10 +50,20 @@ inline constexpr size_t kMaxChainShapes = 4;
 inline constexpr uint64_t kMaxUncachedReceivers = 0;
 // The ARMS of an element read or write (il/feedback_site.h kSlowSiteArms):
 // the slow-site words after the instruction's own, which the backend's
-// element lowering marks where its Array and its typed-array arms begin. They
-// must match the backend's numbering for `elem.get` / `elem.set`.
+// element lowering marks where its Array and its typed-array arms begin, where
+// a write appended (grew the Array by one in place) and where a read of an
+// Array found no element. They must match the backend's numbering for
+// `elem.get` / `elem.set` (il2mir il_abi.h).
 inline constexpr uint32_t kElemArmArray = 1;
 inline constexpr uint32_t kElemArmView = 2;
+inline constexpr uint32_t kElemArmGrow = 3;
+inline constexpr uint32_t kElemArmMiss = 4;
+// The arms of a dynamic `+ - * /` (il2mir il_abi.h): two Numbers computed
+// inline, and per operand a Number that was no int32 (a fraction, -0, NaN,
+// an infinity, or out of range).
+inline constexpr uint32_t kArithArmNumbers = 1;
+inline constexpr uint32_t kArithArmDouble0 = 2;
+inline constexpr uint32_t kArithArmDouble1 = 3;
 
 inline constexpr uint32_t kNoFunction = UINT32_MAX;
 

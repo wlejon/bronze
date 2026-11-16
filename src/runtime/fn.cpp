@@ -44,6 +44,14 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->name = nullptr;
     fn->arity = arity;
     fn->length = 0;
+    // A native compiled code may call as the function it is: C++ (or a
+    // self-hosted builtin) that reads no new.target scope, which every native
+    // but the Object constructor is (builtin_object_methods.cpp reads it).
+    // The bit is what generated code's call test reads (bronze_abi.h,
+    // BRONZE_ABI_FN_FLAG_DIRECT_CALL), with the native's arity and realm.
+    if ((function_flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0 && code != &runtime::objectConstructorBody) {
+        function_flags |= BRONZE_ABI_FN_FLAG_DIRECT_CALL;
+    }
     fn->function_flags = static_cast<uint8_t>(function_flags);
     // The bits above the flag byte are the compiler's instance-capacity
     // prediction for this code (bronze_abi.h, BRONZE_ABI_FN_INLINE_SLOTS_SHIFT),
@@ -123,12 +131,6 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
 
 bool rtEntersWithoutScope(const FunctionHeader* fn) noexcept {
     if (!fn->code) return false;
-    if (fn->isNativeCode()) {
-        // Every native that reads NewTargetScope::current() (rt_object.cpp)
-        // is named here; a direct entry leaves the scope at the enclosing
-        // construction's, which only such a read can tell from undefined.
-        return fn->code != &runtime::objectConstructorBody;
-    }
     return (fn->function_flags & (BRONZE_ABI_FN_FLAG_DIRECT_CALL | BRONZE_ABI_FN_FLAG_CLASS_CTOR)) ==
            BRONZE_ABI_FN_FLAG_DIRECT_CALL;
 }

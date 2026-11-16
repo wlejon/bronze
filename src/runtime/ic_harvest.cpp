@@ -76,6 +76,9 @@ struct Module {
     // kLastShapeArm), by the slow-site index of the word that held it: the
     // `last` rows. `*other*` for a receiver that was no plain object.
     std::map<uint32_t, std::string> last;
+    // A call's or a `new`'s last directly entered callee (il/feedback_site.h
+    // kLastCalleeBit), by the same slow-site index: the `callee` rows.
+    std::map<uint32_t, std::string> callees;
     // The sampler's counts (harvest_sampler.h), by the sampled function's
     // descriptor name_hash.
     std::map<uint32_t, uint64_t> samples;
@@ -335,6 +338,11 @@ std::string textOf(const State& s, const Module& m) {
             appendEscaped(out, name);
             out += '\n';
         }
+        for (const auto& [index, name] : m.callees) {
+            out += "callee\t" + std::to_string(index) + "\t";
+            appendEscaped(out, name);
+            out += '\n';
+        }
     }
     for (const auto& [index, site] : m.ics) {
         if (site.facts.empty()) continue;
@@ -566,6 +574,18 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
             // A word with bit 63 is a site's last shape (il/feedback_site.h
             // kLastShapeArm), not a count: it stays, and is named. A shape
             // is never freed, so the word names one whenever it is read.
+            if ((counts[i] >> 62) == 3) {
+                // A call's last callee: its code pointer, which names a
+                // compiled function as long as its module is loaded, and a
+                // module outlives the instances folded from it.
+                std::string name = calleeOf(reinterpret_cast<const void*>(counts[i] & BRONZE_ABI_VALUE_PAYLOAD_MASK));
+                std::string& held = m->callees[i];
+                if (held != name) {
+                    held = std::move(name);
+                    s.dirty = true;
+                }
+                continue;
+            }
             if ((counts[i] >> 63) != 0) {
                 const auto* shape = reinterpret_cast<const Shape*>(counts[i] & ~(uint64_t{1} << 63));
                 std::string name = shape != nullptr ? shapeName(s, shape) : std::string("*other*");

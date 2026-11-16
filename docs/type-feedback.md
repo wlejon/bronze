@@ -140,10 +140,13 @@ as it did before the row existed. Version 4 adds the harvest's `slowsites` and
 `slow` rows ("Slow paths", below); an older harvest has none, and a build on
 one keeps every fallback in line. Version 5 adds the shape turns among the
 harvest's `slow` rows and its `last` rows ("Phases", below); a build on an
-older harvest reads no site as a phase. The reader takes all five versions.
+older harvest reads no site as a phase. Version 6 adds the `callee` row (a
+call's or a `new`'s last directly entered callee, below); a build on an older
+harvest plans a plain call from a recorded profile only. The reader takes all
+six versions.
 
 ```
-bronze-type-feedback 5
+bronze-type-feedback 6
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -465,6 +468,19 @@ names the first word's shape in a `last` row, by the word's slow-site index
 (`*other*` for a receiver that was no plain object). The order of a cache's
 ways does not say which shape came last: a site behind a recursion meets a
 child first, then its parent once, then children for good.
+
+A `call.dynamic` or a `new` keeps CALLEE TURNS in the same two words, at its
+own slow site: the code pointer of the callee its code entered directly, with
+bits 63 and 62 set (`kLastCalleeBit`), and the count of entries whose callee
+was not the last one's. The harvest names the callee in a `callee` row
+(`*other*` for a native); a call the helper made counts the slow arm. A
+harvest `planCall` reads as one callee when the site turned once and its
+helper never ran. The same build marks a dynamic `+ - * /`'s operand kinds as
+arms (`kArithArmNumbers`, then per operand a Number that was no int32), which
+`planArith` reads when no recorded value site exists. Every build that counts
+slow sites marks an element access's append (`kElemArmGrow`, which keeps
+`planElem` off a write that grew its Array) and an Array read that found no
+element (`kElemArmMiss`).
 
 `planHarvest` reads a site that held several shapes, none of them through
 `*other*`, as a PHASE when its turns are at most `kPhaseTurns` (16; a site
