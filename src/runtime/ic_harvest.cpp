@@ -118,6 +118,12 @@ struct State {
     Kept objects;
     bool atexitArmed = false;
     bool dirty = false;
+    // rtIcHarvestWriteAll has written: the exit write stands down. What a
+    // module's teardown folds after it has no function sources left to name
+    // callees by (rtDropModuleFnSources runs first) and no heap to measure
+    // representation on, so writing again would replace named ways and the
+    // `doubles`/`objects` rows with `*other*` and nothing.
+    bool wroteLive = false;
 };
 
 std::mutex g_mu;
@@ -496,7 +502,7 @@ bool writeFile(const std::string& path, const std::string& text) {
 void writeAtExit() {
     rtHarvestSamplerStop();
     std::lock_guard<std::mutex> lock(g_mu);
-    if (g_state == nullptr || !g_state->dirty) return;
+    if (g_state == nullptr || !g_state->dirty || g_state->wroteLive) return;
     for (const Module& m : g_state->modules) {
         if (!m.path.empty()) writeFile(m.path, textOf(*g_state, m));
     }
@@ -698,6 +704,7 @@ int rtIcHarvestWriteAll() {
         if (!m.path.empty() && writeFile(m.path, textOf(*g_state, m))) ++written;
     }
     g_state->dirty = false;
+    g_state->wroteLive = true;
     // Written: what the samples were for is on disk. A later write still
     // carries them; nothing is sampled after this one.
     rtHarvestSamplerStop();
