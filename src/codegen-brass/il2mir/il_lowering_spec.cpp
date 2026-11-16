@@ -196,15 +196,16 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         }
         // bool = shape.lacks %obj, %shape, "k": the shape's absent cache, in
         // front of its slot-key table (bronze_abi_layout.h
-        // BRONZE_ABI_SLOTKEY_LACKS_ENTRIES), answers when its entry for the
-        // key names the key at the thread's current epoch; an entry for the
-        // key marked FOUND answers no, and anything else asks the runtime,
-        // which fills the entry with its answer (cold).
+        // BRONZE_ABI_SLOTKEY_LACKS_ENTRIES), answers when the key's home or
+        // alternate entry names the key at the thread's current epoch; an
+        // entry for the key marked FOUND answers no, and anything else asks
+        // the runtime, which fills an entry with its answer (cold).
         //   t = [shape+96] ; t == 0 ? t = bronze_shape_slot_keys(shape) (cold)
-        //   k = key_map[k] ; e = t - LACKS_BYTES + 16 * (k mod LACKS_ENTRIES)
-        //   [e+8] == [tls] && [e] == k + 1 ? 1
-        //   : [e+8] == [tls] && [e] == (k + 1 | FOUND) ? 0
-        //   : bronze_shape_lacks(obj, k) (cold)
+        //   k = key_map[k] ; l = t - LACKS_BYTES
+        //   for e in (l + 16 * HOME(k), l + 16 * ALT(k)):
+        //     [e+8] == [tls] && [e] == k + 1 ? 1
+        //     : [e+8] == [tls] && [e] == (k + 1 | FOUND) ? 0
+        //   bronze_shape_lacks(obj, k) (cold)
         case BronzeOp::ShapeLacks: {
             if (!need(2)) return false;
             Value* obj = bits(0);
@@ -215,7 +216,9 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             build->set_cold();
             BasicBlock* have = b.append_block(prefix + "_have");
             Value* table = b.add_block_param(have, Type::i64());
-            BasicBlock* other = b.append_block(prefix + "_other");
+            BasicBlock* home_found = b.append_block(prefix + "_home_found");
+            BasicBlock* alt = b.append_block(prefix + "_alt");
+            BasicBlock* alt_found = b.append_block(prefix + "_alt_found");
             BasicBlock* miss = b.append_block(prefix + "_miss");
             miss->set_cold();
             BasicBlock* done = b.append_block(prefix + "_done");
@@ -229,21 +232,30 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             b.position_at_end(have);
             Value* key = get_key_id(b, inst.index);
             Value* key64 = b.build_zext_i64(key);
-            Value* bucket = b.build_shl(b.build_and(key64, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_ENTRIES - 1)),
-                                        iconst64(b, 4));
-            Value* entry = b.build_add(b.build_sub(table, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_BYTES)), bucket);
+            Value* lacks = b.build_sub(table, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_BYTES));
             Module* mod = b.current_block()->parent()->parent();
             Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
                                                              : b.build_call("bronze_tls_block_addr", Type::i64(), {});
             Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
-            Value* word0 = b.build_load(Type::i64(), entry, 0);
             Value* tag = b.build_add(key64, iconst64(b, 1));
-            Value* named = b.build_eq(word0, tag);
-            Value* current = b.build_eq(b.build_load(Type::i64(), entry, 8), epoch);
-            b.build_br_if(b.build_and(named, current), done, {b.build_iconst_i32(1)}, other, {});
-            b.position_at_end(other);
-            Value* found = b.build_eq(word0, b.build_or(tag, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_FOUND)));
-            b.build_br_if(b.build_and(found, current), done, {b.build_iconst_i32(0)}, miss, {});
+            Value* found_tag = b.build_or(tag, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_FOUND));
+            // The entry at bucket index `bucket`: absent -> 1, else through
+            // `found`: found -> 0, anything else on to `next`.
+            auto probe = [&](Value* bucket, BasicBlock* found, BasicBlock* next) {
+                Value* entry = b.build_add(lacks, b.build_shl(bucket, iconst64(b, 4)));
+                Value* word0 = b.build_load(Type::i64(), entry, 0);
+                Value* current = b.build_eq(b.build_load(Type::i64(), entry, 8), epoch);
+                b.build_br_if(b.build_and(b.build_eq(word0, tag), current), done, {b.build_iconst_i32(1)}, found, {});
+                b.position_at_end(found);
+                b.build_br_if(b.build_and(b.build_eq(word0, found_tag), current), done, {b.build_iconst_i32(0)}, next,
+                              {});
+            };
+            const int64_t bucket_mask = BRONZE_ABI_SLOTKEY_LACKS_ENTRIES - 1;
+            probe(b.build_and(key64, iconst64(b, bucket_mask)), home_found, alt);
+            b.position_at_end(alt);
+            Value* hash = b.build_lshr(b.build_mul(key64, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_HASH)),
+                                       iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_HASH_SHIFT));
+            probe(b.build_and(hash, iconst64(b, bucket_mask)), alt_found, miss);
             b.position_at_end(miss);
             Value* asked = b.build_call("bronze_shape_lacks", Type::i64(), {obj, key});
             b.build_br(done, {b.build_ne(asked, iconst64(b, 0))});

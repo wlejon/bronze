@@ -857,15 +857,23 @@
 #define BRONZE_ABI_SLOTKEY_KEY_SHIFT        3
 /* The ABSENT cache before the slot-key table (a `shape.lacks` test,
  * runtime/accessor_cell.cpp bronze_shape_lacks): LACKS_ENTRIES entries of two
- * u64 words ending at word 0, entry i at table - LACKS_BYTES + 16 * i, for
- * the key indexes equal to i mod LACKS_ENTRIES: (key index + 1), then the
- * prototype-mutation epoch at which an object of the shape was found to have
- * the key neither own nor anywhere on its chain. An entry whose first word
- * also carries LACKS_FOUND says the opposite (the key is own, on the chain,
- * or behind something only the generic read resolves), so a receiver outside
- * a site's trained shapes goes to the generic read without asking again.
- * Zero words match no key. */
+ * u64 words ending at word 0, entry i at table - LACKS_BYTES + 16 * i. A key
+ * lives in one of two buckets, LACKS_HOME(k) (its low bits) or LACKS_ALT(k)
+ * (the top bits of a multiplicative hash, so keys that share a home rarely
+ * share the other; for one key in 16 the two are the same bucket), and a
+ * test reads both: (key index + 1), then the prototype-mutation epoch at
+ * which an object of the shape was found to have the key neither own nor
+ * anywhere on its chain. An entry whose first word also carries LACKS_FOUND
+ * says the opposite (the key is own, on the chain, or behind something only
+ * the generic read resolves), so a receiver outside a site's trained shapes
+ * goes to the generic read without asking again. Zero words match no key. */
 #define BRONZE_ABI_SLOTKEY_LACKS_ENTRIES    16
+#define BRONZE_ABI_SLOTKEY_LACKS_HASH       0x9E3779B1ull
+#define BRONZE_ABI_SLOTKEY_LACKS_HASH_SHIFT 28  /* 32 - log2 of LACKS_ENTRIES */
+#define BRONZE_ABI_SLOTKEY_LACKS_HOME(k)    ((k) & (BRONZE_ABI_SLOTKEY_LACKS_ENTRIES - 1))
+#define BRONZE_ABI_SLOTKEY_LACKS_ALT(k)                                                     \
+    ((((uint64_t)(k) * BRONZE_ABI_SLOTKEY_LACKS_HASH) >> BRONZE_ABI_SLOTKEY_LACKS_HASH_SHIFT) & \
+     (BRONZE_ABI_SLOTKEY_LACKS_ENTRIES - 1))
 #define BRONZE_ABI_SLOTKEY_LACKS_FOUND      (1ull << 32)
 #define BRONZE_ABI_SLOTKEY_LACKS_BYTES      (16 * BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
 

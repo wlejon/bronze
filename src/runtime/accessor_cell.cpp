@@ -147,6 +147,41 @@ bool resolvesAbsent(ObjectHeader* obj, PropertyKey key) {
     return false;
 }
 
+// The absent-cache entry (bronze_abi_layout.h BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
+// a `shape.lacks` fill of `keyIndex` writes, `lacks` being the cache's first
+// word. A key has two buckets, its home and its alternate, and generated code
+// tests both, so the few keys one shape is asked about stay cached together
+// rather than evicting each other from a shared bucket on every ask (three.js
+// asks a material's shape for half a dozen `isXMaterial` flags a draw). The
+// key's own entry is reused, else a bucket naming no key at this epoch; when
+// both buckets hold other live keys, the home's occupant moves to its own
+// other bucket if that one is free, and failing that is overwritten.
+uint64_t* lacksEntryFor(uint64_t* lacks, uint32_t keyIndex) {
+    const uint64_t epoch = protoMutationEpoch();
+    auto entry = [&](uint32_t bucket) { return lacks + 2 * bucket; };
+    auto holds = [](const uint64_t* e, uint32_t k) {
+        return (e[0] & ~BRONZE_ABI_SLOTKEY_LACKS_FOUND) == uint64_t{k} + 1;
+    };
+    auto vacant = [&](const uint64_t* e) { return e[0] == 0 || e[1] != epoch; };
+    uint64_t* home = entry(BRONZE_ABI_SLOTKEY_LACKS_HOME(keyIndex));
+    uint64_t* alt = entry(BRONZE_ABI_SLOTKEY_LACKS_ALT(keyIndex));
+    if (holds(home, keyIndex)) return home;
+    if (holds(alt, keyIndex)) return alt;
+    if (vacant(home)) return home;
+    if (vacant(alt)) return alt;
+    for (uint64_t* e : {home, alt}) {
+        const auto occupant = static_cast<uint32_t>((e[0] & ~BRONZE_ABI_SLOTKEY_LACKS_FOUND) - 1);
+        uint64_t* other = entry(BRONZE_ABI_SLOTKEY_LACKS_HOME(occupant));
+        if (other == e) other = entry(BRONZE_ABI_SLOTKEY_LACKS_ALT(occupant));
+        if (vacant(other)) {
+            other[0] = e[0];
+            other[1] = e[1];
+            return e;
+        }
+    }
+    return home;
+}
+
 }  // namespace
 
 void rtForgetPublishedCells() noexcept {
@@ -236,8 +271,7 @@ uint64_t bronze_shape_lacks(uint64_t objBits, uint32_t keyIndex) {
     if (censusFillsSuppressed()) return absent ? 1 : 0;
     const auto shapeBits = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
     auto* table = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(bronze_shape_slot_keys(shapeBits)));
-    uint64_t* entry = table - BRONZE_ABI_SLOTKEY_LACKS_BYTES / sizeof(uint64_t) +
-                      2 * (keyIndex % BRONZE_ABI_SLOTKEY_LACKS_ENTRIES);
+    uint64_t* entry = lacksEntryFor(table - BRONZE_ABI_SLOTKEY_LACKS_BYTES / sizeof(uint64_t), keyIndex);
     entry[0] = (uint64_t{keyIndex} + 1) | (absent ? 0 : BRONZE_ABI_SLOTKEY_LACKS_FOUND);
     entry[1] = protoMutationEpoch();
     return absent ? 1 : 0;
