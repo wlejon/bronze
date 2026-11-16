@@ -127,7 +127,12 @@ void trackDynamicProgram(const std::shared_ptr<BrassTieredProgram>& program) {
 // hits the entry hands the list to the program's warmer, which builds those
 // functions' Tier-0 bytecode on kWarmThreads threads of its own while the
 // program starts.
-constexpr std::chrono::milliseconds kWarmWindow{3000};
+//
+// The window is an hour, not the first seconds: a function first called
+// minutes in (a game's first fight, a dialog's first opening) builds its body
+// and bytecode on the calling thread, several milliseconds of one frame, and
+// the list is how the next run has it built beforehand.
+constexpr std::chrono::milliseconds kWarmWindow{3600000};
 constexpr size_t kWarmMaxNames = 20000;
 constexpr unsigned kWarmThreads = 2;
 
@@ -171,7 +176,20 @@ void saveWarmLists() {
         if (!program) continue;
         brass::runtime::BytecodeWarmer& warmer = program->dispatchTable().pipeline().bytecode_warmer();
         warmer.stop();
-        cache::storeWarmList(r.dir, r.key, warmer.first_use_log());
+        // A function the warmer built ahead may never be interpreted this
+        // run (its caller's optimized code inlined it, which it can once the
+        // body is there), so it is not in the log; left off the list, the
+        // next run would build it on its first call again. What the last
+        // list named stays, after what ran.
+        std::vector<std::string> names = warmer.first_use_log();
+        if (!names.empty()) {
+            std::unordered_set<std::string> have(names.begin(), names.end());
+            for (std::string& old : cache::loadWarmList(r.dir, r.key)) {
+                if (names.size() >= kWarmMaxNames) break;
+                if (have.insert(old).second) names.push_back(std::move(old));
+            }
+        }
+        cache::storeWarmList(r.dir, r.key, names);
     }
     warmRecords().clear();
 }
