@@ -207,11 +207,10 @@ Function* IlLowering::stage_twin_state(const BronzeInstruction& inst, Builder& b
     return g;
 }
 
-bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function* fn,
-                             std::unordered_map<uint32_t, Value*>& val_map) {
-    // An exit: the function's speculation failed, and the rest of the call is
-    // the twin's. Laid out after the main line.
-    b.current_block()->set_cold();
+// A leave whose G returns another type than S (lower_leave): the state
+// stored into the leave buffer, the twin called, its result returned.
+bool IlLowering::lower_leave_call(const BronzeInstruction& inst, Builder& b, Function* fn,
+                                  std::unordered_map<uint32_t, Value*>& val_map) {
     Function* g = stage_twin_state(inst, b, fn, val_map);
     if (g == nullptr) return false;
     Value* r = b.build_call(brass::resume_twin_name(g->name()), g->return_type(),
@@ -334,7 +333,7 @@ bool IlLowering::build_resume_twins(Module& mod) {
         for (const auto& [id, target] : fn->resume_points()) ids.push_back(id);
         for (uint32_t id : ids) fn->remove_resume_point(id);
     }
-    return true;
+    return match_twin_state_types(mod);
 }
 
 }  // namespace il2mir

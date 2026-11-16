@@ -58,6 +58,8 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_pipeline.cpp
     il2mir/il_property_lowering.cpp
     il2mir/il_lowering_resume.cpp
+    il2mir/il_lowering_exit.cpp
+    il2mir/il_lowering_module.cpp
     il2mir/il_lowering_spec.cpp
     il2mir/il_lowering_literal.cpp
     il2mir/il_translator.cpp

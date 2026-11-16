@@ -135,6 +135,15 @@ private:
     Function* stage_twin_state(const BronzeInstruction& inst, Builder& b, Function* fn,
                                std::unordered_map<uint32_t, Value*>& val_map);
     bool build_resume_twins(Module& mod);
+    // A leave as a guard that always fails into G's twin (il_lowering_exit.cpp),
+    // when G returns S's type: leave_target answers that G, else null.
+    const Function* leave_target(const BronzeInstruction& inst, const Function& fn) const;
+    bool lower_leave_call(const BronzeInstruction& inst, Builder& b, Function* fn,
+                          std::unordered_map<uint32_t, Value*>& val_map);
+    // Once the twins exist: each guard into one passes every state value as
+    // the twin reads it (a tagged value's bits, a double boxed), converted
+    // just ahead of the guard.
+    bool match_twin_state_types(Module& mod);
     // A speculated function's entry test (TranslatorOptions::deopt_generic):
     // once its G's retire word reaches the limit, the call is G's. Nothing
     // for any other function. Answers the block S's body continues in, or
