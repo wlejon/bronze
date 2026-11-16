@@ -153,8 +153,9 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         return out;
     }
     // The optimiser pipeline, as `bronze build` runs it: the profile or
-    // harvest (EvalOptions::feedbackInPath) is applied when it speculates at
-    // least one function, which is what `feedbackApplied` reports.
+    // harvest (EvalOptions::feedbackInPath) is applied when it is this
+    // module's (OptimizeResult::profileFits), which is what `feedbackApplied`
+    // reports.
     {
         opt::OptimizeOptions optOptions;
         optOptions.diags = &diags;
@@ -165,7 +166,7 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
             out.errorMessage = rendered(diags, sources, "the IL failed verification");
             return out;
         }
-        out.feedbackApplied = optimized.speculated();
+        out.feedbackApplied = optimized.profileFits();
     }
     // After the pipeline: the speculation step checks a harvest against the
     // IC layout digest of the module as lowered, which hashes the texts.

@@ -128,34 +128,6 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
     bool proofsOk = il::verifyModuleProofs(*ilMod, proofDiags);
     rep.proofsValid = ilOk && proofsOk && !proofDiags.hasErrors();
 
-    for (const auto& fn : ilMod->functions) {
-        if (fn.isExternal || fn.isEntryPoint || fn.name == "main") continue;
-        for (const auto& p : fn.params) {
-            if (p.type == il::Type::F64 || p.type == il::Type::I32) {
-                ++rep.provenGuards;
-                ++rep.totalGuards;
-            }
-        }
-        for (const auto& blk : fn.blocks) {
-            for (const auto& inst : blk.instructions) {
-                if (inst.type == il::Type::F64 || inst.type == il::Type::I32 ||
-                    inst.type == il::Type::Bool) {
-                    ++rep.unboxedF64Ops;
-                }
-                if (inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet) {
-                    ++rep.totalGuards;
-                    if ((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0) ++rep.provenGuards;
-                } else if (inst.op == il::Op::Unbox || inst.op == il::Op::PinGuard) {
-                    ++rep.totalGuards;
-                }
-            }
-        }
-    }
-    if (rep.totalGuards == 0 && rep.unboxedF64Ops > 0) {
-        rep.provenGuards = rep.unboxedF64Ops;
-        rep.totalGuards = rep.unboxedF64Ops;
-    }
-
     // 4. Optional equivalence proof against `opts.equivalentToSource`
     if (!opts.equivalentToSource.empty()) {
         rep.hasEquivalenceCheck = true;
@@ -225,9 +197,6 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
          << "\"hazardFree\":" << (rep.hazardFree ? "true" : "false") << ","
          << "\"deterministic\":" << (rep.deterministic ? "true" : "false") << ","
          << "\"proofsValid\":" << (rep.proofsValid ? "true" : "false") << ","
-         << "\"provenGuards\":" << rep.provenGuards << ","
-         << "\"totalGuards\":" << rep.totalGuards << ","
-         << "\"unboxedF64Ops\":" << rep.unboxedF64Ops << ","
          << "\"equivalent\":" << (rep.equivalent ? "true" : "false") << ","
          << "\"roundTripProven\":" << (rep.roundTripProven ? "true" : "false") << ","
          << "\"sha256\":\"" << rep.sha256 << "\""

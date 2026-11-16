@@ -74,9 +74,16 @@ struct OptimizeResult {
     // Step 4, its closing redundancy run in `repr.redundancy`.
     ReprStats repr;
 
-    // A profile was read and at least one function was speculated: what
-    // eval::ModuleBuildResult::feedbackApplied reports.
-    bool speculated() const { return profileRead && speculate.functionsSpeculated != 0; }
+    // The profile read is this module's: its harvest was taken from a build
+    // that numbered its sites as this one does, or it speculated a function.
+    // What eval::ModuleBuildResult::feedbackApplied reports. A harvest of a
+    // run in which nothing ran often enough to speculate still fits: the
+    // module is the one that harvest gives, and a host that took "nothing
+    // speculated" for "another build's file" would drop it and harvest again
+    // at every launch.
+    bool profileFits() const {
+        return profileRead && (speculate.harvestMatched != 0 || speculate.functionsSpeculated != 0);
+    }
 };
 
 OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profile,

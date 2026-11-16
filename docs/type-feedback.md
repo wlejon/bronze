@@ -623,7 +623,8 @@ harvest, and the module's key includes the file's text. The module's result
 global is named from the key *without* the profile, so a build on a harvest
 has the same property keys, and therefore the same digest, as the build the
 harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
-build used the profile.
+file is this module's (a harvest from a build of the same text, even one
+in which nothing ran often enough to specialize on).
 
 **Format.** A harvest is a version 4 file with these rows (any `fn` rows
 come first):

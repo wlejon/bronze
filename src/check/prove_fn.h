@@ -25,9 +25,6 @@ struct ProofCertificateReport {
     bool hazardFree = false;
     bool deterministic = false;
     bool proofsValid = false;
-    uint32_t provenGuards = 0;
-    uint32_t totalGuards = 0;
-    uint32_t unboxedF64Ops = 0;
     bool hasEquivalenceCheck = false;
     bool equivalent = true;
     bool hasRoundTripCheck = false;

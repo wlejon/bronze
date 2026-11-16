@@ -58,6 +58,7 @@ struct SpeculateStats {
     uint32_t functionsConsidered = 0;
     uint32_t functionsSpeculated = 0;  // an S was made
     uint32_t harvestIgnored = 0;       // 1 when the file's harvest named another build
+    uint32_t harvestMatched = 0;       // 1 when the file's harvest is this build's
     uint32_t propReads = 0;
     uint32_t propReadChains = 0;       // of those, polymorphic
     uint32_t shapeSetLeads = 0;        // reads and writes testing a receiver's shape set (shape_sets.cpp)

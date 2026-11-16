@@ -155,6 +155,7 @@ Evidence::Evidence(const il::Module& module, const spec::TypeProfile& profile, c
             numberKeys_ = numberSlotKeys(*h, module);
             spelled_ = spellNumberSlots(*h, numberKeys_);
             harvest_ = &*spelled_;
+            stats.harvestMatched = 1;
         } else {
             stats.harvestIgnored = 1;
         }

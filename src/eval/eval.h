@@ -230,9 +230,11 @@ struct ModuleBuildResult {
     // files a program built with moduleRegistry publishes, for a host
     // predicting the registry a later unit will be compiled against.
     std::vector<std::string> filesRead;
-    // The build read EvalOptions::feedbackInPath and specialized on it (a
-    // harvest of another build, or a profile naming nothing here, is not
-    // used); such a module is not harvested again.
+    // The build read EvalOptions::feedbackInPath and the file is this
+    // module's: a harvest taken from a build of the same text, whether or not
+    // anything in it ran often enough to specialize on, or a profile that
+    // specialized a function (a harvest of another build, or a profile naming
+    // nothing here, is not used); such a module is not harvested again.
     bool feedbackApplied = false;
 };
 
