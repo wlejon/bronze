@@ -697,7 +697,7 @@ rematerialization, so each `movabs` value holds a register or a slot.
   verifier refuses a GC point (a collecting call, an indirect call, a
   safepoint) in a function the module declares nocollect, and the interrupt
   poll pass leaves its loops unpolled. docs/gc_contract.md. Users today:
-  `bronze_math_sincos_f64` and `bronze_math_random_f64` (nocollect),
+  `brass_sincos_f64` and `bronze_math_random_f64` (nocollect),
   `bronze_tls_block_addr` and the math kernels (pure); instanced_mesh_churn
   -0.4% instructions from it alone.
 - bronze, read: `__bronze_prop_get_ic` is now the stub's hit paths

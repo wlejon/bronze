@@ -683,6 +683,7 @@ bool IlLowering::lower_instruction(
                 if (arg) args.push_back(arg);
             }
             res_val = b.build_call(callee_name, callee_ret, Span<Value* const>(args.data(), args.size()));
+            through_entry_cell(b, callee_name);
             break;
         }
 

@@ -71,6 +71,7 @@ std::string where(const il::Module& module, const bronze::Span& span) {
 DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::string>& uniqueNames) {
     DeoptSites out;
     std::map<Key, std::set<std::string>> guards;
+    std::set<uint32_t> generic;
     for (const il::Function& fn : module.functions) {
         if (fn.isSpeculated()) noteGuards(fn, uniqueNames, guards);
     }
@@ -105,6 +106,7 @@ DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::st
             }
         }
         if (lines.empty()) continue;
+        generic.insert(f);
         const auto rank = static_cast<uint32_t>(out.generics.size());
         out.generics.push_back(f);
         for (const auto& [id, line] : lines) {
@@ -112,6 +114,10 @@ DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::st
             out.text += line;
             out.text += '\n';
         }
+    }
+    for (uint32_t f = 0; f < module.functions.size(); ++f) {
+        const il::Function& s = module.functions[f];
+        if (s.isSpeculated() && generic.count(s.speculatedFrom)) out.retirable.push_back(f);
     }
     return out;
 }

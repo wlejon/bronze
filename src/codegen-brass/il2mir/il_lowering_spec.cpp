@@ -463,8 +463,8 @@ bool IlLowering::lower_math_fn(const BronzeInstruction& inst, Builder& b, const 
         case kRound: return kernel("bronze_math_round_f64");
         case kMin: return kernel("bronze_math_min2_f64");
         case kMax: return kernel("bronze_math_max2_f64");
-        case kSin: return kernel("bronze_math_sin_f64");
-        case kCos: return kernel("bronze_math_cos_f64");
+        case kSin: return kernel("brass_sin_f64");
+        case kCos: return kernel("brass_cos_f64");
         case kTan: return kernel("bronze_math_tan_f64");
         case kAsin: return kernel("bronze_math_asin_f64");
         case kAcos: return kernel("bronze_math_acos_f64");

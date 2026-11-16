@@ -408,15 +408,10 @@ thread_local Value g_mathObject = Value::fromUndefined();
 // bit on a few percent of arguments), with no FP-environment save and
 // restore.
 
-extern "C" double bronze_math_sin_f64(double x) { return brass::math::sin_f64(x); }
-extern "C" double bronze_math_cos_f64(double x) { return brass::math::cos_f64(x); }
-// Both kernels' answers from one argument reduction: out[0] is
-// bronze_math_sin_f64(x)'s bits, out[1] bronze_math_cos_f64(x)'s. Compiled
-// code calls it where a sine and a cosine of one value are both taken
-// (brass's sincos_fuse; three.js's setFromEuler).
-extern "C" void bronze_math_sincos_f64(double x, void* out) {
-    brass::math::sincos_f64(x, static_cast<double*>(out));
-}
+// Compiled code calls brass's own entry points for sin and cos
+// (brass_sin_f64, brass_cos_f64, and brass_sincos_f64 where brass's
+// sincos_fuse pairs a sine and a cosine of one value), with no wrapper
+// between: the runtime exports them (BRONZE_ABI_BRASS_PLAIN_SYMBOLS).
 
 // The libm members a speculated call site computes directly (il2mir's
 // il_lowering_calls.cpp): each function object's code is the boxed wrapper
@@ -457,11 +452,11 @@ extern "C" uint64_t bronze_math_sqrt(uint64_t, uint64_t, uint32_t argc, const ui
 }
 
 extern "C" uint64_t bronze_math_sin(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return Value::fromDouble(bronze_math_sin_f64(argAt(argc, argv, 0))).rawBits();
+    return Value::fromDouble(brass_sin_f64(argAt(argc, argv, 0))).rawBits();
 }
 
 extern "C" uint64_t bronze_math_cos(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return Value::fromDouble(bronze_math_cos_f64(argAt(argc, argv, 0))).rawBits();
+    return Value::fromDouble(brass_cos_f64(argAt(argc, argv, 0))).rawBits();
 }
 
 extern "C" uint64_t bronze_math_exp(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

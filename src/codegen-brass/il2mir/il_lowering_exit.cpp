@@ -15,7 +15,7 @@
 // guard reads (a double's canonical bits, an int32's double) is made by the
 // exit from the unboxed value (brass x64_isel_guard_state.cpp).
 //
-// The state is the leave's operands as S holds them, then the hidden values
+// The state is the leave's operands as S holds them, then the hidden value
 // (il_lowering_resume.cpp). Whether G holds a dynamic value tagged or as its
 // bits is known only once G is lowered, so match_twin_state_types converts
 // each value to the type its twin reads after every body exists: a bitcast
@@ -89,7 +89,6 @@ bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function
     b.current_block()->set_cold();
     const Function* g = leave_target(inst, *fn);
     if (g == nullptr) return lower_leave_call(inst, b, fn, val_map);
-    const BronzeFunction& g_ast = current_ast_->functions[inst.index];
     const auto& types = il_types();
     std::vector<Value*> state;
     state.reserve(inst.operands.size() + 2);
@@ -111,10 +110,6 @@ bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function
         state.push_back(v);
     }
     if (options_.per_thread_module_data) state.push_back(module_delta(b));
-    if (argv_block_words(this, g_ast) > 0) {
-        if (argv_block_ == nullptr) return inst_error(inst, "leave without an argv block for its twin");
-        state.push_back(argv_block_);
-    }
     Instruction* guard = b.build_guard(b.build_iconst_i32(0), brass::resume_twin_name(g->name()),
                                        Span<Value* const>(state.data(), state.size()));
     guard->set_resume_id(static_cast<uint32_t>(inst.imm_i64));

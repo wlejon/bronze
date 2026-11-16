@@ -224,6 +224,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     }
 
     Value* call_res = b.build_call(fn_name, target->return_type(), call_args);
+    through_entry_cell(b, fn_name);
 
     Value* ret_val = nullptr;
     if (fn_ast.return_type == BronzeType::Void) {

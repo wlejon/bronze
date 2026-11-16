@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bronze::codegen {
@@ -504,7 +505,8 @@ void emitPcTablesAndCodeRanges(
 }
 
 void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::Module& module,
-                     size_t globalCacheCount, const std::vector<uint64_t>* slowArmed, size_t deoptWords) {
+                     size_t globalCacheCount, const std::vector<uint64_t>* slowArmed, size_t deoptWords,
+                     const std::vector<std::string>& entryCells) {
     const std::string dataSecName = ".data";
     Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -522,6 +524,17 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     dataSec.emit64(0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_slot"), dataIdx, slotOffset, 8,
                  SymbolBinding::Local);
+
+    // The entry cells (deopt_sites.h DeoptSites::retirable): S's address
+    // until its G's twin retires it, for every thread at once, as G is what
+    // S computes. A function the image does not hold has no calls left.
+    std::unordered_set<std::string> held;
+    for (const auto& cfi : obj.functions) held.insert(cfi.name);
+    for (const std::string& s : entryCells) {
+        const size_t at = dataSec.data.size();
+        emitPointer(dataSec, held.count(s) ? s : std::string());
+        defineSymbol(obj, moduleSymbolName(entrySymbol, il2mir::entry_cell_name(s)), dataIdx, at, 8, SymbolBinding::Local);
+    }
 
     dataSec.align_to(4);
     const size_t keyMapOffset = dataSec.data.size();
@@ -799,8 +812,10 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
 
     emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, timer);
 
+    std::vector<std::string> entryCells;
+    for (const uint32_t s : deopt.retirable) entryCells.push_back(in.uniqueNames[s]);
     emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount, in.slowArmed,
-                    deopt.sites.empty() ? 0 : deopt.generics.size() + deopt.sites.size());
+                    deopt.sites.empty() ? 0 : deopt.generics.size() + deopt.sites.size(), entryCells);
     demoteInternalSymbols(obj, entrySymbol);
     timer.mark("data section");
 

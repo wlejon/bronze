@@ -130,7 +130,7 @@ private:
     bool lower_resume_call(const BronzeInstruction& inst, Builder& b, Function* fn,
                            std::unordered_map<uint32_t, Value*>& val_map);
     // What a leave and a resume.call share: G's twin for `inst` (its
-    // `index`), with the state, hidden values included, stored into the leave
+    // `index`), with the state, hidden value included, stored into the leave
     // buffer. Null after reporting when G or the buffer is missing.
     Function* stage_twin_state(const BronzeInstruction& inst, Builder& b, Function* fn,
                                std::unordered_map<uint32_t, Value*>& val_map);
@@ -144,12 +144,11 @@ private:
     // the twin reads it (a tagged value's bits, a double boxed), converted
     // just ahead of the guard.
     bool match_twin_state_types(Module& mod);
-    // A speculated function's entry test (TranslatorOptions::deopt_generic):
-    // once its G's retire word reaches the limit, the call is G's. Nothing
-    // for any other function. Answers the block S's body continues in, or
-    // null when there is no test.
-    BasicBlock* lower_retired_entry(const std::string& fn_name, const std::vector<Value*>& params, Builder& b);
-    BasicBlock* retired_entry_bb_ = nullptr;
+    // The call just built (the tail of b's block) goes through `callee`'s
+    // entry cell when `callee` can retire (il_abi.h entry_cell_name).
+    void through_entry_cell(Builder& b, const std::string& callee);
+    // Each retirable S's retired entry: S's signature, calls G.
+    void build_retired_entries(Module& mod);
     // Reports `what` at `inst` and fails the lowering (false).
     bool inst_error(const BronzeInstruction& inst, const std::string& what);
     bool lower_literal_instruction(const BronzeInstruction& inst, Builder& b,

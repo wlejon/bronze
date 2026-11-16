@@ -65,8 +65,8 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_dynamic_shl", "bronze_dynamic_shr", "bronze_dynamic_ushr", "bronze_dynamic_sub",
         "bronze_dynamic_mul", "bronze_dynamic_div", "bronze_dynamic_mod", "bronze_dynamic_neg",
         "bronze_dynamic_bitnot",
-        "sin", "cos", "sqrt", "fabs", "floor", "ceil", "trunc", "bronze_math_sin_f64", "bronze_math_cos_f64",
-        "bronze_math_sincos_f64", "bronze_math_random_f64",
+        "sin", "cos", "sqrt", "fabs", "floor", "ceil", "trunc", "brass_sin_f64", "brass_cos_f64",
+        "brass_sincos_f64", "bronze_math_random_f64",
     };
     for (const char* sym : kSymbols) {
         mod->add_external_symbol(sym);
@@ -81,8 +81,8 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     // JS `%` on numbers: fmod.
     mod->add_symbol_role("bronze_f64_mod", SymbolRole::FloatRem);
     // Math.sin / Math.cos's kernels (brass's trig runtime, V8's bits)...
-    mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::Pure);
-    mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::Pure);
+    mod->add_symbol_role("brass_sin_f64", SymbolRole::Pure);
+    mod->add_symbol_role("brass_cos_f64", SymbolRole::Pure);
     // The libm members' kernels (builtin_math.cpp): plain functions of their
     // arguments, read nothing, write nothing, never collect.
     for (const char* sym : {"bronze_math_exp_f64", "bronze_math_log_f64", "bronze_math_tan_f64",
@@ -94,10 +94,10 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     // ...and their fused form, the same bits from one reduction (brass's
     // sincos_fuse pairs a sine and a cosine of one value into it). It writes
     // only its out slot and never collects.
-    mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::SinF64);
-    mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::CosF64);
-    mod->add_symbol_role("bronze_math_sincos_f64", SymbolRole::SinCosF64);
-    mod->add_symbol_role("bronze_math_sincos_f64", SymbolRole::NoCollect);
+    mod->add_symbol_role("brass_sin_f64", SymbolRole::SinF64);
+    mod->add_symbol_role("brass_cos_f64", SymbolRole::CosF64);
+    mod->add_symbol_role("brass_sincos_f64", SymbolRole::SinCosF64);
+    mod->add_symbol_role("brass_sincos_f64", SymbolRole::NoCollect);
     // Math.random's generator: advances thread-local state (so not Pure) but
     // touches no GC heap, so the call is not a collection point.
     mod->add_symbol_role("bronze_math_random_f64", SymbolRole::NoCollect);

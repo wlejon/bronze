@@ -588,7 +588,7 @@
      * at module init: `generics` retire words then `sites` exit counters at
      * `counts` (this instance's `__bronze_deopt_counts`, which the resume
      * twins bump), `text` one tab-separated line per site, and the retire
-     * limit the speculated functions test. Read only by the report
+     * limit at which a twin retires its speculated functions. Read only by the report
      * BRONZE_DEOPT_STATS=1 prints at exit (runtime/deopt_stats.cpp). */ \
     X(bronze_register_deopt_counts, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_CSTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     /* The module's proven class LAYOUTS, handed over at module init so that
@@ -712,9 +712,6 @@
     X(bronze_fast_string_starts_with,  BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_string_slice,        BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_string_substring,    BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
-    X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
-    X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
-    X(bronze_math_sincos_f64,     BRONZE_ABI_VOID, (BRONZE_ABI_F64, BRONZE_ABI_VPTR)) \
     X(bronze_math_round_f64,      BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_exp_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_log_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
@@ -821,7 +818,10 @@
     Y(brass_parallel_reduce_i64) \
     Y(brass_parallel_reduce_f64) \
     Y(brass_parallel_alloc_context) \
-    Y(brass_parallel_free_context)
+    Y(brass_parallel_free_context) \
+    Y(brass_sin_f64) \
+    Y(brass_cos_f64) \
+    Y(brass_sincos_f64)
 
 #define BRONZE_ABI_PERSONALITY_WINDOWS brass_seh_personality
 #define BRONZE_ABI_PERSONALITY_SYSV    brass_sysv_personality

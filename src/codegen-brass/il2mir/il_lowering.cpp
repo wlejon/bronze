@@ -195,14 +195,14 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     analyze_function(fn_ast);
     record_inline_scopes(fn_ast, *fn->parent());
 
-    // The argv block a call stages its arguments in (il_lowering_calls.h).
-    // A speculated function's is also the one its leaves and resume.calls
-    // hand their twins (il_lowering_resume.cpp), so it is as wide as theirs
-    // too; and their state goes into one buffer as wide as the widest. One
-    // buffer serves them all: a resume.call's twin reads its state at entry,
-    // before anything after it in the exit (another resume.call, the leave)
-    // stores into the buffer again.
-    uint32_t widest_method_argc = argv_block_words(this, fn_ast);
+    // The argv block a call stages its arguments in (il_lowering_calls.h),
+    // as wide as this function's own calls need: a twin makes its own
+    // (il_lowering_resume.cpp). The state of the leaves and resume.calls
+    // that are calls goes into one buffer as wide as the widest. One buffer
+    // serves them all: a resume.call's twin reads its state at entry, before
+    // anything after it in the exit (another resume.call, the leave) stores
+    // into the buffer again.
+    const uint32_t widest_method_argc = argv_block_words(this, fn_ast);
     uint32_t widest_leave = 0;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
@@ -210,12 +210,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 inst.index >= current_ast_->functions.size()) {
                 continue;
             }
-            const uint32_t g_argv = argv_block_words(this, current_ast_->functions[inst.index]);
-            widest_method_argc = std::max(widest_method_argc, g_argv);
             // A leave that is a guard: its twin reads the state from the guard (il_lowering_exit.cpp).
             if (inst.op == BronzeOp::Leave && leave_target(inst, *fn) != nullptr) continue;
             const uint32_t words = static_cast<uint32_t>(inst.operands.size()) +
-                                   (options_.per_thread_module_data ? 1u : 0u) + (g_argv > 0 ? 1u : 0u);
+                                   (options_.per_thread_module_data ? 1u : 0u);
             widest_leave = std::max(widest_leave, words);
         }
     }
@@ -257,6 +255,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         // resume (brass's coroutine lowering refuses any other).
         if (widest_method_argc > 0) {
             argv_block_ = b.build_alloca_tagged(widest_method_argc);
+            // Scratch: a resume twin stages its calls in a block of its own.
+            argv_block_->defining_instruction()->set_fresh_in_twin();
             argv_block_words_ = widest_method_argc;
         }
         if (widest_leave > 0) {
@@ -324,10 +324,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             } else {
                 current_module_delta_ = load_module_delta(b);
             }
-        }
-        retired_entry_bb_ = nullptr;
-        if (BasicBlock* body = lower_retired_entry(fn_name, entry_params, b)) {
-            block_map[fn_ast.blocks[0].id] = body;
         }
         if (fn_name == "main") {
             // The module's code ranges first, before anything here can
@@ -473,13 +469,15 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     if (stack_check_entry_bb_ != nullptr) {
         // A function that calls nothing cannot recurse, and its frame is the
         // one the prologue elides when nothing forces it — so the check goes
-        // unless the body made a call.
+        // unless the body made a call. A guard's exit is not one: it enters
+        // G's twin once, and every call the twin makes reaches a function
+        // that checks, so at most this frame and the twin's run unchecked
+        // below the limit, inside the 128 KiB the limit reserves (tls_block.cpp).
         bool has_call = false;
         for (BasicBlock* bb : fn->blocks()) {
-            if (bb == stack_check_overflow_bb_ || bb == retired_entry_bb_) continue;
+            if (bb == stack_check_overflow_bb_) continue;
             for (Instruction* inst = bb->head(); inst && !has_call; inst = inst->next()) {
-                // A guard's exit calls G's twin.
-                has_call = inst->is_call() || inst->opcode() == Opcode::guard;
+                has_call = inst->is_call();
             }
             if (has_call) break;
         }

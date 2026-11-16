@@ -50,12 +50,14 @@ Only the registering thread's copy is printed.
 ## Retirement
 
 AOT code cannot re-profile, so a speculation that keeps failing would fail for
-the rest of the run. At the entry of each speculated function S
-(`lower_retired_entry`), once G's retire word has reached 1000 exits
-(`TranslatorOptions::deopt_retire_after`), the call goes to G with S's
-arguments and S returns G's result: a load, a compare and a branch the
-predictor learns, per call of S. Direct calls and function objects keep naming
-S, so the test is the whole mechanism; copies of S inlined into other speculated
-functions are not covered and keep exiting through their `resume.call`s (which
-keep counting). A loop that left S runs to its end in the twin; there is no way
+the rest of the run. Each speculated function S whose G has points has an
+ENTRY CELL in the image's shared data (`__bronze_entry_<S>`), a word holding
+S's address that every direct call of S and S's wrapper call through
+(`call @S via @cell`: one `call [rip + cell]`, as the direct call was). Once
+G's retire word has reached 1000 exits (`TranslatorOptions::deopt_retire_after`),
+G's twin stores S's retired entry (`__retired_<S>`, S's signature, calls G)
+into the cell, so every call is G's from then on and S's own code tests
+nothing (`build_resume_twins`, `il_lowering_resume.cpp`). Copies of S inlined
+into other speculated functions are not covered and keep exiting through
+their `resume.call`s (which keep counting). A loop that left S runs to its end in the twin; there is no way
 back into S at a loop header.

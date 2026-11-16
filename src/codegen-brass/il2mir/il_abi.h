@@ -251,4 +251,11 @@ inline constexpr int32_t kElemCellBytes = BRONZE_ABI_ELEM_CELL_WORDS * 8;
 constexpr int32_t kBronzeFnCodeOffset = BRONZE_ABI_FN_CODE_OFFSET;
 constexpr int32_t kBronzeFnEnvOffset = BRONZE_ABI_FN_ENV_OFFSET;
 
+// A retirable speculated function's ENTRY CELL (codegen-brass/deopt_sites.h
+// DeoptSites::retirable) and its RETIRED ENTRY, the function the cell holds
+// once S retires (S's signature, calls G): base names, which the module's
+// entry symbol suffixes as it does every module symbol.
+inline std::string entry_cell_name(const std::string& s) { return "__bronze_entry_" + s; }
+inline std::string retired_entry_name(const std::string& s) { return "__retired_" + s; }
+
 } // namespace il2mir

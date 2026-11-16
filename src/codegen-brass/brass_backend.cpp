@@ -386,7 +386,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     }
     options.elem_cell_sites = codegen::elemCellSites(module);
     // The deopt counters (deopt_sites.h): the twins' exit counts and the
-    // speculated functions' retire test.
+    // speculated functions that can retire (their entry cells).
     {
         const codegen::DeoptSites deopt = codegen::collectDeoptSites(module, uniqueNames);
         options.deopt_generic_count = static_cast<uint32_t>(deopt.generics.size());
@@ -397,11 +397,8 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
             meta.rank = site.generic;
             meta.slots[site.resumeId] = slot;
         }
-        for (size_t i = 0; i < module.functions.size(); ++i) {
-            const il::Function& fn = module.functions[i];
-            if (fn.isSpeculated() && options.deopt_generic.count(uniqueNames[fn.speculatedFrom])) {
-                options.deopt_speculated[uniqueNames[i]] = uniqueNames[fn.speculatedFrom];
-            }
+        for (const uint32_t s : deopt.retirable) {
+            options.deopt_speculated[uniqueNames[s]] = uniqueNames[module.functions[s].speculatedFrom];
         }
     }
     options.slow_site_count = module.slowSiteCount;

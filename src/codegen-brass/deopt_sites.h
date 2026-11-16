@@ -26,6 +26,14 @@ struct DeoptSites {
     std::vector<DeoptSite> sites;  // by function index, then id: a site's rank is its slot
     // Per rank, G's index in Module::functions.
     std::vector<uint32_t> generics;
+    // The speculated functions S that can retire (their G has points), by
+    // index in Module::functions. Each has an ENTRY CELL in the image's
+    // shared data (il2mir::entry_cell_name, emitDataSection): a word holding
+    // S's address, which every direct call of S goes through (`call @S via
+    // @cell`). G's twin stores S's retired entry there, a function that calls
+    // G, once G's retire word reaches the limit (il2mir build_resume_twins),
+    // so the calls are G's from then on and S's own code tests nothing.
+    std::vector<uint32_t> retirable;
     // One line per site, in slot order, tab-separated: G's name, the resume
     // id, what the guards that resume there test and the instruction G
     // re-executes, and `file:line` of that instruction.

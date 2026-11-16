@@ -205,8 +205,9 @@ struct TranslatorOptions {
     // holds one RETIRE word per generic function with resume points (by
     // rank), then one counter per point (by slot). A generic function's twin
     // bumps, at the entry of point `id`, the point's counter and the
-    // function's retire word; a speculated function whose G has rank r goes
-    // to G at its entry once word r reaches `deopt_retire_after`.
+    // function's retire word; once word r reaches `deopt_retire_after`, the
+    // twin of G (rank r) retires every speculated function of G: calls of it
+    // go through its entry cell to G from then on (il_lowering_resume.cpp).
     struct DeoptFunctionMeta {
         uint32_t rank = 0;
         std::unordered_map<uint32_t, uint32_t> slots;  // resume id -> slot
