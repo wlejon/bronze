@@ -14,9 +14,11 @@
 //
 // Only a shape whose every property a slot load may touch directly fills a
 // cell: shared (no dictionary, nobody's prototype, no sentinel), every node a
-// data property boxed in its slot, and no symbol key. A data property that is
-// not writable is spelled `!k` in the name, so the speculated code knows not
-// to store into it. A name that only such a shape could carry is what the
+// data property boxed or double in its slot (never an object slot), and no
+// symbol key. A data property that is not writable is spelled `!k` in the
+// name, so the speculated code knows not to store into it; a double slot is
+// spelled `%k` (slot_repr.h), so the speculated code knows a read of it is a
+// Number and stores only a Number into it. A name that only such a shape could carry is what the
 // speculated code assumed; an ineligible shape under the name leaves the cell
 // to a later one.
 

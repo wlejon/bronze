@@ -471,6 +471,12 @@ struct Module {
         std::string key;
     };
     std::vector<ShapeCell> shapeCells;
+    // THE NUMBER-SLOT KEYS (opt/speculate/number_slots.h): key constant
+    // indices the module registers at init as eligible for a double slot
+    // (bronze_register_slot_repr, runtime/slot_repr.h), before any code
+    // makes an object. The speculation step sets them from a harvest; the
+    // shape cells it makes spell those keys' double slots `%k`.
+    std::vector<uint32_t> numberSlotKeys;
     // THE OBJECT LITERALS `object.literal <lit>` makes: entry `lit` is the
     // literal's keys (indices into `keyConstants`, distinct named keys, in
     // source order) and the inline-slot capacity its objects are made with

@@ -536,12 +536,16 @@ enum class Op : uint8_t {
     // a: bool = ptr.eq %a, %b. Both ptr. `ptr.eq (load.shape x), (shape.cell n)`
     // is the shape test edge_facts recognises.
     PtrEq,
-    // a: bool = shape.has_own %shape, <slot, write>, "k". Whether an object
+    // a: bool = shape.has_own %shape, <slot, mode>, "k". Whether an object
     // at shape %shape (ptr, a `load.shape`) has the string key `keyIndex` as
-    // an own data property held boxed in slot `immI32 >> 1`, and, when bit 0
-    // of `immI32` is set, writable on a shape that is no prototype's. So on
-    // its true edge `slot.load` (and with the bit, `slot.store`) of that slot
-    // is the [[Get]] (the [[Set]]) of the key, whatever the shape is: the
+    // an own data property in slot `immI32 >> kHasOwnSlotShift`, held as the
+    // mode bits ask: kHasOwnWrite, writable on a shape that is no prototype's
+    // and (without kHasOwnNumber) boxed, so any Value may be stored;
+    // kHasOwnNumber alone, a double slot (runtime/slot_repr.h), so the read
+    // is a Number; both, writable in either representation, for a store of a
+    // Number. So on its true edge `slot.load` (and with kHasOwnWrite,
+    // `slot.store` of what the mode admits) of that slot is the [[Get]] (the
+    // [[Set]]) of the key, whatever the shape is: the
     // test of a site whose receivers come in more shapes than a chain of
     // `ptr.eq` tests covers. Reads the shape's slot-key table (runtime
     // shape_slot_keys.cpp), built on first use; a shape's layout never
@@ -564,11 +568,15 @@ enum class Op : uint8_t {
     // it Value (slot - OVERFLOW_SLOT) of the overflow block; the backend picks
     // the form from the constant. Unchecked: %obj's shape is known (a shape
     // fact) and that shape places a data property at `slot`. Reads `Slots`.
+    // `boxType` F64 (printed `number`): every shape the guards in front of it
+    // admit keeps the slot a DOUBLE one (`%k`, opt/core/shape_key.h), so the
+    // value is a Number, read as the double it is.
     SlotLoad,
     // slot.store %obj, <slot>, %v. The store form of `slot.load`, write barrier
     // included. Writes an EXISTING slot: it never transitions the shape, so it
     // writes `Slots` and not `Shapes` (a transition is still a generic
-    // `prop.set`, or a later dedicated op).
+    // `prop.set`, or a later dedicated op). Into a double slot only a Number
+    // may be stored: the speculation tests %v first (`is.number`).
     SlotStore,
     // a: bool = is.i32 %v. %v (dynamic) is a Number whose value is an int32:
     // a double that is integral, in range and not -0 (a Number has one box,
@@ -844,6 +852,10 @@ inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;
 inline constexpr int32_t kDenseNumbers = 1 << 30;
 inline constexpr int32_t kDenseIndexMask = kDenseNumbers - 1;
 inline constexpr int32_t kElemLoadNumber = 1;
+// `shape.has_own`'s immI32: (slot << kHasOwnSlotShift) | mode bits.
+inline constexpr int32_t kHasOwnWrite = 1;
+inline constexpr int32_t kHasOwnNumber = 2;
+inline constexpr int32_t kHasOwnSlotShift = 2;
 
 const char* opName(Op op);
 bool isTerminator(Op op);

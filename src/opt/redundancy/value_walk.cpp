@@ -269,12 +269,24 @@ void ValueWalk::forwardStore(const il::Instruction& inst, const Access& write) {
     read.immutable = false;
     const il::Type t = defs_.type(v);
     switch (inst.op) {
-        case Op::SlotStore:
+        // A read in the Number form (a double slot's, a NUMBERS array's
+        // element) is a key of its own; the stored value answers it too,
+        // being what the place holds (a later read takes the value, whose
+        // own definition says what it is).
+        case Op::SlotStore: {
             exprs_.add(loadKey(Op::SlotLoad, t, write.where), v, read, true);
+            ExprKey number = loadKey(Op::SlotLoad, t, write.where);
+            number.boxType = il::Type::F64;
+            exprs_.add(std::move(number), v, read, true);
             return;
-        case Op::ElemStore:
+        }
+        case Op::ElemStore: {
             exprs_.add(loadKey(Op::ElemLoad, t, write.where), v, read, true);
+            ExprKey number = loadKey(Op::ElemLoad, t, write.where);
+            number.immI32 = il::kElemLoadNumber;
+            exprs_.add(std::move(number), v, read, true);
             return;
+        }
         // `env.set` stores a binding's value, never the uninitialized marker
         // (only `env.init.tdz` writes that), so it answers the checked read
         // too.

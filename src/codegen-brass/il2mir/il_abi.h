@@ -206,6 +206,13 @@ inline constexpr int64_t kDenseNumbers = int64_t{1} << 30;
 inline constexpr int64_t kDenseIndexMask = kDenseNumbers - 1;
 // `elem.load`'s immI32 under such a test (il/il_op.h kElemLoadNumber).
 inline constexpr int64_t kElemLoadNumber = 1;
+// `shape.has_own`'s mode bits and slot shift (il/il_op.h kHasOwnWrite).
+inline constexpr int64_t kHasOwnWrite = 1;
+inline constexpr int64_t kHasOwnNumber = 2;
+inline constexpr int64_t kHasOwnSlotShift = 2;
+// `slot.load` of a double slot (il/il_op.h SlotLoad with boxType F64): this
+// bit set above the slot in the backend's immediate.
+inline constexpr int64_t kSlotLoadNumber = int64_t{1} << 40;
 inline constexpr int32_t kElemViewKinds[8] = {
     BRONZE_ABI_TA_KIND_FLOAT32, BRONZE_ABI_TA_KIND_FLOAT64, BRONZE_ABI_TA_KIND_INT32,
     BRONZE_ABI_TA_KIND_UINT32,  BRONZE_ABI_TA_KIND_UINT16,  BRONZE_ABI_TA_KIND_INT16,
@@ -234,6 +241,10 @@ inline constexpr uint32_t kLastCalleeBit = 62;
 // and its bytes, one after another (brass_backend_sections.cpp).
 inline constexpr std::string_view kShapeCellsSymbol = "__bronze_shape_cells";
 inline constexpr std::string_view kShapeCellKeysSymbol = "__bronze_shape_cell_keys";
+// `__bronze_number_slot_keys`, read-only: the module's double-slot keys
+// (il.h Module::numberSlotKeys) as u32 key constant indices, which the entry
+// hands bronze_register_slot_repr with `__bronze_key_map`.
+inline constexpr std::string_view kNumberSlotKeysSymbol = "__bronze_number_slot_keys";
 // THE LITERAL SHAPES (il.h Module::objectLiterals): two u64 per object
 // literal in the module's per-thread data, zero until bronze_object_literal
 // fills them: the empty root the literal starts from (the TLS block's sized

@@ -56,9 +56,13 @@ std::optional<ShapeName> parseShapeName(std::string_view name) {
         if (!key.empty() && key.front() == '&') return std::nullopt;
         const bool readOnly = !key.empty() && key.front() == '!';
         if (readOnly) key.remove_prefix(1);
+        // A double slot is always a writable data property's.
+        const bool number = !readOnly && !key.empty() && key.front() == '%';
+        if (number) key.remove_prefix(1);
         if (key.empty() || key == "@@symbol") return std::nullopt;
         out.keys.emplace_back(key);
         out.readOnly.push_back(readOnly);
+        out.number.push_back(number);
         at = comma + 1;
     }
     return out;
@@ -71,6 +75,7 @@ std::string shapeNameWithKeys(const ShapeName& shape, size_t keyCount) {
     for (size_t k = 0; k < keyCount && k < shape.keys.size(); ++k) {
         if (k != 0) name += ",";
         if (shape.readOnly[k]) name += "!";
+        if (shape.number[k]) name += "%";
         name += shape.keys[k];
     }
     name += "}";
@@ -99,6 +104,14 @@ std::optional<int32_t> writableSlot(const ShapeName& shape, std::string_view key
         if (shape.keys[k] == key && shape.readOnly[k]) return std::nullopt;
     }
     return slot;
+}
+
+bool numberSlot(const ShapeName& shape, std::string_view key) {
+    if (!ownSlot(shape, key)) return false;
+    for (size_t k = 0; k < shape.keys.size(); ++k) {
+        if (shape.keys[k] == key) return shape.number[k];
+    }
+    return false;
 }
 
 bool isNamedKey(std::string_view key) {

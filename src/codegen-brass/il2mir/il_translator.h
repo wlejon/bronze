@@ -171,6 +171,11 @@ struct TranslatorOptions {
     // reads word n of `__bronze_shape_cells`, which the entry registers with
     // the runtime with the cells' keys (il_abi.h kShapeCellsSymbol).
     uint32_t shape_cell_count = 0;
+    // The keys eligible for a double slot (il.h Module::numberSlotKeys), by
+    // key constant index: the entry registers them before anything runs
+    // (bronze_register_slot_repr, il_abi.h kNumberSlotKeysSymbol), and an
+    // object literal's fast path tests the values it stores under them.
+    std::vector<uint32_t> number_slot_keys;
     // The module's object literals (il.h Module::objectLiterals): their keys
     // and inline slots. `object.literal n` caches its shape in words 2n and
     // 2n+1 of `__bronze_literal_shapes` (il_abi.h kLiteralShapesSymbol).

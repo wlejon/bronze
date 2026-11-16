@@ -638,18 +638,18 @@ whether every property add that made it held a Number
 is walked for the objects of the shapes the caches named. A `doubles` row
 names, for a receiver the caches held, the positions in its key list that were
 born Numbers and that every object found of every shape of that name held a
-Number in; a `mixed` row names a key some named shape was born or found
-holding anything else under. A build on the harvest makes a layout cell's
-member a `number` one when its key is at such a position of the cell's shape
-and is not mixed
-(`applyFeedbackLayoutCells`), and makes those keys eligible
-(`bronze_register_slot_repr` at module init). `objects` and `nonobject` rows
-say the same of plain objects (not arrays, functions or null): the positions
-born holding one and found holding one in every object, and the keys found
-holding anything else; such a key becomes eligible for an object slot, and a
-layout cell member or family field at it an `object` one
-(`applyFeedbackObjectKeys`). See docs/slot-representation.md, "From a
-harvest".
+Number in; a `mixed` row names a key some object was found holding anything
+else under at a position not born so (born a Number, or its birth unseen):
+the key a run with it eligible would have made a double slot of and then
+generalized. A position born something else does not make its key mixed
+(eligible, that add gets a boxed node). A build on the harvest makes the keys
+at a `doubles` position that are not mixed eligible
+(`bronze_register_slot_repr` at module init) and spells their positions `%k`
+in the receiver names its shape cells resolve
+(`opt/speculate/number_slots.h`), so reads behind those cells are Numbers.
+`objects` and `nonobject` rows say the same of plain objects (not arrays,
+functions or null); no build reads them today. See
+docs/slot-representation.md, "From a harvest".
 
 **Slow paths.** An inline fast path with a generic fallback (an element read
 or write, a constant-index read or write and the runs of them il2mir lowers

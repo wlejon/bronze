@@ -60,12 +60,28 @@ void guardShape(GuardBuilder& b, ValueId object, const std::string& key);
 // `shape.in shape, (shape.cell <cell of k1>), ...` for two or more keys,
 // emitShapeIs for one.
 ValueId emitShapeIn(GuardBuilder& b, ValueId shape, const std::vector<std::string>& keys);
+// Whether the shape `s` names keeps the site's key in a DOUBLE slot (`%k`,
+// opt/core/shape_key.h); for a slot-keyed plan's entry (no name), its
+// `number`.
+bool holdsNumber(GuardBuilder& b, const ShapeSlot& s);
+// What the shapes reaching one slot access keep there.
+struct SlotGroup {
+    int32_t slot = 0;
+    bool allNumber = false;  // every shape a double slot: a read is a Number
+    bool anyNumber = false;  // some shape a double slot: a store must be one
+};
 // The own-slot access of a PropRead or PropWrite plan on several shapes (or
-// a set's: shape_sets.cpp), the site's result defined: `access(slot)` emits
-// the access of one slot at the cursor and returns its value (kNoValue for a
-// write). The forms are in prop_shape.cpp.
+// a set's: shape_sets.cpp), the site's result defined: `access(group, join)`
+// emits the access of one slot at the cursor and returns its value (kNoValue
+// for a write); `join` is where every access ends, for an access that takes
+// the generic arm (a store of a non-Number into a double slot). The forms are
+// in prop_shape.cpp.
 void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
-                      const std::function<ValueId(int32_t)>& access);
+                      const std::function<ValueId(const SlotGroup&, BlockId)>& access);
+// A store of the site's value into a slot that may be a double one: when
+// `number`, the store happens only for a Number (`is.number`) and anything
+// else takes the generic arm to `join`; the cursor ends after the store.
+void emitSlotStore(GuardBuilder& b, ValueId object, ValueId value, int32_t slot, bool number, BlockId join);
 
 // direct_call.cpp: `call @entry(f)` with the convention policy.h
 // directCallFits states, at the cursor, where a dominating `fn.code_is

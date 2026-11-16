@@ -83,6 +83,9 @@ struct ArrayHeader {
     // setLength) use `elementsKeepingNumbers` and say why at the write.
     static constexpr uint32_t kElementsAreNumbers = BRONZE_ABI_ARRAY_BIT_NUMBERS;
     static_assert(kElementsAreNumbers != kHasCustomPrototype);
+    // NO_CLAIM: `claimNumbers` refused this array once and will not scan it
+    // again (bronze_abi_layout.h).
+    static constexpr uint32_t kNumbersRefused = BRONZE_ABI_ARRAY_BIT_NO_CLAIM;
 
     bool elementsAreNumbers() const noexcept { return (reserved & kElementsAreNumbers) != 0; }
     void forgetNumbers() noexcept { reserved &= ~kElementsAreNumbers; }

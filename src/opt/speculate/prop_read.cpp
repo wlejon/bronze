@@ -17,11 +17,12 @@
 // a join whose parameter is `r`.
 //
 // Why exact: the loader resolves a cell only to a shape whose every property
-// is a plain writable data property in the boxed representation (shape_key.h),
-// so for an object at that shape [[Get]] of the key is its own data property,
-// found without a prototype walk, a getter or a proxy trap — the slot's
-// Value. Nothing before the last guard is observable (tests and header
-// loads), so a failure re-runs the generic `prop.get` in G with nothing done.
+// is a plain data property in the representation its name spells
+// (shape_key.h), so for an object at that shape [[Get]] of the key is its own
+// data property, found without a prototype walk, a getter or a proxy trap —
+// the slot's Value, a Number when the name spells the key `%k`. Nothing
+// before the last guard is observable (tests and header loads), so a failure
+// re-runs the generic `prop.get` in G with nothing done.
 // `proto` ways (the value lives on a prototype object this step has no
 // constant for), `absent`, `accessor` and `array` ways stay generic.
 
@@ -36,24 +37,31 @@ void rewritePropRead(RewriteContext& ctx, const SitePlan& plan) {
     assert(site.op == il::Op::PropGet && site.type == il::Type::Dynamic && site.result != il::kNoValue);
     const ValueId object = site.operands[0];
 
-    auto slotLoad = [&](int32_t slot) {
+    // A slot every shape that reaches the load keeps a double one is read
+    // as a Number (il_op.h SlotLoad `number`).
+    auto slotLoad = [&](int32_t slot, bool number) {
         il::Instruction load;
         load.op = il::Op::SlotLoad;
         load.type = il::Type::Dynamic;
         load.operands = {object};
         load.immI32 = slot;
+        if (number) {
+            load.boxType = il::Type::F64;
+            ++ctx.stats.numberSlotReads;
+        }
         return load;
     };
 
     if (plan.shapes.size() == 1) {
         guardShape(b, object, plan.shapes.front().key);
-        b.emitResult(slotLoad(plan.shapes.front().slot));
+        b.emitResult(slotLoad(plan.shapes.front().slot, holdsNumber(b, plan.shapes.front())));
         b.finish();
         ++ctx.stats.propReads;
         return;
     }
 
-    emitSlotDispatch(b, plan, object, [&](int32_t slot) { return b.emitInst(slotLoad(slot)); });
+    emitSlotDispatch(b, plan, object,
+                     [&](const SlotGroup& g, BlockId) { return b.emitInst(slotLoad(g.slot, g.allNumber)); });
     b.finish();
     ++ctx.stats.propReads;
     ++ctx.stats.propReadChains;

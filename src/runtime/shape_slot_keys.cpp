@@ -1,7 +1,7 @@
 // The slot-key table of a shape (shape.h `slot_keys`, bronze_abi_layout.h
 // BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET): for every slot, which string key the
-// shape's own properties keep there and whether it is a boxed data property
-// and writable. Generated code's `shape.has_own` test reads it
+// shape's own properties keep there, whether it is a data property (boxed or
+// double), writable, and a double slot. Generated code's `shape.has_own` test reads it
 // (il2mir/il_lowering_spec.cpp), so a site whose receivers come in many shapes
 // that all keep the key at one slot tests the slot's entry instead of each
 // shape's identity.
@@ -47,9 +47,10 @@ const uint64_t* buildSlotKeys(const Shape* shape) {
         uint32_t index = 0;
         if (!rtKeyIndexOf(rtUtf8Chars(name), index)) continue;  // no module names it
         uint64_t entry = (uint64_t{index} + 1) << BRONZE_ABI_SLOTKEY_KEY_SHIFT;
-        if (!node->accessor && node->repr == SlotRepr::Boxed) {
+        if (!node->accessor && node->repr != SlotRepr::Object) {
             entry |= BRONZE_ABI_SLOTKEY_DATA;
             if (node->writable) entry |= BRONZE_ABI_SLOTKEY_WRITABLE;
+            if (node->repr == SlotRepr::Double) entry |= BRONZE_ABI_SLOTKEY_NUMBER;
         }
         table[1 + node->slot_index] = entry;
     }

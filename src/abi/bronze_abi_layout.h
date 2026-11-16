@@ -648,6 +648,11 @@
  * custom-prototype mark. */
 #define BRONZE_ABI_ARRAY_BITS_OFFSET     36
 #define BRONZE_ABI_ARRAY_BIT_NUMBERS     2
+/* NO_CLAIM: a claim scanned this array and refused it (an element that is no
+ * Number, a hole, a named property, too long). It stays: an array refused
+ * once is not scanned again, so a read of an array of objects pays one scan
+ * in its life and not one per read. It promises nothing about the elements. */
+#define BRONZE_ABI_ARRAY_BIT_NO_CLAIM    4
 /* The longest array bronze_array_claim_numbers scans: a claim is made where
  * `is.dense_array` with kDenseNumbers finds the bit clear (il/il_op.h), and a
  * longer array is not one a scan per visit could pay for. */
@@ -838,8 +843,9 @@
  * builds it, then a table of u64 words, word 0 the number of entries and word
  * 1 + s the entry for slot s: (key index + 1) << SLOTKEY_KEY_SHIFT, where the
  * key index is the process-wide one `__bronze_key_map` names, ORed with
- * SLOTKEY_DATA when the property there is a data property held boxed and
- * SLOTKEY_WRITABLE when it is also writable. A slot no property of the
+ * SLOTKEY_DATA when the property there is a data property held boxed or as a
+ * double, SLOTKEY_WRITABLE when it is also writable and SLOTKEY_NUMBER when
+ * its slot is a double one (runtime/slot_repr.h). A slot no property of the
  * shape's string-keyed own properties owns (an accessor's second word, the
  * numbers between the inline Values and the overflow split, a symbol key, a
  * key no module registered) is 0, which no test compares equal to. A
@@ -847,7 +853,8 @@
 #define BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET    96
 #define BRONZE_ABI_SLOTKEY_DATA             1u
 #define BRONZE_ABI_SLOTKEY_WRITABLE         2u
-#define BRONZE_ABI_SLOTKEY_KEY_SHIFT        2
+#define BRONZE_ABI_SLOTKEY_NUMBER           4u
+#define BRONZE_ABI_SLOTKEY_KEY_SHIFT        3
 
 /* A LAYOUT CELL's member (bronze_static_layout_publish): the third u32 of its
  * (key, slot, flags) triple. WRITE: a site stores to it, so the shape must

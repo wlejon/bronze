@@ -40,12 +40,17 @@
 //
 // WHERE A DOUBLE SLOT COMES FROM. Only from an ELIGIBLE key whose first store
 // is a number. Eligibility is handed over at module init as a list of names
-// (`bronze_register_slot_repr`), which the compiler takes from the `--pins`
-// manifest (a field pinned `number` on a class whose layout the compilation
-// proved) and from an inline-cache harvest (keys the harvested run's objects
-// were born and kept Numbers under; docs/slot-representation.md "From a
-// harvest"). Any other key is never eligible: a key that alternates would cost
-// a shape split each time it turned over.
+// (`bronze_register_slot_repr`), which the compiler takes from an
+// inline-cache harvest (keys the harvested run's objects were born and kept
+// Numbers under; docs/slot-representation.md "From a harvest",
+// opt/speculate/number_slots.h). Any other key is never eligible: a key that
+// alternates would cost a shape split each time it turned over.
+//
+// WHAT COMPILED CODE READS OFF IT. A double slot is spelled `%k` in the
+// shape's name (type_feedback.cpp shapeText), and a shape cell resolves only
+// to a shape whose nodes have the representations its name spells
+// (shape_cells.cpp), so speculated code behind a `%k` cell reads the slot as
+// a Number with no tag test, and stores into it only a Number.
 //
 // THE OBJECT REPRESENTATION. The same discipline for one more fact: a slot a
 // shape calls an OBJECT one holds an Object-tagged pointer to a plain object

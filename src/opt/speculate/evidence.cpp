@@ -8,6 +8,7 @@
 #include "abi/bronze_abi.h"
 #include "abi/bronze_feedback_site.h"
 #include "opt/speculate/context.h"
+#include "opt/speculate/number_slots.h"
 #include "opt/speculate/policy.h"
 #include "opt/core/shape_key.h"
 #include "opt/speculate/sites.h"
@@ -151,7 +152,9 @@ Evidence::Evidence(const il::Module& module, const spec::TypeProfile& profile, c
         // something about this build only if that build numbered its sites as
         // this one does over the same text (docs/type-feedback.md, "Identity").
         if (h->digest == il::icLayoutDigest(module) && h->sites == module.icSiteCount) {
-            harvest_ = h;
+            numberKeys_ = numberSlotKeys(*h, module);
+            spelled_ = spellNumberSlots(*h, numberKeys_);
+            harvest_ = &*spelled_;
         } else {
             stats.harvestIgnored = 1;
         }
@@ -378,10 +381,14 @@ std::optional<SitePlan> Evidence::planSlotKeyed(SiteKind kind, const std::vector
         const std::optional<int32_t> slot =
             kind == SiteKind::PropSlotWrite ? writableSlot(*shape, key) : ownSlot(*shape, key);
         if (!slot) continue;
-        if (std::any_of(plan.shapes.begin(), plan.shapes.end(), [&](const ShapeSlot& s) { return s.slot == *slot; })) {
+        const bool number = numberSlot(*shape, key);
+        const auto known =
+            std::find_if(plan.shapes.begin(), plan.shapes.end(), [&](const ShapeSlot& s) { return s.slot == *slot; });
+        if (known != plan.shapes.end()) {
+            known->number = known->number && number;
             continue;
         }
-        plan.shapes.push_back(ShapeSlot{std::string(), *slot});
+        plan.shapes.push_back(ShapeSlot{std::string(), *slot, number});
     }
     if (plan.shapes.empty() || plan.shapes.size() > kMaxChainShapes) return std::nullopt;
     return plan;

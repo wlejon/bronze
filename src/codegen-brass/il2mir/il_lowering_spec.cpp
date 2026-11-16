@@ -147,8 +147,9 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         //   r = (e & mask) == ((key_map[k] + 1) << 2 | bits)
         case BronzeOp::ShapeHasOwn: {
             if (!need(1)) return false;
-            const int64_t slot = inst.imm_i64 >> 1;
-            const bool write = (inst.imm_i64 & 1) != 0;
+            const int64_t slot = inst.imm_i64 >> kHasOwnSlotShift;
+            const bool write = (inst.imm_i64 & kHasOwnWrite) != 0;
+            const bool number = (inst.imm_i64 & kHasOwnNumber) != 0;
             Value* shape = bits(0);
             BasicBlock* cur = b.current_block();
             const std::string prefix = "hasown_" + std::to_string(cur->parent()->next_block_id());
@@ -170,13 +171,20 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             Value* at = b.build_select(in, b.build_add(table, iconst64(b, 8 + 8 * static_cast<uint64_t>(slot))), table);
             Value* entry = b.build_select(
                 in, with_alias_class(b.build_load(Type::i64(), at, 0), kRuntimeWordAliasClass), iconst64(b, 0));
-            const uint64_t need_bits = BRONZE_ABI_SLOTKEY_DATA | (write ? BRONZE_ABI_SLOTKEY_WRITABLE : 0u);
-            const uint64_t mask = write ? ~uint64_t{0} : ~uint64_t{BRONZE_ABI_SLOTKEY_WRITABLE};
+            // The bits the mode asks for, and the ones it does not care about:
+            // a read takes either representation (a double slot's word is the
+            // Number's Value), a Number read only a double slot, a store only
+            // a boxed slot, and a Number's store either.
+            const uint64_t need_bits = BRONZE_ABI_SLOTKEY_DATA | (write ? BRONZE_ABI_SLOTKEY_WRITABLE : 0u) |
+                                       (number && !write ? BRONZE_ABI_SLOTKEY_NUMBER : 0u);
+            const uint64_t ignored = (write ? 0u : BRONZE_ABI_SLOTKEY_WRITABLE) |
+                                     (number == write ? BRONZE_ABI_SLOTKEY_NUMBER : 0u);
+            const uint64_t mask = ~uint64_t{ignored};
             Value* key = b.build_zext_i64(get_key_id(b, inst.index));
             Value* want = b.build_or(b.build_shl(b.build_add(key, iconst64(b, 1)),
                                                  iconst64(b, BRONZE_ABI_SLOTKEY_KEY_SHIFT)),
                                      iconst64(b, need_bits));
-            Value* match = b.build_eq(write ? entry : b.build_and(entry, iconst64(b, mask)), want);
+            Value* match = b.build_eq(ignored == 0 ? entry : b.build_and(entry, iconst64(b, mask)), want);
             if (write) {
                 Value* proto = with_alias_class(
                     b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET), kRuntimeWordAliasClass);
@@ -193,10 +201,17 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         }
         // dynamic = slot.load %obj, <slot>: inline slot: one load at
         // ptr + 24 + 8*slot; overflow slot: the block word at ptr + 16,
-        // masked, then the load at block + 8 + 8*(slot - 62).
+        // masked, then the load at block + 8 + 8*(slot - 62). A double slot's
+        // (kSlotLoadNumber) is loaded as the double and boxed as its bits,
+        // canonical already (runtime/slot_repr.h), so an unbox is the double.
         case BronzeOp::SlotLoad: {
             if (!need(1)) return false;
-            Value* addr = slot_address(b, object_address(b, bits(0)), inst.imm_i64);
+            Value* addr = slot_address(b, object_address(b, bits(0)), inst.imm_i64 & ~kSlotLoadNumber);
+            if ((inst.imm_i64 & kSlotLoadNumber) != 0) {
+                res_val = b.build_bitcast_i64_f64(
+                    with_alias_class(b.build_load(Type::f64(), addr, 0), kObjectSlotAliasClass));
+                return true;
+            }
             res_val = with_alias_class(b.build_load(Type::i64(), addr, 0), kObjectSlotAliasClass);
             return true;
         }

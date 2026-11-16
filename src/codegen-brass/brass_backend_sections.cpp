@@ -158,6 +158,18 @@ void emitShapeCellKeys(ObjectFile& obj, Section& roSec, int32_t roIdx, const std
                  roSec.data.size() - at, SymbolBinding::Local);
 }
 
+// The double-slot keys (il2mir::kNumberSlotKeysSymbol): u32 key constant
+// indices, which init hands bronze_register_slot_repr.
+void emitNumberSlotKeys(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
+                        const il::Module& module) {
+    if (module.numberSlotKeys.empty()) return;
+    roSec.align_to(4);
+    const size_t at = roSec.data.size();
+    for (uint32_t k : module.numberSlotKeys) roSec.emit32(k);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kNumberSlotKeysSymbol)), roIdx, at,
+                 roSec.data.size() - at, SymbolBinding::Local);
+}
+
 // The IC IDENTITY record (bronze_abi_layout.h): what a harvest of the module's
 // inline caches is filed under. Local under the module's own name, which init
 // hands `bronze_register_ic_hot`, and exported for a host that loaded the
@@ -799,6 +811,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
     emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module);
     emitShapeCellKeys(obj, roSec, roIdx, entrySymbol, in.module);
+    emitNumberSlotKeys(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     emitFileStrings(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles);
     const DeoptSites deopt = collectDeoptSites(in.module, in.uniqueNames);

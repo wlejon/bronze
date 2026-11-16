@@ -275,8 +275,13 @@ std::string shapeText(const Shape* sh, std::unordered_map<const Shape*, std::str
         // `k` is a writable data property. Two shapes whose keys differ only
         // in those attributes are told apart, and a compiler reading the name
         // knows which slots a write may store into (opt/core/shape_key.h).
+        // `%k` is a double slot (slot_repr.h): a Number, and only a Number
+        // may be stored there without moving the object off the shape.
         for (const Shape* n = sh; n != nullptr && n->parent != nullptr; n = n->parent) {
-            const char* mark = n->accessor ? "&" : (n->writable ? "" : "!");
+            const char* mark = n->accessor                    ? "&"
+                               : !n->writable                 ? "!"
+                               : n->repr == SlotRepr::Double ? "%"
+                                                             : "";
             if (StringHeader* ks = n->key.string()) keys.push_back(mark + rtUtf8Chars(ks));
             else keys.push_back(std::string(mark) + "@@symbol");
         }

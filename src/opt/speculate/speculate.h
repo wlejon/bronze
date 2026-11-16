@@ -60,6 +60,9 @@ struct SpeculateStats {
     uint32_t shapeSetLeads = 0;        // reads and writes testing a receiver's shape set (shape_sets.cpp)
     uint32_t shapeSetFollowers = 0;    // reads and writes a lead's set may fold
     uint32_t propSlotKeyed = 0;        // reads and writes tested by shape.has_own
+    uint32_t numberSlotKeys = 0;       // keys made eligible for a double slot (number_slots.h)
+    uint32_t numberSlotReads = 0;      // slot reads of double slots, Numbers by the shape
+    uint32_t numberSlotStores = 0;     // slot stores into double slots, behind is.number
     uint32_t propWrites = 0;
     uint32_t propAdds = 0;
     uint32_t constructs = 0;

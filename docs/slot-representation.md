@@ -19,10 +19,8 @@ Implementation: `src/runtime/slot_repr.{h,cpp}`, `src/runtime/shape.{h,cpp}`
 **A double slot is created only from a promise.** A shape node is born
 `SlotRepr::Double` when the store that creates the property is a Number *and*
 the property's name is on the eligibility list the module handed over at init
-(`bronze_register_slot_repr`) — which the compiler builds from the `--pins`
-manifest's `number` fields on classes whose layout it proved, and from an
-inline-cache harvest (below, "From a harvest"). No pins manifest and no
-harvest, no double slots.
+(`bronze_register_slot_repr`) — which the compiler builds from an
+inline-cache harvest (below, "From a harvest"). No harvest, no double slots.
 
 **A double slot is taken back by a shape change.** When a non-Number reaches a
 double slot, `ObjectHeader::setSlot` moves *that object* to a shape rebuilt with
@@ -64,18 +62,58 @@ made by a property add through it, whether every such add held a Number
 (`rtIcHarvestNoteBirth`), and at the write walks the heap for the objects of the
 shapes the caches named; a `doubles` row gives a receiver's key positions that
 were born Numbers and that every object found held a Number in, a `mixed` row a
-key anything else was found under. `applyFeedbackLayoutCells` makes a layout
-cell's member a `number` one when its key is at such a position of the cell's
-shape and is not mixed, and puts the key on the module's eligibility list.
+key some object held anything else under at a position not born so (the key a
+run with it eligible would have generalized; a position born something else
+just gets a boxed node there).
 
-A `number` member is published by `bronze_static_layout_publish` only for a
-shape whose slot is a double (`BRONZE_ABI_LAYOUT_PAIR_DOUBLE`), and shapes are
-immutable, so behind the cell's guard the slot holds a Number: the backend
-answers the IL's `is.number` test of the loaded value with a constant there,
-and with the test itself on the path that missed the cell (`number_flag`,
-`il_property.h`). The IL keeps the test, so the proof checker certifies the
-raw read as it always did. Nothing rests on the harvest being right: a key the
-run misjudged costs a shape split or a refused cell.
+`opt/speculate/number_slots.h` reads both: the ELIGIBLE keys are the ones at a
+`doubles` position, not mixed and named by the module (`Module::numberSlotKeys`,
+registered at init by `bronze_register_slot_repr`, before any object is made),
+and every receiver name the speculation reads off the harvest is respelled with
+those keys' positions as `%k`, the name the run's shape will carry
+(`type_feedback.cpp shapeText`). A shape cell resolves only to a shape whose
+every node has the representation its name spells (`shape_cells.cpp`), and
+shapes are immutable, so behind a cell's guard a `%k` slot holds a Number:
+
+* a READ is `slot.load ... number` (il_op.h): the backend loads the double and
+  the IL knows the value is a Number, so its `is.number` folds and its unbox
+  is the load (as for a NUMBERS array's element, docs/type-feedback.md);
+* a STORE (`slot.store`, a speculated add's slot and shape stores) is behind
+  `is.number` of the value, folded when the value is known one; anything else
+  takes the generic `prop.set` in a cold arm that rejoins, whose runtime store
+  moves the object off the shape;
+* a SLOT-KEYED site (`shape.has_own`, many shapes) reads the slot-key table's
+  NUMBER bit (`BRONZE_ABI_SLOTKEY_NUMBER`): a read of a slot every sampled shape
+  keeps a double one tests the Number form and is a Number; a store tests the
+  form that takes either representation and stores a Number, and any other
+  value tests the boxed form.
+
+Nothing rests on the harvest being right: a name no shape of the run carries
+leaves its cell empty (the guard fails: generic arm or leave), and a key that
+turns out mixed costs each object that meets a non-Number one generalization,
+after which the double edge is sticky and later objects are born boxed. Each
+eligible key adds at most one sibling per parent node (the double edge beside
+the boxed one), so the tree grows by at most the number of (parent, key)
+pairs that met both a Number and something else at birth.
+
+## Every writer, compiled and runtime
+
+The discipline has to hold for every path that can put a value in a slot
+(oracle case `slot_numbers_writers` trains a key per writer on Numbers and
+then writes non-Numbers through it):
+
+| writer | how it keeps a double slot a Number |
+|---|---|
+| runtime `setSlot` (bronze_prop_set, `defineProperty`, `Object.assign`, spread, JSON, `Reflect.set`, proxies, keyed writes, destructuring and for-of targets) | generalizes (`withSlotBoxed`) or canonicalizes |
+| runtime adds (`desiredSlotRepr`) | double only for an eligible key with a Number in hand, boxed sibling otherwise |
+| G's inline set arm (`lower_prop_set_mono`) | takes a double entry only for a Number |
+| G's set stub (own, add, define-add arms) | DOUBLE flag / node repr tested against the value |
+| S `slot.store`, speculated add | behind `is.number` (prop_shape.cpp `emitSlotStore`, prop_write.cpp) |
+| S slot-keyed store | `shape.has_own` write modes (prop_slot.cpp) |
+| `object.literal` fast path | caches a double shape only at positions it tests (`numbers` mask, runtime/literal.cpp) |
+| transition cells | publish a double `to` only for code that tests the value |
+| `rawSetSlot` callers | the RegExp result shapes (never eligible: built boxed) |
+| accessor redefinition, freeze, delete | rebuild the node boxed (an accessor or read-only node is never double) |
 
 ## Object slots
 

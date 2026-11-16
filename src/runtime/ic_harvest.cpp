@@ -225,7 +225,13 @@ void measureRepresentation(State& s) {
                 const auto birth = s.births.find(node);
                 const bool other = marks != held.end() && (marks->second[i] & kind) != 0;
                 const bool bornOther = birth != s.births.end() && (birth->second & kind) == 0;
-                if (bornOther || other) {
+                // A key is `mixed` (`nonobject`) when some object holds
+                // anything else at a position not born so (born a Number, or
+                // its birth unseen): under eligibility that object's slot
+                // would have been made a double one and then generalized. A
+                // position born something else is no reason against the
+                // key: the run with it eligible gives that add a boxed node.
+                if (other && !bornOther) {
                     if (StringHeader* key = node->key.valid() && !node->key.isSymbol() ? node->key.string() : nullptr) {
                         kept.other.insert(rtUtf8Chars(key));
                     }

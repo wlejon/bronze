@@ -359,7 +359,7 @@ Effects rawEffects(const Instruction& inst) {
         // A shape's layout is fixed; whether it is a prototype's (the write
         // form's last condition) changes with the program's Shapes.
         case Op::ShapeHasOwn:
-            return (inst.immI32 & 1) != 0 ? guardedOp(Loc::Shapes, LocSet::none()) : none();
+            return (inst.immI32 & kHasOwnWrite) != 0 ? guardedOp(Loc::Shapes, LocSet::none()) : none();
         case Op::SlotLoad:
             return guardedOp(Loc::Slots, LocSet::none());
         case Op::SlotStore:

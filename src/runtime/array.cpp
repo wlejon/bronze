@@ -182,13 +182,20 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
 
 bool ArrayHeader::claimNumbers() noexcept {
     if (elementsAreNumbers()) return true;
-    if (!isBare() || length > BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH) return false;
-    if (length > 0 && !elements.isPointer()) return false;
+    if ((reserved & kNumbersRefused) != 0) return false;
+    // A refusal is remembered, so the readers that ask on every visit
+    // (generic element reads, il_elem_lowering.cpp) scan an array once.
+    auto refuse = [this] {
+        reserved |= kNumbersRefused;
+        return false;
+    };
+    if (!isBare() || length > BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH) return refuse();
+    if (length > 0 && !elements.isPointer()) return refuse();
     const Value* cur = std::as_const(*this).elementsData();
     for (uint32_t i = 0; i < length; ++i) {
         const Value v = cur[i];
         if (v.isNumber()) continue;
-        if (!v.isInt32()) return false;
+        if (!v.isInt32()) return refuse();
     }
     // Every element is a Number; the Int32 boxes among them become the same
     // Number in double form. No reference is stored, so no barrier is owed.

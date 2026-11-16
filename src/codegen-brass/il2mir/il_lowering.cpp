@@ -394,6 +394,14 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_method_ic_rows", Type::void_type(),
                              {table_addr, rows_addr, sites_addr, site_count});
             }
+            // The keys eligible for a double slot (il.h
+            // Module::numberSlotKeys), before the cells are resolved and
+            // before any object this module makes gets its shape.
+            if (!options_.number_slot_keys.empty()) {
+                Value* keys_addr = b.build_func_addr(module_sym(std::string(kNumberSlotKeysSymbol)));
+                Value* key_count = b.build_iconst_i32(static_cast<int32_t>(options_.number_slot_keys.size()));
+                b.build_call("bronze_register_slot_repr", Type::void_type(), {keys_addr, key_count, map_addr});
+            }
             // The module's shape cells (il.h Module::shapeCells): the
             // runtime fills each with the shape its key names, now for one
             // that exists and when one is made for the rest, before `shape.cell`

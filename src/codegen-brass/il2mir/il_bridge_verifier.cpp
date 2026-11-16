@@ -29,7 +29,8 @@ bool is_const_i64_any(const brass::Value* v, uint64_t& out) {
 }
 
 // A double that IS a Value's bits rather than the result of arithmetic: a
-// boxed Array element loaded as one (il_abi.h kBoxedElementAliasClass), an
+// boxed Array element or a double slot loaded as one (il_abi.h
+// kBoxedElementAliasClass, kObjectSlotAliasClass), an
 // i64's bits reinterpreted, or a block parameter every incoming edge
 // passes one of those (the read runs of il_lowering_hoist.cpp merge them).
 // `seen` cuts a loop of parameters: a cycle contributes no other value.
@@ -60,7 +61,7 @@ bool is_value_bits_f64(const brass::Function& fn, const brass::Value* v, std::ve
     const brass::Instruction* def = v->is_instruction() ? v->defining_instruction() : nullptr;
     if (!def) return false;
     if ((def->opcode() == brass::Opcode::load || def->opcode() == brass::Opcode::load_indexed) &&
-        def->alias_class() == kBoxedElementAliasClass) {
+        (def->alias_class() == kBoxedElementAliasClass || def->alias_class() == kObjectSlotAliasClass)) {
         return true;
     }
     // An i64 reinterpreted: turned back, it is the same i64, which this rule

@@ -14,6 +14,9 @@
 namespace bronze::codegen {
 
 static_assert(il2mir::kSlowSiteArms == bronze::il::kSlowSiteArms, "one slow site's indices, counted twice");
+static_assert(il2mir::kHasOwnWrite == bronze::il::kHasOwnWrite && il2mir::kHasOwnNumber == bronze::il::kHasOwnNumber &&
+                  il2mir::kHasOwnSlotShift == bronze::il::kHasOwnSlotShift,
+              "shape.has_own's immediate is read alike on both sides");
 static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kElemLoadNumber == bronze::il::kElemLoadNumber,
               "the NUMBERS forms of is.dense_array and elem.load, named twice");
 static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
@@ -508,7 +511,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::IsObject: out.op = il2mir::BronzeOp::IsObject; break;
         case il::Op::SlotLoad:
             out.op = il2mir::BronzeOp::SlotLoad;
-            out.imm_i64 = inst.immI32;
+            out.imm_i64 = inst.immI32 | (inst.boxType == il::Type::F64 ? il2mir::kSlotLoadNumber : 0);
             break;
         case il::Op::SlotStore:
             out.op = il2mir::BronzeOp::SlotStore;

@@ -49,6 +49,9 @@ DefTag tagByDefinition(const ValueView& values, ValueId v) {
         // Under `is.dense_array` with kDenseNumbers: a Number in double form.
         case Op::ElemLoad:
             return (d->immI32 & il::kElemLoadNumber) != 0 ? DefTag::Number : DefTag::Unknown;
+        // A double slot's read (il_op.h SlotLoad, `number`).
+        case Op::SlotLoad:
+            return d->boxType == Type::F64 ? DefTag::Number : DefTag::Unknown;
         default:
             return DefTag::Unknown;
     }
@@ -248,9 +251,12 @@ std::optional<bool> knownHasOwnResult(const il::Instruction& inst, const FactEnv
         if (cell >= module.shapeCells.size()) return std::nullopt;
         const std::optional<ShapeName> shape = parseShapeName(module.shapeCells[cell].key);
         if (!shape) return std::nullopt;
-        const std::optional<int32_t> slot =
-            (inst.immI32 & 1) != 0 ? writableSlot(*shape, key) : ownSlot(*shape, key);
-        const bool here = slot && *slot == (inst.immI32 >> 1);
+        const bool write = (inst.immI32 & il::kHasOwnWrite) != 0;
+        const bool number = (inst.immI32 & il::kHasOwnNumber) != 0;
+        const std::optional<int32_t> slot = write ? writableSlot(*shape, key) : ownSlot(*shape, key);
+        // The representation the mode asks for (il_op.h ShapeHasOwn).
+        const bool repr = number == write || numberSlot(*shape, key) == number;
+        const bool here = slot && *slot == (inst.immI32 >> il::kHasOwnSlotShift) && repr;
         if (answer && *answer != here) return std::nullopt;
         answer = here;
     }

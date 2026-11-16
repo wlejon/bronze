@@ -13,6 +13,7 @@
 
 #include <algorithm>
 
+#include "opt/core/shape_key.h"
 #include "opt/speculate/sites.h"
 
 namespace bronze::opt::speculate {
@@ -45,6 +46,39 @@ void guardShape(GuardBuilder& b, ValueId object, const std::string& key) {
     b.guard(emitShapeIs(b, shape, key));
 }
 
+bool holdsNumber(GuardBuilder& b, const ShapeSlot& s) {
+    if (s.key.empty()) return s.number;
+    const std::optional<ShapeName> shape = parseShapeName(s.key);
+    const il::Module& module = b.context().module;
+    const uint32_t key = b.site().keyIndex;
+    return shape && key < module.keyConstants.size() && numberSlot(*shape, module.keyConstants[key]);
+}
+
+// THE STORE INTO A DOUBLE SLOT. The cell's shape keeps the slot a double one
+// (shape_key.h `%k`), which compiled code keeps true by storing only a Number
+// there: anything else is the generic `prop.set`, whose runtime store moves
+// the object to a shape with the slot boxed (runtime/object.cpp setSlot). A
+// Number's box is its canonical double (value.h), so the stored word is the
+// one a double slot holds. The test folds for a value known a Number.
+//
+//     br is.number %v, S, G
+//  S: slot.store %obj, k, %v ; jump J
+//  G: prop.set %obj, "key", %v (cold) ; jump J
+void emitSlotStore(GuardBuilder& b, ValueId object, ValueId value, int32_t slot, bool number, BlockId join) {
+    if (number) {
+        const BlockId store = b.newBlock();
+        const BlockId other = b.genericArm(join);
+        b.branch(b.emit(il::Op::IsNumber, il::Type::Bool, {value}), store, {}, other, {});
+        b.moveTo(store);
+    }
+    il::Instruction inst;
+    inst.op = il::Op::SlotStore;
+    inst.type = il::Type::Void;
+    inst.operands = {object, value};
+    inst.immI32 = slot;
+    b.emitInst(std::move(inst));
+}
+
 
 // THE SLOT DISPATCH of an own-slot site on several shapes (prop_read.cpp,
 // prop_write.cpp). Its shapes are grouped by the slot the key has in them (a
@@ -74,16 +108,22 @@ void guardShape(GuardBuilder& b, ValueId object, const std::string& key) {
 // Nothing before the last guard is observable (tests and header loads), so a
 // lead's exit re-runs the generic site in G with nothing done.
 void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
-                      const std::function<ValueId(int32_t)>& access) {
+                      const std::function<ValueId(const SlotGroup&, BlockId)>& access) {
     assert(plan.shapes.size() >= 2 && plan.shapes.size() <= kMaxSetShapes);
     const bool result = b.site().result != il::kNoValue;
     std::vector<std::pair<int32_t, std::vector<std::string>>> groups;
+    std::vector<SlotGroup> reprs;
     for (const ShapeSlot& s : plan.shapes) {
+        const bool number = holdsNumber(b, s);
         auto g = std::find_if(groups.begin(), groups.end(), [&](const auto& x) { return x.first == s.slot; });
         if (g == groups.end()) {
             groups.push_back({s.slot, {s.key}});
+            reprs.push_back(SlotGroup{s.slot, number, number});
         } else {
             g->second.push_back(s.key);
+            SlotGroup& r = reprs[static_cast<size_t>(g - groups.begin())];
+            r.allNumber = r.allNumber && number;
+            r.anyNumber = r.anyNumber || number;
         }
     }
     if (plan.shapeSet == ShapeSetRole::Lead) ++b.context().stats.shapeSetLeads;
@@ -133,7 +173,7 @@ void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
     }
     for (size_t g = 0; g < groups.size(); ++g) {
         b.moveTo(accesses[g]);
-        const ValueId v = access(groups[g].first);
+        const ValueId v = access(reprs[g], join);
         b.jump(join, result ? std::vector<ValueId>{v} : std::vector<ValueId>{});
     }
     if (result) b.resultParam(join);

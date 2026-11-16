@@ -210,7 +210,15 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
         Value* has_numbers =
             b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)), b.build_iconst_i32(0));
-        b.build_br_if(has_numbers, bb_merge, {elem}, bb_claim, {});
+        // An array a claim already refused (NO_CLAIM) is not asked again:
+        // the call is made once in an array's life, not once per read.
+        BasicBlock* bb_ask = b.append_block(prefix + "_ask");
+        b.position_at_end(bb_hit);
+        b.build_br_if(has_numbers, bb_merge, {elem}, bb_ask, {});
+        b.position_at_end(bb_ask);
+        Value* refused =
+            b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NO_CLAIM)), b.build_iconst_i32(0));
+        b.build_br_if(refused, bb_mixed, bb_claim);
         b.position_at_end(bb_claim);
         Value* claimed = b.build_call("bronze_array_claim_numbers", Type::i32(), {obj});
         b.build_br_if(b.build_ne(claimed, b.build_iconst_i32(0)), bb_merge, {elem}, bb_mixed, {});

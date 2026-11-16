@@ -61,7 +61,9 @@ void bronze_transition_publish(uint64_t* cell, uint64_t fromBits, uint32_t keyIn
     if (to->parent != from || !to->key.matches(key) || to->slot_index != slot) return;
     if (!to->enumerable || !to->writable || !to->configurable || to->accessor) return;
     if (slot >= to->inline_slots || slot >= ObjectHeader::kOverflowSlot) return;
-    if (to->slotIsDouble(slot) || to->slotIsObject(slot)) return;
+    // A double `to` (slot_repr.h) is the speculated add's only for a Number:
+    // it tests the value before the stores (prop_write.cpp).
+    if (to->slotIsObject(slot)) return;
     if (!chainAdmitsAdd(from->prototypeValue(), key)) return;
     *cell = protoMutationEpoch();
 }

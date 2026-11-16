@@ -21,6 +21,7 @@
 
 #include "il_abi.h"
 #include "il_lowering.h"
+#include "il_lowering_ops.h"
 
 namespace il2mir {
 
@@ -101,6 +102,37 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             Value* shape = with_alias_class(b.build_load(Type::i64(), cache, 8), kRuntimeWordAliasClass);
             Value* tls_root = b.build_load(Type::i64(), tls_block(b), root_off);
             Value* ok = b.build_and(b.build_eq(root, tls_root), b.build_ne(root, b.build_iconst_i64(0)));
+            // The positions under a key this module made eligible for a
+            // double slot (il.h Module::numberSlotKeys): the runtime caches
+            // a shape keeping such a slot a double one only at these
+            // (`numbers`, runtime/literal.cpp), and a double slot takes only
+            // a Number, so the fast path is for an object whose every value
+            // there that is not known a Number is one.
+            uint64_t numbers = 0;
+            std::vector<size_t> tested;
+            for (size_t i = 0; i < opd.size() && i < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT; ++i) {
+                const bool eligible = std::find(options_.number_slot_keys.begin(), options_.number_slot_keys.end(),
+                                                lit.keys[i]) != options_.number_slot_keys.end();
+                if (!eligible) continue;
+                numbers |= uint64_t{1} << i;
+                if (boxed_f64_source(opd[i]) == nullptr) tested.push_back(i);
+            }
+            if (!tested.empty()) {
+                BasicBlock* here = b.current_block();
+                BasicBlock* check = b.append_block(p + "_repr");
+                b.position_at_end(here);
+                b.build_br_if(ok, check, slow);
+                b.position_at_end(check);
+                Value* doubles = with_alias_class(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET),
+                                                  kRuntimeWordAliasClass);
+                Value* refused = b.build_iconst_i64(0);
+                for (size_t i : tested) {
+                    Value* not_number = b.build_zext_i64(
+                        b.build_ugt(opd[i], b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits))));
+                    refused = b.build_or(refused, b.build_shl(not_number, b.build_iconst_i64(static_cast<int64_t>(i))));
+                }
+                ok = b.build_eq(b.build_and(refused, doubles), b.build_iconst_i64(0));
+            }
             Value* obj = alloc_lowering_.bump_plain_object(b, shape, ok, slow, fast, slots);
             Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
             for (size_t i = 0; i < opd.size(); ++i) {
@@ -118,7 +150,8 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             Value* argv = stage_argv(b, staged);
             b.build_br(merge, {b.build_call("bronze_object_literal", Type::i64(),
                                             {cache, b.build_iconst_i32(static_cast<int32_t>(inl)),
-                                             b.build_iconst_i32(static_cast<int32_t>(opd.size())), argv})});
+                                             b.build_iconst_i32(static_cast<int32_t>(opd.size())), argv,
+                                             b.build_iconst_i64(static_cast<int64_t>(numbers))})});
             b.position_at_end(merge);
             res_val = result;
             return true;
@@ -136,6 +169,22 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                     const bool primitive =
                         is_primitive_value(inst.operands[i]) || prop_lowering_.is_known_non_ref(opd[i]);
                     prop_lowering_.store_value(b, addr, opd[i], kBoxedElementAliasClass, !primitive);
+                }
+                // A literal whose every element is a Number is born NUMBERS
+                // (runtime/array.h): n compares here, where the first read
+                // would otherwise call the claim to scan it. Longer literals
+                // are left to the claim.
+                constexpr uint32_t kBornNumbersMax = 16;
+                const bool boxed = std::all_of(opd.begin(), opd.end(), [](Value* v) { return v->type() == Type::i64(); });
+                if (n <= kBornNumbersMax && boxed) {
+                    Value* all = nullptr;
+                    for (uint32_t i = 0; i < n; ++i) {
+                        Value* is_num = b.build_ult(opd[i], b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits + 1)));
+                        all = all == nullptr ? is_num : b.build_and(all, is_num);
+                    }
+                    Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+                    Value* numbers = b.build_select(all, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS), b.build_iconst_i32(0));
+                    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, b.build_or(bits, numbers));
                 }
             }
             res_val = arr;

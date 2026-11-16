@@ -118,6 +118,7 @@ struct ModuleMirror {
     std::string harvestOutPath;
     std::vector<Module::NativeImport> nativeImports;
     std::vector<Module::ShapeCell> shapeCells;
+    std::vector<uint32_t> numberSlotKeys;
     std::vector<Module::ObjectLiteral> objectLiterals;
     std::vector<Module::ProtoCell> protoCells;
     std::vector<Module::MemberCell> memberCells;
@@ -594,6 +595,8 @@ std::string serializeModule(const Module& module) {
     }
     w.var(module.shapeCells.size());
     for (const auto& c : module.shapeCells) w.str(c.key);
+    w.var(module.numberSlotKeys.size());
+    for (uint32_t k : module.numberSlotKeys) w.var(k);
     w.var(module.objectLiterals.size());
     for (const auto& l : module.objectLiterals) {
         w.var(l.keys.size());
@@ -658,6 +661,8 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     }
     out.shapeCells.resize(r.count());
     for (auto& c : out.shapeCells) c.key = r.str();
+    out.numberSlotKeys.resize(r.count());
+    for (auto& k : out.numberSlotKeys) k = r.u32();
     out.objectLiterals.resize(r.count());
     for (auto& l : out.objectLiterals) {
         l.keys.resize(r.count());

@@ -131,7 +131,9 @@ void slotReprResetForTesting() {
 }
 
 SlotReprCounters& slotReprMutableCounters() noexcept {
-    static auto* c = new SlotReprCounters();
+    // Every counter is bumped on a cold path (a node made, a slot
+    // generalized), which is where the report is armed.
+    static auto* c = (static_cast<void>(config()), new SlotReprCounters());
     return *c;
 }
 const SlotReprCounters& slotReprCounters() noexcept { return slotReprMutableCounters(); }

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -159,6 +160,9 @@ enum class ShapeSetRole : uint8_t { None, Lead, Follow };
 struct ShapeSlot {
     std::string key;  // the shape's name: the shape cell's key
     int32_t slot = 0;
+    // A slot-keyed site's slot (no name): every shape the ways sampled with
+    // the key there keeps it a double slot (`%k`).
+    bool number = false;
 };
 
 struct SitePlan {
@@ -221,6 +225,10 @@ public:
     // The decisions for function `fn`, or nullopt when it is not hot, may not
     // be speculated, or has no site with decisive evidence.
     std::optional<FunctionPlan> plan(uint32_t fn) const;
+
+    // The keys the build makes eligible for a double slot
+    // (number_slots.h); empty without a harvest.
+    const std::set<std::string>& numberKeys() const { return numberKeys_; }
 
 private:
     struct SiteRefs;  // the feedback sites of one function, by instruction
@@ -285,7 +293,11 @@ private:
 
     const il::Module& module_;
     const spec::TypeProfile& profile_;
-    const spec::Harvest* harvest_ = nullptr;  // null when absent or stale
+    // The harvest with its names spelled for the eligible keys
+    // (number_slots.h); null when absent or stale.
+    const spec::Harvest* harvest_ = nullptr;
+    std::optional<spec::Harvest> spelled_;
+    std::set<std::string> numberKeys_;
     std::vector<std::string> keys_;
     uint64_t minEntries_ = kMinEntries;
     uint64_t minSamples_ = kMinSamples;

@@ -89,7 +89,7 @@ void reindex(Registry& r) {
 // `shape` directly (shape_cells.h).
 bool eligible(const Shape* shape) {
     if (shape == nullptr || shape->isDictionary() || shape->used_as_prototype || shape->uncacheable ||
-        shape->has_symbol_keys || shape->double_slots != 0 || shape->object_slots != 0) {
+        shape->has_symbol_keys || shape->object_slots != 0) {
         return false;
     }
     // Over Object.prototype only the literal roots' trees: a builtin's own
@@ -102,20 +102,22 @@ bool eligible(const Shape* shape) {
     }
     // A read-only data property is one slot like any other: its name spells
     // it `!k` (type_feedback.cpp shapeText), and compiled code stores only
-    // into the keys its name spells writable.
+    // into the keys its name spells writable. A double slot is spelled `%k`,
+    // and compiled code reads a Number there and stores only a Number.
     for (const Shape* n = shape; n != nullptr && n->parent != nullptr; n = n->parent) {
-        if (n->accessor || n->repr != SlotRepr::Boxed || !n->key.isString()) return false;
+        if (n->accessor || n->repr == SlotRepr::Object || !n->key.isString()) return false;
     }
     return true;
 }
 
-// Whether a data transition adds the key a name spells (`!k` when it is not
-// writable).
+// Whether a data transition adds the key a name spells: `!k` when it is not
+// writable, `%k` when its slot is a double one, `k` for a boxed writable one.
 bool keyIs(const ShapeTransition& t, const std::string& spelled) {
     const StringHeader* s = t.key.string();
     if (s == nullptr) return false;
-    if (t.writable) return rtUtf8Chars(s) == spelled;
-    return !spelled.empty() && spelled.front() == '!' && rtUtf8Chars(s) == std::string_view(spelled).substr(1);
+    const char mark = !t.writable ? '!' : t.repr == SlotRepr::Double ? '%' : '\0';
+    if (mark == '\0') return rtUtf8Chars(s) == spelled;
+    return !spelled.empty() && spelled.front() == mark && rtUtf8Chars(s) == std::string_view(spelled).substr(1);
 }
 
 // The eligible shape under `root` whose keys are `keys[at..]` added in order
@@ -123,7 +125,7 @@ bool keyIs(const ShapeTransition& t, const std::string& spelled) {
 const Shape* descend(const Shape* from, const std::vector<std::string>& keys, size_t at) {
     if (at == keys.size()) return eligible(from) ? from : nullptr;
     for (const ShapeTransition& t : from->transitions) {
-        if (t.accessor || t.repr != SlotRepr::Boxed || !keyIs(t, keys[at])) continue;
+        if (t.accessor || t.repr == SlotRepr::Object || !keyIs(t, keys[at])) continue;
         if (const Shape* found = descend(t.next_shape, keys, at + 1)) return found;
     }
     return nullptr;
@@ -150,7 +152,7 @@ void rtShapeCellsNoteShape(const Shape* shape) {
         const StringHeader* s = shape->key.string();
         if (s == nullptr) return;
         // Spelled as the name spells it (type_feedback.cpp shapeText).
-        last = (shape->writable ? "" : "!") + rtUtf8Chars(s);
+        last = (!shape->writable ? "!" : shape->repr == SlotRepr::Double ? "%" : "") + rtUtf8Chars(s);
     }
     const auto it = r.byLastKey.find(last);
     if (it == r.byLastKey.end()) return;

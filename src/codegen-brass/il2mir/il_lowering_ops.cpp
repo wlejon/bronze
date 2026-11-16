@@ -171,10 +171,12 @@ Value* boxed_f64_source(Value* v, const BasicBlock* here) {
     if (def && def->opcode() == Opcode::bitcast_i64_f64 && def->operand_count() >= 1) {
         const Instruction* conv = def->operand(0)->defining_instruction();
         if (conv && conv->opcode() == Opcode::sitofp_f64_i32) return def->operand(0);
-        // A NUMBERS array's element read as a double (il_lowering_spec.cpp
-        // ElemLoad): the stored box's bits, canonical already.
+        // A NUMBERS array's element or a double slot read as a double
+        // (il_lowering_spec.cpp ElemLoad, SlotLoad): the stored box's bits,
+        // canonical already. Only those two loads are f64 loads of their
+        // alias classes.
         if (conv && (conv->opcode() == Opcode::load || conv->opcode() == Opcode::load_indexed) &&
-            conv->alias_class() == kBoxedElementAliasClass) {
+            (conv->alias_class() == kBoxedElementAliasClass || conv->alias_class() == kObjectSlotAliasClass)) {
             return def->operand(0);
         }
         return nullptr;

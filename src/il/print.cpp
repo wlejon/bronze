@@ -739,7 +739,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::ShapeHasOwn:
                         out += "shape.has_own %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
-                               std::to_string(inst.immI32 >> 1) + ((inst.immI32 & 1) != 0 ? " write" : "") +
+                               std::to_string(inst.immI32 >> kHasOwnSlotShift) +
+                               ((inst.immI32 & kHasOwnWrite) != 0 ? " write" : "") +
+                               ((inst.immI32 & kHasOwnNumber) != 0 ? " number" : "") +
                                ", \"" +
                                (inst.keyIndex < module.keyConstants.size() ? module.keyConstants[inst.keyIndex]
                                                                           : std::string("?")) +
@@ -748,7 +750,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::SlotLoad:
                         out += "slot.load %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + std::to_string(inst.immI32);
+                               ", " + std::to_string(inst.immI32) + (inst.boxType == Type::F64 ? " number" : "");
                         break;
                     case Op::SlotStore:
                         out += "slot.store %" +

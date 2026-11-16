@@ -45,6 +45,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_object_spread", "bronze_object_rest", "bronze_dynamic_call_spread", "bronze_call_method_spread",
         "bronze_call_method", "bronze_register_method_ic_cells", "__bronze_ic_table", "__bronze_method_ic_sites",
         "bronze_register_shape_cells", "__bronze_shape_cells", "__bronze_shape_cell_keys",
+        "bronze_register_slot_repr", "__bronze_number_slot_keys",
         "__bronze_literal_shapes", "bronze_object_literal", "__bronze_proto_cells", "bronze_transition_publish",
         "__bronze_member_cells", "bronze_member_cell_publish", "__bronze_deopt_counts",
         "__bronze_elem_cells", "bronze_elem_get_cell",

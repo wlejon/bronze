@@ -154,6 +154,13 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
     std::vector<FunctionPlan> plans;
     {
         const Evidence evidence(module, profile, options, stats);
+        // The keys the spelled harvest assumed eligible, registered at init.
+        module.numberSlotKeys.clear();
+        for (const std::string& key : evidence.numberKeys()) {
+            const auto at = std::find(module.keyConstants.begin(), module.keyConstants.end(), key);
+            module.numberSlotKeys.push_back(static_cast<uint32_t>(at - module.keyConstants.begin()));
+        }
+        stats.numberSlotKeys = static_cast<uint32_t>(module.numberSlotKeys.size());
         for (uint32_t f = 0; f < lowered; ++f) {
             ++stats.functionsConsidered;
             std::optional<FunctionPlan> plan = evidence.plan(f);
