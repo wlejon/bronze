@@ -172,7 +172,11 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::RelLe: out.op = il2mir::BronzeOp::RelLe; break;
         case il::Op::RelGe: out.op = il2mir::BronzeOp::RelGe; break;
         case il::Op::TypeOf: out.op = il2mir::BronzeOp::TypeOf; break;
-        case il::Op::ToStr: out.op = il2mir::BronzeOp::ToStr; break;
+        case il::Op::ToStr:
+            static_assert(il2mir::kToStrKeepNumber == il::kToStrKeepNumber);
+            out.op = il2mir::BronzeOp::ToStr;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::InstanceOf: out.op = il2mir::BronzeOp::InstanceOf; break;
         case il::Op::In: out.op = il2mir::BronzeOp::In; break;
         case il::Op::IsNullish: out.op = il2mir::BronzeOp::IsNullish; break;
@@ -585,6 +589,16 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             }
             break;
         case il::Op::ConstructResult: out.op = il2mir::BronzeOp::ConstructResult; break;
+        case il::Op::ConcatN: out.op = il2mir::BronzeOp::ConcatN; break;
+        case il::Op::ArrayPush: out.op = il2mir::BronzeOp::ArrayPush; break;
+        case il::Op::TypeOfIs:
+            // il_lowering_ops.cpp lower_typeof_is numbers the kinds the same way.
+            static_assert(il::kTypeOfUndefined == 0 && il::kTypeOfObject == 1 && il::kTypeOfBoolean == 2 &&
+                          il::kTypeOfNumber == 3 && il::kTypeOfString == 4 && il::kTypeOfSymbol == 5 &&
+                          il::kTypeOfBigInt == 6 && il::kTypeOfFunction == 7);
+            out.op = il2mir::BronzeOp::TypeOfIs;
+            out.imm_i64 = inst.immI32;
+            break;
     }
 
     return out;

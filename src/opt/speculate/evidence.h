@@ -138,6 +138,7 @@ enum class SiteKind : uint8_t {
     MemberSet,     // prop.set (an assignment) of an accessor's setter
     MemberAbsent,  // prop.get of a key on neither the receiver nor its chain
     TdzRead,       // env.get.tdz of a binding fixed once initialized (tdz.cpp)
+    ArrayPush,     // method.call "push" of one value on an array the function made (array_push.cpp)
 };
 
 // Int: every operand an int32 and the operation computed on i32 (add, sub,

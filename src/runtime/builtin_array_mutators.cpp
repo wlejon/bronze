@@ -6,6 +6,13 @@
 
 namespace bronze::runtime {
 
+extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+
+extern "C" uint64_t bronze_array_push1(uint64_t arrBits, uint64_t valBits) {
+    recordHelperCall("bronze_array_push1");
+    return bronze_array_push(0, arrBits, 1, &valBits);
+}
+
 extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {

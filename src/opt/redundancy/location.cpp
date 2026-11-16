@@ -25,6 +25,7 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::TypedLength:
         case Op::TypedLoad:
         case Op::TypedStore:
+        case Op::ArrayPush:     // operand 1 is the pushed value: that captures
             return slot == 0;
         case Op::IsObject:
         case Op::IsI32:
@@ -114,6 +115,8 @@ Location placeOf(const il::Instruction& inst) {
             return at;
         case Op::IsDenseArray:
         case Op::ArrayLength:
+        // Its length and its elements: one array's memory (il_op.h).
+        case Op::ArrayPush:
             if (inst.operands.empty()) return at;
             at.place = Place::Array;
             at.base = inst.operands[0];

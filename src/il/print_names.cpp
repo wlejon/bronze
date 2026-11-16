@@ -193,6 +193,9 @@ const char* opName(Op op) {
         case Op::MemberCell: return "member.cell";
         case Op::MemberPublish: return "member.publish";
         case Op::ConstructResult: return "construct.result";
+        case Op::ConcatN: return "concat.n";
+        case Op::TypeOfIs: return "typeof.is";
+        case Op::ArrayPush: return "array.push";
     }
     return "?";
 }

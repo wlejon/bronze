@@ -14,7 +14,7 @@ bool functionUsesStringOps(const il::Module& mod, const il::Function& fn) {
         for (const auto& inst : blk.instructions) {
             using Op = il::Op;
             if (inst.op == Op::ConcatBegin || inst.op == Op::ConcatAppend ||
-                inst.op == Op::ConcatEnd || inst.op == Op::ToStr) {
+                inst.op == Op::ConcatEnd || inst.op == Op::ConcatN || inst.op == Op::ToStr) {
                 return true;
             }
             if (inst.op == Op::Box && inst.operands.empty() && inst.keyIndex < mod.keyConstants.size()) {

@@ -140,6 +140,7 @@ Effects rawEffects(const Instruction& inst) {
         case Op::StrictEq:
         case Op::IsNullish:
         case Op::IsNumber:
+        case Op::TypeOfIs:
             return none();
         // The answer is one of eleven immortal strings, but the table is built
         // lazily by the first `typeof` the process runs, which interns.
@@ -161,6 +162,15 @@ Effects rawEffects(const Instruction& inst) {
         // test reads; a write that changes it is a transition.
         case Op::IsPlainArray:
             return reading(Loc::Shapes);
+        // One array's header words and elements (its block grows, which
+        // allocates), behind a dominating is.plain_array; the length limit's
+        // RangeError (il_op.h).
+        case Op::ArrayPush: {
+            Effects e = throwing(Loc::Shapes | Loc::ArrayLen | Loc::Elements, Loc::ArrayLen | Loc::Elements);
+            e.allocates = true;
+            e.guarded = true;
+            return e;
+        }
         // The kind is fixed when the view is made. With the pristine-length
         // bit it also reads the instance shape and the prototype epoch.
         case Op::IsTypedArray:
@@ -232,6 +242,13 @@ Effects rawEffects(const Instruction& inst) {
         case Op::ModuleNamespace: {
             Effects e = allocation();
             e.reads = Loc::Slots | Loc::Shapes | Loc::Heap;
+            return e;
+        }
+        // Joins primitives: runs nothing, reads no object; a string past the
+        // length limit is a RangeError.
+        case Op::ConcatN: {
+            Effects e = allocation();
+            e.throws = true;
             return e;
         }
 

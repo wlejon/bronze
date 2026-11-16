@@ -169,6 +169,18 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         out += "bitnot %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
+                    case Op::TypeOfIs: {
+                        static const char* const kNames[] = {"undefined", "object", "boolean", "number", "string",
+                                                             "symbol", "bigint", "function", "none"};
+                        const int32_t k = inst.immI32;
+                        out += "typeof.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               (k >= 0 && k <= kTypeOfNone ? kNames[k] : "?");
+                        break;
+                    }
+                    case Op::ToStr:
+                        out += "to.string %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        if ((inst.immI32 & kToStrKeepNumber) != 0) out += ", keepnum";
+                        break;
                     case Op::ToNumeric:
                         out += "to.numeric %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);

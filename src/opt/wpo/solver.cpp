@@ -447,7 +447,14 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::ConstNull: primResult(kNull); break;
         case Op::ConstBigInt: primResult(kBigInt); break;
         case Op::Add: primResult(kNumber | kStr | kBigInt); break;
-        case Op::ConcatBegin: case Op::ConcatAppend: case Op::ConcatEnd: case Op::ToStr:
+        case Op::ConcatBegin: case Op::ConcatAppend: case Op::ConcatEnd: case Op::ConcatN:
+            primResult(kStr);
+            break;
+        case Op::ToStr:
+            if ((inst.immI32 & il::kToStrKeepNumber) != 0) {
+                primResult(kStr | kNumber);
+                break;
+            }
             primResult(kStr);
             break;
         case Op::TypeOf: result(typeOfValue(op(inst, 0))); break;
@@ -462,7 +469,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         case Op::CmpLt: case Op::CmpGt: case Op::CmpLe: case Op::CmpGe:
         case Op::NumTruthy: case Op::RelLt:
-        case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber:
+        case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber: case Op::TypeOfIs:
         case Op::IsDenseArray: case Op::InstanceOf: case Op::In: case Op::IterStep:
         case Op::IsTypedArray: case Op::IsPlainArray: case Op::PrivateHas:
             primResult(kBool);

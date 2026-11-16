@@ -9,6 +9,54 @@ namespace il2mir {
 
 namespace {
 
+// typeof.is (il_op.h): `typeof v === name` from v's bits. The tags answer
+// every name but "object" and "function", which split the objects by whether
+// they are callable: a function's header says so, a proxy's is asked of the
+// runtime (its target decides), any other object is not.
+Value* lower_typeof_is(Builder& b, Value* v, int64_t kind) {
+    auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
+    auto tag_is = [&](uint64_t tag) {
+        return b.build_eq(b.build_lshr(v, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(tag));
+    };
+    switch (kind) {
+        case 0:  // undefined, and the hole a read of one becomes
+            return b.build_eq(b.build_and(v, bits(~(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT))), bits(kUndefinedTag));
+        case 2: return tag_is(BRONZE_ABI_TAG_BOOL);
+        case 3: return b.build_or(b.build_ule(v, bits(kBronzeNumberMaxBits)), tag_is(BRONZE_ABI_TAG_INT32));
+        case 4: return tag_is(BRONZE_ABI_TAG_STRING);
+        case 5: return tag_is(BRONZE_ABI_TAG_SYMBOL);
+        case 6: return tag_is(BRONZE_ABI_TAG_BIGINT);
+        case 1:
+        case 7: break;
+        default: return b.build_iconst_i32(0);
+    }
+    const bool function = kind == 7;
+    constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << BRONZE_ABI_VALUE_TAG_SHIFT;
+    constexpr int32_t kFunctionLow = (BRONZE_ABI_OBJ_FLAGS_FUNCTION << 16) | BRONZE_ABI_TAG_OBJECT;
+    constexpr int32_t kProxyLow = (BRONZE_ABI_OBJ_FLAGS_PROXY << 16) | BRONZE_ABI_TAG_OBJECT;
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "typeofis_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* obj = b.append_block(prefix + "_obj");
+    BasicBlock* proxy = b.append_block(prefix + "_proxy");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+    b.position_at_end(cur);
+    Value* ptr = b.build_xor(v, bits(kObjectTagBits));
+    // Not an object: "object" only for null, "function" never.
+    Value* other = function ? b.build_iconst_i32(0) : b.build_eq(v, bits(kNullTag));
+    b.build_br_if(b.build_ult(ptr, bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT)), obj, {}, merge, {other});
+    b.position_at_end(obj);
+    Value* header = b.build_load(Type::i32(), ptr, 0);
+    Value* is_fn = b.build_eq(header, b.build_iconst_i32(kFunctionLow));
+    Value* answer = function ? is_fn : b.build_xor(is_fn, b.build_iconst_i32(1));
+    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kProxyLow)), proxy, {}, merge, {answer});
+    b.position_at_end(proxy);
+    Value* callable = b.build_and(b.build_call("bronze_is_callable", Type::i32(), {v}), b.build_iconst_i32(1));
+    b.build_br(merge, {function ? callable : b.build_xor(callable, b.build_iconst_i32(1))});
+    b.position_at_end(merge);
+    return result;
+}
+
 // Which operand of a strict.eq is an f64, with the other a boxed Value or an
 // f64: 0 or 1, else -1. An i32 is left out, since an IL bool is held in one
 // too.
@@ -177,6 +225,8 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::IsPlainArray:
         case BronzeOp::IsNullish:
         case BronzeOp::TypeOf:
+        case BronzeOp::TypeOfIs:
+        case BronzeOp::ArrayPush:
         case BronzeOp::InstanceOf:
         case BronzeOp::In:
         case BronzeOp::ClassExtend:
@@ -550,6 +600,28 @@ bool lower_ops_instruction(
             return true;
         }
 
+        // array.push (il_op.h): the inline append where the element block has
+        // room, the runtime's push past it.
+        case BronzeOp::ArrayPush: {
+            Value* arr = lowering->ensure_type(get_opd(0), Type::i64(), b);
+            Value* val = lowering->ensure_type(get_opd(1), Type::i64(), b);
+            BasicBlock* cur = b.current_block();
+            const std::string prefix = "arrpush_" + std::to_string(cur->parent()->next_block_id());
+            BasicBlock* slow = b.append_block(prefix + "_slow");
+            BasicBlock* merge = b.append_block(prefix + "_merge");
+            slow->set_cold();
+            Value* result = b.add_block_param(merge, Type::i64());
+            b.position_at_end(cur);
+            Value* ptr = b.build_lshr(b.build_shl(arr, b.build_iconst_i64(16)), b.build_iconst_i64(16));
+            Value* fast = lowering->prop_lowering().lower_array_push(b, ptr, val, slow);
+            b.build_br(merge, {fast});
+            b.position_at_end(slow);
+            b.build_br(merge, {b.build_call("bronze_array_push1", Type::i64(), {arr, val})});
+            b.position_at_end(merge);
+            res_val = result;
+            return true;
+        }
+
         case BronzeOp::IsPlainArray: {
             res_val = lowering->prop_lowering().lower_is_plain_array(
                 b, lowering->ensure_type(get_opd(0), Type::i64(), b));
@@ -571,6 +643,18 @@ bool lower_ops_instruction(
             if (!op0) return false;
             Value* src = lowering->ensure_type(op0, Type::i64(), b);
             res_val = b.build_call("bronze_typeof", Type::i64(), {src});
+            return true;
+        }
+
+        case BronzeOp::TypeOfIs: {
+            Value* op0 = get_opd(0);
+            if (!op0) return false;
+            if (op0->type() == Type::f64()) {
+                res_val = b.build_iconst_i32(inst_ast.imm_i64 == 3 ? 1 : 0);
+            } else {
+                res_val = lower_typeof_is(b, lowering->ensure_type(op0, Type::i64(), b), inst_ast.imm_i64);
+            }
+            if (lowering) lowering->note_boolean(res_val);
             return true;
         }
 

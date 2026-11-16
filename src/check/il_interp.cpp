@@ -136,13 +136,21 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     break;
                 case Op::Unbox: case Op::ToNumeric: case Op::ToStr: vals[inst.result] = opV(0); break;
                 case Op::NumTruthy: vals[inst.result] = CVal::makeBool(opV(0).isTruthy()); break;
-                case Op::TypeOf: {
+                case Op::TypeOf:
+                case Op::TypeOfIs: {
                     CVal v = opV(0);
                     std::string t = (v.kind == CVal::Kind::Undefined) ? "undefined"
                                   : (v.kind == CVal::Kind::String) ? "string"
                                   : (v.kind == CVal::Kind::Bool) ? "boolean"
                                   : (v.kind == CVal::Kind::Function) ? "function"
                                   : (v.kind == CVal::Kind::Object || v.kind == CVal::Kind::Null) ? "object" : "number";
+                    if (inst.op == Op::TypeOfIs) {
+                        static const char* const kNames[] = {"undefined", "object", "boolean", "number",
+                                                             "string", "symbol", "bigint", "function"};
+                        vals[inst.result] = CVal::makeBool(inst.immI32 >= 0 && inst.immI32 < il::kTypeOfNone &&
+                                                           t == kNames[inst.immI32]);
+                        break;
+                    }
                     vals[inst.result] = CVal::makeStr(t);
                     break;
                 }
@@ -286,6 +294,12 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     break;
                 case Op::ConcatAppend: vals[inst.result] = CVal::makeStr(getStr(opV(0)) + getStr(opV(1))); break;
                 case Op::ConcatEnd: vals[inst.result] = CVal::makeStr(getStr(opV(0))); break;
+                case Op::ConcatN: {
+                    std::string joined;
+                    for (size_t k = 0; k < inst.operands.size(); ++k) joined += getStr(opV(k));
+                    vals[inst.result] = CVal::makeStr(joined);
+                    break;
+                }
                 case Op::Add: {
                     CVal a = opV(0), b = opV(1);
                     if (a.kind == CVal::Kind::String || b.kind == CVal::Kind::String) {

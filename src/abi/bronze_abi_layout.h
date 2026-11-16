@@ -920,6 +920,9 @@
  * FunctionHeader::code — the identity the Math direct-dispatch guard compares
  * (see the bronze_math_* registry entries). Pinned in runtime/fn.h. */
 #define BRONZE_ABI_OBJ_FLAGS_FUNCTION    2
+/* HeapKind::Proxy: the one other kind `typeof` may call "function" (a proxy
+ * of a callable target), asked of the runtime (bronze_is_callable). */
+#define BRONZE_ABI_OBJ_FLAGS_PROXY       14
 #define BRONZE_ABI_FN_CODE_OFFSET        24
 
 /* The FunctionHeader fields the inline `new` fast path reads, and the vet

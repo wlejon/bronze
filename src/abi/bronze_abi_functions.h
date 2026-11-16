@@ -34,6 +34,8 @@
     X(bronze_typeof,              BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_to_string,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_instanceof,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* IsCallable (7.2.3) of a proxy, the case typeof.is does not answer inline. */ \
+    X(bronze_is_callable,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_has_property,        BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_to_int32,            BRONZE_ABI_I32,  (BRONZE_ABI_U64)) \
     X(bronze_to_int32_f64,        BRONZE_ABI_I32,  (BRONZE_ABI_F64)) \
@@ -295,6 +297,8 @@
     X(bronze_array_claim_numbers, BRONZE_ABI_U32,  (BRONZE_ABI_U64)) \
     X(bronze_array_pop,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_array_push,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    /* array.push's slow path (il_op.h): `arr.push(v)`, arr a plain Array. */ \
+    X(bronze_array_push1,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_index_of, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_includes, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_array_shift,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
@@ -378,11 +382,11 @@
     X(bronze_concat_begin,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_concat_append,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_concat_end,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
-    /* A whole chain at once, for one whose `count` operands (three or more,\
-     * in a rooted block the caller owns) are all Strings already, as a\
-     * template's are once each substitution has been converted: joining\
-     * Strings runs nothing, so the result is allocated once at its length. */ \
-    X(bronze_concat_strings,      BRONZE_ABI_U64,  (BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
+    /* A template literal at once (IL concat.n): `count` pieces in a rooted\
+     * block the caller owns, each a String or a Number its substitution's\
+     * to.string let through. Converting a Number and joining Strings run\
+     * nothing, so the result is allocated once at its length. */ \
+    X(bronze_concat_template,     BRONZE_ABI_U64,  (BRONZE_ABI_MU64, BRONZE_ABI_U32)) \
     /* The rest of 13.15.3 ApplyStringOrNumericBinaryOperator over BOXED\
      * operands, which `+` alone used to need. They exist because a BigInt\
      * operand makes every one of these a two-algorithm operator: ToNumeric\

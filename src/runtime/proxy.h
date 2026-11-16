@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -46,6 +47,7 @@ struct ProxyHeader {
     HeapValue constructible; // boolean
 
     static constexpr uint16_t kFlags = HeapKind::Proxy;
+    static_assert(kFlags == BRONZE_ABI_OBJ_FLAGS_PROXY);
 
     // Rooted operands, not Values: the allocation inside can move both, and
     // a by-value copy would store the from-space address it was handed.

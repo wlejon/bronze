@@ -265,6 +265,17 @@ bool IlLowering::lower_instruction(
             break;
         }
 
+        case BronzeOp::ConcatN: {
+            // The pieces in the argv block, which the collector scans, so the
+            // helper may allocate with them in it.
+            std::vector<Value*> pieces;
+            for (size_t i = 0; i < inst_ast.operands.size(); ++i) pieces.push_back(get_opd(i));
+            Value* argv = stage_argv(b, pieces);
+            res_val = b.build_call("bronze_concat_template", Type::i64(),
+                                   {argv, b.build_iconst_i32(static_cast<int32_t>(pieces.size()))});
+            break;
+        }
+
         case BronzeOp::ForInKeys: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_for_in_keys", Type::i64(), {obj});
@@ -556,6 +567,11 @@ bool IlLowering::lower_instruction(
             b.position_at_end(cur);
             Value* is_str = b.build_eq(b.build_lshr(val, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT)),
                                        b.build_iconst_i64(BRONZE_ABI_TAG_STRING));
+            if ((inst_ast.imm_i64 & kToStrKeepNumber) != 0) {
+                // A template piece: its concat.n converts a Number itself.
+                Value* is_num = b.build_ule(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+                is_str = b.build_or(is_str, is_num);
+            }
             b.build_br_if(is_str, merge, {val}, slow, {});
             b.position_at_end(slow);
             b.build_br(merge, {b.build_call("bronze_to_string", Type::i64(), {val})});

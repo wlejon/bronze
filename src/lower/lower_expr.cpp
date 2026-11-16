@@ -161,22 +161,19 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         };
-        auto emitConcat = [&](Value lhs, Value rhs) {
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = il::Op::Add;
-            inst.type = il::Type::Dynamic;
-            inst.result = res;
-            inst.operands = {lhs.id, rhs.id};
-            emitInst(ilFn, inst);
-            return Value{res, il::Type::Dynamic};
-        };
         // 13.2.8.6 spells a substitution as ToString, which is NOT the `+`
         // below with a string on the left. Both reach ToPrimitive for an
         // object operand and they ask it for different hints — ToString asks
         // for "string" and 13.15.3 asks for none — so `${o}` and `'' + o`
         // disagree for an object that defines both `toString` and `valueOf`,
         // and the `+` chain alone would have answered `valueOf`'s.
+        //
+        // When the template has two pieces or more, a Number substitution
+        // passes its `to.string` unconverted (kToStrKeepNumber) and the join
+        // converts it, which runs nothing either.
+        size_t pieceCount = tmpl->exprs.size();
+        for (const auto& q : tmpl->quasis) pieceCount += q.empty() ? 0 : 1;
+        const bool joined = pieceCount >= 2;
         auto emitToString = [&](Value v) {
             il::ValueId res = ilFn.valueCount++;
             il::Instruction inst;
@@ -184,19 +181,17 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             inst.type = il::Type::Dynamic;
             inst.result = res;
             inst.operands = {v.id};
+            if (joined) inst.immI32 = il::kToStrKeepNumber;
             emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         };
 
-        // The pieces in order, every one a String by the time it is one: a
-        // quasi is, and a substitution is converted where 13.2.8.6 converts
-        // it, straight after its own evaluation and before the next one's.
-        // Joining Strings is then observable by nobody, so it is done once,
-        // after the last piece, through the accumulator a `+` spine uses
-        // (lower_concat_chain.cpp) and with none of that spine's refusals:
-        // the substitutions may call and branch, because the appends stand
-        // together in the block the last one ends in. A fold of pairwise
-        // `add`s allocated and copied the whole prefix per piece.
+        // The pieces in order, each a String (or a Number, above) by the
+        // time it is one: a quasi is, and a substitution is converted where
+        // 13.2.8.6 converts it, straight after its own evaluation and before
+        // the next one's. Joining them is then observable by nobody, so it is
+        // one `concat.n` after the last piece, which allocates the result
+        // once at its length (bronze_concat_template).
         std::vector<Value> pieces;
         if (!tmpl->quasis.empty() && !tmpl->quasis[0].empty()) pieces.push_back(emitStr(tmpl->quasis[0]));
         for (size_t i = 0; i < tmpl->exprs.size(); ++i) {
@@ -209,25 +204,13 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         }
         if (pieces.empty()) return emitStr(std::string());
         if (pieces.size() == 1) return pieces[0];
-        if (pieces.size() == 2) return emitConcat(pieces[0], pieces[1]);
-        Value acc = pieces[0];
-        for (size_t i = 1; i < pieces.size(); ++i) {
-            il::Instruction inst;
-            inst.op = i == 1 ? il::Op::ConcatBegin : il::Op::ConcatAppend;
-            inst.type = il::Type::Dynamic;
-            inst.result = ilFn.valueCount++;
-            inst.operands = {acc.id, pieces[i].id};
-            if (i == 1) inst.immI32 = static_cast<int32_t>(pieces.size() - 2);  // lowerAddChain's hint
-            emitInst(ilFn, inst);
-            acc = Value{inst.result, il::Type::Dynamic};
-        }
-        il::Instruction end;
-        end.op = il::Op::ConcatEnd;
-        end.type = il::Type::Dynamic;
-        end.result = ilFn.valueCount++;
-        end.operands = {acc.id};
-        emitInst(ilFn, end);
-        return Value{end.result, il::Type::Dynamic};
+        il::Instruction join;
+        join.op = il::Op::ConcatN;
+        join.type = il::Type::Dynamic;
+        join.result = ilFn.valueCount++;
+        for (const Value& piece : pieces) join.operands.push_back(piece.id);
+        emitInst(ilFn, join);
+        return Value{join.result, il::Type::Dynamic};
     }
 
     if (const auto* tagged = dynamic_cast<const ast::TaggedTemplate*>(&expr)) {

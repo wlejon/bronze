@@ -562,6 +562,7 @@ private:
     // `x`, as the nullish test it is; nullopt for any other comparison.
     std::optional<Value> lowerNullishEquality(const ast::Binary& bin, Value lhs, Value rhs,
                                               il::Function& ilFn);
+    std::optional<Value> lowerTypeofEquality(const ast::Binary& bin, Value lhs, Value rhs, il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
                                        il::Function& ilFn);
     std::optional<Value> lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,

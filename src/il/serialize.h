@@ -57,7 +57,8 @@ namespace bronze::il {
 // 43: shape.in.
 // 44: absent member cells (Module::MemberKind::Absent).
 // 46: is.uninit (il_op.h).
-inline constexpr uint32_t kFormatVersion = 46;
+// 47: concat.n, to.string keepnum, typeof.is and array.push (il_op.h).
+inline constexpr uint32_t kFormatVersion = 47;
 
 std::string serializeModule(const Module& module);
 

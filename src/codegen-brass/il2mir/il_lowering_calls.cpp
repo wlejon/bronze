@@ -45,6 +45,9 @@ uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& 
                                 inst.op == BronzeOp::CallDynamic ||
                                 (inst.op == BronzeOp::SuperCall && inst.param_count > 16);
             if (stages && inst.param_count > widest) widest = inst.param_count;
+            if (inst.op == BronzeOp::ConcatN) {
+                widest = std::max<uint32_t>(widest, static_cast<uint32_t>(inst.operands.size()));
+            }
             // object.literal's slow path stages its values and their keys.
             if (inst.op == BronzeOp::ObjectLiteral) {
                 widest = std::max<uint32_t>(widest, static_cast<uint32_t>(2 * inst.operands.size()));

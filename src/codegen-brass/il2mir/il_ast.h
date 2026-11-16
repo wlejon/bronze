@@ -224,12 +224,18 @@ enum class BronzeOp {
     MemberCell,
     MemberPublish,
     ConstructResult,
+    ConcatN,
+    TypeOfIs,
+    ArrayPush,
     Unknown
 };
 
 // The write mode a PropDefine hands the shared set lowering in place of a
 // strict flag: il.h kWriteDefine (il_to_brass_ast.cpp asserts they agree).
 // Every helper choice keyed off the mode routes it to bronze_prop_define.
+// `to.string`'s imm bit il::kToStrKeepNumber: a Number passes unconverted to
+// the concat.n that uses it.
+inline constexpr int64_t kToStrKeepNumber = 1;
 inline constexpr uint32_t kDefineWriteMode = 2;
 // il.h kWriteLiteralElement: an array literal's element store, an
 // assignment's `PropSet` whose miss defines (bronze_prop_define).

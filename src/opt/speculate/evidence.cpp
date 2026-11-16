@@ -68,6 +68,8 @@ struct Evidence::SiteRefs {
     // Per value, the instruction defining it (null for parameters and block
     // parameters).
     std::vector<const il::Instruction*> defs;
+    // Per block parameter, the one value its edges pass (kNoValue otherwise).
+    std::vector<ValueId> incoming;
 
     SiteRefs(const il::Module& module, const il::Function& fn)
         : sites(il::enumerateFeedbackSites(module, fn)), types(valueTypes(fn)), defs(fn.valueCount, nullptr) {
@@ -75,13 +77,58 @@ struct Evidence::SiteRefs {
             if (sites[s].block == il::FeedbackSite::kEntrySite) continue;
             byInst[key(sites[s].block, sites[s].inst)].push_back(s);
         }
+        std::unordered_map<BlockId, const il::Block*> byId;
         for (const il::Block& b : fn.blocks) {
+            byId[b.id] = &b;
             for (const il::Instruction& inst : b.instructions) {
                 if (inst.result != il::kNoValue && inst.result < defs.size()) defs[inst.result] = &inst;
             }
         }
+        // A block parameter every edge passes one value (or itself, or a
+        // parameter that is in turn that value) is that value: a loop's
+        // unchanged `var` (single). Resolved to a fixed point, as trivial
+        // phis are.
+        incoming.assign(fn.valueCount, il::kNoValue);
+        std::unordered_map<ValueId, std::vector<ValueId>> args;
+        auto edge = [&](const il::BlockTarget& t) {
+            auto it = byId.find(t.block);
+            if (it == byId.end()) return;
+            const auto& params = it->second->params;
+            for (size_t i = 0; i < params.size() && i < t.args.size(); ++i) args[params[i].id].push_back(t.args[i]);
+        };
+        for (const il::Block& b : fn.blocks) {
+            for (const il::Instruction& inst : b.instructions) {
+                edge(inst.target);
+                edge(inst.elseTarget);
+            }
+        }
+        bool changed = true;
+        for (int round = 0; changed && round < 16; ++round) {
+            changed = false;
+            for (const auto& [param, from] : args) {
+                if (param >= incoming.size()) continue;
+                ValueId only = il::kNoValue;
+                bool many = false;
+                for (ValueId a : from) {
+                    a = single(a);
+                    if (a == param) continue;
+                    if (only == il::kNoValue) only = a;
+                    else if (only != a) many = true;
+                }
+                const ValueId now = many ? il::kNoValue : only;
+                if (now != incoming[param]) {
+                    incoming[param] = now;
+                    changed = true;
+                }
+            }
+        }
     }
     const il::Instruction* def(ValueId v) const { return v < defs.size() ? defs[v] : nullptr; }
+    // `v`, or the one value it stands for through block parameters.
+    ValueId single(ValueId v) const {
+        for (int hops = 0; hops < 8 && v < incoming.size() && incoming[v] != il::kNoValue; ++hops) v = incoming[v];
+        return v;
+    }
     static uint64_t key(uint32_t block, uint32_t inst) { return (uint64_t{block} << 32) | inst; }
     // The sites of `kind` at the instruction, in ordinal order.
     std::vector<const il::FeedbackSite*> at(BlockId block, uint32_t inst, il::FeedbackKind kind) const {
@@ -463,6 +510,18 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     }
     const std::string& key = module_.keyConstants[inst.keyIndex];
     const size_t argc = inst.operands.size() - 1;
+    // `a.push(v)` on an array this function made (array_push.cpp): the
+    // allocation is the evidence, the receiver's shape is tested.
+    if (key == "push" && argc == 1) {
+        const il::Instruction* d = refs.def(refs.single(inst.operands[0]));
+        if (d != nullptr && (d->op == il::Op::ArrayLiteral || d->op == il::Op::CreateArray)) {
+            SitePlan push;
+            push.kind = SiteKind::ArrayPush;
+            push.block = block;
+            push.index = index;
+            return push;
+        }
+    }
 
     SitePlan plan;
     plan.block = block;

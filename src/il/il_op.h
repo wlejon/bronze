@@ -756,7 +756,50 @@ enum class Op : uint8_t {
     // the value of `new` given what a base constructor returned (10.2.2
     // [[Construct]] steps 10-12). Pure.
     ConstructResult,
+    // a: dynamic = concat.n %p0, ..., %pk (k >= 1). A template literal's
+    // pieces joined in one step: every operand is a String, or a Number
+    // when it is a `to.string` carrying kToStrKeepNumber (whose only use is
+    // this op), converted here as ToString converts it. Nothing it does is
+    // observable but the fresh String it returns, made at its exact length.
+    // Allocates; throws only the RangeError of a too-long string.
+    ConcatN,
+    // a: bool = typeof.is %v, <kind>. `typeof %v === name` for the name
+    // TypeOfKind `immI32` stands for (13.5.3's table): a tag test, plus for
+    // "object" and "function" whether an object is callable, which is fixed
+    // when it is made. What `typeof x === "lit"` (and `!==`, `==`, `!=`, either
+    // way round) lowers to (lower_expr_binary.cpp). Total, pure.
+    TypeOfIs,
+    // a: dynamic = array.push b, v. `b.push(v)` (23.1.3.23) where a dominating
+    // `is.plain_array b` held: an Array at the bare array shape, whose `push`
+    // can only be %Array.prototype.push% and whose chain (the frozen
+    // Array.prototype and Object.prototype) holds no index a Set could reach.
+    // Appends `v`, answers the new length. Writes that one array's length and
+    // elements and nothing else (no user code runs), so a loop filling a fresh
+    // array keeps every other array's facts (opt/redundancy/location.cpp).
+    // Grows the element block (allocates); throws the RangeError of a length
+    // past 2^32 - 1. Speculation's form of a `push` on an array the function
+    // made (speculate/array_push.cpp).
+    ArrayPush,
 };
+
+// typeof.is's immI32: which answer of `typeof` it tests for. kTypeOfNone
+// is a literal `typeof` never answers, which is false for every value.
+enum TypeOfKind : int32_t {
+    kTypeOfUndefined = 0,
+    kTypeOfObject = 1,
+    kTypeOfBoolean = 2,
+    kTypeOfNumber = 3,
+    kTypeOfString = 4,
+    kTypeOfSymbol = 5,
+    kTypeOfBigInt = 6,
+    kTypeOfFunction = 7,
+    kTypeOfNone = 8,
+};
+
+// The flag on `to.string`'s immI32 that lets a Number through unconverted:
+// the result is a String or a Number, and its one use is a `concat.n`
+// operand, which converts the Number itself (lower_expr.cpp, templates).
+inline constexpr int32_t kToStrKeepNumber = 1;
 
 // The last op, for the serializer's range check.
 inline constexpr Op kLastOp = Op::ConstructResult;

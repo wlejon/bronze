@@ -686,6 +686,8 @@ uint64_t bronze_typeof(uint64_t bits) {
     return typeofString(kObject).rawBits();
 }
 
+bool bronze_is_callable(uint64_t bits) { return rtIsCallableValue(Value(bits)); }
+
 bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     recordHelperCall("bronze_has_property");
     Rooted<Value> objRoot{Value(objBits)};

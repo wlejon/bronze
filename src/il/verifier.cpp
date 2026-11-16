@@ -26,6 +26,43 @@ namespace bronze::il {
 // is what rejects one threaded through a block parameter: past that edge the
 // value has a name the spine did not give it, and nothing local can say who
 // else holds it.
+// A `to.string` carrying kToStrKeepNumber answers a String OR a Number, which
+// only `concat.n` is written to take: every other instruction that reads it
+// would be handed a Number where it was promised a String. A resume state (a
+// generic function's own concat.n picks the value up again) and a block
+// argument pass it along without reading it. A `concat.n` joins two pieces
+// or more.
+static bool verifyTemplatePieces(const Function& fn, DiagnosticSink& diags) {
+    std::unordered_set<ValueId> keep;
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op == Op::ToStr && (inst.immI32 & kToStrKeepNumber) != 0) keep.insert(inst.result);
+            if (inst.op == Op::ConcatN && inst.operands.size() < 2) {
+                diags.error(Span{}, "Function " + fn.name + ": concat.n takes two pieces or more");
+                return false;
+            }
+        }
+    }
+    if (keep.empty()) return true;
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op == Op::ConcatN || inst.op == Op::ResumePoint || inst.op == Op::Leave ||
+                inst.op == Op::ResumeCall) {
+                continue;
+            }
+            for (ValueId id : inst.operands) {
+                if (keep.count(id) != 0) {
+                    diags.error(Span{}, "Function " + fn.name + ": %" + std::to_string(id) +
+                                            ", a to.string that lets a Number through, is read by " +
+                                            opName(inst.op) + "; only concat.n may read it");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static bool verifyConcatChain(const Function& fn, DiagnosticSink& diags) {
     auto fail = [&](const std::string& msg) {
         diags.error(Span{}, "Function " + fn.name + ": " + msg);
@@ -142,12 +179,14 @@ static const SpecSignature* specSignature(Op op) {
         case Op::ProtoPublish: return &kProtoPublish;
         case Op::MemberCell: return &kMemberCell;
         case Op::MemberPublish: return &kMemberPublish;
-        case Op::ConstructResult: return &kConstructResult;
+        case Op::ConstructResult:
+        case Op::ArrayPush: return &kConstructResult;
         case Op::LoadShape: return &kLoadShape;
         case Op::ShapeCell: return &kShapeCell;
         case Op::PtrEq: return &kPtrEq;
         case Op::ShapeHasOwn: return &kShapeHasOwn;
         case Op::IsObject:
+        case Op::TypeOfIs:
         case Op::IsI32:
         case Op::IsHole:
         case Op::IsUninit:
@@ -759,6 +798,7 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     }
 
     if (!verifyConcatChain(fn, diags)) return false;
+    if (!verifyTemplatePieces(fn, diags)) return false;
     return verifyFunctionProofs(fn, nullptr, diags);
 }
 

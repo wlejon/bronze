@@ -135,6 +135,31 @@ BRONZE_NOINLINE static uint64_t concatAppendSlow(uint64_t accBits, uint64_t xBit
     return rtAddNonStringTail(accRoot, xRoot);
 }
 
+// A template's pieces are mostly a few characters, where a call to memcpy
+// costs more than the copy: two overlapping words cover 4 to 16 bytes, and
+// three single bytes cover 1 to 3, with no access outside either string.
+static inline void copyLatin1(char* dst, const char* src, uint32_t n) {
+    if (n > 16) {
+        std::memcpy(dst, src, n);
+    } else if (n >= 8) {
+        uint64_t a, b;
+        std::memcpy(&a, src, 8);
+        std::memcpy(&b, src + n - 8, 8);
+        std::memcpy(dst, &a, 8);
+        std::memcpy(dst + n - 8, &b, 8);
+    } else if (n >= 4) {
+        uint32_t a, b;
+        std::memcpy(&a, src, 4);
+        std::memcpy(&b, src + n - 4, 4);
+        std::memcpy(dst, &a, 4);
+        std::memcpy(dst + n - 4, &b, 4);
+    } else if (n > 0) {
+        dst[0] = src[0];
+        dst[n / 2] = src[n / 2];
+        dst[n - 1] = src[n - 1];
+    }
+}
+
 extern "C" {
 
 uint64_t bronze_concat_begin(uint64_t aBits, uint64_t bBits, uint32_t remaining) {
@@ -214,48 +239,82 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
     return concatAppendSlow(accBits, xBits);
 }
 
-uint64_t bronze_concat_strings(const uint64_t* pieces, uint32_t count) {
-    recordHelperCall("bronze_concat_strings");
-    // Every piece a sealed Latin-1 String and room in the young window: the
-    // result is allocated at its length with nothing collected on the way, so
-    // the texts are copied straight out of the caller's block.
+uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
+    recordHelperCall("bronze_concat_template");
+    // A template's pieces in a block the caller owns and the collector scans
+    // (the argv block): each a String, or a Number its `to.string` let
+    // through. A Number becomes its String here, which runs nothing: a small
+    // integer is the immortal cached one, anything else is allocated and
+    // written back into the block, so it stays rooted while later pieces are
+    // converted and while the result is.
     uint64_t total = 0;
-    bool plain = true;
+    bool utf16 = false;
     for (uint32_t i = 0; i < count; ++i) {
-        const Value v(pieces[i]);
+        Value v(pieces[i]);
         if (!v.isString()) {
-            plain = false;
-            break;
+            // A small non-negative integer (an id, a count, a counter) is the
+            // cached string, -0 included; any other Number is formatted.
+            const double d = v.asNumber();
+            Value cached;
+            if (d >= 0.0 && d < 1024.0) {
+                const auto n = static_cast<uint32_t>(d);
+                if (static_cast<double>(n) == d) cached = rtSmallIntString(n);
+            }
+            v = cached.isString() ? cached : rtPrimitiveToString(v);
+            pieces[i] = v.rawBits();
         }
         const StringHeader* s = v.asString<StringHeader>();
-        plain = plain && s->isLatin1() && !s->isBuilder();
         total += s->length;
+        utf16 = utf16 || s->isUTF16();
     }
-    if (plain && total < StringHeader::kViewMinLength) {
-        if (HeapObjectHeader* h =
-                rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(total) + 1, Tag::String)) {
-            auto* out = reinterpret_cast<StringHeader*>(h);
-            out->header.flags = 0;
-            out->length = static_cast<uint32_t>(total);
-            out->flags = 0;
-            char* text = out->latin1Data();
-            for (uint32_t i = 0; i < count; ++i) {
-                const StringHeader* s = Value(pieces[i]).asString<StringHeader>();
-                std::memcpy(text, s->latin1Data(), s->length);
-                text += s->length;
-            }
-            *text = '\0';
-            return Value::fromString(out).rawBits();
+    Heap& heap = rtHeap();
+    if (total >= StringHeader::kViewMinLength) {
+        // A long result: pairwise, as `+` builds one, so it is a view a loop
+        // can go on extending in place.
+        Rooted<Value> acc{Value(pieces[0])};
+        Rooted<Value> next{Value()};
+        for (uint32_t i = 1; i < count; ++i) {
+            next.set(Value(pieces[i]));
+            acc.set(StringHeader::concat(heap, acc, next));
         }
+        return acc.get().rawBits();
     }
-    // Anything else is the accumulator's, a step at a time. The block is the
-    // caller's root, so each piece is read after whatever the step before it
-    // collected.
-    Rooted<Value> acc{Value(bronze_concat_begin(pieces[0], pieces[1], count - 2))};
-    for (uint32_t i = 2; i < count; ++i) {
-        acc.set(Value(bronze_concat_append(acc.get().rawBits(), pieces[i])));
+    const auto len = static_cast<uint32_t>(total);
+    const size_t unit = utf16 ? sizeof(uint16_t) : 1;
+    HeapObjectHeader* h =
+        heap.tryAllocate(2 * sizeof(uint32_t) + (static_cast<size_t>(len) + 1) * unit, Tag::String);
+    StringHeader* out = nullptr;
+    if (h != nullptr) {
+        out = reinterpret_cast<StringHeader*>(h);
+        out->header.flags = 0;
+        out->length = len;
+        out->flags = utf16 ? StringHeader::kUTF16Flag : 0;
+    } else {
+        // Collects: the pieces are re-read from the block below.
+        out = StringHeader::createBuilder(heap, utf16, len, len);
+        out->sealBuilder();
     }
-    return bronze_concat_end(acc.get().rawBits());
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const StringHeader* s = Value(pieces[i]).asString<StringHeader>();
+        const uint32_t n = s->length;
+        if (!utf16) {
+            copyLatin1(out->latin1Data() + at, s->latin1Data(), n);
+        } else if (s->isUTF16()) {
+            std::memcpy(out->utf16Data() + at, s->utf16Data(), static_cast<size_t>(n) * sizeof(uint16_t));
+        } else {
+            const auto* in = reinterpret_cast<const unsigned char*>(s->latin1Data());
+            uint16_t* dst = out->utf16Data() + at;
+            for (uint32_t k = 0; k < n; ++k) dst[k] = in[k];
+        }
+        at += n;
+    }
+    if (utf16) {
+        out->utf16Data()[len] = 0;
+    } else {
+        out->latin1Data()[len] = '\0';
+    }
+    return Value::fromString(out).rawBits();
 }
 
 uint64_t bronze_concat_end(uint64_t vBits) {

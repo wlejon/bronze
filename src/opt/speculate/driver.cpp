@@ -62,6 +62,7 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
         case SiteKind::MemberSet:
         case SiteKind::MemberAbsent: rewriteMember(ctx, site); return;
         case SiteKind::TdzRead: rewriteTdzRead(ctx, site); return;
+        case SiteKind::ArrayPush: rewriteArrayPush(ctx, site); return;
     }
 }
 

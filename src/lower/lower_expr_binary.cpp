@@ -162,6 +162,59 @@ std::optional<Lowerer::Value> Lowerer::lowerNullishEquality(const ast::Binary& b
     return emitLogicalNot(answer, ilFn);
 }
 
+// `typeof x === "number"` and its three siblings (`!==`, `==`, `!=`), either way
+// round: `typeof` answers one of eight interned strings and the literal names
+// one of them (or none), so the comparison is a question about the value's
+// tag, `typeof.is`, where it was a call making the string and a compare of
+// it. Loose and strict agree, both sides being Strings. Both operands have
+// been evaluated; the `typeof` and the literal box they left are unused and
+// fall to dead-code removal.
+std::optional<Lowerer::Value> Lowerer::lowerTypeofEquality(const ast::Binary& bin, Value lhs, Value rhs,
+                                                           il::Function& ilFn) {
+    auto typeofOf = [](const ast::Expr& e) {
+        const auto* un = dynamic_cast<const ast::Unary*>(&e);
+        return un != nullptr && un->op == ast::UnaryOp::TypeOf;
+    };
+    const auto* lit = dynamic_cast<const ast::StringLit*>(bin.rhs.get());
+    Value tested = lhs;
+    if (lit == nullptr || !typeofOf(*bin.lhs)) {
+        lit = dynamic_cast<const ast::StringLit*>(bin.lhs.get());
+        tested = rhs;
+        if (lit == nullptr || !typeofOf(*bin.rhs)) return std::nullopt;
+    }
+    // The `typeof` was the last instruction its operand's lowering emitted,
+    // in the block that is current (a literal emits no block).
+    if (currentBlockIdx_ >= ilFn.blocks.size()) return std::nullopt;
+    const il::Instruction* typeofInst = nullptr;
+    for (auto it = ilFn.blocks[currentBlockIdx_].instructions.rbegin();
+         it != ilFn.blocks[currentBlockIdx_].instructions.rend(); ++it) {
+        if (it->result == tested.id) {
+            if (it->op == il::Op::TypeOf && it->operands.size() == 1) typeofInst = &*it;
+            break;
+        }
+    }
+    if (typeofInst == nullptr) return std::nullopt;
+    static const std::pair<const char*, il::TypeOfKind> kNames[] = {
+        {"undefined", il::kTypeOfUndefined}, {"object", il::kTypeOfObject}, {"boolean", il::kTypeOfBoolean},
+        {"number", il::kTypeOfNumber},       {"string", il::kTypeOfString}, {"symbol", il::kTypeOfSymbol},
+        {"bigint", il::kTypeOfBigInt},       {"function", il::kTypeOfFunction},
+    };
+    il::TypeOfKind kind = il::kTypeOfNone;
+    for (const auto& [name, k] : kNames) {
+        if (lit->value == name) kind = k;
+    }
+    il::Instruction inst;
+    inst.op = il::Op::TypeOfIs;
+    inst.type = il::Type::Bool;
+    inst.result = ilFn.valueCount++;
+    inst.operands = {typeofInst->operands[0]};
+    inst.immI32 = kind;
+    emitInst(ilFn, inst);
+    Value answer{inst.result, il::Type::Bool};
+    if (bin.op == ast::BinaryOp::Eq || bin.op == ast::BinaryOp::StrictEq) return answer;
+    return emitLogicalNot(answer, ilFn);
+}
+
 // `a == b` / `a === b` and their negations.
 //
 // When both operands have the SAME proven primitive type, the two operators
@@ -344,6 +397,7 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     if (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::StrictEq ||
         bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe) {
         if (auto nullish = lowerNullishEquality(*bin, lhs, rhs, ilFn)) return nullish;
+        if (auto typeTest = lowerTypeofEquality(*bin, lhs, rhs, ilFn)) return typeTest;
         return lowerEquality(bin->op, lhs, rhs, ilFn);
     }
     if (bin->op == ast::BinaryOp::Less || bin->op == ast::BinaryOp::Greater ||

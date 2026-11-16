@@ -15,7 +15,7 @@ constexpr size_t kMaxSeq = 900;
 
 bool isPureUse(il::Op op) {
     switch (op) {
-        case il::Op::StrictEq: case il::Op::TypeOf: case il::Op::IsNullish: case il::Op::IsNumber:
+        case il::Op::StrictEq: case il::Op::TypeOf: case il::Op::IsNullish: case il::Op::IsNumber: case il::Op::TypeOfIs:
         case il::Op::IsDenseArray: case il::Op::IsTypedArray: case il::Op::IsPlainArray:
         case il::Op::KeepAlive: case il::Op::Print: case il::Op::PrintErr: case il::Op::Branch:
         case il::Op::PatternCheck: case il::Op::FeedbackRecord: case il::Op::PinGuard:

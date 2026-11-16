@@ -126,7 +126,8 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     }
                     break;
                 }
-                case Op::TypeOf: {
+                case Op::TypeOf:
+                case Op::TypeOfIs: {
                     std::string tag = "number";
                     if (!inst.operands.empty()) {
                         il::ValueId op0 = inst.operands[0];
@@ -136,6 +137,13 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         if (state.undefValues.count(op0)) tag = "undefined";
                         else if (state.funcRefs.count(op0) || isFnTok) tag = "function";
                         else if (state.heap.isStringValue(op0)) tag = "string";
+                    }
+                    if (inst.op == Op::TypeOfIs) {
+                        static const char* const kNames[] = {"undefined", "object", "boolean", "number",
+                                                             "string", "symbol", "bigint", "function"};
+                        const bool hit = inst.immI32 >= 0 && inst.immI32 < il::kTypeOfNone && tag == kNames[inst.immI32];
+                        state.values[inst.result] = hit ? one64_ : zero64_;
+                        break;
                     }
                     evalBoxStringLiteral(tag, inst.result, state);
                     break;
@@ -390,6 +398,19 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         state.heap.propagateAlias(inst.operands[0], inst.result);
                     } else {
                         evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                    }
+                    break;
+                case Op::ConcatN:
+                    if (heapTable_.numericParams() &&
+                        std::any_of(inst.operands.begin(), inst.operands.end(),
+                                    [&](il::ValueId v) { return !state.heap.isStringValue(v); })) {
+                        return {false, kNumberConcatReason, false, zero64_, {}, {}, zero1_};
+                    }
+                    // Folded left to right into the result, which each step
+                    // reads before it writes.
+                    evalStringConcatOp(inst.operands[0], inst.operands[1], inst.result, state);
+                    for (size_t k = 2; k < inst.operands.size(); ++k) {
+                        evalStringConcatOp(inst.result, inst.operands[k], inst.result, state);
                     }
                     break;
                 case Op::ConcatEnd:

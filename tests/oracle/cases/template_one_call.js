@@ -1,6 +1,6 @@
 // A template's pieces are all Strings once each substitution is converted, so
-// the chain is one call that allocates the result at its length
-// (il_string_join.cpp, bronze_concat_strings); `a + b` of two Latin-1 strings
+// the template is one `concat.n` that allocates the result at its length
+// (rt_concat.cpp bronze_concat_template); `a + b` of two Latin-1 strings
 // allocates without rooting them.
 function g(a, b, c, d) { return `<${a}|${b}|${c}|${d}>`; }
 const big = 'x'.repeat(5000);

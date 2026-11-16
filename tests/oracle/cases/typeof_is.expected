@@ -1,0 +1,5 @@
+0:u!o!n:undefined 1:o!n:object 2:b!o!n:boolean 3:b!o!n:boolean 4:n!o:number 5:n!o:number 6:n!o:number 7:n!o:number 8:n!o:number 9:n!o:number 10:n!o:number 11:n!o:number 12:s!o!nS:string 13:s!o!nS:string 14:s!o!nS:string 15:s!o!nS:string 16:s!o!nS:string 17:y!o!n:symbol 18:g!o!n:bigint 19:g!o!n:bigint 20:o!n:object 21:o!n:object 22:o!n:object 23:fF!o!n:function 24:fF!o!n:function 25:fF!o!n:function 26:fF!o!n:function 27:fF!o!n:function 28:fF!o!n:function 29:o!n:object 30:o!n:object 31:o!n:object 32:o!n:object 33:fF!o!n:function 34:fF!o!n:function 35:o!n:object 36:o!n:object 37:o!n:object 38:o!n:object 39:o!n:object 40:o!n:object 41:o!n:object 42:o!n:object 43:o!n:object 44:fF!o!n:function 45:o!n:object 46:fF!o!n:function 47:o!n:object
+true true true
+{"undefined":2000,"notObj":58000,"object":38000,"boolean":4000,"number":16000,"N":16000,"string":10000,"symbol":2000,"bigint":4000,"function":20000,"F":20000}
+true true fttf
+true false

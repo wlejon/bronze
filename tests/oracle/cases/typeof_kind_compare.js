@@ -1,7 +1,8 @@
 // `typeof x === "object"` and `typeof x === "function"` (and `!==`) are
-// answered inline from the operand's tag and heap kind: "function" for a
-// Function kind, "object" for null and every other object kind, with
-// bronze_typeof asked only for a proxy, whose answer its target decides.
+// answered inline from the operand's tag and heap kind (`typeof.is`):
+// "function" for a Function kind, "object" for null and every other object
+// kind, with bronze_is_callable asked only for a proxy, whose answer its
+// target decides.
 // Every kind of heap object and every primitive passes through the same sites,
 // so a mapping wrong for any one of them shows here.
 class K { constructor() { this.a = 1; } m() { return 1; } static s() { return 2; } }
