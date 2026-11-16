@@ -151,6 +151,7 @@ static const SpecSignature* specSignature(Op op) {
     static const SpecSignature kShapeCell{0, {}, Type::Ptr, true};
     static const SpecSignature kPtrEq{2, {Type::Ptr, Type::Ptr}, Type::Bool, false};
     static const SpecSignature kShapeHasOwn{1, {Type::Ptr}, Type::Bool, true};
+    static const SpecSignature kShapeLacks{2, {Type::Dynamic, Type::Ptr}, Type::Bool, false};
     static const SpecSignature kDynTest{1, {Type::Dynamic}, Type::Bool, false};
     static const SpecSignature kSlotLoad{1, {Type::Dynamic}, Type::Dynamic, true};
     static const SpecSignature kSlotStore{2, {Type::Dynamic, Type::Dynamic}, Type::Void, true};
@@ -185,6 +186,7 @@ static const SpecSignature* specSignature(Op op) {
         case Op::ShapeCell: return &kShapeCell;
         case Op::PtrEq: return &kPtrEq;
         case Op::ShapeHasOwn: return &kShapeHasOwn;
+        case Op::ShapeLacks: return &kShapeLacks;
         case Op::IsObject:
         case Op::TypeOfIs:
         case Op::IsI32:

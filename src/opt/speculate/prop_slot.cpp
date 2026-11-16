@@ -23,6 +23,18 @@
 // receiver the tests do not answer, a primitive included, takes the generic
 // access in the cold arm and the function stays in S: nothing here leaves.
 //
+// ABSENT KEYS. A read whose ways also found the key nowhere (evidence.cpp
+// planPropRead: more receivers than member cells cover, or own ways beside
+// them) tests the shape's absent cache too, before the slots when most ways
+// were absent ones:
+//
+//     br shape.lacks %obj, s, "key", U, N     U: jump J(undefined)
+//
+// `shape.lacks` is answered by the runtime for a plain receiver and recorded
+// per shape under the prototype epoch (il_op.h ShapeLacks), so a shape the
+// ways never saw is answered too, and a receiver it does not answer takes
+// the generic arm.
+//
 // DOUBLE SLOTS (runtime/slot_repr.h). The table says which slots are double
 // ones (BRONZE_ABI_SLOTKEY_NUMBER). A read tests the plain form, which takes
 // either representation, unless every sampled shape keeps the key at that
@@ -41,8 +53,8 @@ namespace bronze::opt::speculate {
 
 void rewritePropSlot(RewriteContext& ctx, const SitePlan& plan) {
     const bool write = plan.kind == SiteKind::PropSlotWrite;
-    assert((write || plan.kind == SiteKind::PropSlotRead) && !plan.shapes.empty() &&
-           plan.shapes.size() <= kMaxChainShapes);
+    assert((write || plan.kind == SiteKind::PropSlotRead) && (!plan.shapes.empty() || plan.absent) &&
+           plan.shapes.size() <= kMaxChainShapes && (!plan.absent || !write));
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction site = b.site();
     assert(write ? site.op == il::Op::PropSet && !il::isDefineWrite(site) && site.result == il::kNoValue
@@ -66,13 +78,34 @@ void rewritePropSlot(RewriteContext& ctx, const SitePlan& plan) {
         test.keyIndex = site.keyIndex;
         return b.emitInst(std::move(test));
     };
+    // The absent test, in front of the slot tests or behind them; `next` is
+    // where its miss goes.
+    auto lacks = [&](BlockId next) {
+        il::Instruction test;
+        test.op = il::Op::ShapeLacks;
+        test.type = il::Type::Bool;
+        test.operands = {object, shape};
+        test.keyIndex = site.keyIndex;
+        const ValueId absent = b.emitInst(std::move(test));
+        const BlockId undef = b.newBlock();
+        b.branch(absent, undef, {}, next, {});
+        b.moveTo(undef);
+        b.jump(join, {b.emit(il::Op::ConstUndefined, il::Type::Dynamic, {})});
+        ++ctx.stats.propAbsentTests;
+    };
+    if (plan.absent && (plan.absentFirst || plan.shapes.empty())) {
+        const BlockId next = plan.shapes.empty() ? other : b.newBlock();
+        lacks(next);
+        if (!plan.shapes.empty()) b.moveTo(next);
+    }
+    const bool lacksLast = plan.absent && !plan.absentFirst && !plan.shapes.empty();
     for (size_t i = 0; i < plan.shapes.size(); ++i) {
         const int32_t slot = plan.shapes[i].slot;
         const bool number = !write && plan.shapes[i].number;
         const int32_t mode = write ? il::kHasOwnWrite | il::kHasOwnNumber : number ? il::kHasOwnNumber : 0;
         const bool last = i + 1 == plan.shapes.size();
         const BlockId hit = b.newBlock();
-        const BlockId next = last ? other : b.newBlock();
+        const BlockId next = last && !lacksLast ? other : b.newBlock();
         if (!write) {
             b.branch(hasOwn(slot, mode), hit, {}, next, {});
         } else {
@@ -96,8 +129,9 @@ void rewritePropSlot(RewriteContext& ctx, const SitePlan& plan) {
         }
         const ValueId value = b.emitInst(std::move(access));
         b.jump(join, write ? std::vector<ValueId>{} : std::vector<ValueId>{value});
-        if (!last) b.moveTo(next);
+        if (!last || lacksLast) b.moveTo(next);
     }
+    if (lacksLast) lacks(other);
     b.moveTo(join);
     b.finish();
     if (write) {

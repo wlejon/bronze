@@ -9,7 +9,10 @@
 // Built on first ask, per shape, in the thread's arena (shapes are immortal
 // and so is their table), from the shape's own transition chain: every node
 // owns exactly one property and one slot (two for an accessor pair), and a
-// node is never changed once made, so the table never goes stale.
+// node is never changed once made, so the table never goes stale. The absent
+// cache in front of it (bronze_abi_layout.h BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
+// is the one part that changes: accessor_cell.cpp bronze_shape_lacks fills
+// it, and an entry speaks for the epoch it names only.
 
 #include <algorithm>
 #include <cstdint>
@@ -38,7 +41,12 @@ const uint64_t* buildSlotKeys(const Shape* shape) {
             count = std::max(count, node->slot_index + (node->accessor ? 2u : 1u));
         }
     }
-    auto* table = static_cast<uint64_t*>(rtArena().allocate(sizeof(uint64_t) * (1 + count)));
+    // The absent cache (bronze_abi_layout.h BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
+    // sits before word 0, empty until a `shape.lacks` miss fills an entry.
+    constexpr size_t kLacksWords = BRONZE_ABI_SLOTKEY_LACKS_BYTES / sizeof(uint64_t);
+    auto* block = static_cast<uint64_t*>(rtArena().allocate(sizeof(uint64_t) * (kLacksWords + 1 + count)));
+    std::fill(block, block + kLacksWords, uint64_t{0});
+    uint64_t* table = block + kLacksWords;
     table[0] = count;
     std::fill(table + 1, table + 1 + count, uint64_t{0});
     for (const Shape* node : nodes) {

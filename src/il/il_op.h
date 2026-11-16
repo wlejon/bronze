@@ -553,6 +553,19 @@ enum class Op : uint8_t {
     // The prototype mark is monotone the other way (a shape becomes one, never
     // stops), which only turns a true answer false.
     ShapeHasOwn,
+    // a: bool = shape.lacks %obj, %shape, "k". Whether [[Get]] of the string
+    // key `keyIndex` on %obj (an object, by an `is.object` guard), whose
+    // shape is %shape (its `load.shape`), finds nothing: the shape has no
+    // such own property and no link of its prototype chain has one, as of
+    // this thread's prototype epoch. So on its true edge the read is
+    // `undefined`, whatever the shape is: the absent arm of a site whose
+    // receivers come in more shapes than member cells cover. Asks the
+    // shape's absent cache (runtime shape_slot_keys.cpp, beside the slot-key
+    // table), which the runtime fills on a miss for a plain, non-dictionary
+    // receiver it finds the key absent from (accessor_cell.cpp
+    // bronze_shape_lacks); a true answer holds until the epoch moves. Reads
+    // `Protos`; runs no user code and allocates nothing on the JS heap.
+    ShapeLacks,
     // a: bool = shape.in %shape, %c1, ..., %cn. Whether the ptr %shape (a
     // `load.shape`) equals one of the ptrs %c1..%cn (n >= 2, each a
     // `shape.cell`): the test of a receiver whose shape is one of a set. Its

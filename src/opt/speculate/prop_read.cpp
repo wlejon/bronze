@@ -24,7 +24,9 @@
 // before the last guard is observable (tests and header loads), so a failure
 // re-runs the generic `prop.get` in G with nothing done.
 // `proto` ways (the value lives on a prototype object this step has no
-// constant for), `absent`, `accessor` and `array` ways stay generic.
+// constant for), `accessor` and `array` ways stay generic; `absent` ways are
+// member cells (member_call.cpp) or, beside own ways or past what cells
+// cover, a slot-keyed read's `shape.lacks` arm (prop_slot.cpp).
 
 #include "opt/speculate/sites.h"
 

@@ -58,6 +58,7 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::PtrEq:
         case BronzeOp::ShapeIn:
         case BronzeOp::ShapeHasOwn:
+        case BronzeOp::ShapeLacks:
         case BronzeOp::IsObject:
         case BronzeOp::SlotLoad:
         case BronzeOp::SlotStore:
@@ -191,6 +192,63 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
                 match = b.build_and(match, b.build_eq(b.build_zext_i64(proto), iconst64(b, 0)));
             }
             res_val = match;
+            return true;
+        }
+        // bool = shape.lacks %obj, %shape, "k": the shape's absent cache, in
+        // front of its slot-key table (bronze_abi_layout.h
+        // BRONZE_ABI_SLOTKEY_LACKS_ENTRIES), answers when its entry for the
+        // key names the key at the thread's current epoch; an entry for the
+        // key marked FOUND answers no, and anything else asks the runtime,
+        // which fills the entry with its answer (cold).
+        //   t = [shape+96] ; t == 0 ? t = bronze_shape_slot_keys(shape) (cold)
+        //   k = key_map[k] ; e = t - LACKS_BYTES + 16 * (k mod LACKS_ENTRIES)
+        //   [e+8] == [tls] && [e] == k + 1 ? 1
+        //   : [e+8] == [tls] && [e] == (k + 1 | FOUND) ? 0
+        //   : bronze_shape_lacks(obj, k) (cold)
+        case BronzeOp::ShapeLacks: {
+            if (!need(2)) return false;
+            Value* obj = bits(0);
+            Value* shape = bits(1);
+            BasicBlock* cur = b.current_block();
+            const std::string prefix = "lacks_" + std::to_string(cur->parent()->next_block_id());
+            BasicBlock* build = b.append_block(prefix + "_build");
+            build->set_cold();
+            BasicBlock* have = b.append_block(prefix + "_have");
+            Value* table = b.add_block_param(have, Type::i64());
+            BasicBlock* other = b.append_block(prefix + "_other");
+            BasicBlock* miss = b.append_block(prefix + "_miss");
+            miss->set_cold();
+            BasicBlock* done = b.append_block(prefix + "_done");
+            Value* answer = b.add_block_param(done, Type::i32());
+            b.position_at_end(cur);
+            Value* word = with_alias_class(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET),
+                                           kRuntimeWordAliasClass);
+            b.build_br_if(b.build_eq(word, iconst64(b, 0)), build, {}, have, {word});
+            b.position_at_end(build);
+            b.build_br(have, {b.build_call("bronze_shape_slot_keys", Type::i64(), {shape})});
+            b.position_at_end(have);
+            Value* key = get_key_id(b, inst.index);
+            Value* key64 = b.build_zext_i64(key);
+            Value* bucket = b.build_shl(b.build_and(key64, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_ENTRIES - 1)),
+                                        iconst64(b, 4));
+            Value* entry = b.build_add(b.build_sub(table, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_BYTES)), bucket);
+            Module* mod = b.current_block()->parent()->parent();
+            Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                             : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+            Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+            Value* word0 = b.build_load(Type::i64(), entry, 0);
+            Value* tag = b.build_add(key64, iconst64(b, 1));
+            Value* named = b.build_eq(word0, tag);
+            Value* current = b.build_eq(b.build_load(Type::i64(), entry, 8), epoch);
+            b.build_br_if(b.build_and(named, current), done, {b.build_iconst_i32(1)}, other, {});
+            b.position_at_end(other);
+            Value* found = b.build_eq(word0, b.build_or(tag, iconst64(b, BRONZE_ABI_SLOTKEY_LACKS_FOUND)));
+            b.build_br_if(b.build_and(found, current), done, {b.build_iconst_i32(0)}, miss, {});
+            b.position_at_end(miss);
+            Value* asked = b.build_call("bronze_shape_lacks", Type::i64(), {obj, key});
+            b.build_br(done, {b.build_ne(asked, iconst64(b, 0))});
+            b.position_at_end(done);
+            res_val = answer;
             return true;
         }
         // bool = is.object %v:  xor rax, OBJECT_TAG<<48 ; cmp rax, 1<<48 ; setb

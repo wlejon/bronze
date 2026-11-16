@@ -33,6 +33,7 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::IsNullish:
         case Op::IsHole:
         case Op::IsUninit:
+        case Op::ShapeLacks:    // operand 1 is a shape
         case Op::IsDenseArray:
         case Op::IsPlainArray:
         case Op::IsTypedArray:

@@ -126,6 +126,13 @@ struct ClassLayout {
 
     // Whether `fields` is a claim about slot numbers, or only a name list.
     bool layoutProven = false;
+
+    // The names this class's own body installs on an instance (its field
+    // declarations and every `this.<name> = ...` of its constructor and
+    // methods), whatever the layout verdict (class_capacity.cpp). No claim
+    // about slots: what an unproven class's instances are allocated room for
+    // (lower_class.cpp classInstanceInlineSlots), with its bases' names.
+    std::vector<std::string> ownNames;
     // Why not, when it is not. Named, never silent: this string is what
     // `--infer-stats` reports and what a future chunk reads to decide which
     // refusal is worth removing.
@@ -229,6 +236,10 @@ private:
     // `extends` first. `resolving` breaks a cyclic `extends`, which is a
     // TypeError at run time but must not be an infinite loop here.
     void resolve(size_t index, std::set<size_t>& resolving);
+
+    // Fills every class's `ownNames` from `methodsByIndex_`
+    // (class_capacity.cpp).
+    void collectOwnNames();
 
     // Numbers the proven classes in preorder over `extends` and fills
     // `familyIndex`/`familySpan`. Runs after every class is resolved, because

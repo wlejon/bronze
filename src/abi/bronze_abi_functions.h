@@ -275,6 +275,13 @@
      * only: no GC, no user code. Called from a `shape.has_own` test whose   \
      * shape's table word is still null (runtime/shape_slot_keys.cpp). */    \
     X(bronze_shape_slot_keys,     BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
+    /* A `shape.lacks` test's miss (bronze_abi_layout.h                     \
+     * BRONZE_ABI_SLOTKEY_LACKS_ENTRIES): 1 when [[Get]] of the key (a      \
+     * process-wide key index) on the object finds nothing at the current   \
+     * epoch, recorded in its shape's absent cache when the object is a     \
+     * plain, non-dictionary one; else 0. No GC, no user code               \
+     * (runtime/accessor_cell.cpp). */                                      \
+    X(bronze_shape_lacks,         BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     /* A MEMBER cell (runtime/accessor_cell.cpp, il.h Module::memberCells):\
      * two words, (shape, prototype-mutation epoch). Fills it from a speculated\
      * site's exit: the receiver's shape when its chain resolves the key, at\

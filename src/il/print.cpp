@@ -747,6 +747,13 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                                                           : std::string("?")) +
                                "\"";
                         break;
+                    case Op::ShapeLacks:
+                        out += "shape.lacks %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) + ", \"" +
+                               (inst.keyIndex < module.keyConstants.size() ? module.keyConstants[inst.keyIndex]
+                                                                          : std::string("?")) +
+                               "\"";
+                        break;
                     case Op::SlotLoad:
                         out += "slot.load %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

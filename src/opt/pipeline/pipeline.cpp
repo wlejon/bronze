@@ -113,7 +113,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     if (r.profileRead) {
         out += "speculate: " + n(s.functionsSpeculated) + "/" + n(s.functionsConsidered) + " functions";
         if (s.harvestIgnored) out += " (harvest of another build ignored)";
-        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), shape sets " + n(s.shapeSetLeads) + " (followers " + n(s.shapeSetFollowers) + "), slot-keyed " + n(s.propSlotKeyed) + ", number slots " + n(s.numberSlotKeys) + " keys (reads " + n(s.numberSlotReads) + ", stores " + n(s.numberSlotStores) + "), prop.set " +
+        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), shape sets " + n(s.shapeSetLeads) + " (followers " + n(s.shapeSetFollowers) + "), slot-keyed " + n(s.propSlotKeyed) + " (absent " + n(s.propAbsentTests) + "), number slots " + n(s.numberSlotKeys) + " keys (reads " + n(s.numberSlotReads) + ", stores " + n(s.numberSlotStores) + "), prop.set " +
                n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", push " + n(s.arrayPushes) + ", tdz " + n(s.tdzReads) + ", math " + n(s.mathCalls) +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +

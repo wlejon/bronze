@@ -5,6 +5,7 @@
 // written by hand with `function` and `.prototype`; what it buys is that bronze
 // can now read the source three.js is actually written in.
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,19 +18,32 @@ namespace bronze::lower {
 
 namespace {
 
-// The own properties a class's instances are predicted to carry: the fields
-// its construction installs (the base's prefix included) and those a method
-// adds later. An unproven layout's list may stop short of its base's prefix,
-// so the base's own prediction is added to it then. Depth-bounded against a
-// cyclic `extends`, which the table does not resolve but need not trust.
-uint32_t predictedInstanceFields(const types::ClassLayoutTable& table, const types::ClassLayout* layout,
-                                 int depth = 0) {
-    if (layout == nullptr || depth > 32) return 0;
-    uint32_t n = static_cast<uint32_t>(layout->fields.size() + layout->lateFields.size());
-    if (!layout->layoutProven && !layout->superName.empty()) {
-        n += predictedInstanceFields(table, table.byName(layout->superName), depth + 1);
+// The own properties a class's instances are predicted to carry. A proven
+// layout lists them, its base's prefix included, beside the late fields its
+// methods add. An unproven one names no slots, but its own body and its
+// bases' still say which names an instance gets (class_layout.h `ownNames`):
+// their union up the chain, plus a proven base's whole prediction where the
+// chain reaches one. A base the table does not model (a constructor function:
+// eventemitter3's EventEmitter under all of pixi) adds the default capacity
+// an object of its own gets, so the names after its prefix still fit.
+// Depth-bounded against a cyclic `extends`, which the table does not resolve
+// but need not trust.
+uint32_t predictedInstanceFields(const types::ClassLayoutTable& table, const types::ClassLayout* layout) {
+    std::set<std::string> names;
+    for (int depth = 0; layout != nullptr && depth <= 32; ++depth) {
+        if (layout->layoutProven) {
+            return static_cast<uint32_t>(names.size() + layout->fields.size() + layout->lateFields.size());
+        }
+        names.insert(layout->ownNames.begin(), layout->ownNames.end());
+        names.insert(layout->lateFields.begin(), layout->lateFields.end());
+        if (layout->superName.empty()) {
+            return static_cast<uint32_t>(names.size()) + (layout->superUnknown ? BRONZE_ABI_OBJ_INLINE_SLOTS : 0);
+        }
+        const types::ClassLayout* base = table.byName(layout->superName);
+        if (base == nullptr) return static_cast<uint32_t>(names.size()) + BRONZE_ABI_OBJ_INLINE_SLOTS;
+        layout = base;
     }
-    return n;
+    return static_cast<uint32_t>(names.size());
 }
 
 }  // namespace

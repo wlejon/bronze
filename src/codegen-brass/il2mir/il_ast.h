@@ -182,6 +182,8 @@ enum class BronzeOp {
     // The slot and write bit packed in `imm_i64` as il_op.h's `immI32`, the
     // key's module index in `index`.
     ShapeHasOwn,
+    // The key's module index in `index`; operands the object and its shape.
+    ShapeLacks,
     IsObject,
     SlotLoad,
     SlotStore,

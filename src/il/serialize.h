@@ -59,7 +59,8 @@ namespace bronze::il {
 // 46: is.uninit (il_op.h).
 // 47: concat.n, to.string keepnum, typeof.is and array.push (il_op.h).
 // 48: Module::numberSlotKeys; shape.has_own's mode bits; slot.load number.
-inline constexpr uint32_t kFormatVersion = 48;
+// 49: shape.lacks (il_op.h).
+inline constexpr uint32_t kFormatVersion = 49;
 
 std::string serializeModule(const Module& module);
 

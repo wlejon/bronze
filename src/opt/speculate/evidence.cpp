@@ -319,7 +319,28 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
             if (h->full || h->uncached > kMaxUncachedReceivers) return std::nullopt;
             return planMember(*h, SiteKind::MemberGet, 0, block, index);
         }
-        if (h->ways.front().form == "absent") return planMember(*h, SiteKind::MemberAbsent, 0, block, index);
+        // Ways that found the key own or nowhere, some nowhere: member cells
+        // when they cover every receiver, else (more receivers than the
+        // ways held, or own ones beside them) slot tests and the shape's
+        // absent cache.
+        const auto absentWays = std::count_if(h->ways.begin(), h->ways.end(),
+                                              [](const spec::HarvestWay& w) { return w.form == "absent"; });
+        const auto ownWays = std::count_if(h->ways.begin(), h->ways.end(),
+                                           [](const spec::HarvestWay& w) { return w.form == "own"; });
+        if (absentWays != 0 && absentWays + ownWays == static_cast<long>(h->ways.size())) {
+            if (ownWays == 0) {
+                if (std::optional<SitePlan> member = planMember(*h, SiteKind::MemberAbsent, 0, block, index)) {
+                    return member;
+                }
+            }
+            for (const spec::HarvestWay& way : h->ways) {
+                if (way.form == "own") names.push_back(way.receiver);
+            }
+            std::optional<SitePlan> plan = planSlotKeyed(SiteKind::PropSlotRead, names, key, block, index, true);
+            if (plan) plan->absentFirst = absentWays * 2 > static_cast<long>(h->ways.size());
+            return plan;
+        }
+        if (h->ways.front().form == "absent") return std::nullopt;
         // More receivers than the ways held, or some no way could: what the
         // ways show is a sample, so the site tests slots, not shapes.
         if (h->full || h->uncached > kMaxUncachedReceivers) {
@@ -367,11 +388,13 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
 // test is the shape's own entry for each slot (shape.has_own), so a shape the
 // ways never saw is answered as well when it agrees.
 std::optional<SitePlan> Evidence::planSlotKeyed(SiteKind kind, const std::vector<std::string>& names,
-                                                const std::string& key, BlockId block, uint32_t index) const {
+                                                const std::string& key, BlockId block, uint32_t index,
+                                                bool absent) const {
     SitePlan plan;
     plan.kind = kind;
     plan.block = block;
     plan.index = index;
+    plan.absent = absent;
     // A way this step cannot read (a dictionary, an accessor in the name) or
     // whose shape lacks the key as needed is one more receiver the generic arm
     // answers.
@@ -390,7 +413,7 @@ std::optional<SitePlan> Evidence::planSlotKeyed(SiteKind kind, const std::vector
         }
         plan.shapes.push_back(ShapeSlot{std::string(), *slot, number});
     }
-    if (plan.shapes.empty() || plan.shapes.size() > kMaxChainShapes) return std::nullopt;
+    if ((plan.shapes.empty() && !absent) || plan.shapes.size() > kMaxChainShapes) return std::nullopt;
     return plan;
 }
 

@@ -211,6 +211,38 @@ void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
     publish(cell, published, epoch);
 }
 
+// A `shape.lacks` test's miss (il_op.h ShapeLacks): whether [[Get]] of the
+// key on `obj` finds nothing now, recorded in the absent cache of the
+// object's shape (bronze_abi_layout.h BRONZE_ABI_SLOTKEY_LACKS_ENTRIES) under
+// the current epoch. Only a plain, non-dictionary receiver is answered and
+// recorded, for the reason a member cell names a shape only for one (above):
+// its shape is then all there is to know about its own keys and its
+// [[Prototype]], and the epoch stands for the rest of the chain. An entry is
+// read only beside the epoch word it was filled with, so a bump makes every
+// entry a miss without anything here having to forget it.
+uint64_t bronze_shape_lacks(uint64_t objBits, uint32_t keyIndex) {
+    recordPropCall("bronze_shape_lacks", keyIndex, nullptr);
+    Value objVal(objBits);
+    StringHeader* key = rtKeyHeader(keyIndex);
+    if (key == nullptr || !objVal.isObject() || objVal.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+        return 0;
+    }
+    auto* obj = objVal.asObject<ObjectHeader>();
+    if (obj->shape == nullptr || obj->shape->isDictionary()) return 0;
+    // Either answer holds for every object of the shape until a prototype
+    // changes (the epoch), so both are kept; a found key's entry sends the
+    // next receiver of the shape straight to the generic read.
+    const bool absent = resolvesAbsent(obj, PropertyKey::forString(key));
+    if (censusFillsSuppressed()) return absent ? 1 : 0;
+    const auto shapeBits = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
+    auto* table = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(bronze_shape_slot_keys(shapeBits)));
+    uint64_t* entry = table - BRONZE_ABI_SLOTKEY_LACKS_BYTES / sizeof(uint64_t) +
+                      2 * (keyIndex % BRONZE_ABI_SLOTKEY_LACKS_ENTRIES);
+    entry[0] = (uint64_t{keyIndex} + 1) | (absent ? 0 : BRONZE_ABI_SLOTKEY_LACKS_FOUND);
+    entry[1] = protoMutationEpoch();
+    return absent ? 1 : 0;
+}
+
 }  // extern "C"
 
 }  // namespace bronze::runtime

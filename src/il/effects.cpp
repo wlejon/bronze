@@ -406,6 +406,11 @@ Effects rawEffects(const Instruction& inst) {
         }
         case Op::MemberCell:
             return reading(Loc::Protos);
+        // A shape's own keys never change; its chain's answer is good for an
+        // epoch, which a write to `Protos` may end. The cache it fills is the
+        // runtime's, read by nothing else.
+        case Op::ShapeLacks:
+            return guardedOp(Loc::Protos, LocSet::none());
         // Reads the receiver's shape and its chain; fills a cell.
         case Op::MemberPublish: {
             Effects e;
