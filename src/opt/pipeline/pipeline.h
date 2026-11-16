@@ -56,6 +56,9 @@ struct OptimizeOptions {
     // The redundancy pass's own knobs (RedundancyOptions).
     uint32_t maxRounds = 3;
     bool hoistLoops = true;
+    // Threads the per-function steps may use (0: the machine's); the
+    // module they leave does not depend on it.
+    size_t threads = 0;
 };
 
 struct OptimizeResult {

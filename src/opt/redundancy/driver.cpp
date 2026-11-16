@@ -2,11 +2,13 @@
 // fixed point, and the module walk.
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <vector>
 
 #include "opt/redundancy/jobs.h"
 #include "opt/redundancy/redundancy.h"
+#include "support/parallel.h"
 
 namespace bronze::opt {
 
@@ -34,6 +36,10 @@ void RedundancyStats::add(const RedundancyStats& o) {
 namespace {
 
 using redundancy::JobContext;
+
+// A thread per this many instructions of the functions a walk runs on: below
+// it, starting a thread costs more than it saves.
+constexpr size_t kMinInstructionsPerThread = 20000;
 
 // The jobs that only remove or rewrite in place, cheapest first.
 bool runCleanup(JobContext& ctx) {
@@ -97,23 +103,36 @@ bool runRedundancy(il::Module& module, il::Function& fn, const RedundancyOptions
 }
 
 RedundancyStats runRedundancyModule(il::Module& module, const RedundancyOptions& options) {
+    // Runs `run(i)` on each function index of `which`, functions in
+    // parallel, and adds their stats in index order.
     RedundancyStats stats;
+    auto runAll = [&](const std::vector<uint32_t>& which, const std::function<void(uint32_t, RedundancyStats&)>& run) {
+        std::vector<size_t> weights(which.size(), 0);
+        size_t total = 0;
+        for (size_t k = 0; k < which.size(); ++k) {
+            for (const il::Block& block : module.functions[which[k]].blocks) weights[k] += block.instructions.size();
+            total += weights[k];
+        }
+        std::vector<RedundancyStats> each(which.size());
+        const size_t threads = threadsForWork(options.threads, which.size(), total, kMinInstructionsPerThread);
+        parallelForEach(heaviestFirst(weights), threads, [&](size_t k) { run(which[k], each[k]); });
+        for (const RedundancyStats& s : each) stats.add(s);
+    };
+    std::vector<uint32_t> speculated, generic;
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        (module.functions[i].isSpeculated() ? speculated : generic).push_back(static_cast<uint32_t>(i));
+    }
     // Speculated functions first: the leaves they keep decide which resume
     // points of G stay. Indices, not iterators: the deque does not grow here,
     // but nothing below should have to know that.
-    for (size_t i = 0; i < module.functions.size(); ++i) {
-        il::Function& fn = module.functions[i];
-        if (fn.isSpeculated()) runRedundancy(module, fn, options, &stats);
-    }
+    runAll(speculated, [&](uint32_t i, RedundancyStats& s) { runRedundancy(module, module.functions[i], options, &s); });
     const std::map<uint32_t, std::vector<uint32_t>> named = namedResumeIds(module);
-    for (size_t i = 0; i < module.functions.size(); ++i) {
-        il::Function& fn = module.functions[i];
-        if (fn.isSpeculated()) continue;
+    runAll(generic, [&](uint32_t i, RedundancyStats& s) {
         RedundancyOptions forG = options;
-        const auto it = named.find(static_cast<uint32_t>(i));
+        const auto it = named.find(i);
         forG.namedResumeIds = it != named.end() ? it->second : std::vector<uint32_t>{};
-        runRedundancy(module, fn, forG, &stats);
-    }
+        runRedundancy(module, module.functions[i], forG, &s);
+    });
     return stats;
 }
 

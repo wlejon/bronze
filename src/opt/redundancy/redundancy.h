@@ -109,6 +109,12 @@ struct RedundancyOptions {
     // would go.
     bool removeUnnamedResumePoints = false;
     std::vector<uint32_t> namedResumeIds;
+    // Threads runRedundancyModule may run functions on (0: the machine's).
+    // The pass reads only the function it is given, the module's tables and,
+    // for a speculated function, its generic function, which the module walk
+    // does not change while speculated functions run: its result does not
+    // depend on the threads.
+    size_t threads = 1;
 };
 
 // What each job did, as counts. Accumulated, never reset by the pass.

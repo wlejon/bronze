@@ -10,6 +10,7 @@
 #include "il_abi.h"
 #include "il_bridge_verifier.h"
 #include "il_pipeline.h"
+#include <brass/core/parallel_for.hpp>
 #include <brass/mir/coro_transform.hpp>
 #include <brass/mir/printer.hpp>
 #include <brass/mir/verifier.hpp>
@@ -96,21 +97,34 @@ static bool is_translator_data_symbol(std::string_view sym) {
 // (runtime_symbols.hpp), so no engine binds it to a call stub. A function
 // the module defines under the prefix (the sort merge stub, whose address
 // the runtime is handed) is code, not a table.
-static void declare_data_symbols(Module& mod) {
-    std::vector<std::string> syms;
-    for (const Function* fn : mod.functions()) {
-        if (!fn) continue;
+static void declare_data_symbols(Module& mod, size_t threads) {
+    // Each function scanned on its own (the scan only reads the module), the
+    // symbols declared in module order.
+    const std::vector<Function*>& fns = mod.functions();
+    std::vector<std::vector<std::string_view>> per(fns.size());
+    std::vector<size_t> weights(fns.size(), 1);
+    size_t total = 0;
+    for (size_t i = 0; i < fns.size(); ++i) {
+        if (fns[i]) weights[i] += fns[i]->block_count();
+        total += weights[i];
+    }
+    brass::parallel_for_each(brass::heaviest_first(weights), brass::threads_for_work(threads, fns.size(), total, 4000),
+                             [&](size_t i) {
+        const Function* fn = fns[i];
+        if (!fn) return;
         for (const BasicBlock* bb : fn->blocks()) {
             if (!bb) continue;
             for (const Instruction* inst : *bb) {
                 if (!inst || inst->opcode() != Opcode::func_addr) continue;
                 const std::string_view sym = inst->symbol();
                 if (is_translator_data_symbol(sym) && !mod.string_symbol(sym) && !mod.get_function(sym))
-                    syms.emplace_back(sym);
+                    per[i].push_back(sym);
             }
         }
+    });
+    for (const auto& syms : per) {
+        for (std::string_view sym : syms) mod.add_symbol_role(sym, SymbolRole::Data);
     }
-    for (const std::string& sym : syms) mod.add_symbol_role(sym, SymbolRole::Data);
 }
 
 std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
@@ -443,7 +457,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     }
 
     ltimer.mark("lower fns");
-    declare_data_symbols(*mod);
+    declare_data_symbols(*mod, options_.build_threads);
     // A lazy body is not there for the scan to see, and declaring its data
     // symbols when it is built would change the module's declarations while
     // other threads read them: every table a function other than the entry
@@ -464,7 +478,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             ++fns;
             for (const BasicBlock* bb : f->blocks()) {
                 ++blocks;
-                for (const Instruction* inst : *const_cast<BasicBlock*>(bb)) insts += inst ? 1 : 0;
+                insts += bb->instruction_count();
             }
         }
         std::fprintf(stderr, "        mir: %zu functions (%zu lazy), %zu blocks, %zu instructions\n", fns,
@@ -483,7 +497,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // optimizes it: until then a suspend is an ordinary instruction to the
     // passes, which would move a frame read or an unboxed reference across
     // it, where a resume re-enters the body and a collection may have run.
-    brass::lower_coroutines(*mod);
+    brass::lower_coroutines(*mod, options_.build_threads);
     ltimer.mark("coroutines");
 
     // 5. Every generic function's resume twin, cut from its body as lowered

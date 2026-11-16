@@ -158,6 +158,7 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     {
         opt::OptimizeOptions optOptions;
         optOptions.diags = &diags;
+        optOptions.threads = options.buildThreads;
         const opt::OptimizeResult optimized =
             opt::optimizeModule(*ilModule, in.feedback ? &*in.feedback : nullptr, optOptions);
         if (!optimized.ok) {

@@ -56,8 +56,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
+#include <future>
+#include <memory>
 #include <string>
 #include <optional>
 #include <unordered_map>
@@ -70,6 +74,7 @@
 #include "opt/core/loops.h"
 #include "opt/inline/inline.h"
 #include "opt/inline/parts.h"
+#include "support/parallel.h"
 
 namespace bronze::opt::inliner {
 
@@ -316,14 +321,31 @@ std::vector<Candidate> choose(const il::Module& module, uint32_t c, std::vector<
 // Callee sizes as the policy reads them (InlineOptions::cleanup), each
 // measured once: a callee's body no longer changes once the bottom-up walk
 // has passed it.
+//
+// The cleanup is most of the pass's time, so a size known not to change
+// before it is asked for is measured ahead, on the pool's threads
+// (prefetch): a speculated function's once its turn is over, an optimistic
+// copy's once it is made, and at the start, a function the pass never
+// changes (not speculated, no speculated function's generic) that a
+// speculated function calls. Each is measured on a copy taken when the
+// prefetch is made, from the module's tables, which the pass does not
+// change: the size is the one `of` would have measured.
 class CalleeSizes {
 public:
-    CalleeSizes(const il::Module& module, const InlineOptions& options) : module_(module), options_(options) {}
+    CalleeSizes(const il::Module& module, const InlineOptions& options)
+        : module_(module),
+          options_(options),
+          threads_(options.cleanup ? threadsForWork(options.threads, SIZE_MAX, SIZE_MAX, 0) : 1),
+          pool_(threads_) {}
     uint32_t of(uint32_t f) {
         const auto it = sizes_.find(f);
         if (it != sizes_.end()) return it->second;
         uint32_t size = 0;
-        if (options_.cleanup) {
+        if (const auto p = pending_.find(f); p != pending_.end()) {
+            std::future<uint32_t> ready = std::move(p->second);
+            pending_.erase(p);
+            size = ready.get();
+        } else if (options_.cleanup) {
             il::Function copy = module_.functions[f];
             options_.cleanup(copy);
             size = bodySize(copy);
@@ -333,13 +355,65 @@ public:
         sizes_.emplace(f, size);
         return size;
     }
-    void forget(uint32_t f) { sizes_.erase(f); }
+    void prefetch(uint32_t f) {
+        if (threads_ <= 1 || sizes_.count(f) != 0 || pending_.count(f) != 0) return;
+        auto job = std::make_shared<Job>(module_.functions[f]);
+        pending_.emplace(f, job->size.get_future());
+        pool_.submit([job, cleanup = &options_.cleanup] {
+            try {
+                (*cleanup)(job->copy);
+                job->size.set_value(bodySize(job->copy));
+            } catch (...) {
+                job->size.set_exception(std::current_exception());
+            }
+        });
+    }
+    void forget(uint32_t f) {
+        sizes_.erase(f);
+        if (const auto p = pending_.find(f); p != pending_.end()) {
+            p->second.wait();
+            pending_.erase(p);
+        }
+    }
 
 private:
+    struct Job {
+        explicit Job(il::Function body) : copy(std::move(body)) {}
+        il::Function copy;
+        std::promise<uint32_t> size;
+    };
+
     const il::Module& module_;
     const InlineOptions& options_;
     std::unordered_map<uint32_t, uint32_t> sizes_;
+    std::unordered_map<uint32_t, std::future<uint32_t>> pending_;
+    size_t threads_;
+    // Last: destroyed first, so its threads are done before what they use.
+    TaskPool pool_;
 };
+
+// The prefetch at the start (CalleeSizes): the functions the pass never
+// changes that a speculated function calls directly and could inline.
+void prefetchStable(const il::Module& module, CalleeSizes& sizes) {
+    const auto n = static_cast<uint32_t>(module.functions.size());
+    std::vector<uint8_t> generic(n, 0);
+    for (const il::Function& fn : module.functions) {
+        if (fn.isSpeculated() && fn.speculatedFrom < n) generic[fn.speculatedFrom] = 1;
+    }
+    std::vector<uint8_t> done(n, 0);
+    for (const il::Function& fn : module.functions) {
+        if (!fn.isSpeculated()) continue;
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::Call || inst.calleeIndex >= n) continue;
+                const uint32_t f = inst.calleeIndex;
+                if (done[f] || generic[f] || module.functions[f].isSpeculated()) continue;
+                done[f] = 1;
+                if (calleeInlinable(module.functions[f])) sizes.prefetch(f);
+            }
+        }
+    }
+}
 
 // One run of the pass: what every caller shares, and the optimistic copies
 // it made (caller -> copy).
@@ -456,9 +530,12 @@ InlineStats inlineModule(il::Module& module, const InlineOptions& options) {
                 }
             }
         }
+        prefetchStable(module, sizes);
         for (uint32_t c : bottomUpOrder(module)) {
             inlineInto(run, c);
             sizes.forget(c);
+            sizes.prefetch(c);
+            if (const auto copy = run.plus.find(c); copy != run.plus.end()) sizes.prefetch(copy->second);
         }
         // Every reference to a caller the pass made an optimistic copy of
         // names the copy: it is entered first (opt/speculate optimistic.h).

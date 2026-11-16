@@ -84,6 +84,7 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     sizing.hoistLoops = false;
     inliner::InlineOptions inlining = options.inlining;
     inlining.cleanup = [&module, sizing](il::Function& fn) { runRedundancy(module, fn, sizing); };
+    inlining.threads = options.threads;
     if (const spec::Harvest* h = profile != nullptr ? profile->harvest() : nullptr;
         h != nullptr && anySpeculated && result.speculate.harvestIgnored == 0 && h->slowSites == module.slowSiteCount) {
         inlining.harvestCount = [h](uint32_t index) -> std::optional<uint64_t> {
@@ -104,6 +105,7 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     RedundancyOptions redundancy;
     redundancy.maxRounds = options.maxRounds;
     redundancy.hoistLoops = options.hoistLoops;
+    redundancy.threads = options.threads;
     // runRedundancyModule fills namedResumeIds per G from the surviving
     // leaves; without a speculated function there is no resume point to drop.
     redundancy.removeUnnamedResumePoints = true;

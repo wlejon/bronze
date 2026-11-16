@@ -96,6 +96,10 @@ struct InlineOptions {
     // the harvest has none for it (no harvest, a stale one, a word the
     // harvested build did not count). Unset: no counts at all.
     std::function<std::optional<uint64_t>(uint32_t index)> harvestCount;
+    // Threads that may run `cleanup` ahead of the walk (driver.cpp
+    // CalleeSizes; 0: the machine's). The pass's result does not depend on
+    // it. `cleanup` must then be safe to run on several copies at once.
+    size_t threads = 1;
 };
 
 struct InlineStats {

@@ -80,9 +80,10 @@ bool loadNativeManifest(const std::string& manifestPath, const std::string& nati
 // backend, for every command that compiles or shows a kept module. False
 // with `diags` holding why when the IL failed verification.
 bool runOptimizer(il::Module& module, const std::optional<spec::TypeProfile>& profile, bool optStats,
-                  DiagnosticSink& diags) {
+                  DiagnosticSink& diags, size_t threads = 0) {
     opt::OptimizeOptions options;
     options.diags = &diags;
+    options.threads = threads;
     const opt::OptimizeResult result = opt::optimizeModule(module, profile ? &*profile : nullptr, options);
     if (optStats) std::fputs(opt::formatOptimizeStats(result).c_str(), stderr);
     return result.ok;
@@ -430,7 +431,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     inferred.reset();
     astModule.reset();
-    const bool optimized = runOptimizer(*ilModule, feedbackProfile, optStats, diags);
+    const bool optimized = runOptimizer(*ilModule, feedbackProfile, optStats, diags, buildThreads);
     feedbackProfile.reset();
     timer.mark("optimize");
     if (!optimized) {
