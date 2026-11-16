@@ -200,6 +200,23 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_miss, {}, bb_hit, {});
     b.position_at_end(bb_hit);
     arm_begin(b, kElemArmArray);
+    if (arms_marked()) {
+        // An Array holding anything but Numbers (its NUMBERS bit clear and
+        // not claimable now) marks kElemArmNoNumbers: what decides whether
+        // the speculated read tests the bit (opt/speculate/evidence.cpp).
+        BasicBlock* bb_claim = b.append_block(prefix + "_claim");
+        BasicBlock* bb_mixed = b.append_block(prefix + "_mixed");
+        b.position_at_end(bb_hit);
+        Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+        Value* has_numbers =
+            b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)), b.build_iconst_i32(0));
+        b.build_br_if(has_numbers, bb_merge, {elem}, bb_claim, {});
+        b.position_at_end(bb_claim);
+        Value* claimed = b.build_call("bronze_array_claim_numbers", Type::i32(), {obj});
+        b.build_br_if(b.build_ne(claimed, b.build_iconst_i32(0)), bb_merge, {elem}, bb_mixed, {});
+        b.position_at_end(bb_mixed);
+        arm_begin(b, kElemArmNoNumbers);
+    }
     b.build_br(bb_merge, {elem});
 
     b.position_at_end(bb_not_arr);
@@ -561,14 +578,20 @@ bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
 // `is.dense_array`: an Array with an elements block, `max_index < length`, and
 // the array index hazard clear (the TLS tag mask the elements word is ANDed
 // with zeroes once it is set), as an i32.
-Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index) {
+// With `numbers`, also its NUMBERS bit (runtime/array.h); a clear bit is
+// claimed on a cold path (bronze_array_claim_numbers scans at most
+// BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements), whose answer is the test's.
+Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index, bool numbers) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "is_dense_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
     BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_check = numbers ? b.append_block(prefix + "_check") : nullptr;
+    BasicBlock* bb_claim = numbers ? b.append_block(prefix + "_claim") : nullptr;
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i32());
+    if (numbers) bb_claim->set_cold();
 
     b.position_at_end(cur);
     Value* ptr = nullptr;
@@ -586,7 +609,21 @@ Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint
     Value* has_elems = b.build_eq(b.build_and(elems, mask), iconst(b, kObjectTagBits));
     Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
-    b.build_br(bb_merge, {b.build_and(has_elems, in_bounds)});
+    Value* dense = b.build_and(has_elems, in_bounds);
+    if (!numbers) {
+        b.build_br(bb_merge, {dense});
+        b.position_at_end(bb_merge);
+        return result;
+    }
+    Value* bits = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+    Value* has_numbers =
+        b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)), b.build_iconst_i32(0));
+    b.build_br_if(b.build_and(dense, has_numbers), bb_merge, {b.build_iconst_i32(1)}, bb_check, {});
+    b.position_at_end(bb_check);
+    b.build_br_if(dense, bb_claim, {}, bb_merge, {b.build_iconst_i32(0)});
+    b.position_at_end(bb_claim);
+    Value* claimed = b.build_call("bronze_array_claim_numbers", Type::i32(), {obj});
+    b.build_br(bb_merge, {b.build_ne(claimed, b.build_iconst_i32(0))});
 
     b.position_at_end(bb_merge);
     return result;

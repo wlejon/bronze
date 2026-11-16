@@ -512,7 +512,11 @@ int32, then `kArithArmResultDouble` for a Number result that was no int32),
 which `planArith` reads when no recorded value site exists. It also splits an
 element access's typed-array arm by element kind (`kElemArmView` for
 Float32, `kElemArmViewF64`, `kElemArmViewI32`, `kElemArmViewOther`) and marks
-`kElemArmMiss` for a view index past the length. Every build that counts
+`kElemArmMiss` for a view index past the length. An Array read whose array
+holds anything but Numbers (its NUMBERS bit clear and not claimable,
+runtime/array.h) marks `kElemArmNoNumbers`; a read that never did is planned
+on the bit (`is.dense_array` with `kDenseNumbers`, no hole or number test
+after the load). Every build that counts
 slow sites marks an element access's append (`kElemArmGrow`, which keeps
 `planElem` off a write that grew its Array) and an Array read that found no
 element (`kElemArmMiss`), and a `.length` read's header answers

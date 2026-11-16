@@ -158,11 +158,15 @@ std::optional<bool> FactEnv::known(FactKind kind, ValueId v, int64_t imm, ValueI
                 if (f.holds) return false;
                 continue;
             // `is.dense_array v, k` covers every index up to k; failing it at
-            // k fails it at every larger k.
-            case FactKind::DenseArray:
-                if (f.holds && f.imm >= imm) return true;
-                if (!f.holds && f.imm <= imm) return false;
+            // k fails it at every larger k. The NUMBERS form (il_op.h
+            // kDenseNumbers) answers the plain one, never the reverse.
+            case FactKind::DenseArray: {
+                const int64_t fi = f.imm & il::kDenseIndexMask, qi = imm & il::kDenseIndexMask;
+                const bool fn = (f.imm & il::kDenseNumbers) != 0, qn = (imm & il::kDenseNumbers) != 0;
+                if (f.holds && fi >= qi && (fn || !qn)) return true;
+                if (!f.holds && fi <= qi && (qn || !fn)) return false;
                 continue;
+            }
             case FactKind::TypedArray:
                 if (f.imm == imm) return f.holds;
                 continue;

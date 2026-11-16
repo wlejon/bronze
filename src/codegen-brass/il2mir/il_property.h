@@ -172,7 +172,7 @@ public:
 
     // `is.dense_array`: whether `obj` is an Array with an elements block and
     // `max_index < length`.
-    Value* lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index);
+    Value* lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index, bool numbers);
     // `is.typed_array`: whether `obj` is a TypedArray of `elem_kind`, as an i32
     // (and, with kTypedArrayPristineLength in `imm`, whether its chain is
     // pristine as typed_array_chain_pristine says).

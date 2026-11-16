@@ -136,6 +136,7 @@ void BoxFolder::visit(BlockId b, size_t i) {
         case Op::IsObject:
         case Op::IsNullish:
         case Op::IsHole:
+        case Op::IsUninit:
             if (s && inst.operands.size() == 1 && foldTest(inst, *s)) {
                 ++ctx_.stats.testsFolded;
                 changed_ = true;
@@ -220,6 +221,8 @@ bool BoxFolder::foldTest(il::Instruction& inst, const BoxSource& s) {
         case Op::IsObject: answer = form->isObject; break;
         case Op::IsNullish: answer = form->isNullish; break;
         case Op::IsHole: answer = form->isHole; break;
+        // No box is the uninitialized marker.
+        case Op::IsUninit: answer = false; break;
         default: return false;
     }
     if (!answer) return false;

@@ -31,6 +31,7 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::IsNumber:
         case Op::IsNullish:
         case Op::IsHole:
+        case Op::IsUninit:
         case Op::IsDenseArray:
         case Op::IsPlainArray:
         case Op::IsTypedArray:

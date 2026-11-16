@@ -94,7 +94,8 @@ ValueId indexValue(GuardBuilder& b, const SitePlan& plan, ValueId index) {
 // A dense Array's in-bounds int32 index, guarded with the receiver.
 ValueId guardDense(GuardBuilder& b, const SitePlan& plan, ValueId array, ValueId index) {
     const bool constant = plan.constIndex != kNoConstIndex;
-    b.guard(b.emit(il::Op::IsDenseArray, il::Type::Bool, {array}, constant ? plan.constBound : 0));
+    const int32_t numbers = plan.kind == SiteKind::ElemRead && plan.numbers ? il::kDenseNumbers : 0;
+    b.guard(b.emit(il::Op::IsDenseArray, il::Type::Bool, {array}, (constant ? plan.constBound : 0) | numbers));
     const ValueId x = indexValue(b, plan, index);
     if (!constant) {
         const ValueId length = b.emit(il::Op::ArrayLength, il::Type::I32, {array});
@@ -199,10 +200,12 @@ void rewriteElem(RewriteContext& ctx, const SitePlan& plan) {
             load.op = il::Op::ElemLoad;
             load.type = il::Type::Dynamic;
             load.operands = {array, x};
+            load.immI32 = plan.numbers ? il::kElemLoadNumber : 0;
             b.emitResult(std::move(load));
             // The result is the hole only on the edge that leaves, where
-            // nothing reads it: the exit resumes in front of the site.
-            b.guard(b.emit(il::Op::IsHole, il::Type::Bool, {site.result}), false);
+            // nothing reads it: the exit resumes in front of the site. A
+            // NUMBERS array has no hole below its length.
+            if (!plan.numbers) b.guard(b.emit(il::Op::IsHole, il::Type::Bool, {site.result}), false);
         }
         b.finish();
         ++ctx.stats.elementReads;

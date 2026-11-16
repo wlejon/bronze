@@ -204,7 +204,16 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     inst.operands = {isHoistableImmutable ? entryEnvValue_ : currentEnv(ilFn)};
     inst.envDepth = entryDepth;
     inst.envIndex = index;
-    inst.envImmutable = isImmutable;
+    // A checked read of an OUTER scope's binding that nothing writes once it
+    // is initialized (a `const`, or a `let` its whole reach never assigns):
+    // il.h envImmutable on env.get.tdz, which speculation reads as an
+    // env.get past a test of the uninitialized marker (opt/speculate/tdz.cpp).
+    const bool tdzImmutable =
+        lexical && isOuterScope && !slotName.empty() && scopeIndex < envScopes_.size() &&
+        (imm == SlotImmutability::Throws ||
+         (envScopes_[scopeIndex].rebindsKnown && !envScopes_[scopeIndex].deeplyAssigned.contains(slotName) &&
+          !assignedNames_.contains(slotName)));
+    inst.envImmutable = lexical ? tdzImmutable : isImmutable;
     if (lexical) {
         inst.keyIndex =
             getKeyConstantIndex(envScopes_[scopeIndex].slotNames[index]);

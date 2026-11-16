@@ -68,6 +68,10 @@ inline constexpr uint32_t kElemArmMiss = 4;
 inline constexpr uint32_t kElemArmKindBit0 = 5;
 inline constexpr uint32_t kElemArmKindBit1 = 6;
 inline constexpr uint32_t kElemArmKindBit2 = 7;
+// A read's Array arm whose array held something besides Numbers (its NUMBERS
+// bit clear and not claimable). Shares kElemArmKindBit0's index: a site that
+// met Arrays and views is not planned (planElem).
+inline constexpr uint32_t kElemArmNoNumbers = 5;
 inline constexpr int32_t kElemViewKinds[8] = {
     BRONZE_ABI_TA_KIND_FLOAT32, BRONZE_ABI_TA_KIND_FLOAT64, BRONZE_ABI_TA_KIND_INT32,
     BRONZE_ABI_TA_KIND_UINT32,  BRONZE_ABI_TA_KIND_UINT16,  BRONZE_ABI_TA_KIND_INT16,
@@ -133,6 +137,7 @@ enum class SiteKind : uint8_t {
     MemberGet,     // prop.get of an accessor's getter
     MemberSet,     // prop.set (an assignment) of an accessor's setter
     MemberAbsent,  // prop.get of a key on neither the receiver nor its chain
+    TdzRead,       // env.get.tdz of a binding fixed once initialized (tdz.cpp)
 };
 
 // Int: every operand an int32 and the operation computed on i32 (add, sub,
@@ -190,6 +195,9 @@ struct SitePlan {
     // A dense constant-index access: the largest constant index planned for
     // the same receiver, which its dense-array test covers.
     int32_t constBound = kNoConstIndex;
+    // A dense read whose every Array held only Numbers (NUMBERS bit set or
+    // claimed, kElemArmNoNumbers never ran): tested with kDenseNumbers.
+    bool numbers = false;
     // MathCall: the il::Intrinsic.
     int32_t intrinsic = -1;
     // MathCall on the pinned global Math (il::Module::mathPinned): the callee

@@ -177,7 +177,11 @@ std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {
             if (auto site = planSite(fnIndex, b, i, refs)) out.sites.push_back(std::move(*site));
         }
     }
-    if (out.sites.empty()) return std::nullopt;
+    // TDZ reads alone make no S: they pay inside one, beside other sites.
+    if (std::all_of(out.sites.begin(), out.sites.end(),
+                    [](const SitePlan& p) { return p.kind == SiteKind::TdzRead; })) {
+        return std::nullopt;
+    }
     shareConstBounds(fn, out);
     shareShapeSets(fn, out);
     demoteUnsourcedInts(fn, out);
@@ -231,6 +235,15 @@ std::optional<SitePlan> Evidence::planSite(uint32_t fnIndex, BlockId block, uint
         case il::Op::Construct: plan = planConstruct(inst, refs, block, index); break;
         case il::Op::ElemGet:
         case il::Op::ElemSet: plan = planElem(inst, refs, block, index); break;
+        // A binding fixed once initialized needs no evidence (tdz.cpp).
+        case il::Op::EnvGetTdz:
+            if (inst.envImmutable && inst.operands.size() == 1 && inst.type == il::Type::Dynamic) {
+                plan = SitePlan{};
+                plan->kind = SiteKind::TdzRead;
+                plan->block = block;
+                plan->index = index;
+            }
+            break;
         default:
             if (arithSupported(inst)) plan = planArith(fnIndex, inst, refs, block, index);
             break;
@@ -802,6 +815,7 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
             return std::nullopt;
         }
         plan.kind = SiteKind::ElemRead;
+        plan.numbers = array && !slowRan(site + kElemArmNoNumbers);
     } else {
         const int32_t mode = il::writeMode(inst);
         if (mode != il::kWriteSloppy && mode != il::kWriteStrict) return std::nullopt;

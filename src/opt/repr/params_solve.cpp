@@ -103,6 +103,7 @@ bool foldableUse(Op op) {
         case Op::IsObject:
         case Op::IsNullish:
         case Op::IsHole:
+        case Op::IsUninit:
         case Op::UnboxI32:
         case Op::UnboxF64:
         case Op::Unbox:

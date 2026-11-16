@@ -97,7 +97,9 @@ struct Instruction {
     static constexpr int32_t kConstructNamed = 1;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
-    bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding
+    // EnvGet: slot is an initialized immutable binding. EnvGetTdz: once
+    // initialized, the slot is never written again (lower_scope.cpp).
+    bool envImmutable = false;
     // A direct `call` to a CLOSURE, and the number of parent links from the
     // record in operand 0 to the one the closure captured.
     //

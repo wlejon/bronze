@@ -69,11 +69,13 @@ struct ArrayHeader {
     static constexpr uint32_t kHasCustomPrototype = 1;
     // NUMBERS: every element below `length` is a Number in its double form
     // (`Value::isNumber()`: no hole, no Int32 box, nothing tagged), so a
-    // constant-index read in bounds is a load of a Number. Generated code spends it to skip the per-element
-    // number tests of a kernel's reads (lower/guard_region.h, "NUMBER ARRAYS").
+    // read in bounds is a load of a Number. Speculated code spends it to skip
+    // the hole and number tests after each read (`is.dense_array` with
+    // il::kDenseNumbers, il/il_op.h).
     //
-    // SET only by `claimNumbers`, which scans, so the bit is never more than a
-    // cached answer to a question about the elements as they are. CLEARED by
+    // SET by `claimNumbers`, which scans, and on an empty array generated code
+    // makes (create.array of length 0, il_alloc_lowering.cpp), so the bit is
+    // never more than a true answer about the elements as they are. CLEARED by
     // every write that could falsify it. The mutable accessors below clear it
     // themselves, so a path that writes elements without knowing about the bit
     // can only make the array slower, never make the bit lie; the few writers

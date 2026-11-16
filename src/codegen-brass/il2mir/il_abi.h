@@ -100,9 +100,12 @@ inline ArrayElements array_elements(brass::Builder& b, brass::Value* ptr) {
                                       b.build_iconst_i64(0x0000FFFFFFFFFFFFLL));
     return {block, b.build_zext_i64(array_header_load(b, brass::Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET))};
 }
-// Element `idx` of an Array (array_elements), a boxed value.
-inline brass::Value* array_element_load(brass::Builder& b, const ArrayElements& e, brass::Value* idx) {
-    return with_alias_class(b.build_load_indexed(brass::Type::i64(), e.block, b.build_add(idx, e.head), 8,
+// Element `idx` of an Array (array_elements), a boxed value; loaded as an
+// f64 for an element known to be a Number in its double form (its bits are
+// the box: il_bridge_verifier.cpp is_value_bits_f64).
+inline brass::Value* array_element_load(brass::Builder& b, const ArrayElements& e, brass::Value* idx,
+                                        brass::Type type = brass::Type::i64()) {
+    return with_alias_class(b.build_load_indexed(type, e.block, b.build_add(idx, e.head), 8,
                                                  static_cast<int32_t>(BRONZE_ABI_HDR_BYTES)),
                             kBoxedElementAliasClass);
 }
@@ -194,6 +197,15 @@ inline constexpr uint32_t kElemArmMiss = 4;
 inline constexpr uint32_t kElemArmKindBit0 = 5;
 inline constexpr uint32_t kElemArmKindBit1 = 6;
 inline constexpr uint32_t kElemArmKindBit2 = 7;
+// A read of an Array whose NUMBERS bit was clear and could not be claimed
+// (bronze_array_claim_numbers): opt/speculate/evidence.h. An Array read never
+// marks the kind bits, which only views mark.
+inline constexpr uint32_t kElemArmNoNumbers = 5;
+// `is.dense_array`'s NUMBERS bit above its max index (il/il_op.h kDenseNumbers).
+inline constexpr int64_t kDenseNumbers = int64_t{1} << 30;
+inline constexpr int64_t kDenseIndexMask = kDenseNumbers - 1;
+// `elem.load`'s immI32 under such a test (il/il_op.h kElemLoadNumber).
+inline constexpr int64_t kElemLoadNumber = 1;
 inline constexpr int32_t kElemViewKinds[8] = {
     BRONZE_ABI_TA_KIND_FLOAT32, BRONZE_ABI_TA_KIND_FLOAT64, BRONZE_ABI_TA_KIND_INT32,
     BRONZE_ABI_TA_KIND_UINT32,  BRONZE_ABI_TA_KIND_UINT16,  BRONZE_ABI_TA_KIND_INT16,

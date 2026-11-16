@@ -153,8 +153,10 @@ Effects rawEffects(const Instruction& inst) {
         // that grows writes `ArrayLen`) or under code that writes everything;
         // the block's CONTENTS (`Elements`, what `elem.store` writes) are not
         // read.
+        // The NUMBERS form also reads the bits word an element store clears.
         case Op::IsDenseArray:
-            return reading(Loc::Shapes | Loc::ArrayLen);
+            return (inst.immI32 & kDenseNumbers) != 0 ? reading(Loc::Shapes | Loc::ArrayLen | Loc::Elements)
+                                                      : reading(Loc::Shapes | Loc::ArrayLen);
         // The array's shape word (bare or not) is what the
         // test reads; a write that changes it is a transition.
         case Op::IsPlainArray:
@@ -324,6 +326,7 @@ Effects rawEffects(const Instruction& inst) {
         case Op::FnCodeIs:    // a function's code never changes
         case Op::InBounds:
         case Op::IsHole:
+        case Op::IsUninit:
         case Op::IsArray:     // an object's kind never changes
         case Op::FnNativeIs:
         case Op::MathFn:

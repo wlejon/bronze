@@ -46,6 +46,9 @@ DefTag tagByDefinition(const ValueView& values, ValueId v) {
                 case Type::Str: return DefTag::Primitive;
                 default: return DefTag::Unknown;
             }
+        // Under `is.dense_array` with kDenseNumbers: a Number in double form.
+        case Op::ElemLoad:
+            return (d->immI32 & il::kElemLoadNumber) != 0 ? DefTag::Number : DefTag::Unknown;
         default:
             return DefTag::Unknown;
     }
@@ -90,6 +93,7 @@ std::optional<bool> isI32Test(const FactEnv& facts, DefTag def, ValueId x) {
 // the box of an i32 decides it.
 std::optional<bool> isNumberTest(const FactEnv& facts, DefTag def, ValueId x) {
     if (const auto k = facts.known(FactKind::Number, x)) return k;
+    if (def == DefTag::Number) return true;
     if (def == DefTag::Primitive || def == DefTag::Nullish) return false;
     if (knownObject(facts, def, x) || facts.known(FactKind::Nullish, x) == true ||
         facts.known(FactKind::Hole, x) == true) {
@@ -277,6 +281,11 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
             return isNullishTest(facts, def, x);
         case Op::IsHole:
             return isHoleTest(facts, def, x);
+        // Only an env read produces the marker: a value with a known tag or
+        // a defining constant, box or allocation is not it.
+        case Op::IsUninit:
+            if (def != DefTag::Unknown || facts.tagOf(x) != ValueTag::Unknown) return false;
+            return std::nullopt;
         case Op::IsDenseArray:
             return either(facts.known(FactKind::DenseArray, x, inst.immI32),
                           knownNotObject(facts, def, x) ? std::optional<bool>(false) : std::nullopt);

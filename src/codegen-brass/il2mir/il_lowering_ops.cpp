@@ -115,6 +115,12 @@ Value* boxed_f64_source(Value* v, const BasicBlock* here) {
     if (def && def->opcode() == Opcode::bitcast_i64_f64 && def->operand_count() >= 1) {
         const Instruction* conv = def->operand(0)->defining_instruction();
         if (conv && conv->opcode() == Opcode::sitofp_f64_i32) return def->operand(0);
+        // A NUMBERS array's element read as a double (il_lowering_spec.cpp
+        // ElemLoad): the stored box's bits, canonical already.
+        if (conv && (conv->opcode() == Opcode::load || conv->opcode() == Opcode::load_indexed) &&
+            conv->alias_class() == kBoxedElementAliasClass) {
+            return def->operand(0);
+        }
         return nullptr;
     }
     if (!def || def->opcode() != Opcode::select || def->operand_count() < 3) return nullptr;
@@ -532,8 +538,9 @@ bool lower_ops_instruction(
                 return true;
             }
             Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
-            const auto max_index = static_cast<uint32_t>(inst_ast.imm_i64);
-            res_val = lowering->prop_lowering().lower_is_dense_array(b, src, max_index);
+            const auto max_index = static_cast<uint32_t>(inst_ast.imm_i64 & kDenseIndexMask);
+            const bool numbers = (inst_ast.imm_i64 & kDenseNumbers) != 0;
+            res_val = lowering->prop_lowering().lower_is_dense_array(b, src, max_index, numbers);
             return true;
         }
 

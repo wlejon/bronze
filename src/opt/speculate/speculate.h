@@ -69,6 +69,7 @@ struct SpeculateStats {
     uint32_t elementReads = 0;
     uint32_t elementWrites = 0;
     uint32_t arrayLengths = 0;
+    uint32_t tdzReads = 0;             // env.get.tdz of a binding fixed once initialized (tdz.cpp)
     uint32_t mathCalls = 0;
     uint32_t guards = 0;               // branches whose failing edge leaves
     uint32_t resumePoints = 0;         // placed in generic functions

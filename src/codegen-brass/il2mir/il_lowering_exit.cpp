@@ -105,7 +105,15 @@ bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function
                 v = ensure_type(v, Type::i32(), b);
                 if (!is_zero_one(v)) v = b.build_and(v, b.build_iconst_i32(1));
                 break;
-            default: break;
+            default:
+                // A box of a double the main line holds (box.f64, a NUMBERS
+                // element) is made again here, so the main line keeps the
+                // double alone live to this exit, not its box as well.
+                if (Value* f = boxed_f64_source(v)) {
+                    Value* bits = box_f64_bits(b, f);
+                    v = v->type().is_tagged() ? b.build_bitcast_tagged_i64(bits) : bits;
+                }
+                break;
         }
         state.push_back(v);
     }

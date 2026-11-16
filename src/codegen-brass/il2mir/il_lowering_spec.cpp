@@ -75,6 +75,7 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::ElemStore:
         case BronzeOp::InBounds:
         case BronzeOp::IsHole:
+        case BronzeOp::IsUninit:
         case BronzeOp::IsArray:
         case BronzeOp::TypedLength:
         case BronzeOp::TypedLoad:
@@ -245,6 +246,12 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         // f64 = unbox.f64.unchecked %v: the bits as a double (movq).
         case BronzeOp::UnboxF64: {
             if (!need(1)) return false;
+            // A box made of a double here (box.f64, a NUMBERS element) is
+            // that double.
+            if (Value* f = boxed_f64_source(opd[0])) {
+                res_val = f;
+                return true;
+            }
             res_val = b.build_bitcast_f64_i64(bits(0));
             return true;
         }
@@ -338,6 +345,11 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             if (!need(2)) return false;
             Value* ptr = object_address(b, bits(0));
             const ArrayElements e = array_elements(b, ptr);
+            if ((inst.imm_i64 & kElemLoadNumber) != 0) {
+                // A NUMBERS array's element: a double, boxed as its bits.
+                res_val = b.build_bitcast_i64_f64(array_element_load(b, e, b.build_zext_i64(i32(1)), Type::f64()));
+                return true;
+            }
             res_val = array_element_load(b, e, b.build_zext_i64(i32(1)));
             return true;
         }
@@ -385,6 +397,12 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         case BronzeOp::IsHole: {
             if (!need(1)) return false;
             res_val = b.build_eq(bits(0), iconst64(b, BRONZE_ABI_HOLE_BITS));
+            return true;
+        }
+        // bool = is.uninit %v: the word is BRONZE_ABI_UNINITIALIZED_BITS.
+        case BronzeOp::IsUninit: {
+            if (!need(1)) return false;
+            res_val = b.build_eq(bits(0), iconst64(b, BRONZE_ABI_UNINITIALIZED_BITS));
             return true;
         }
         // bool = is.array %v: an object whose header word is the Array's.

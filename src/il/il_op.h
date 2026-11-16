@@ -133,7 +133,12 @@ enum class Op : uint8_t {
     // own receiver proof (llvm_recv_proof.h), so it claims nothing the reads it
     // stands in front of were not already going to assume
     // (lower_pattern.cpp).
-    IsDenseArray,  // a: bool = is.dense_array b, <immI32: max index>
+    // With kDenseNumbers in immI32 it also asks the array's NUMBERS bit
+    // (runtime/array.h): every element below the length is a Number in its
+    // double form, so a read in bounds needs no hole or number test after it.
+    // A clear bit is claimed on the spot (bronze_array_claim_numbers) before
+    // the test answers no. Reads `Elements` too: a store may clear the bit.
+    IsDenseArray,  // a: bool = is.dense_array b, <immI32: max index | kDenseNumbers>
     Ret,        // ret [a]
     // `throw v`: goes to this block's handler with v, or raises v out of the
     // function when the block has none. A terminator, because it is a way OUT
@@ -616,7 +621,9 @@ enum class Op : uint8_t {
     // block, as stored: a hole reads as the HOLE value, never `undefined`, and
     // no prototype is asked — so pair it with `is.hole`. Unchecked: %arr is an
     // Array and %i is in bounds (`in.bounds %i, %len` with %len its
-    // `array.length`). Reads `Elements`.
+    // `array.length`). Reads `Elements`. immI32 kElemLoadNumber: the array
+    // passed `is.dense_array` with kDenseNumbers, so the element is a Number
+    // in its double form (never the hole).
     ElemLoad,
     // elem.store %arr, %i, %v. Stores %v (dynamic, never the hole) into the
     // element block at %i (i32), write barrier included. Unchecked as
@@ -631,6 +638,11 @@ enum class Op : uint8_t {
     // a: bool = is.hole %v. %v (dynamic) is the array-hole value
     // (BRONZE_ABI_HOLE_BITS), which only `elem.load` can produce. Pure.
     IsHole,
+    // a: bool = is.uninit %v. %v (dynamic) is the uninitialized-binding marker
+    // (BRONZE_ABI_UNINITIALIZED_BITS), which only `env.get` of a lexical slot
+    // can produce: speculation's form of `env.get.tdz` is that read with this
+    // test guarded false (opt/speculate/tdz.cpp). Pure.
+    IsUninit,
 
     // ---- speculation: finishing an inlined call generically -------------
     // `a = resume.call @G, <id>, %s0, %s1, ...`: runs G's resume twin from
@@ -784,6 +796,11 @@ const IntrinsicInfo* intrinsicInfo(int32_t i);
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).
 inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;
+// The bit of `is.dense_array`'s immI32 above its max index (see there), and
+// `elem.load`'s immI32 under such a test.
+inline constexpr int32_t kDenseNumbers = 1 << 30;
+inline constexpr int32_t kDenseIndexMask = kDenseNumbers - 1;
+inline constexpr int32_t kElemLoadNumber = 1;
 
 const char* opName(Op op);
 bool isTerminator(Op op);

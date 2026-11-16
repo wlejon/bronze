@@ -641,15 +641,16 @@
 /* ArrayHeader::reserved, a word of bits. NUMBERS (runtime/array.h says
  * exactly what it promises): every element below `length` is a Number in its
  * double form (bits <= BRONZE_ABI_NUMBER_MAX_BITS). Generated code that
- * stores anything else into an element, or a hole, clears it;
- * bronze_array_claim_numbers is the only thing that sets it, and only on an
- * array at the thread's array shape. Bit 1 is the runtime's custom-prototype
- * mark. */
+ * stores anything else into an element, or a hole, clears it. It is set on
+ * an empty array generated code makes (create.array of length 0, which has no
+ * element to promise anything about) and by bronze_array_claim_numbers, only
+ * on an array at the thread's array shape. Bit 1 is the runtime's
+ * custom-prototype mark. */
 #define BRONZE_ABI_ARRAY_BITS_OFFSET     36
 #define BRONZE_ABI_ARRAY_BIT_NUMBERS     2
-/* The longest array bronze_array_claim_numbers scans: a claim is made in
- * front of a kernel's constant-index reads, and a longer array is not one a
- * scan per visit could pay for. */
+/* The longest array bronze_array_claim_numbers scans: a claim is made where
+ * `is.dense_array` with kDenseNumbers finds the bit clear (il/il_op.h), and a
+ * longer array is not one a scan per visit could pay for. */
 #define BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH 64
 /* The frame bronze_array_sort_merged hands to a module's merge stub
  * (il2mir/il_array_sort.cpp), which it enters once per sort with the frame as

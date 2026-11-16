@@ -301,8 +301,11 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET,
                   b.build_iconst_i64(static_cast<int64_t>(arr_w3)));
 
-    // Word 4 (offset 32): head_offset=0, reserved=0
-    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET, b.build_iconst_i64(0));
+    // Word 4 (offset 32): head_offset=0, reserved: NUMBERS for an empty
+    // array (no element below its length is anything but a Number), else 0.
+    const uint64_t arr_w4 = param_count == 0 ? uint64_t{BRONZE_ABI_ARRAY_BIT_NUMBERS} << 32 : 0;
+    b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET,
+                  b.build_iconst_i64(static_cast<int64_t>(arr_w4)));
 
     // Word 5 (offset 40): elements = Tag::Object boxed elem_ptr
     Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
@@ -329,6 +332,13 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     // Fallback path
     b.position_at_end(bb_fallback);
     Value* fallback_val = b.build_call("bronze_create_array", Type::i64(), {size_val});
+    if (param_count == 0) {
+        // The same object the fast path makes: born NUMBERS.
+        Value* p = b.build_and(fallback_val, b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK)));
+        Value* bits = b.build_load(Type::i32(), p, BRONZE_ABI_ARRAY_BITS_OFFSET);
+        b.build_store(Type::i32(), p, BRONZE_ABI_ARRAY_BITS_OFFSET,
+                      b.build_or(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)));
+    }
     b.build_br(bb_merge, {fallback_val});
 
     // Merge block

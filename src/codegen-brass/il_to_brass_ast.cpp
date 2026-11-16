@@ -14,6 +14,8 @@
 namespace bronze::codegen {
 
 static_assert(il2mir::kSlowSiteArms == bronze::il::kSlowSiteArms, "one slow site's indices, counted twice");
+static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kElemLoadNumber == bronze::il::kElemLoadNumber,
+              "the NUMBERS forms of is.dense_array and elem.load, named twice");
 static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
                   il2mir::kLastShapeArm == bronze::il::kLastShapeArm,
               "the shape turns' indices, named twice");
@@ -522,13 +524,17 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::FnEnv: out.op = il2mir::BronzeOp::FnEnv; break;
         case il::Op::ArrayLength: out.op = il2mir::BronzeOp::ArrayLength; break;
-        case il::Op::ElemLoad: out.op = il2mir::BronzeOp::ElemLoad; break;
+        case il::Op::ElemLoad:
+            out.op = il2mir::BronzeOp::ElemLoad;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::ElemStore: out.op = il2mir::BronzeOp::ElemStore; break;
         case il::Op::InBounds:
             out.op = il2mir::BronzeOp::InBounds;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::IsHole: out.op = il2mir::BronzeOp::IsHole; break;
+        case il::Op::IsUninit: out.op = il2mir::BronzeOp::IsUninit; break;
         case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
         case il::Op::TypedLength: out.op = il2mir::BronzeOp::TypedLength; break;
         case il::Op::TypedLoad:

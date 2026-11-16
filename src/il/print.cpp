@@ -649,7 +649,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                (inst.keyIndex < module.keyConstants.size()
                                     ? module.keyConstants[inst.keyIndex]
                                     : std::string("?")) +
-                               "\"";
+                               "\"" + (inst.envImmutable ? " fixed" : "");
                         break;
                     case Op::ModuleEnvSet:
                         out += "module.env.set %" +

@@ -150,6 +150,7 @@ static const SpecSignature* specSignature(Op op) {
         case Op::IsObject:
         case Op::IsI32:
         case Op::IsHole:
+        case Op::IsUninit:
         case Op::FnCodeIs:
         case Op::IsArray:
         case Op::FnNativeIs:
