@@ -104,6 +104,8 @@ struct InlineStats {
     uint32_t inlined = 0;             // calls replaced by a body
     uint32_t inlinedSpeculated = 0;   // of those, of a speculated callee
     uint32_t inlinedHot = 0;          // of those, taken as hot calls (above)
+    uint32_t inlinedOptimistic = 0;   // of those, of an optimistic callee (opt/speculate optimistic.h)
+    uint32_t optimisticCopies = 0;    // optimistic copies the pass made of conservative callers
     uint32_t refusedCallee = 0;       // the callee can never be inlined
     uint32_t refusedSite = 0;         // this call cannot take it (env hops, no resume-after, types)
     uint32_t refusedSize = 0;         // too big for where the call is

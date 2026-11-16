@@ -2,7 +2,8 @@
 
 // THE DEOPT SITES of a module: every `resume.point` of a generic function G,
 // numbered across the module. Each has an exit counter in the module's
-// per-thread data (`__bronze_deopt_counts`, after one RETIRE word per G),
+// per-thread data (`__bronze_deopt_counts`, after one RETIRE word per G; one
+// OPTIMISTIC word per G follows the counters),
 // which G's resume twin bumps at the entry the point gave it: every `leave`
 // and `resume.call` that resumes there counts, and nothing on S's fast path
 // does (il2mir build_resume_twins). The runtime prints the table at exit under
@@ -20,6 +21,9 @@ struct DeoptSite {
     uint32_t function = 0;  // G's index in Module::functions
     uint32_t resumeId = 0;  // the point's id within G
     uint32_t generic = 0;   // G's rank among the module's generic functions with points
+    // An optimistic point (il_op.h kResumeOptimistic): its exits count into
+    // G's OPTIMISTIC word, not its retire word (opt/speculate optimistic.h).
+    bool optimistic = false;
 };
 
 struct DeoptSites {
@@ -33,10 +37,14 @@ struct DeoptSites {
     // @cell`). G's twin stores S's retired entry there, a function that calls
     // G, once G's retire word reaches the limit (il2mir build_resume_twins),
     // so the calls are G's from then on and S's own code tests nothing.
+    // An optimistic copy S+ among them (its `fallback` is S) retires to S once
+    // G's optimistic word reaches its limit: G's twin points S+'s entry cell
+    // where S's points.
     std::vector<uint32_t> retirable;
     // One line per site, in slot order, tab-separated: G's name, the resume
-    // id, what the guards that resume there test and the instruction G
-    // re-executes, and `file:line` of that instruction.
+    // id, what the guards that resume there test (`optimistic` first for an
+    // optimistic point) and the instruction G re-executes, and `file:line`
+    // of that instruction.
     std::string text;
 };
 

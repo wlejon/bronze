@@ -37,12 +37,18 @@
 //   - A leave is rewritten by the one rule (inline.h). The caller's state is
 //     its point `a` in G_c's ids, which S_c keeps (cloneFunction); the
 //     generic call's result is replaced by what G_f returned, converted as
-//     the fast path converts it (resultMakeable). Every other value of the
+//     the fast path converts it (resultMakeable). An OPTIMISTIC leave (only
+//     in an optimistic callee, spliced only into an optimistic caller:
+//     opt/speculate optimistic.h) stays one on both levels: the resume.call
+//     names the callee's optimistic point, and the caller leaves for the
+//     optimistic point beside `a` in G_c, which is made here when G_c has
+//     none yet (right after `a`, same state, a fresh id). Every other value of the
 //     state was live after the generic call in G_c and was not its result,
 //     so it is defined before the call: in S_c, before the direct call, on a
 //     path B lies on (the speculation step re-defines every replaced result
 //     under its old id on the fast path, guard_builder.h).
 
+#include <algorithm>
 #include <cassert>
 #include <numeric>
 #include <utility>
@@ -55,6 +61,36 @@
 namespace bronze::opt::inliner {
 
 namespace {
+
+// The optimistic point beside G's ordinary point `id`: the one right after
+// it, made when there is none.
+uint32_t optimisticSibling(il::Function& g, uint32_t id) {
+    uint32_t next = 0;
+    il::Block* home = nullptr;
+    size_t at = 0;
+    for (il::Block& block : g.blocks) {
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const il::Instruction& inst = block.instructions[i];
+            if (inst.op != il::Op::ResumePoint || inst.immI32 < 0) continue;
+            next = std::max(next, static_cast<uint32_t>(inst.immI32) + 1);
+            if (static_cast<uint32_t>(inst.immI32) == id) {
+                home = &block;
+                at = i;
+            }
+        }
+    }
+    assert(home != nullptr && home->instructions[at].keyIndex != il::kResumeOptimistic);
+    auto& insts = home->instructions;
+    if (at + 1 < insts.size() && insts[at + 1].op == il::Op::ResumePoint &&
+        insts[at + 1].keyIndex == il::kResumeOptimistic && insts[at + 1].operands == insts[at].operands) {
+        return static_cast<uint32_t>(insts[at + 1].immI32);
+    }
+    il::Instruction sibling = insts[at];
+    sibling.immI32 = static_cast<int32_t>(next);
+    sibling.keyIndex = il::kResumeOptimistic;
+    insts.insert(insts.begin() + static_cast<std::ptrdiff_t>(at + 1), std::move(sibling));
+    return next;
+}
 
 // The exit of a copied leave: `resume.call` of the callee's G, the conversion
 // of its value to the generic call's result type when that result is in the
@@ -71,6 +107,7 @@ uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blo
     rc.type = calleeGeneric.returnType;
     rc.calleeIndex = leave.calleeIndex;
     rc.immI32 = leave.immI32;
+    rc.keyIndex = leave.keyIndex;
     rc.operands = leave.operands;
     rc.span = leave.span;
     if (rc.type != il::Type::Void) rc.result = newValue(caller);
@@ -121,6 +158,11 @@ uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blo
     out.type = il::Type::Void;
     out.calleeIndex = caller.speculatedFrom;
     out.immI32 = static_cast<int32_t>(after.resumeId);
+    if (leave.keyIndex == il::kResumeOptimistic) {
+        assert(caller.isOptimistic());
+        out.immI32 = static_cast<int32_t>(optimisticSibling(module.functions[caller.speculatedFrom], after.resumeId));
+        out.keyIndex = il::kResumeOptimistic;
+    }
     out.operands = after.state;
     for (ValueId& v : out.operands) {
         if (v == after.callResult) v = standIn;

@@ -163,7 +163,7 @@ void GuardBuilder::guardTo(ValueId cond, bool passWhen, BlockId exit) {
 }
 
 BlockId GuardBuilder::makeExit(uint32_t resumeId, std::vector<il::Instruction> work, ValueId replaced,
-                               ValueId replacement) {
+                               ValueId replacement, bool optimistic) {
     const BlockId exit = newBlock();
     fn_.blocks[exit].cold = true;
     for (il::Instruction& inst : work) {
@@ -176,6 +176,7 @@ BlockId GuardBuilder::makeExit(uint32_t resumeId, std::vector<il::Instruction> w
     leave.type = il::Type::Void;
     leave.calleeIndex = ctx_.genericIndex;
     leave.immI32 = static_cast<int32_t>(resumeId);
+    leave.keyIndex = optimistic ? il::kResumeOptimistic : 0;
     // G's ids name S's copies (resume_points.h); only the site's result,
     // which an exit after the site has under another name, is substituted.
     leave.operands = ctx_.resume.state(resumeId);
@@ -205,7 +206,14 @@ uint32_t GuardBuilder::resumeAfterSite() {
     return ctx_.resume.at(siteBlock_, siteIndex_ + 1);
 }
 
-BlockId GuardBuilder::genericArm(BlockId join, std::vector<il::Instruction> work) {
+BlockId GuardBuilder::exitBeforeOptimistic(std::vector<il::Instruction> work) {
+    assert(ctx_.optimistic);
+    ++ctx_.optimisticExits;
+    return makeExit(ctx_.resume.at(siteBlock_, siteIndex_, true), std::move(work), il::kNoValue, il::kNoValue, true);
+}
+
+BlockId GuardBuilder::genericArm(BlockId join, std::vector<il::Instruction> work, bool mayLeave) {
+    if (mayLeave && ctx_.optimistic) return exitBeforeOptimistic(std::move(work));
     const BlockId arm = newBlock();
     fn_.blocks[arm].cold = true;
     const BlockId resumeCursor = cursor_;

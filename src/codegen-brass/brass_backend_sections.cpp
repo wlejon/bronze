@@ -828,7 +828,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     std::vector<std::string> entryCells;
     for (const uint32_t s : deopt.retirable) entryCells.push_back(in.uniqueNames[s]);
     emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount, in.slowArmed,
-                    deopt.sites.empty() ? 0 : deopt.generics.size() + deopt.sites.size(), entryCells);
+                    deopt.sites.empty() ? 0 : 2 * deopt.generics.size() + deopt.sites.size(), entryCells);
     demoteInternalSymbols(obj, entrySymbol);
     timer.mark("data section");
 

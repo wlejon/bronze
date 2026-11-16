@@ -12,8 +12,13 @@
 //   3. Per function: clone G into S, give S's lowered direct calls their
 //      after-call points (markLoweredDirectCalls), rewrite S's sites last to
 //      first in each block (a split at one site never moves another still to
-//      come), place the loop-entry points, then write G's resume points.
-//   4. Redirect entry over the whole module.
+//      come), place the loop-entry points. Then the same on a copy of G with
+//      the optimistic rewrites (optimistic.h), never-entered blocks turned
+//      into exits; it becomes S+ when it made an optimistic exit, appended
+//      after the S copies, and is dropped otherwise. Then write G's resume
+//      points (S's and S+'s together: they share a location's ordinary point).
+//   4. Redirect entry over the whole module: to S+ where there is one (from G
+//      and from S), else to S.
 //
 // Nothing here reads the whole-program analysis (opt/wpo wpo::analyze). It is
 // the place a fact from it would enter a decision — a site the predicting
@@ -22,11 +27,13 @@
 // nothing yet.
 
 #include <algorithm>
+#include <map>
 #include <memory>
 
 #include "il/resume_rules.h"
 #include "opt/core/clone.h"
 #include "opt/speculate/evidence.h"
+#include "opt/speculate/optimistic.h"
 #include "opt/speculate/policy.h"
 #include "opt/speculate/sites.h"
 
@@ -64,43 +71,6 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
         case SiteKind::TdzRead: rewriteTdzRead(ctx, site); return;
         case SiteKind::ArrayPush: rewriteArrayPush(ctx, site); return;
     }
-}
-
-// The operations that name a function by index, and whether each names the
-// function's CODE (and so must follow entry to S) — `leave` names G on
-// purpose and is not among them; `coro.start` names a coroutine body, which
-// is never speculated.
-uint32_t* redirectableIndex(il::Instruction& inst) {
-    switch (inst.op) {
-        case il::Op::Call:
-        case il::Op::CreateFunction:
-        case il::Op::FunctionRef:
-        case il::Op::FnCodeIs:
-            return &inst.calleeIndex;
-        case il::Op::Construct:
-            return inst.directTarget != il::Instruction::kNoDirectTarget ? &inst.directTarget : nullptr;
-        default:
-            return nullptr;
-    }
-}
-
-// Every creation of, reference to and direct call of a speculated G now
-// names its S: the closures a program makes run S, and a direct call enters
-// S. That includes G's own calls of G (a recursion in G reached by a leave
-// re-enters the speculated code) and S's. The `leave`s of S keep naming G.
-uint32_t redirectEntry(il::Module& module, const EntryMap& entries) {
-    uint32_t redirected = 0;
-    for (il::Function& fn : module.functions) {
-        for (il::Block& block : fn.blocks) {
-            for (il::Instruction& inst : block.instructions) {
-                uint32_t* index = redirectableIndex(inst);
-                if (index == nullptr || !entries.isRedirected(*index)) continue;
-                *index = entries.entryOf(*index);
-                ++redirected;
-            }
-        }
-    }
-    return redirected;
 }
 
 // LOWERED DIRECT CALLS of S (lowering's own `call @f` to a declaration that is
@@ -166,7 +136,9 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
             std::optional<FunctionPlan> plan = evidence.plan(f);
             if (!plan) continue;
             planFromAnalysis(module, *plan);
-            if (!plan->sites.empty()) plans.push_back(std::move(*plan));
+            if (plan->sites.empty()) continue;
+            plan->neverEntered = evidence.neverEnteredBlocks(f);
+            plans.push_back(std::move(*plan));
         }
     }
     if (plans.empty()) return stats;
@@ -177,8 +149,11 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
         entries.setSpeculated(plans[i].function, lowered + static_cast<uint32_t>(i));
     }
 
-    // 3. Clone and rewrite, one function at a time.
+    // 3. Clone and rewrite, one function at a time. Each S+ is appended after
+    // every S (step 2 fixed those indices).
     ShapeCells cells(module);
+    std::vector<il::Function> kept;              // the S+ copies, appended after the loop
+    std::map<uint32_t, uint32_t> optimisticOf;  // S -> S+
     for (const FunctionPlan& plan : plans) {
         const uint32_t g = plan.function;
         const std::string name = module.functions[g].name + options.nameSuffix;
@@ -194,14 +169,50 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
         markLoweredDirectCalls(ctx);
         for (const SitePlan& site : rewriteOrder(plan.sites)) rewriteSite(ctx, site);
         stats.loopEntryPoints += placeLoopEntries(ctx, plan.sites);
+
+        // S+: G again, rewritten optimistically, kept when that made an
+        // optimistic exit (optimistic.h).
+        il::Function optimistic = generic;
+        optimistic.name = module.functions[g].name + kOptimisticSuffix;
+        optimistic.isExported = false;
+        optimistic.isEntryPoint = false;
+        optimistic.speculatedFrom = g;
+        RewriteContext octx{module, g, s, generic, optimistic, resume, cells, entries, valueTypes(optimistic),
+                            stats};
+        octx.optimistic = true;
+        markLoweredDirectCalls(octx);
+        const std::vector<SitePlan> sites = sitesOutsideLeftCode(generic, plan);
+        for (const SitePlan& site : rewriteOrder(sites)) rewriteSite(octx, site);
+        stats.loopEntryPoints += placeLoopEntries(octx, sites, plan.neverEntered);
+        const uint32_t arms = octx.optimisticExits;
+        const uint32_t left = leaveNeverEntered(octx, plan.neverEntered);
+        if (octx.optimisticExits != 0) {
+            optimistic.fallback = s;
+            kept.push_back(std::move(optimistic));
+            ++stats.optimisticCopies;
+            stats.optimisticArms += arms;
+            stats.neverEnteredLeft += left;
+        }
+
         stats.resumePoints += static_cast<uint32_t>(resume.size());
         resume.insertInto(generic);
         ++stats.functionsSpeculated;
     }
     stats.shapeCells = cells.added();
+    for (il::Function& plus : kept) {
+        const uint32_t sIndex = plus.fallback;
+        module.functions.push_back(std::move(plus));
+        optimisticOf[sIndex] = static_cast<uint32_t>(module.functions.size() - 1);
+    }
 
-    // 4. Entry goes to S.
-    stats.redirected = redirectEntry(module, entries);
+    // 4. Entry goes to S+, or S.
+    std::vector<uint32_t> entry(module.functions.size());
+    for (uint32_t f = 0; f < entry.size(); ++f) entry[f] = entries.entryOf(f);
+    for (const auto& [sIndex, plus] : optimisticOf) {
+        entry[sIndex] = plus;
+        entry[module.functions[sIndex].speculatedFrom] = plus;
+    }
+    stats.redirected = redirectFunctionReferences(module, entry);
     return stats;
 }
 

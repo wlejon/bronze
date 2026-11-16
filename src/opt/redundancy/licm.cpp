@@ -181,7 +181,7 @@ private:
     bool canHoist(const il::Instruction& inst) const;
     bool dominatesLatches(BlockId b) const;
     std::optional<Step> guardStep(BlockId b);
-    const std::optional<LeaveTarget>& resumeTarget();
+    const std::optional<LeaveTarget>& resumeTarget(bool optimistic);
 
     JobContext& ctx_;
     il::Function& fn_;
@@ -195,9 +195,10 @@ private:
     FactEnv preheaderFacts_;
     WriteSet loopWrites_;
     std::vector<uint8_t> hoisted_;
-    // The speculation step's answer for this loop, asked once.
-    bool resumeAsked_ = false;
-    std::optional<LeaveTarget> resume_;
+    // The speculation step's answer for this loop, asked once per exit kind
+    // (ordinary, optimistic).
+    bool resumeAsked_[2] = {false, false};
+    std::optional<LeaveTarget> resume_[2];
 };
 
 WriteSet LoopPlanner::blockWrites(BlockId b) const {
@@ -246,16 +247,17 @@ bool LoopPlanner::dominatesLatches(BlockId b) const {
     return true;
 }
 
-const std::optional<LeaveTarget>& LoopPlanner::resumeTarget() {
-    if (!resumeAsked_) {
-        resumeAsked_ = true;
+const std::optional<LeaveTarget>& LoopPlanner::resumeTarget(bool optimistic) {
+    const int k = optimistic ? 1 : 0;
+    if (!resumeAsked_[k]) {
+        resumeAsked_[k] = true;
         if (fn_.isSpeculated() && ctx_.options.preheaderResume) {
-            resume_ = ctx_.options.preheaderResume(fn_, loop_.header, preheader_,
-                                                   [this](ValueId v) { return ctx_.current(v); });
-            if (resume_ && !resume_->buildState) resume_.reset();
+            resume_[k] = ctx_.options.preheaderResume(fn_, loop_.header, preheader_,
+                                                      [this](ValueId v) { return ctx_.current(v); }, optimistic);
+            if (resume_[k] && !resume_[k]->buildState) resume_[k].reset();
         }
     }
-    return resume_;
+    return resume_[k];
 }
 
 std::optional<Step> LoopPlanner::guardStep(BlockId b) {
@@ -279,7 +281,9 @@ std::optional<Step> LoopPlanner::guardStep(BlockId b) {
         }
         fills.push_back(inst);
     }
-    const std::optional<LeaveTarget>& target = resumeTarget();
+    const il::Block& exitBlock = fn_.blocks[thenExits ? thenBlock : elseBlock];
+    const std::optional<LeaveTarget>& target =
+        resumeTarget(exitBlock.instructions.back().keyIndex == il::kResumeOptimistic);
     if (!target) return std::nullopt;
 
     // From here on the preheader chain is past this guard: its fast edge's
@@ -350,6 +354,7 @@ BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step) {
     leave.op = Op::Leave;
     leave.calleeIndex = fn.speculatedFrom;
     leave.immI32 = static_cast<int32_t>(step.target.resumeId);
+    leave.keyIndex = step.target.kind;
     leave.operands = std::move(state);
     fn.blocks[exit].instructions.push_back(std::move(leave));
 

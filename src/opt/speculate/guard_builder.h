@@ -91,7 +91,16 @@ public:
     // arm for evidence that is incomplete rather than wrong: a polymorphic
     // site meeting one more receiver stays in S. `work` (instructions with no
     // effect G could see: `member.publish`) runs first.
-    BlockId genericArm(BlockId join, std::vector<il::Instruction> work = {});
+    // `mayLeave`: the arm is for a receiver or value the harvested run never
+    // brought here (a chain's shapes were the cache's every way; a double
+    // slot's every store was a Number), so in the OPTIMISTIC copy
+    // (RewriteContext::optimistic) it is an exit to an optimistic point in
+    // front of the site instead (exitBeforeOptimistic), and the join keeps
+    // what the site's fast path established.
+    BlockId genericArm(BlockId join, std::vector<il::Instruction> work = {}, bool mayLeave = false);
+    // The exit leaving for the OPTIMISTIC point in front of the site (an
+    // optimistic copy's: il_op.h kResumeOptimistic), doing `work` first.
+    BlockId exitBeforeOptimistic(std::vector<il::Instruction> work = {});
 
     // ---- blocks ---------------------------------------------------------------
     // A new block with the site's handler, cold when the site's block is.
@@ -114,7 +123,7 @@ private:
     void append(il::Instruction inst);
     void terminate(il::Instruction inst);
     BlockId makeExit(uint32_t resumeId, std::vector<il::Instruction> work, ValueId replaced,
-                     ValueId replacement);
+                     ValueId replacement, bool optimistic = false);
 
     RewriteContext& ctx_;
     il::Function& fn_;

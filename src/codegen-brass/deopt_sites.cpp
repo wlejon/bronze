@@ -88,6 +88,7 @@ DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::st
             if (t.op == il::Op::Branch && t.elseTarget.block <= b.id) backTargets.insert(t.elseTarget.block);
         }
         std::map<uint32_t, std::string> lines;
+        std::set<uint32_t> optimistic;
         for (const il::Block& b : g.blocks) {
             for (size_t i = 0; i < b.instructions.size(); ++i) {
                 const il::Instruction& rp = b.instructions[i];
@@ -96,8 +97,12 @@ DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::st
                 size_t next = i + 1;
                 while (next < b.instructions.size() && b.instructions[next].op == il::Op::ResumePoint) ++next;
                 std::string what;
+                if (rp.keyIndex == il::kResumeOptimistic) {
+                    optimistic.insert(id);
+                    what = "optimistic ";
+                }
                 for (const std::string& k : guards[{f, id}]) what += (what.empty() ? "" : "/") + k;
-                if (what.empty()) what = "-";
+                if (what.empty() || what == "optimistic ") what += "-";
                 what += " -> ";
                 what += next < b.instructions.size() ? il::opName(b.instructions[next].op) : "end";
                 if (i == 0 && backTargets.count(b.id)) what += " (loop entry)";
@@ -110,7 +115,7 @@ DeoptSites collectDeoptSites(const il::Module& module, const std::vector<std::st
         const auto rank = static_cast<uint32_t>(out.generics.size());
         out.generics.push_back(f);
         for (const auto& [id, line] : lines) {
-            out.sites.push_back({f, id, rank});
+            out.sites.push_back({f, id, rank, optimistic.count(id) != 0});
             out.text += line;
             out.text += '\n';
         }

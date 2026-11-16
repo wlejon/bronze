@@ -397,9 +397,13 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
             auto& meta = options.deopt_generic[uniqueNames[site.function]];
             meta.rank = site.generic;
             meta.slots[site.resumeId] = slot;
+            if (site.optimistic) meta.optimistic.insert(site.resumeId);
         }
         for (const uint32_t s : deopt.retirable) {
             options.deopt_speculated[uniqueNames[s]] = uniqueNames[module.functions[s].speculatedFrom];
+            if (module.functions[s].isOptimistic()) {
+                options.deopt_fallback[uniqueNames[s]] = uniqueNames[module.functions[s].fallback];
+            }
         }
     }
     options.slow_site_count = module.slowSiteCount;

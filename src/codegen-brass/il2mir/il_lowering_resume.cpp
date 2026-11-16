@@ -240,6 +240,12 @@ bool IlLowering::lower_resume_call(const BronzeInstruction& inst, Builder& b, Fu
 // (`call @S via @cell`, one `call [rip + cell]` as the direct call was). So
 // S's own code tests nothing. Copies of S inlined into other functions are
 // not covered and keep counting through their resume.calls.
+//
+// RETIRING S+ TO S (opt/speculate optimistic.h): an exit at an optimistic
+// point counts into G's optimistic word instead; once that reaches
+// TranslatorOptions::deopt_optimistic_after, the twin copies S's entry cell
+// into S+'s, so S+'s calls run S (or G, when S has retired already). G's
+// retirement stores the retired entry into both cells.
 void IlLowering::through_entry_cell(Builder& b, const std::string& callee) {
     if (options_.deopt_speculated.count(callee) == 0) return;
     Instruction* call = b.current_block()->tail();
@@ -293,7 +299,12 @@ bool IlLowering::build_resume_twins(Module& mod) {
                     retiring.push_back(s_name);
                 }
             }
-            twin_options.on_exit = [this, &m, retiring](Builder& b, uint32_t id) {
+            std::vector<std::pair<std::string, std::string>> fallbacks;  // (S+, S) of G
+            for (const std::string& s : retiring) {
+                const auto fb = options_.deopt_fallback.find(s);
+                if (fb != options_.deopt_fallback.end()) fallbacks.emplace_back(s, fb->second);
+            }
+            twin_options.on_exit = [this, &m, retiring, fallbacks](Builder& b, uint32_t id) {
                 const auto slot = m.slots.find(id);
                 if (slot == m.slots.end()) return;
                 Value* base = module_data_addr(b, "__bronze_deopt_counts");
@@ -303,12 +314,15 @@ bool IlLowering::build_resume_twins(Module& mod) {
                     b.build_store(Type::i64(), base, at, n);
                     return n;
                 };
-                Value* exits = bump(m.rank);
+                const bool optimistic = m.optimistic.count(id) != 0;
+                Value* exits =
+                    bump(optimistic ? options_.deopt_generic_count + options_.deopt_site_count + m.rank : m.rank);
                 bump(options_.deopt_generic_count + slot->second);
-                if (retiring.empty()) return;
+                if (optimistic ? fallbacks.empty() : retiring.empty()) return;
                 // At the limit, retire: a branch, so a thread whose count is
                 // below never puts S back.
-                Value* retired = b.build_uge(exits, b.build_iconst_i64(static_cast<int64_t>(options_.deopt_retire_after)));
+                const uint64_t limit = optimistic ? options_.deopt_optimistic_after : options_.deopt_retire_after;
+                Value* retired = b.build_uge(exits, b.build_iconst_i64(static_cast<int64_t>(limit)));
                 BasicBlock* here = b.current_block();
                 BasicBlock* retire = b.append_block("retire");
                 retire->set_cold();
@@ -316,6 +330,15 @@ bool IlLowering::build_resume_twins(Module& mod) {
                 b.position_at_end(here);
                 b.build_br_if(retired, retire, counted);
                 b.position_at_end(retire);
+                if (optimistic) {
+                    for (const auto& [plus, s] : fallbacks) {
+                        Value* to = b.build_load(Type::ptr(), b.build_func_addr(module_sym(entry_cell_name(s))), 0);
+                        b.build_store(Type::ptr(), b.build_func_addr(module_sym(entry_cell_name(plus))), 0, to);
+                    }
+                    b.build_br(counted);
+                    b.position_at_end(counted);
+                    return;
+                }
                 for (const std::string& s : retiring) {
                     b.build_store(Type::ptr(), b.build_func_addr(module_sym(entry_cell_name(s))), 0,
                                   b.build_func_addr(retired_entry_name(s)));

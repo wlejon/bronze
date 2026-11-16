@@ -11,6 +11,11 @@
 // in back to front in each block, which keeps the indices of the ones still
 // to place valid. Two guards that resume at one location share one point.
 //
+// A location may hold two points: the ordinary one and an OPTIMISTIC one
+// (il_op.h kResumeOptimistic), which only the optimistic copy S+ leaves for
+// and which counts toward retiring S+ to S (optimistic.h). Same state; the
+// optimistic one goes in right after the ordinary one when both exist.
+//
 // The state is in G's value ids. S keeps G's ids (cloneFunction), and every
 // rewrite in S re-defines a replaced instruction's result under its old id
 // on the fast path, so the same list names S's copies of those values at any
@@ -18,6 +23,7 @@
 
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -36,12 +42,12 @@ public:
 
     // The id of the point in front of instruction `index` of G's `block`,
     // made on first ask. The block must be one mayPlaceResumePoint allows.
-    uint32_t at(BlockId block, uint32_t index);
+    uint32_t at(BlockId block, uint32_t index, bool optimistic = false);
     // Its state, in G's ids, in operand order.
     const std::vector<ValueId>& state(uint32_t id) const;
     // Whether a point already exists at the location (loop entries reuse a
     // site's point at a header's top).
-    bool has(BlockId block, uint32_t index) const;
+    bool has(BlockId block, uint32_t index, bool optimistic = false) const;
 
     size_t size() const { return points_.size(); }
 
@@ -54,13 +60,15 @@ private:
         BlockId block = 0;
         uint32_t index = 0;
         uint32_t id = 0;
+        bool optimistic = false;
         std::vector<ValueId> state;
     };
+    using Location = std::tuple<BlockId, uint32_t, bool>;
 
     const il::Function& generic_;
     Cfg cfg_;
     Liveness live_;
-    std::map<std::pair<BlockId, uint32_t>, uint32_t> byLocation_;
+    std::map<Location, uint32_t> byLocation_;
     std::vector<Point> points_;
     uint32_t nextId_ = 0;
     bool inserted_ = false;

@@ -37,6 +37,17 @@
 // (shares of 1/500 and 1/2000 within noise of 1/1000); the same limits for
 // every call were a wash (three_lights +6%).
 //
+// Optimistic copies (opt/speculate optimistic.h). A call names its callee's
+// entry, S+ where there is one. A conservative caller (an S, or a function
+// with no S+) takes the callee's S instead (bodyOf): an optimistic exit in S
+// would count toward retiring S to G. An optimistic caller takes S+. A
+// conservative caller with no S+ of its own that would inline an optimistic
+// body if it were optimistic gets one here: a copy of it before any splice
+// (fallback: the caller), which takes the optimistic bodies; every reference
+// to the caller is pointed at the copy when the pass ends. Weights are summed
+// over the conservative functions only, so a second copy of a function does
+// not count its calls twice.
+//
 // Application. The chosen calls are spliced back to front within each block
 // (splice.cpp keeps everything in front of a site and every other block where
 // it was), so the places recorded before the first splice stay right. A
@@ -55,6 +66,7 @@
 
 #include "il/feedback_site.h"
 #include "opt/core/cfg.h"
+#include "opt/core/clone.h"
 #include "opt/core/loops.h"
 #include "opt/inline/inline.h"
 #include "opt/inline/parts.h"
@@ -73,6 +85,21 @@ constexpr uint32_t kMinGrowth = 800;
 constexpr uint32_t kHotGrowth = 3000;
 constexpr uint32_t kMaxCallerSize = 8000;
 
+// The body a direct call of function `callee` made by `caller` takes: a
+// conservative caller's is the callee's conservative copy, an optimistic
+// caller's the callee's optimistic one, the copy the pass made (`plus`) when
+// it made one.
+uint32_t bodyOf(const il::Module& module, const il::Function& caller, uint32_t callee,
+                const std::unordered_map<uint32_t, uint32_t>& plus) {
+    if (callee >= module.functions.size()) return callee;
+    if (caller.isOptimistic()) {
+        const auto it = plus.find(callee);
+        return it != plus.end() ? it->second : callee;
+    }
+    const il::Function& f = module.functions[callee];
+    return f.isOptimistic() ? f.fallback : callee;
+}
+
 // The speculated functions in post-order of the direct calls among them.
 std::vector<uint32_t> bottomUpOrder(const il::Module& module) {
     const auto n = static_cast<uint32_t>(module.functions.size());
@@ -82,8 +109,13 @@ std::vector<uint32_t> bottomUpOrder(const il::Module& module) {
         if (!fn.isSpeculated()) continue;
         for (const il::Block& block : fn.blocks) {
             for (const il::Instruction& inst : block.instructions) {
-                if (inst.op != il::Op::Call || inst.calleeIndex >= n || inst.calleeIndex == f) continue;
-                if (module.functions[inst.calleeIndex].isSpeculated()) callees[f].push_back(inst.calleeIndex);
+                if (inst.op != il::Op::Call || inst.calleeIndex >= n) continue;
+                // A conservative caller may get an optimistic copy taking the
+                // callee's optimistic body (inlineInto), so that body comes
+                // first too.
+                for (const uint32_t body : {bodyOf(module, fn, inst.calleeIndex, {}), inst.calleeIndex}) {
+                    if (body != f && module.functions[body].isSpeculated()) callees[f].push_back(body);
+                }
             }
         }
         std::sort(callees[f].begin(), callees[f].end());
@@ -172,9 +204,9 @@ struct Candidate {
 
 // The calls of `caller` (module function `c`) that may take their callee's
 // body, with what the ranking needs.
-std::vector<Candidate> candidatesOf(const il::Module& module, uint32_t c, const AfterCallPoints& points,
-                                    const InlineOptions& options, InlineStats& stats) {
-    const il::Function& caller = module.functions[c];
+std::vector<Candidate> candidatesOf(const il::Module& module, const il::Function& caller,
+                                    const AfterCallPoints& points, const InlineOptions& options,
+                                    const std::unordered_map<uint32_t, uint32_t>& plus, InlineStats& stats) {
     const Cfg cfg(caller);
     const DomTree dom(cfg);
     const LoopForest loops(cfg, dom);
@@ -188,7 +220,8 @@ std::vector<Candidate> candidatesOf(const il::Module& module, uint32_t c, const 
             const il::Instruction& call = insts[i];
             if (call.op != il::Op::Call || call.calleeIndex >= module.functions.size()) continue;
             ++stats.sitesConsidered;
-            const il::Function& callee = module.functions[call.calleeIndex];
+            const uint32_t body = bodyOf(module, caller, call.calleeIndex, plus);
+            const il::Function& callee = module.functions[body];
             if (!calleeInlinable(callee)) {
                 ++stats.refusedCallee;
                 continue;
@@ -208,7 +241,7 @@ std::vector<Candidate> candidatesOf(const il::Module& module, uint32_t c, const 
             const bool construct = i > 0 && insts[i - 1].op == il::Op::CreateThis && callee.needsThis &&
                                    call.operands[callee.needsEnv ? 1 : 0] == insts[i - 1].result;
             const uint32_t depth = construct ? std::max<uint32_t>(loops.depth(b), 1) : loops.depth(b);
-            Candidate cand{b, i, call.calleeIndex, bodySize(callee), depth, after, std::nullopt};
+            Candidate cand{b, i, body, bodySize(callee), depth, after, std::nullopt};
             cand.count = callWeight(module, caller, options, call);
             out.push_back(cand);
         }
@@ -308,34 +341,89 @@ private:
     std::unordered_map<uint32_t, uint32_t> sizes_;
 };
 
-void inlineInto(il::Module& module, uint32_t c, CalleeSizes& sizes, const InlineOptions& options,
-                uint64_t total, InlineStats& stats) {
-    il::Function& caller = module.functions[c];
-    assert(caller.isSpeculated());
-    ++stats.callersVisited;
-    // G_c is not edited by this pass, so the points and their predecessors
-    // read here hold for every splice into S_c.
-    const AfterCallPoints points(module.functions[caller.speculatedFrom]);
-    std::vector<Candidate> candidates = candidatesOf(module, c, points, options, stats);
-    for (Candidate& cand : candidates) cand.size = sizes.of(cand.callee);
-    const std::vector<Candidate> chosen = choose(module, c, std::move(candidates), bodySize(caller), total, stats);
-    if (chosen.empty()) return;
+// One run of the pass: what every caller shares, and the optimistic copies
+// it made (caller -> copy).
+struct Run {
+    il::Module& module;
+    CalleeSizes& sizes;
+    const InlineOptions& options;
+    uint64_t total = 0;
+    InlineStats& stats;
+    std::unordered_map<uint32_t, uint32_t> plus;
+    std::vector<uint8_t> hasCopy;  // by index: a speculated function S+ falls back to
+};
 
+// The calls of `caller` (module function `c`, or a copy of it about to be:
+// `c` names the caller only in the trace) the policy takes, in splice order.
+std::vector<Candidate> chosenFor(Run& run, const il::Function& caller, uint32_t c, const AfterCallPoints& points,
+                                 InlineStats& stats) {
+    std::vector<Candidate> candidates = candidatesOf(run.module, caller, points, run.options, run.plus, stats);
+    for (Candidate& cand : candidates) cand.size = run.sizes.of(cand.callee);
+    return choose(run.module, c, std::move(candidates), bodySize(caller), run.total, stats);
+}
+
+void spliceChosen(Run& run, uint32_t c, const std::vector<Candidate>& chosen) {
     std::optional<il::Function> self;
     for (const Candidate& cand : chosen) {
         if (cand.callee == c) {
-            self = caller;
+            self = run.module.functions[c];
             break;
         }
     }
     for (const Candidate& cand : chosen) {
-        const il::Function& callee = cand.callee == c ? *self : module.functions[cand.callee];
-        const SpliceResult r = spliceCall(module, c, cand.block, cand.index, callee, cand.after);
-        ++stats.inlined;
-        if (callee.isSpeculated()) ++stats.inlinedSpeculated;
-        stats.leavesRewritten += r.leavesRewritten;
-        stats.instructionsAdded += r.instructionsAdded;
+        const il::Function& callee = cand.callee == c ? *self : run.module.functions[cand.callee];
+        const SpliceResult r = spliceCall(run.module, c, cand.block, cand.index, callee, cand.after);
+        ++run.stats.inlined;
+        if (callee.isSpeculated()) ++run.stats.inlinedSpeculated;
+        if (callee.isOptimistic()) ++run.stats.inlinedOptimistic;
+        run.stats.leavesRewritten += r.leavesRewritten;
+        run.stats.instructionsAdded += r.instructionsAdded;
     }
+}
+
+void inlineInto(Run& run, uint32_t c) {
+    il::Module& module = run.module;
+    assert(module.functions[c].isSpeculated());
+    ++run.stats.callersVisited;
+    // The points after G_c's calls. The pass adds only optimistic points to
+    // G_c (splice.cpp), each right after an ordinary one, which leaves every
+    // after-call point where this finds it.
+    const AfterCallPoints points(module.functions[module.functions[c].speculatedFrom]);
+    const std::vector<Candidate> chosen = chosenFor(run, module.functions[c], c, points, run.stats);
+
+    // A conservative caller with no optimistic copy: would the copy take an
+    // optimistic body? The probe is the caller before any splice, as its
+    // copy would be.
+    std::optional<il::Function> probe;
+    std::vector<Candidate> probeChosen;
+    InlineStats probeStats;
+    const uint32_t copyIndex = static_cast<uint32_t>(module.functions.size());
+    if (!module.functions[c].isOptimistic() && (c >= run.hasCopy.size() || !run.hasCopy[c])) {
+        probe = module.functions[c];
+        probe->fallback = c;
+        probe->name = module.functions[probe->speculatedFrom].name + "$opt";
+        // A self-call of the copy takes the caller's body as spliced (the
+        // copy is not in the module while it is chosen for).
+        probeChosen = chosenFor(run, *probe, c, points, probeStats);
+        const bool optimistic = std::any_of(probeChosen.begin(), probeChosen.end(), [&](const Candidate& cand) {
+            return module.functions[cand.callee].isOptimistic();
+        });
+        if (!optimistic) probe.reset();
+    }
+
+    spliceChosen(run, c, chosen);
+    if (!probe) return;
+    module.functions.push_back(std::move(*probe));
+    run.plus[c] = copyIndex;
+    ++run.stats.optimisticCopies;
+    ++run.stats.callersVisited;
+    run.stats.sitesConsidered += probeStats.sitesConsidered;
+    run.stats.refusedCallee += probeStats.refusedCallee;
+    run.stats.refusedSite += probeStats.refusedSite;
+    run.stats.refusedSize += probeStats.refusedSize;
+    run.stats.refusedBudget += probeStats.refusedBudget;
+    run.stats.inlinedHot += probeStats.inlinedHot;
+    spliceChosen(run, copyIndex, probeChosen);
 }
 
 // `resumeAfter` is the inliner's alone; past it a point named only by one is
@@ -355,9 +443,12 @@ InlineStats inlineModule(il::Module& module, const InlineOptions& options) {
     InlineStats stats;
     if (options.enabled) {
         CalleeSizes sizes(module, options);
-        uint64_t total = 0;
+        Run run{module, sizes, options, 0, stats, {}, std::vector<uint8_t>(module.functions.size(), 0)};
+        uint64_t& total = run.total;
         for (const il::Function& fn : module.functions) {
-            if (!fn.isSpeculated()) continue;
+            if (fn.isOptimistic()) run.hasCopy[fn.fallback] = 1;
+            // An optimistic copy's calls are its conservative copy's again.
+            if (!fn.isSpeculated() || fn.isOptimistic()) continue;
             for (const il::Block& block : fn.blocks) {
                 for (const il::Instruction& inst : block.instructions) {
                     if (inst.op != il::Op::Call) continue;
@@ -366,8 +457,16 @@ InlineStats inlineModule(il::Module& module, const InlineOptions& options) {
             }
         }
         for (uint32_t c : bottomUpOrder(module)) {
-            inlineInto(module, c, sizes, options, total, stats);
+            inlineInto(run, c);
             sizes.forget(c);
+        }
+        // Every reference to a caller the pass made an optimistic copy of
+        // names the copy: it is entered first (opt/speculate optimistic.h).
+        if (!run.plus.empty()) {
+            std::vector<uint32_t> entry(module.functions.size());
+            for (uint32_t f = 0; f < entry.size(); ++f) entry[f] = f;
+            for (const auto& [c, copy] : run.plus) entry[c] = copy;
+            redirectFunctionReferences(module, entry);
         }
     }
     clearResumeAfter(module);

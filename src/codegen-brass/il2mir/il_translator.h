@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace brass {
 struct DemoteStats;
@@ -213,15 +214,23 @@ struct TranslatorOptions {
     // function's retire word; once word r reaches `deopt_retire_after`, the
     // twin of G (rank r) retires every speculated function of G: calls of it
     // go through its entry cell to G from then on (il_lowering_resume.cpp).
+    // After the counters, one OPTIMISTIC word per generic function (by rank):
+    // an exit at an optimistic point bumps it instead of the retire word,
+    // and once it reaches `deopt_optimistic_after` the twin points each
+    // optimistic copy's entry cell where its fallback's points
+    // (opt/speculate optimistic.h).
     struct DeoptFunctionMeta {
         uint32_t rank = 0;
         std::unordered_map<uint32_t, uint32_t> slots;  // resume id -> slot
+        std::unordered_set<uint32_t> optimistic;       // the optimistic resume ids
     };
     std::unordered_map<std::string, DeoptFunctionMeta> deopt_generic;  // by G's name
     std::unordered_map<std::string, std::string> deopt_speculated;     // S's name -> G's name
+    std::unordered_map<std::string, std::string> deopt_fallback;       // S+'s name -> S's name
     uint32_t deopt_generic_count = 0;
     uint32_t deopt_site_count = 0;
     uint64_t deopt_retire_after = 1000;
+    uint64_t deopt_optimistic_after = 100;
     // SLOW SITES (il.h `slowSite`, il_property.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image

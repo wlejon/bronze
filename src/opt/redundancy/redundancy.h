@@ -41,8 +41,10 @@ namespace bronze::opt {
 // preheaderResume for the contract.
 struct LeaveTarget {
     // The `resume.point` id in G (S's `speculatedFrom`) the hoisted guard's
-    // `leave` names.
+    // `leave` names, and its kind (il_op.h kResumeOptimistic or 0), which is
+    // the kind of the exit the hoisted guard had.
     uint32_t resumeId = 0;
+    uint32_t kind = 0;
     // Builds the leave's state. Called once per hoisted guard, while the pass
     // applies its plan, with `exitBlock` a fresh, empty, cold block of `fn`
     // whose only predecessor is the hoisted guard's failing arm. It may
@@ -77,6 +79,9 @@ struct LeaveTarget {
 //     value by an equal one (a trivial block parameter by its one incoming
 //     value, a duplicate by the value numbered first) and deletes it, so an
 //     id of G that S had may be gone from S while its value is still there.
+//   - `optimistic`: the guard's exit is an optimistic one (il_op.h
+//     kResumeOptimistic), and so must the answer's point be: an optimistic
+//     copy's exit counts toward retiring it to S, never toward retiring S.
 //   - Returning nullopt keeps every guard of the loop inside it. Without a
 //     resume point at the loop's entry a guard cannot be executed before the
 //     loop: the per-iteration test remains, because the facts a guard
@@ -84,7 +89,7 @@ struct LeaveTarget {
 //     unless the guard dominates the header from outside.
 using PreheaderResumeFn = std::function<std::optional<LeaveTarget>(
     const il::Function& fn, il::BlockId header, il::BlockId preheader,
-    const std::function<il::ValueId(il::ValueId)>& current)>;
+    const std::function<il::ValueId(il::ValueId)>& current, bool optimistic)>;
 
 struct RedundancyOptions {
     // Rounds of the job sequence per function; each round runs every job

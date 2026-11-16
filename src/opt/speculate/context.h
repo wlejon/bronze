@@ -72,6 +72,11 @@ struct RewriteContext {
     // what the rewrites add (GuardBuilder keeps it current).
     std::vector<il::Type> types;
     SpeculateStats& stats;
+    // Rewriting the OPTIMISTIC copy S+ (optimistic.h): a generic arm a
+    // rewrite allows to leave (GuardBuilder::genericArm) leaves for an
+    // optimistic point instead. `optimisticExits` counts the exits so made.
+    bool optimistic = false;
+    uint32_t optimisticExits = 0;
     // A fresh inline-cache index for a generic read a rewrite adds (the
     // method call's callee fetch): appended past the module's count, never
     // renumbering one that exists.

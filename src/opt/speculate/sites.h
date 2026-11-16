@@ -98,8 +98,11 @@ ValueId emitDirectCallValue(GuardBuilder& b, uint32_t callee, ValueId calleeValu
 ValueId emitCodeIs(GuardBuilder& b, ValueId calleeValue, uint32_t callee);
 
 // loops.cpp: places a loop-entry resume point at the top of the header of
-// every loop of G that holds one of `planned` (sites the rewrite guarded).
-// Returns how many it placed.
-uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& planned);
+// every loop of G that holds one of `planned` (sites the rewrite guarded) or
+// one of `left` (blocks of G an optimistic copy leaves at the top of); in an
+// optimistic copy (ctx.optimistic) each such header gets the optimistic
+// point beside the ordinary one. Returns how many it placed.
+uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& planned,
+                          const std::vector<BlockId>& left = {});
 
 }  // namespace bronze::opt::speculate

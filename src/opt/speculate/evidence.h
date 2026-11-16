@@ -218,6 +218,9 @@ struct SitePlan {
 struct FunctionPlan {
     uint32_t function = 0;
     std::vector<SitePlan> sites;  // in block, then instruction order
+    // Blocks of G the harvested run never entered where an optimistic copy
+    // leaves at the top (never_entered.cpp), ascending.
+    std::vector<BlockId> neverEntered;
 };
 
 class Evidence {
@@ -234,6 +237,10 @@ public:
     // The keys the build makes eligible for a double slot
     // (number_slots.h); empty without a harvest.
     const std::set<std::string>& numberKeys() const { return numberKeys_; }
+
+    // never_entered.cpp: the blocks of function `fn` the harvested run never
+    // entered and where leaving pays, or none without a counting harvest.
+    std::vector<BlockId> neverEnteredBlocks(uint32_t fn) const;
 
 private:
     struct SiteRefs;  // the feedback sites of one function, by instruction
@@ -291,6 +298,8 @@ private:
     bool slowRan(uint32_t slowIndex) const;
     uint64_t slowCount(uint32_t slowIndex) const;
     bool slowArmed(uint32_t slowSite) const;
+    // Whether the harvest says `inst` never executed (never_entered.cpp).
+    bool neverRan(const il::Instruction& inst) const;
     // The module function a profile's callee name names, if exactly one.
     uint32_t calleeByRecordedName(const std::string& name) const;
     uint32_t calleeByHarvestName(const std::string& name) const;

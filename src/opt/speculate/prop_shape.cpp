@@ -67,7 +67,7 @@ bool holdsNumber(GuardBuilder& b, const ShapeSlot& s) {
 void emitSlotStore(GuardBuilder& b, ValueId object, ValueId value, int32_t slot, bool number, BlockId join) {
     if (number) {
         const BlockId store = b.newBlock();
-        const BlockId other = b.genericArm(join);
+        const BlockId other = b.genericArm(join, {}, true);
         b.branch(b.emit(il::Op::IsNumber, il::Type::Bool, {value}), store, {}, other, {});
         b.moveTo(store);
     }
@@ -151,7 +151,7 @@ void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
         if (plan.shapeSet == ShapeSetRole::Lead) {
             b.guard(in);
         } else {
-            const BlockId other = b.genericArm(join);
+            const BlockId other = b.genericArm(join, {}, true);
             const BlockId pass = b.newBlock();
             b.branch(in, pass, {}, other, {});
             b.moveTo(pass);
@@ -163,7 +163,7 @@ void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
         }
         if (groups.size() == 1) b.jump(accesses[0]);
     } else {
-        const BlockId other = b.genericArm(join);
+        const BlockId other = b.genericArm(join, {}, true);
         for (size_t i = 0; i < plan.shapes.size(); ++i) {
             const bool last = i + 1 == plan.shapes.size();
             const BlockId next = last ? other : b.newBlock();

@@ -22,6 +22,7 @@ struct Table {
     uint32_t generics = 0;
     uint32_t sites = 0;
     uint64_t retireAfter = 0;
+    uint64_t optimisticAfter = 0;
 };
 
 struct State {
@@ -70,6 +71,11 @@ void report() {
                 if (rank < t.generics && t.counts[rank] >= t.retireAfter) {
                     retired.push_back(f[0] + " (" + std::to_string(t.counts[rank]) + " exits)");
                 }
+                const uint64_t opt = rank < t.generics ? t.counts[t.generics + t.sites + rank] : 0;
+                if (opt >= t.optimisticAfter && t.optimisticAfter != 0) {
+                    retired.push_back(f[0] + "'s optimistic copy to its speculated copy (" + std::to_string(opt) +
+                                      " optimistic exits)");
+                }
             }
             first = false;
             last = f[0];
@@ -93,7 +99,7 @@ void report() {
 }  // namespace
 
 extern "C" void bronze_register_deopt_counts(uint64_t* counts, const char* text, uint32_t generics, uint32_t sites,
-                                             uint64_t retireAfter) {
+                                             uint64_t retireAfter, uint64_t optimisticAfter) {
     static const bool wanted = [] {
         const char* v = std::getenv("BRONZE_DEOPT_STATS");
         return v != nullptr && std::strcmp(v, "1") == 0;
@@ -103,7 +109,7 @@ extern "C" void bronze_register_deopt_counts(uint64_t* counts, const char* text,
     std::lock_guard<std::mutex> lock(s.mu);
     // A module instance registered again (its init ran twice) replaces itself.
     std::erase_if(s.tables, [counts](const Table& t) { return t.counts == counts; });
-    s.tables.push_back({counts, text, generics, sites, retireAfter});
+    s.tables.push_back({counts, text, generics, sites, retireAfter, optimisticAfter});
     if (!s.armed) {
         s.armed = true;
         std::atexit(report);

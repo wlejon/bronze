@@ -14,6 +14,7 @@ deopt: 894 exits at 58 resume points
           46  2     is.object/proto.cell/ptr.eq -> prop.set     three.module.js:3903   mod4.Vector3
 ...
 deopt: retired mod4.InstancedMesh.setMatrixAt (1000 exits)
+deopt: retired addListener's optimistic copy to its speculated copy (100 optimistic exits)
 ```
 
 One row per resume point of a generic function that was reached at least
@@ -28,21 +29,25 @@ once, by count:
   transition cell, `inlined f` an exit of an inlined body of f, `jump` an exit
   reached without a branch), then the IL op G re-executes there, and
   `(loop entry)` for a point at the top of a loop header (a hoisted guard).
+  `optimistic` first marks an OPTIMISTIC point, which only an optimistic copy
+  leaves for (below).
 - `where`: the source position of that op.
 - `function`: G's name, as the backend names it.
 
-A function retired during the run is listed after the table.
+A function retired during the run is listed after the table, and so is an
+optimistic copy retired to its speculated copy.
 
 ## How it is counted
 
 `src/codegen-brass/deopt_sites.{h,cpp}` numbers every resume point of the
 module (by function, then id) from the IL the optimiser left and writes one
 line of text per point. `__bronze_deopt_counts` (per-thread module data) holds
-one RETIRE word per generic function with points, then one counter per point.
+one RETIRE word per generic function with points, then one counter per point,
+then one OPTIMISTIC word per generic function.
 The backend builds each G's resume twin with brass's `ResumeTwinOptions::
 on_exit` hook (`il_lowering_resume.cpp`): the entry of the twin for point `id`
-adds one to the point's counter and to G's retire word, after it has read the
-state. Nothing of it is in S: a fast path pays nothing. The module's entry
+adds one to the point's counter and to G's retire word (its optimistic word,
+for an optimistic point), after it has read the state. Nothing of it is in S: a fast path pays nothing. The module's entry
 registers the table with `bronze_register_deopt_counts`
 (`src/runtime/deopt_stats.cpp`), which prints the report at exit when asked.
 Only the registering thread's copy is printed.
@@ -61,3 +66,20 @@ nothing (`build_resume_twins`, `il_lowering_resume.cpp`). Copies of S inlined
 into other speculated functions are not covered and keep exiting through
 their `resume.call`s (which keep counting). A loop that left S runs to its end in the twin; there is no way
 back into S at a loop header.
+
+## Optimistic copies
+
+A function where an assumption pays only if its miss leaves has a second
+speculated copy, the OPTIMISTIC copy S+ (`<G>$opt`; il.h `Function::fallback`
+names S), entered before S: blocks of G the harvested run never entered, and
+the generic arms of polymorphic own-slot reads and writes and of stores into
+double slots, leave S+ where S runs them in place (`src/opt/speculate/
+optimistic.h` has the design). Those exits leave for optimistic points of G
+and count into G's optimistic word. Once it reaches 100
+(`TranslatorOptions::deopt_optimistic_after`), G's twin copies S's entry cell
+into S+'s, so S+'s calls run S (or G, if S has retired). An ordinary exit of
+S+ counts toward G's retire word as S's do, and retiring G stores the retired
+entry into both cells. So data the harvest never showed costs at most 100
+leaves per thread before the run is S's, and no function retires to G that
+would not have without S+.
+

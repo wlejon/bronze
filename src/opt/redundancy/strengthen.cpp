@@ -14,6 +14,10 @@
 // path F starts: from F through jumps and guard branches (one side an exit)
 // only, never past a branch both of whose sides continue in S.
 //
+// The two exits must be of one kind (il_op.h kResumeOptimistic): an
+// optimistic copy's arm that leaves on a non-Number would otherwise leave
+// through an ordinary exit, which counts toward retiring to G.
+//
 // One test less per element read in matrix code (three.js's
 // Matrix4.multiplyMatrices reads 32 elements and multiplies each).
 
@@ -34,16 +38,27 @@ bool isExit(const il::Function& fn, BlockId b) {
     return block.cold && !block.instructions.empty() && block.instructions.back().op == Op::Leave;
 }
 
+// The kind of the leave that ends exit block `b`.
+uint32_t exitKind(const il::Function& fn, BlockId b) { return fn.blocks[b].instructions.back().keyIndex; }
+
 // Whether `is.number x` is reached on every way on from `start` that stays in
-// S, looking through at most a bounded stretch of code.
-bool numberTestFollows(const il::Function& fn, BlockId start, ValueId x) {
+// S, looking through at most a bounded stretch of code, and an exit it
+// branches to is of kind `kind`.
+bool numberTestFollows(const il::Function& fn, BlockId start, ValueId x, uint32_t kind) {
     constexpr size_t kMaxInstructions = 4000;
     size_t seen = 0;
     BlockId cur = start;
     for (size_t steps = 0; steps < fn.blocks.size(); ++steps) {
         const il::Block& block = fn.blocks[cur];
         for (const il::Instruction& inst : block.instructions) {
-            if (inst.op == Op::IsNumber && inst.operands.size() == 1 && inst.operands[0] == x) return true;
+            if (inst.op == Op::IsNumber && inst.operands.size() == 1 && inst.operands[0] == x) {
+                const il::Instruction& t = block.instructions.back();
+                if (t.op != Op::Branch || t.operands.empty() || t.operands[0] != inst.result) return true;
+                for (BlockId side : {t.target.block, t.elseTarget.block}) {
+                    if (isExit(fn, side) && exitKind(fn, side) != kind) return false;
+                }
+                return true;
+            }
             if (++seen > kMaxInstructions) return false;
         }
         if (block.instructions.empty()) return false;
@@ -78,7 +93,7 @@ bool runGuardStrengthening(JobContext& ctx) {
         if (!isExit(fn, term.target.block) || isExit(fn, term.elseTarget.block)) continue;
         if (!term.target.args.empty() || !term.elseTarget.args.empty()) continue;
         const ValueId x = test->operands[0];
-        if (!numberTestFollows(fn, term.elseTarget.block, x)) continue;
+        if (!numberTestFollows(fn, term.elseTarget.block, x, exitKind(fn, term.target.block))) continue;
         // A new test in front of the branch; the hole test, now unused here,
         // is dead code's to remove.
         il::Instruction number;

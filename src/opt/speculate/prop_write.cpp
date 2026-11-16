@@ -122,7 +122,7 @@ void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan) {
     b.moveTo(adds);
     if (number) {
         const BlockId add = b.newBlock();
-        b.branch(b.emit(il::Op::IsNumber, il::Type::Bool, {value}), add, {}, b.genericArm(join), {});
+        b.branch(b.emit(il::Op::IsNumber, il::Type::Bool, {value}), add, {}, b.genericArm(join, {}, true), {});
         b.moveTo(add);
         ++ctx.stats.numberSlotStores;
     }

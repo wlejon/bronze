@@ -40,12 +40,14 @@ bool verified(const il::Module& module, const OptimizeOptions& options, const ch
 // passed as it is: nothing to box in the exit block.
 PreheaderResumeFn loopEntryResumes(const il::Module& module) {
     return [&module](const il::Function& fn, il::BlockId header, il::BlockId preheader,
-                     const std::function<il::ValueId(il::ValueId)>& current) -> std::optional<LeaveTarget> {
+                     const std::function<il::ValueId(il::ValueId)>& current,
+                     bool optimistic) -> std::optional<LeaveTarget> {
         std::optional<speculate::LoopEntryResume> entry =
-            speculate::loopEntryResume(module, fn, header, preheader, current);
+            speculate::loopEntryResume(module, fn, header, preheader, current, optimistic);
         if (!entry) return std::nullopt;
         LeaveTarget target;
         target.resumeId = entry->resumeId;
+        target.kind = optimistic ? il::kResumeOptimistic : 0;
         target.buildState = [state = std::move(entry->stateInS)](il::Function&, il::BlockId) {
             return state;
         };
@@ -128,6 +130,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
         out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), shape sets " + n(s.shapeSetLeads) + " (followers " + n(s.shapeSetFollowers) + "), slot-keyed " + n(s.propSlotKeyed) + " (absent " + n(s.propAbsentTests) + "), number slots " + n(s.numberSlotKeys) + " keys (reads " + n(s.numberSlotReads) + ", stores " + n(s.numberSlotStores) + "), prop.set " +
                n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", push " + n(s.arrayPushes) + ", tdz " + n(s.tdzReads) + ", math " + n(s.mathCalls) +
+               "; optimistic copies " + n(s.optimisticCopies) + " (arms " + n(s.optimisticArms) + ", never-entered blocks " + n(s.neverEnteredLeft) + ")" +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +
                n(s.loopEntryPoints) + "), shape cells " + n(s.shapeCells) + ", redirected " + n(s.redirected) +
                "\n";
@@ -136,7 +139,8 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     }
     const inliner::InlineStats& in = r.inlined;
     out += "inline: " + n(in.inlined) + "/" + n(in.sitesConsidered) + " calls (speculated " +
-           n(in.inlinedSpeculated) + ", hot " + n(in.inlinedHot) + "); refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
+           n(in.inlinedSpeculated) + ", hot " + n(in.inlinedHot) + ", optimistic " + n(in.inlinedOptimistic) +
+           "); optimistic copies " + n(in.optimisticCopies) + "; refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
            ", size " + n(in.refusedSize) + ", budget " + n(in.refusedBudget) + "; leaves rewritten " +
            n(in.leavesRewritten) + "\n";
     auto redundancyLine = [&](const char* name, const RedundancyStats& d) {

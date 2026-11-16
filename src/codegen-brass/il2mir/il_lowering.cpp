@@ -381,7 +381,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_deopt_counts", Type::void_type(),
                              {counts_addr, text_addr, b.build_iconst_i32(static_cast<int32_t>(options_.deopt_generic_count)),
                               b.build_iconst_i32(static_cast<int32_t>(options_.deopt_site_count)),
-                              b.build_iconst_i64(static_cast<int64_t>(options_.deopt_retire_after))});
+                              b.build_iconst_i64(static_cast<int64_t>(options_.deopt_retire_after)),
+                              b.build_iconst_i64(static_cast<int64_t>(options_.deopt_optimistic_after))});
             }
             // The method-call sites' rows (bronze_abi_layout.h, "the METHOD
             // ROWS"), kept by the runtime's latches the same way.

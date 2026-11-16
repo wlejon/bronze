@@ -88,6 +88,7 @@ struct FunctionMirror {
     std::string displayName;
     uint32_t descFlags;
     uint32_t speculatedFrom;
+    uint32_t fallback;
     uint32_t entrySlowSite;
     std::vector<Function::InlineScope> inlineScopes;
     std::vector<Block> blocks;
@@ -495,6 +496,7 @@ void writeFunction(Writer& w, const Function& fn) {
     w.str(fn.displayName);
     w.var(fn.descFlags);
     w.var(static_cast<uint32_t>(fn.speculatedFrom + 1u));  // kNotSpeculated wraps to 0
+    w.var(static_cast<uint32_t>(fn.fallback + 1u));        // kNoFallback wraps to 0
     w.var(static_cast<uint32_t>(fn.entrySlowSite + 1u));   // none wraps to 0
     w.var(fn.valueCount);
     w.var(fn.inlineScopes.size());
@@ -548,6 +550,7 @@ void readFunction(Reader& r, Function& fn) {
     fn.displayName = r.str();
     fn.descFlags = r.u32();
     fn.speculatedFrom = r.u32() - 1u;
+    fn.fallback = r.u32() - 1u;
     fn.entrySlowSite = r.u32() - 1u;
     fn.valueCount = r.u32();
     fn.inlineScopes.resize(r.count());

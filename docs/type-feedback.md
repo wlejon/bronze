@@ -664,6 +664,17 @@ in the receiver names its shape cells resolve
 functions or null); no build reads them today. See
 docs/slot-representation.md, "From a harvest".
 
+**Never-entered blocks.** The same counters say which blocks of a function
+the harvested run never entered: an armed word still zero is code that never
+ran, and a call's count, a named access's shape-turn count and every word of
+an element access or numeric op are marked on each execution of the
+instruction. A block holding such an instruction that never ran, which calls
+out and whose code rejoins the rest, is one the speculation step's OPTIMISTIC
+copy leaves at the top of (`src/opt/speculate/never_entered.cpp`,
+`optimistic.h`); the conservative copy keeps it, and the optimistic one
+retires to it after 100 such exits (docs/deopt-stats.md, "Optimistic
+copies").
+
 **Slow paths.** An inline fast path with a generic fallback (an element read
 or write, a constant-index read or write and the runs of them il2mir lowers
 under one guard, a strict compare's contents call, a checked unbox and a

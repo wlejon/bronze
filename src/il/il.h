@@ -370,6 +370,16 @@ struct Function {
     static constexpr uint32_t kNotSpeculated = UINT32_MAX;
     uint32_t speculatedFrom = kNotSpeculated;
     bool isSpeculated() const { return speculatedFrom != kNotSpeculated; }
+    // An OPTIMISTIC speculated function S+ (opt/speculate optimistic.h): the
+    // index of the conservative speculated function S of the same G that its
+    // retirement falls back to. S+ is S with assumptions that pay only when a
+    // miss leaves (a block the harvested run never entered leaves instead of
+    // rejoining); it is entered first, and its optimistic exits (resume
+    // points of kind kResumeOptimistic) retire it to S, not to G. kNoFallback
+    // for every other function.
+    static constexpr uint32_t kNoFallback = UINT32_MAX;
+    uint32_t fallback = kNoFallback;
+    bool isOptimistic() const { return fallback != kNoFallback; }
     // The slow-site index of the function's ENTRY COUNT (il/feedback_site.h
     // numberSlowSites): a build made to be harvested adds one to its word at
     // every entry. A speculated copy keeps its G's. Instruction::kNoSlowSite

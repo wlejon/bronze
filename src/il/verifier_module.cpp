@@ -73,6 +73,12 @@ static bool checkResumeState(const Module& module, const Function& fn, const Ins
                                 std::to_string(inst.immI32) + ", which it does not have");
         return false;
     }
+    if (inst.keyIndex != point->keyIndex || (inst.keyIndex == kResumeOptimistic && !fn.isOptimistic())) {
+        diags.error(Span{}, what + " to @" + generic.name + ", " + std::to_string(inst.immI32) +
+                                " is of another kind than the point, or optimistic outside an optimistic "
+                                "function");
+        return false;
+    }
     if (point->operands.size() != inst.operands.size()) {
         diags.error(Span{}, what + " to @" + generic.name + ", " + std::to_string(inst.immI32) +
                                 " carries " + std::to_string(inst.operands.size()) + " state values for " +
@@ -197,6 +203,24 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                         " is speculated from a function index that is out of range, "
                                         "external or itself speculated");
                 return false;
+            }
+        }
+        if (fn.isOptimistic()) {
+            const Function* s = fn.fallback < module.functions.size() ? &module.functions[fn.fallback] : nullptr;
+            if (s == nullptr || !fn.isSpeculated() || !s->isSpeculated() || s->isOptimistic() ||
+                s->speculatedFrom != fn.speculatedFrom || s->returnType != fn.returnType ||
+                s->params.size() != fn.params.size()) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        " is optimistic over a function that is no conservative speculated "
+                                        "copy of the same generic function with its signature");
+                return false;
+            }
+            for (size_t p = 0; p < fn.params.size(); ++p) {
+                if (fn.params[p].type != s->params[p].type) {
+                    diags.error(Span{}, "Function " + fn.name + " and its fallback " + s->name +
+                                            " differ in a parameter's type");
+                    return false;
+                }
             }
         }
         std::vector<Type> ownTypes;

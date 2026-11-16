@@ -509,11 +509,18 @@ enum class Op : uint8_t {
     // instruction, pure ones included, may be moved across it while a
     // `leave` names it (Effects::barrier), because a resumption arrives here
     // with only the state in hand. Never in a speculated function.
+    // `keyIndex` is the point's KIND: 0, or kResumeOptimistic for a point only
+    // an optimistic function S+ (il.h Function::fallback) leaves for, which
+    // counts toward retiring S+ to S rather than S to G (docs/deopt-stats.md).
+    // An optimistic point stands right after the ordinary point of the same
+    // place when both exist, with the same state (printed `optimistic`).
     ResumePoint,
     // `leave @G, <id>, %s0, %s1, ...`: terminator. Leaves S for G's
     // `resume.point <id>` with the operands as its state, which match that
     // point's operands in count and in type, one for one. `calleeIndex` is
     // G's index in Module::functions and must be S's `speculatedFrom`.
+    // `keyIndex` repeats the point's kind (kResumeOptimistic: only in an
+    // optimistic function), so a pass reading an exit knows it without G.
     // No successors: what runs next is G's, and S never sees it again.
     Leave,
 
@@ -675,8 +682,9 @@ enum class Op : uint8_t {
     // inlined callee's guard failed, so the rest of that call runs in the
     // callee's generic function, and the caller then leaves for its own
     // generic function after the call with this result in the call's place.
-    // `calleeIndex` is G's index, `immI32` the id; the state matches that
-    // point's operands in count and type exactly as a `leave`'s does. The
+    // `calleeIndex` is G's index, `immI32` the id, `keyIndex` the point's kind;
+    // the state matches that point's operands in count and type exactly as a
+    // `leave`'s does. The
     // result has G's return type, and there is none when G returns void.
     // Only in speculated functions. Effects: everything (it runs G's code).
     ResumeCall,
@@ -876,6 +884,8 @@ inline constexpr int32_t kStoreNumber = 1;
 inline constexpr int32_t kHasOwnWrite = 1;
 inline constexpr int32_t kHasOwnNumber = 2;
 inline constexpr int32_t kHasOwnSlotShift = 2;
+// `resume.point`'s keyIndex (see there): an optimistic point.
+inline constexpr uint32_t kResumeOptimistic = 1;
 
 const char* opName(Op op);
 bool isTerminator(Op op);

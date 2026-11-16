@@ -293,7 +293,11 @@ receiver), 11 shape compares, the rest store representation tests.
   tag and 39 header tests on join parameters in the MIR). Either those
   diamonds become exits where the profile saw the slow arm never taken
   (which removes the join), or the receiver needs no test at all (next
-  point). Carrying a layout fact across them was measured and dropped
+  point). The first is done where a harvest shows the arm never entered:
+  the optimistic copy S+ leaves there, and retires to S, which keeps the
+  join, when the arm turns out to run (`src/opt/speculate/optimistic.h`,
+  docs/deopt-stats.md "Optimistic copies"; -1.2% instructions on pixi_text,
+  -2.0% on three_skinned, -14.5% on three_instanced). Carrying a layout fact across them was measured and dropped
   ("Tried and dropped": the repeats are fewer than the receivers).
 - *What a slot holds.* The guards that remain are asked of values just
   loaded from a slot of an object already guarded: a Number test per number

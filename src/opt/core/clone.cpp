@@ -108,4 +108,44 @@ size_t removeResumePoints(il::Function& fn) {
     return removed;
 }
 
+namespace {
+
+uint32_t* codeReference(il::Instruction& inst) {
+    switch (inst.op) {
+        case il::Op::Call:
+        case il::Op::CreateFunction:
+        case il::Op::FunctionRef:
+        case il::Op::FnCodeIs:
+            return &inst.calleeIndex;
+        case il::Op::Construct:
+            return inst.directTarget != il::Instruction::kNoDirectTarget ? &inst.directTarget : nullptr;
+        default:
+            return nullptr;
+    }
+}
+
+}  // namespace
+
+uint32_t redirectFunctionReferences(il::Module& module, const std::vector<uint32_t>& entry) {
+    uint32_t redirected = 0;
+    for (il::Function& fn : module.functions) {
+        for (il::Block& block : fn.blocks) {
+            for (il::Instruction& inst : block.instructions) {
+                uint32_t* index = codeReference(inst);
+                if (index == nullptr || *index >= entry.size() || entry[*index] == *index) continue;
+                *index = entry[*index];
+                ++redirected;
+            }
+        }
+    }
+    // A member cell holds the function whose code its method runs, which the
+    // runtime compares with a receiver's: the same code the closures run.
+    for (il::Module::MemberCell& cell : module.memberCells) {
+        if (cell.callee >= entry.size() || entry[cell.callee] == cell.callee) continue;
+        cell.callee = entry[cell.callee];
+        ++redirected;
+    }
+    return redirected;
+}
+
 }  // namespace bronze::opt

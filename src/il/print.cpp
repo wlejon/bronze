@@ -97,6 +97,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         out += typeName(fn.returnType);
         if (fn.isExported) out += " export";
         if (fn.isSpeculated()) out += " speculated @" + getFnName(fn.speculatedFrom);
+        if (fn.isOptimistic()) out += " optimistic @" + getFnName(fn.fallback);
         out += " {\n";
         for (const auto& block : fn.blocks) {
             out += "  b" + std::to_string(block.id);
@@ -674,12 +675,14 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     // order IS the contract a `leave` matches against.
                     case Op::ResumePoint:
                         out += "resume.point " + std::to_string(inst.immI32);
+                        if (inst.keyIndex == kResumeOptimistic) out += " optimistic";
                         for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
                         break;
                     case Op::Leave:
                     case Op::ResumeCall:
                         out += std::string(opName(inst.op)) + " @" + getFnName(inst.calleeIndex) +
                                ", " + std::to_string(inst.immI32);
+                        if (inst.keyIndex == kResumeOptimistic) out += " optimistic";
                         for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
                         break;
                     // The cell's KEY beside its number: which shape a test

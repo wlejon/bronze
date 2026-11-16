@@ -19,7 +19,10 @@
 //      a point right AFTER the generic call, recorded as the call's
 //      `resumeAfter` (il.h) for the inliner (opt/inline);
 //   4. redirects entry: every creation of, reference to and direct call of G
-//      in the module names S instead (S's own `leave`s keep naming G).
+//      in the module names S instead (S's own `leave`s keep naming G);
+//   5. makes, where an assumption pays only if its miss leaves, an
+//      OPTIMISTIC copy S+ entered before S, which retires to S
+//      (optimistic.h); entry then names S+.
 // There is no other speculation mechanism: no flags on instructions, no
 // typed versions, no guarded regions. Everything S assumes it tests.
 //
@@ -80,7 +83,10 @@ struct SpeculateStats {
     uint32_t resumePoints = 0;         // placed in generic functions
     uint32_t loopEntryPoints = 0;      // of those, at a loop header's top
     uint32_t shapeCells = 0;           // cells this step added to the module
-    uint32_t redirected = 0;           // references to a G rewritten to its S
+    uint32_t redirected = 0;           // references to a G (or an S) rewritten to its entry
+    uint32_t optimisticCopies = 0;     // S+ copies made (optimistic.h)
+    uint32_t optimisticArms = 0;       // their generic arms turned into optimistic exits
+    uint32_t neverEnteredLeft = 0;     // their never-entered blocks turned into optimistic exits
 };
 
 // Runs the step over `module`. Reads every piece of evidence before it
@@ -126,12 +132,16 @@ bool mayPlaceResumePoint(const il::Function& fn, BlockId block);
 //     every path), or has a type other than G's — or when `preheader` does not
 //     end in a `jump` to `header`.
 // `stateInS[i]` is to be passed for the resume point's operand i.
+// `optimistic` asks for the header's OPTIMISTIC point instead (the one right
+// after the ordinary one, il_op.h kResumeOptimistic), which the step places
+// for an optimistic copy's loops (optimistic.h); nullopt where there is none.
 struct LoopEntryResume {
     uint32_t resumeId = 0;
     std::vector<ValueId> stateInS;
 };
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& S,
                                                BlockId header, BlockId preheader,
-                                               const std::function<ValueId(ValueId)>& current);
+                                               const std::function<ValueId(ValueId)>& current,
+                                               bool optimistic = false);
 
 }  // namespace bronze::opt::speculate

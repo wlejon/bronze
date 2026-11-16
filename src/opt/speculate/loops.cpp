@@ -27,7 +27,8 @@
 
 namespace bronze::opt::speculate {
 
-uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& planned) {
+uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& planned,
+                          const std::vector<BlockId>& left) {
     const il::Function& g = ctx.generic;
     const Cfg cfg(g);
     const DomTree dom(cfg);
@@ -37,20 +38,27 @@ uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& plan
         // b0 takes no parameters and cannot be given a preheader
         // (cfg_edit.h ensurePreheader), so nothing could resume there.
         if (loop.header == 0 || !mayPlaceResumePoint(g, loop.header)) continue;
-        const bool guarded = std::any_of(planned.begin(), planned.end(),
-                                         [&](const SitePlan& p) { return loop.contains(p.block); });
+        const bool guarded =
+            std::any_of(planned.begin(), planned.end(), [&](const SitePlan& p) { return loop.contains(p.block); }) ||
+            std::any_of(left.begin(), left.end(), [&](BlockId b) { return loop.contains(b); });
         if (!guarded) continue;
         // A site at the header's top already has a point there, with the
         // same state: it serves the loop entry as well.
-        if (ctx.resume.has(loop.header, 0)) continue;
-        ctx.resume.at(loop.header, 0);
-        ++placed;
+        if (!ctx.resume.has(loop.header, 0)) {
+            ctx.resume.at(loop.header, 0);
+            ++placed;
+        }
+        if (ctx.optimistic && !ctx.resume.has(loop.header, 0, true)) {
+            ctx.resume.at(loop.header, 0, true);
+            ++placed;
+        }
     }
     return placed;
 }
 
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& s, BlockId header,
-                                               BlockId preheader, const std::function<ValueId(ValueId)>& current) {
+                                               BlockId preheader, const std::function<ValueId(ValueId)>& current,
+                                               bool optimistic) {
     if (!s.isSpeculated() || s.speculatedFrom >= module.functions.size()) return std::nullopt;
     const il::Function& g = module.functions[s.speculatedFrom];
     if (header >= s.blocks.size() || preheader >= s.blocks.size() || header == preheader) return std::nullopt;
@@ -71,8 +79,13 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
         if (paramOwner[p.id] != gHeader) return std::nullopt;
     }
     const auto& gInsts = g.blocks[gHeader].instructions;
-    if (gInsts.empty() || gInsts.front().op != il::Op::ResumePoint) return std::nullopt;
-    const il::Instruction& point = gInsts.front();
+    // The ordinary point first, then the optimistic one (resume_points.h).
+    const size_t at = optimistic ? 1 : 0;
+    if (gInsts.size() <= at || gInsts[at].op != il::Op::ResumePoint ||
+        gInsts[at].keyIndex != (optimistic ? il::kResumeOptimistic : 0u)) {
+        return std::nullopt;
+    }
+    const il::Instruction& point = gInsts[at];
 
     const auto& preInsts = s.blocks[preheader].instructions;
     if (preInsts.empty()) return std::nullopt;

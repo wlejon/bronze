@@ -52,4 +52,14 @@ void cloneBlocks(const il::Function& src, const std::vector<BlockId>& blocks, il
 // answers how many.
 size_t removeResumePoints(il::Function& fn);
 
+// Points every reference to function f that names its CODE (a call,
+// `create.func`, `fn.ref`, `fn.code_is`, a `new`'s direct target; not a
+// `leave` or `resume.call`, which name a generic function on purpose) at
+// `entry[f]`, over the whole module, and a member cell's callee
+// (il.h Module::MemberCell) with them; f beyond `entry` or with entry[f] == f
+// stays. Answers how many references it rewrote. The speculation step points
+// G's and S's at their entry this way, the inliner a caller's at the
+// optimistic copy it made of it.
+uint32_t redirectFunctionReferences(il::Module& module, const std::vector<uint32_t>& entry);
+
 }  // namespace bronze::opt

@@ -599,10 +599,12 @@
     /* The module's DEOPT COUNTERS (codegen-brass/deopt_sites.h), handed over
      * at module init: `generics` retire words then `sites` exit counters at
      * `counts` (this instance's `__bronze_deopt_counts`, which the resume
-     * twins bump), `text` one tab-separated line per site, and the retire
-     * limit at which a twin retires its speculated functions. Read only by the report
+     * twins bump) then `generics` optimistic words, `text` one tab-separated
+     * line per site, the retire limit at which a twin retires its speculated
+     * functions, and the optimistic limit at which it retires their
+     * optimistic copies to the conservative ones. Read only by the report
      * BRONZE_DEOPT_STATS=1 prints at exit (runtime/deopt_stats.cpp). */ \
-    X(bronze_register_deopt_counts, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_CSTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    X(bronze_register_deopt_counts, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_CSTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* The module's proven class LAYOUTS, handed over at module init so that
      * `bronze_family_stamp` can recognise a shape as an instance of one.
      *
