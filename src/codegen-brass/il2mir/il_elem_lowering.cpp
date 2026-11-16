@@ -12,6 +12,7 @@
 #include "il_prop_stubs.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <algorithm>
 #include <string>
 
 namespace il2mir {
@@ -101,6 +102,14 @@ void mark_view_arm(PropertyLoweringHelper& prop, Builder& b, Value* ptr, Value* 
 
 }  // namespace
 
+Value* PropertyLoweringHelper::elem_cell(Builder& b) {
+    if (elem_cell_sites_ == nullptr || !elem_cells_base_fn_ || slow_sites_.size() != 1) return nullptr;
+    const auto it = std::lower_bound(elem_cell_sites_->begin(), elem_cell_sites_->end(), slow_sites_[0]);
+    if (it == elem_cell_sites_->end() || *it != slow_sites_[0]) return nullptr;
+    const int64_t at = static_cast<int64_t>(it - elem_cell_sites_->begin()) * kElemCellBytes;
+    return b.build_add(elem_cells_base_fn_(b), iconst(b, static_cast<uint64_t>(at)));
+}
+
 // An element key as the Value the helpers take: an i32 is an int32 Number, an
 // f64 its boxed bits, anything else already a Value.
 Value* boxed_elem_key(Builder& b, Value* index) {
@@ -141,7 +150,8 @@ ElemIndex elem_index(Builder& b, Value* index) {
 // planElem).
 //
 // A read: an Array's element inline, a typed array's through the module's
-// view stub, the rest bronze_elem_get.
+// view stub, a plain receiver's through the site's pair cell when it names
+// the receiver's shape and the key, the rest bronze_elem_get.
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
     Value* key = boxed_elem_key(b, index);
     const ElemIndex ei = elem_index(b, index);
@@ -218,6 +228,38 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
 
     b.position_at_end(bb_slow);
     slow_arm(b);
+    if (Value* cell = elem_cell(b)) {
+        // The site's pair cell: a plain receiver at the cell's shape and the
+        // cell's key bits read the cell's own data slot. Anything else asks
+        // the runtime to fill the cell from the computed-read table (while
+        // the cell still takes fills) and reads through the helper.
+        // append_block moves the cursor, so every block is made first.
+        bb_slow->set_cold(false);
+        BasicBlock* bb_cell_hit = b.append_block(prefix + "_cellhit");
+        BasicBlock* bb_fill = b.append_block(prefix + "_fill");
+        BasicBlock* bb_fill_call = b.append_block(prefix + "_fillcall");
+        BasicBlock* bb_helper = b.append_block(prefix + "_helper");
+        bb_fill->set_cold();
+        bb_fill_call->set_cold();
+        bb_helper->set_cold();
+        b.position_at_end(bb_slow);
+        Value* is_object = nullptr;
+        Value* cptr = nullptr;
+        Value* shape = nullptr;
+        receiver_shape(b, obj, is_object, cptr, shape);
+        Value* same_shape = b.build_eq(shape, b.build_load(Type::i64(), cell, 0));
+        Value* same_key = b.build_eq(key, b.build_load(Type::i64(), cell, 8));
+        b.build_br_if(b.build_and(is_object, b.build_and(same_shape, same_key)), bb_cell_hit, bb_fill);
+        b.position_at_end(bb_cell_hit);
+        b.build_br(bb_merge, {load_slot_at(b, cptr, b.build_load(Type::i64(), cell, 16))});
+        b.position_at_end(bb_fill);
+        b.build_br_if(b.build_ult(b.build_load(Type::i64(), cell, 24), iconst(b, BRONZE_ABI_ELEM_CELL_LIMIT)),
+                      bb_fill_call, bb_helper);
+        b.position_at_end(bb_fill_call);
+        b.build_call("bronze_elem_cell_fill", Type::void_type(), {obj, key, cell});
+        b.build_br(bb_helper);
+        b.position_at_end(bb_helper);
+    }
     b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, key})});
 
     b.position_at_end(bb_merge);

@@ -198,6 +198,9 @@ struct TranslatorOptions {
         uint32_t group_size = 1;
     };
     std::vector<MemberCellMeta> member_cells;
+    // The element cells (codegen-brass/elem_cells.h): the slow sites of the
+    // module's computed reads, sorted; cell n is the read at element n.
+    std::vector<uint32_t> elem_cell_sites;
     // THE DEOPT COUNTERS (codegen-brass/deopt_sites.h): `__bronze_deopt_counts`
     // holds one RETIRE word per generic function with resume points (by
     // rank), then one counter per point (by slot). A generic function's twin

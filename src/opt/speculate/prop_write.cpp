@@ -1,7 +1,8 @@
 // PROPERTY WRITE: `prop.set %obj, <key>, %v` (an assignment, sloppy or
 // strict) to a property the receiver already has.
 //
-// Evidence (evidence.cpp planPropWrite): one shape, holding the key as an own
+// Evidence (evidence.cpp planPropWrite): one to kMaxChainShapes shapes (each
+// tested in turn, a store per distinct slot), holding the key as an own
 // property before the write — a harvest's single `store` way (a write the
 // cache filled for a key the receiver had), or a recorded Shape site, which
 // observes the receiver before the write, naming one shape that lists the
@@ -136,20 +137,61 @@ void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan) {
 }
 
 void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan) {
-    assert(plan.kind == SiteKind::PropWrite && plan.shapes.size() == 1);
+    assert(plan.kind == SiteKind::PropWrite && !plan.shapes.empty() && plan.shapes.size() <= kMaxChainShapes);
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction& site = b.site();
     assert(site.op == il::Op::PropSet && !il::isDefineWrite(site) && site.result == il::kNoValue);
     const ValueId object = site.operands[0];
     const ValueId value = site.operands[1];
+    auto slotStore = [&](int32_t slot) {
+        il::Instruction store;
+        store.op = il::Op::SlotStore;
+        store.type = il::Type::Void;
+        store.operands = {object, value};
+        store.immI32 = slot;
+        b.emitInst(std::move(store));
+    };
 
-    guardShape(b, object, plan.shapes.front().key);
-    il::Instruction store;
-    store.op = il::Op::SlotStore;
-    store.type = il::Type::Void;
-    store.operands = {object, value};
-    store.immI32 = plan.shapes.front().slot;
-    b.emitInst(std::move(store));
+    if (plan.shapes.size() == 1) {
+        guardShape(b, object, plan.shapes.front().key);
+        slotStore(plan.shapes.front().slot);
+        b.finish();
+        ++ctx.stats.propWrites;
+        return;
+    }
+
+    // Several shapes: each test that matches goes to the store of its slot,
+    // one store per distinct slot (a subclass's shape extends its base's, so
+    // a base field usually sits at one slot in all of them); the last test is
+    // the guard.
+    const ValueId shape = emitShapeOf(b, object);
+    const BlockId join = b.newBlock();
+    std::vector<std::pair<int32_t, BlockId>> stores;
+    auto storeBlock = [&](int32_t slot) {
+        for (const auto& [s, block] : stores) {
+            if (s == slot) return block;
+        }
+        stores.emplace_back(slot, b.newBlock());
+        return stores.back().second;
+    };
+    for (size_t i = 0; i < plan.shapes.size(); ++i) {
+        const ValueId matches = emitShapeIs(b, shape, plan.shapes[i].key);
+        const BlockId target = storeBlock(plan.shapes[i].slot);
+        if (i + 1 == plan.shapes.size()) {
+            b.guard(matches);
+            b.jump(target);
+        } else {
+            const BlockId next = b.newBlock();
+            b.branch(matches, target, {}, next, {});
+            b.moveTo(next);
+        }
+    }
+    for (const auto& [slot, block] : stores) {
+        b.moveTo(block);
+        slotStore(slot);
+        b.jump(join);
+    }
+    b.moveTo(join);
     b.finish();
     ++ctx.stats.propWrites;
 }

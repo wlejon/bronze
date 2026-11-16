@@ -1,5 +1,8 @@
 #include "opt/redundancy/tests.h"
 
+#include <cstdint>
+#include <utility>
+
 namespace bronze::opt::redundancy {
 
 namespace {
@@ -141,6 +144,36 @@ std::optional<bool> ptrEqTest(const il::Instruction& inst, const FactEnv& facts,
     return facts.known(FactKind::PtrEq, a, b);
 }
 
+std::pair<ValueId, int32_t> offsetOf(const ValueView& values, ValueId v) {
+    return offsetForm(v, [&](ValueId x) { return values.def(x); });
+}
+
+// `in.bounds x, n, +span`: a test of the same x and n answers a plain one; an
+// InRange fact about x's base answers any whose offsets it covers.
+std::optional<bool> inBoundsTest(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
+    const ValueId x = inst.operands[0];
+    const ValueId n = inst.operands[1];
+    if (inst.immI32 == 0) {
+        if (const auto k = facts.known(FactKind::InBounds, x, 0, n)) return k;
+    }
+    const auto [base, c] = offsetOf(values, x);
+    if (static_cast<int64_t>(c) + inst.immI32 > INT32_MAX) return std::nullopt;
+    if (facts.inRange(base, n, c, c + inst.immI32)) return true;
+    return std::nullopt;
+}
+
+// `add.would_ovf x, k` with k a non-negative constant: an InRange fact that
+// puts x + k below some length (an int32) and x + 0.. at or above zero says
+// the sum is an int32.
+std::optional<bool> addOverflowTest(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
+    for (int side = 0; side < 2; ++side) {
+        const il::Instruction* k = values.defIs(inst.operands[side], Op::ConstI32);
+        if (k == nullptr || k->immI32 < 0) continue;
+        if (facts.inRange(inst.operands[1 - side], kNoValue, k->immI32, k->immI32)) return false;
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
@@ -184,7 +217,10 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
             return fnCodeTest(facts, values, def, inst);
         case Op::InBounds:
             if (inst.operands.size() != 2) return std::nullopt;
-            return facts.known(FactKind::InBounds, inst.operands[0], 0, inst.operands[1]);
+            return inBoundsTest(inst, facts, values);
+        case Op::AddWouldOvf:
+            if (inst.operands.size() != 2) return std::nullopt;
+            return addOverflowTest(inst, facts, values);
         case Op::PtrEq:
             if (inst.operands.size() != 2) return std::nullopt;
             return ptrEqTest(inst, facts, exprs, values);

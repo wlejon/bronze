@@ -1,0 +1,8 @@
+warm 162000
+0,3,6,9
+0,other-b,2
+4,,6
+8,getter,10,getter 2
+12,from-proto,14
+changed-proto,16
+seven, sym, 20,4

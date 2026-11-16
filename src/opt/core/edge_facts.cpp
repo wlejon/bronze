@@ -1,5 +1,7 @@
 #include "opt/core/edge_facts.h"
 
+#include <cstdint>
+
 namespace bronze::opt {
 
 const char* factKindName(FactKind kind) {
@@ -17,6 +19,7 @@ const char* factKindName(FactKind kind) {
         case FactKind::Array: return "array";
         case FactKind::Callee: return "callee";
         case FactKind::InBounds: return "in-bounds";
+        case FactKind::InRange: return "in-range";
         case FactKind::PtrEq: return "ptr-eq";
     }
     return "?";
@@ -50,10 +53,18 @@ public:
             case il::Op::IsHole: valueFact(FactKind::Hole); return;
             case il::Op::FnCodeIs: valueFact(FactKind::Callee, d->calleeIndex); return;
             case il::Op::IsArray: valueFact(FactKind::Array); return;
-            case il::Op::InBounds:
+            case il::Op::InBounds: {
                 if (d->operands.size() != 2) return;
                 out.push_back(Fact{FactKind::InBounds, truth, d->operands[0], d->operands[1], 0, {}});
+                // A widened test (il_op.h) also bounds its neighbours: with x
+                // = base + c0, every base + c for c in c0..c0+span.
+                if (!truth || d->immI32 <= 0) return;
+                const auto [base, c0] =
+                    offsetForm(d->operands[0], [&](ValueId v) { return defs_.defInst(fn_, v); });
+                if (static_cast<int64_t>(c0) + d->immI32 > INT32_MAX) return;
+                out.push_back(Fact{FactKind::InRange, true, base, d->operands[1], packRange(c0, c0 + d->immI32), {}});
                 return;
+            }
             case il::Op::IsDenseArray:
                 memoryFact(cond, FactKind::DenseArray, truth, d->operands[0], d->immI32,
                            Loc::Shapes | Loc::ArrayLen | Loc::Elements, out);

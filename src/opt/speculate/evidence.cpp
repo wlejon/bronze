@@ -278,9 +278,9 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
 }
 
 // An assignment to a property every receiver already had as an own data
-// property, on one shape. A harvest says so with a `store` way (a write the
-// cache filled for a key the receiver had); its `own` way is a write that
-// ADDED the key (a transition), which stays generic. A recorded Shape site is
+// property, on one to kMaxChainShapes shapes. A harvest says so with `store`
+// ways (a write the cache filled for a key the receiver had); a single `own`
+// way is a write that ADDED the key (a transition: planPropAdd). A recorded Shape site is
 // observed before the write, so a shape whose key list has the key is a
 // receiver that had it. Defines (object literals, class fields) stay generic.
 std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
@@ -295,33 +295,42 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
     const std::string& key = module_.keyConstants[inst.keyIndex];
     if (!isNamedKey(key)) return std::nullopt;
 
-    std::string name;
+    std::vector<std::string> names;
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
         if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) {
             return std::nullopt;
         }
         if (h->ways.front().form == "accessor") return planMember(*h, SiteKind::MemberSet, 1, block, index);
-        if (h->ways.size() != 1) return std::nullopt;
-        if (h->ways.front().form == "own") return planPropAdd(h->ways.front().receiver, key, block, index);
-        if (h->ways.front().form != "store") return std::nullopt;
-        name = h->ways.front().receiver;
+        if (h->ways.size() == 1 && h->ways.front().form == "own") {
+            return planPropAdd(h->ways.front().receiver, key, block, index);
+        }
+        for (const spec::HarvestWay& way : h->ways) {
+            if (way.form != "store") return std::nullopt;
+            names.push_back(way.receiver);
+        }
     } else {
         const auto shapeSites = refs.at(block, index, il::FeedbackKind::Shape);
         if (shapeSites.size() != 1) return std::nullopt;
         const spec::SiteFeedback* site = recorded(fn, shapeSites.front()->ordinal);
         if (site == nullptr || !onlyPlainObjects(*site)) return std::nullopt;
-        name = site->soleShape();
+        names.push_back(site->soleShape());
     }
-    const std::optional<ShapeName> shape = parseShapeName(name);
-    if (!shape) return std::nullopt;
-    const std::optional<int32_t> slot = writableSlot(*shape, key);
-    if (!slot) return std::nullopt;
+    if (names.empty() || names.size() > kMaxChainShapes) return std::nullopt;
 
     SitePlan plan;
     plan.kind = SiteKind::PropWrite;
     plan.block = block;
     plan.index = index;
-    plan.shapes.push_back(ShapeSlot{name, *slot});
+    for (const std::string& name : names) {
+        const std::optional<ShapeName> shape = parseShapeName(name);
+        if (!shape) return std::nullopt;
+        const std::optional<int32_t> slot = writableSlot(*shape, key);
+        if (!slot) return std::nullopt;
+        if (std::any_of(plan.shapes.begin(), plan.shapes.end(), [&](const ShapeSlot& s) { return s.key == name; })) {
+            continue;
+        }
+        plan.shapes.push_back(ShapeSlot{name, *slot});
+    }
     return plan;
 }
 

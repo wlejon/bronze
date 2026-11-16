@@ -22,10 +22,19 @@ public:
     explicit ShapeCells(il::Module& module);
     uint32_t cellFor(const std::string& key);
     uint32_t added() const { return added_; }
+    // The member cell (il.h Module::memberCells) a site with ONE receiver
+    // shape uses: one per (kind, key, function, the shape the harvest named),
+    // shared by every such site, so the tests of one receiver against it are
+    // one value the redundancy pass numbers. Whatever shape the runtime
+    // publishes into a cell resolves the key to the function (accessor_cell
+    // .cpp), so sharing changes no answer; a site whose receiver is not the
+    // published shape leaves, as it would at a cell of its own holding it.
+    uint32_t memberCellFor(il::Module::MemberKind kind, uint32_t keyIndex, uint32_t callee, const std::string& shape);
 
 private:
     il::Module& module_;
     std::unordered_map<std::string, uint32_t> byKey_;
+    std::unordered_map<std::string, uint32_t> members_;
     uint32_t added_ = 0;
 };
 

@@ -2,6 +2,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-brass/deopt_sites.h"
+#include "codegen-brass/elem_cells.h"
 #include "codegen-brass/il2mir/il_abi.h"
 #include "il/feedback_site.h"
 #include "support/source.h"
@@ -606,6 +607,16 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
         const size_t cellBytes = module.memberCells.size() * 2 * sizeof(uint64_t);
         dataSec.data.resize(cellOffset + cellBytes, 0);
         defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kMemberCellsSymbol)), dataIdx,
+                     cellOffset, cellBytes, SymbolBinding::Local);
+    }
+
+    // The element cells (il2mir::kElemCellsSymbol): zero, per thread.
+    if (const size_t cells = elemCellSites(module).size(); cells != 0) {
+        dataSec.align_to(8);
+        const size_t cellOffset = dataSec.data.size();
+        const size_t cellBytes = cells * il2mir::kElemCellBytes;
+        dataSec.data.resize(cellOffset + cellBytes, 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kElemCellsSymbol)), dataIdx,
                      cellOffset, cellBytes, SymbolBinding::Local);
     }
 

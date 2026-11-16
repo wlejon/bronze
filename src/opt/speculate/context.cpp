@@ -1,5 +1,7 @@
 #include "opt/speculate/context.h"
 
+#include <string>
+
 namespace bronze::opt::speculate {
 
 std::vector<il::Type> valueTypes(const il::Function& fn) {
@@ -29,6 +31,23 @@ uint32_t ShapeCells::cellFor(const std::string& key) {
     module_.shapeCells.push_back(il::Module::ShapeCell{key});
     byKey_.emplace(key, index);
     ++added_;
+    return index;
+}
+
+uint32_t ShapeCells::memberCellFor(il::Module::MemberKind kind, uint32_t keyIndex, uint32_t callee,
+                                   const std::string& shape) {
+    const std::string id = std::to_string(static_cast<uint32_t>(kind)) + ":" + std::to_string(keyIndex) + ":" +
+                           std::to_string(callee) + ":" + shape;
+    if (auto it = members_.find(id); it != members_.end()) return it->second;
+    const auto index = static_cast<uint32_t>(module_.memberCells.size());
+    il::Module::MemberCell cell;
+    cell.kind = kind;
+    cell.keyIndex = keyIndex;
+    cell.callee = callee;
+    cell.group = index;
+    cell.groupSize = 1;
+    module_.memberCells.push_back(cell);
+    members_.emplace(id, index);
     return index;
 }
 

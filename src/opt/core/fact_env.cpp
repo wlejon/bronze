@@ -120,6 +120,18 @@ std::optional<bool> FactEnv::known(FactKind kind, ValueId v, int64_t imm, ValueI
     return std::nullopt;
 }
 
+bool FactEnv::inRange(ValueId base, ValueId length, int32_t lo, int32_t hi) const {
+    const auto it = byValue_.find(base);
+    if (it == byValue_.end()) return false;
+    for (const uint32_t i : it->second) {
+        const Fact& f = facts_[i];
+        if (!alive_[i] || f.kind != FactKind::InRange || !f.holds || f.value != base) continue;
+        if (length != kNoValue && f.other != length) continue;
+        if (rangeLo(f.imm) <= lo && hi <= rangeHi(f.imm)) return true;
+    }
+    return false;
+}
+
 std::optional<bool> FactEnv::boolValue(ValueId v) const {
     if (known(FactKind::BoolValue, v, 1) == true) return true;
     if (known(FactKind::BoolValue, v, 0) == true) return false;

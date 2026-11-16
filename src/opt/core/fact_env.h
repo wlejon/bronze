@@ -82,6 +82,9 @@ public:
     bool inBounds(ValueId index, ValueId length) const {
         return known(FactKind::InBounds, index, 0, length) == true;
     }
+    // Whether a holding InRange fact puts base + c in [0, length) for every
+    // c in lo..hi (any length when `length` is kNoValue).
+    bool inRange(ValueId base, ValueId length, int32_t lo, int32_t hi) const;
 
     // Every live fact, oldest first (for dumps and tests).
     std::vector<Fact> live() const;

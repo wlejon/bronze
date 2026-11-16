@@ -27,10 +27,17 @@
 // The sources are a greatest fixpoint: everything planned Int starts as a
 // source and is demoted until nothing changes, so a counter whose only int
 // input is its own increment stays int.
+//
+// An INDEX keeps its int form whatever its operands are: a sum or product
+// whose result is the index of a planned element access (`v[i + 3]`). The
+// access converts its index to an int32 anyway, so the int form moves that
+// test onto the operands, where a value used in several indices (a
+// parameter `i` in `v[i]`, `v[i + 1]`, ...) is unboxed once.
 
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "opt/speculate/evidence.h"
 #include "opt/speculate/sites.h"
@@ -96,6 +103,16 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
 
     for (ValueId v = 0; v < fn.params.size(); ++v) types[v] = fn.params[v].type;
 
+    // The indices of the planned element accesses.
+    std::unordered_set<ValueId> indices;
+    for (const SitePlan& p : plan.sites) {
+        if (p.kind != SiteKind::ElemRead && p.kind != SiteKind::ElemWrite) continue;
+        const il::Instruction& inst = fn.blocks[p.block].instructions[p.index];
+        if ((inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet) && inst.operands.size() >= 2) {
+            indices.insert(inst.operands[1]);
+        }
+    }
+
     std::vector<ValueId> values;
     values.reserve(defs.size());
     for (const auto& [v, d] : defs) values.push_back(v);
@@ -155,6 +172,10 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
             if (p.kind != SiteKind::Arith || p.form != ArithForm::Int) continue;
             const il::Instruction& inst = fn.blocks[p.block].instructions[p.index];
             if (!demotable(inst.op)) continue;
+            if (inst.result != il::kNoValue && indices.count(inst.result) != 0 &&
+                (inst.op == il::Op::Add || inst.op == il::Op::Sub || inst.op == il::Op::Mul)) {
+                continue;
+            }
             for (ValueId v : inst.operands) {
                 if (types[v] != il::Type::Dynamic || isSource(v)) continue;
                 p.form = ArithForm::Double;

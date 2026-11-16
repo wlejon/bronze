@@ -806,6 +806,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += i == 0 ? " " : ", ";
                                 out += "%" + std::to_string(inst.operands[i]);
                             }
+                            if (inst.op == Op::InBounds && inst.immI32 != 0) {
+                                out += ", +" + std::to_string(inst.immI32);
+                            }
                         }
                         break;
                 }

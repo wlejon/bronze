@@ -109,7 +109,7 @@ inline constexpr uint8_t kTagDouble = 2;  // any other Number (`is.number`)
 
 enum class SiteKind : uint8_t {
     PropRead,     // prop.get on own data slots of 1..kMaxChainShapes shapes
-    PropWrite,    // prop.set (an assignment) to an existing own slot of one shape
+    PropWrite,    // prop.set (an assignment) to an existing own slot of 1..kMaxChainShapes shapes
     PropAdd,      // prop.set (an assignment) adding the key to one shape, inline
     Construct,    // construct with one target
     MethodSlot,   // method.call whose method is an own data slot of one shape
@@ -143,8 +143,10 @@ struct SitePlan {
     SiteKind kind = SiteKind::PropRead;
     BlockId block = 0;
     uint32_t index = 0;
-    // PropRead (one or a chain), PropWrite and MethodSlot (one); PropAdd
-    // the shape before the add, then the one after it with the key's slot.
+    // PropRead and PropWrite (one or a chain), MethodSlot (one); PropAdd
+    // the shape before the add, then the one after it with the key's slot;
+    // MemberMethod / MemberGet / MemberSet the receiver shape of each callee
+    // (slot unused).
     std::vector<ShapeSlot> shapes;
     // MethodSlot, MethodProto, Call, Construct: the callee, by its index as
     // lowered. MethodProto over several (2..kMaxChainShapes): `callees`, and

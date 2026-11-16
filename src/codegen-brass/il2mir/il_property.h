@@ -93,6 +93,16 @@ public:
     // fast path (shape and callee turns, operand kinds) is kept.
     [[nodiscard]] bool evidence_marked() const noexcept { return shape_turn_fn_ && arms_marked(); }
 
+    // THE ELEMENT CELLS (codegen-brass/elem_cells.h): `sites` is the sorted
+    // slow sites of the module's computed reads, `base` the address of the
+    // module's cell table. `elem_cell` is the cell of the instruction being
+    // lowered (its slow site's), or null when it has none.
+    void set_elem_cells(const std::vector<uint32_t>* sites, std::function<Value*(Builder&)> base) {
+        elem_cell_sites_ = sites;
+        elem_cells_base_fn_ = std::move(base);
+    }
+    Value* elem_cell(Builder& b);
+
     // With per-thread module data (TranslatorOptions::per_thread_module_data)
     // the table's address is the symbol plus the calling thread's delta,
     // which the owner of the function being lowered supplies; unset, the
@@ -225,6 +235,8 @@ private:
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
     std::function<void(Builder&, uint32_t, bool)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
+    const std::vector<uint32_t>* elem_cell_sites_ = nullptr;
+    std::function<Value*(Builder&)> elem_cells_base_fn_;
     std::function<void(Builder&, uint32_t, Value*)> shape_turn_fn_;
 };
 

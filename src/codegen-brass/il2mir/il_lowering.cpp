@@ -317,6 +317,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     prop_lowering_.set_key_map_sym(module_sym("__bronze_key_map"));
     prop_lowering_.set_module_sym_fn([this](const char* base) { return module_sym(base); });
     prop_lowering_.set_ic_table(module_sym("__bronze_ic_table"), options_.ic_site_count);
+    prop_lowering_.set_elem_cells(&options_.elem_cell_sites,
+                                  [this](Builder& b) { return module_data_addr(b, std::string(kElemCellsSymbol)); });
     if (options_.per_thread_module_data) {
         prop_lowering_.set_module_delta_fn([this](Builder& b) { return module_delta(b); });
         mod->add_external_symbol("bronze_module_instance");
@@ -603,6 +605,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
                                  "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells",
                                  "__bronze_literal_shapes", "__bronze_proto_cells", "__bronze_member_cells",
+                                 "__bronze_elem_cells",
                                  "__bronze_deopt_counts"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }

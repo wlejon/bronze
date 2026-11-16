@@ -74,7 +74,14 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
         result.ok = false;
         return result;
     }
-    result.inlined = inliner::inlineModule(module, options.inlining);
+    // The inliner sizes a callee by a copy the redundancy pass cleaned up,
+    // which is what the body costs once its caller is cleaned up.
+    RedundancyOptions sizing;
+    sizing.maxRounds = options.maxRounds;
+    sizing.hoistLoops = false;
+    inliner::InlineOptions inlining = options.inlining;
+    inlining.cleanup = [&module, sizing](il::Function& fn) { runRedundancy(module, fn, sizing); };
+    result.inlined = inliner::inlineModule(module, inlining);
     if (!verified(module, options, "after inlining")) {
         result.ok = false;
         return result;

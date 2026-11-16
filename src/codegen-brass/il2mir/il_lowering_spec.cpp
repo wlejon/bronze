@@ -294,10 +294,17 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             }
             return true;
         }
-        // bool = in.bounds %i, %len: unsigned (cmp ; setb).
+        // bool = in.bounds %i, %len: unsigned (cmp ; setb). Widened by a
+        // span k: i >= 0 and i + k < len, in 64 bits.
         case BronzeOp::InBounds: {
             if (!need(2)) return false;
-            res_val = b.build_ult(i32(0), i32(1));
+            if (inst.imm_i64 == 0) {
+                res_val = b.build_ult(i32(0), i32(1));
+                return true;
+            }
+            Value* x = b.build_sext_i64(i32(0));
+            Value* last = b.build_add(x, iconst64(b, static_cast<uint64_t>(inst.imm_i64)));
+            res_val = b.build_and(b.build_sge(x, iconst64(b, 0)), b.build_slt(last, b.build_sext_i64(i32(1))));
             return true;
         }
         // bool = is.hole %v: the word is BRONZE_ABI_HOLE_BITS.

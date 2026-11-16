@@ -61,15 +61,17 @@
 //
 // POLICY (driver.cpp): a callee of at most kSmallCallee instructions is
 // inlined wherever the caller stays under kMaxCallerSize; one of at most
-// kMediumCallee only in a loop, and only within the caller's growth budget
-// (kGrowthFactor times its size before the pass, at least kMinGrowth more).
-// Sizes count instructions outside exit blocks (blocks ending in `leave`).
+// kLargeCallee only within the caller's growth budget (kGrowthFactor times its
+// size before the pass, at least kMinGrowth more). Sizes count instructions
+// outside exit blocks (blocks ending in `leave`) of the callee once cleaned up
+// (InlineOptions::cleanup).
 //
 // When done, the pass clears `resumeAfter` on every instruction of the module:
 // it means nothing to anything after it, and the redundancy pass deletes the
 // resume points nothing names any more (a `leave` or a `resume.call`).
 
 #include <cstdint>
+#include <functional>
 
 #include "il/il.h"
 
@@ -79,9 +81,11 @@ struct InlineOptions {
     // Off: nothing is inlined, but `resumeAfter` is still cleared, so the
     // pipeline calls the pass either way.
     bool enabled = true;
-    // Zero takes the defaults in driver.cpp.
-    uint32_t smallCallee = 0;
-    uint32_t mediumCallee = 0;
+    // The policy reads a callee's size off a copy this has cleaned up (the
+    // redundancy pass), which is what the body costs once the caller is
+    // cleaned up after the splice: a speculated body as made is mostly
+    // guards the cleanup folds. Unset: the size as it stands.
+    std::function<void(il::Function&)> cleanup;
 };
 
 struct InlineStats {

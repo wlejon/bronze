@@ -36,7 +36,8 @@ using redundancy::JobContext;
 
 // The jobs that only remove or rewrite in place, cheapest first.
 bool runCleanup(JobContext& ctx) {
-    bool changed = redundancy::runValueWalk(ctx);
+    bool changed = redundancy::runBoundsWidening(ctx);
+    changed |= redundancy::runValueWalk(ctx);
     changed |= redundancy::runDeadStores(ctx);
     changed |= redundancy::runDeadCode(ctx);
     return changed;

@@ -236,6 +236,11 @@ inline constexpr std::string_view kProtoCellsSymbol = "__bronze_proto_cells";
 // module's per-thread data, (shape, epoch), zero until the runtime fills them
 // (runtime/accessor_cell.cpp).
 inline constexpr std::string_view kMemberCellsSymbol = "__bronze_member_cells";
+// THE ELEMENT CELLS (codegen-brass/elem_cells.h): four u64 per computed read
+// in the module's per-thread data, (shape, key bits, slot word, fills), zero
+// until bronze_elem_cell_fill fills one (runtime/elem_ic.cpp).
+inline constexpr std::string_view kElemCellsSymbol = "__bronze_elem_cells";
+inline constexpr int32_t kElemCellBytes = 32;
 
 // The function object's code and environment words (bronze_abi_layout.h,
 // BRONZE_ABI_FN_*): what `fn.code_is` and `fn.env` read.

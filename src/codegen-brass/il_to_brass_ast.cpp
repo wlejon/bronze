@@ -518,7 +518,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::ArrayLength: out.op = il2mir::BronzeOp::ArrayLength; break;
         case il::Op::ElemLoad: out.op = il2mir::BronzeOp::ElemLoad; break;
         case il::Op::ElemStore: out.op = il2mir::BronzeOp::ElemStore; break;
-        case il::Op::InBounds: out.op = il2mir::BronzeOp::InBounds; break;
+        case il::Op::InBounds:
+            out.op = il2mir::BronzeOp::InBounds;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::IsHole: out.op = il2mir::BronzeOp::IsHole; break;
         case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
         case il::Op::TypedLength: out.op = il2mir::BronzeOp::TypedLength; break;

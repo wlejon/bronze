@@ -1,8 +1,10 @@
 // MEMBERS ABOVE THE RECEIVER: a method call, a getter read or a setter write
 // whose member the harvest found on the receiver's prototype chain, one
 // function per receiver shape (evidence_member.cpp planMember). Each shape the
-// site held gets a MEMBER CELL (il.h Module::memberCells, one group per site)
-// for its function, and the site becomes a shape test chain over the cells:
+// site held gets a MEMBER CELL (il.h Module::memberCells, one group per site,
+// or for a site of one shape the cell every such site of the same member and
+// shape shares) for its function, and the site becomes a shape test chain
+// over the cells:
 //
 //     guard is.object %recv
 //     s = load.shape %recv
@@ -70,24 +72,34 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
             break;
     }
 
-    // The site's group of cells, one per receiver shape the harvest held.
+    // The site's group of cells, one per receiver shape the harvest held; a
+    // site of one shape shares its cell (ShapeCells::memberCellFor).
     il::Module& module = ctx.module;
-    const auto group = static_cast<uint32_t>(module.memberCells.size());
     const auto count = static_cast<uint32_t>(plan.callees.size());
+    std::vector<uint32_t> cells;
+    if (count == 1 && plan.shapes.size() == 1) {
+        cells.push_back(ctx.cells.memberCellFor(kind, site.keyIndex, ctx.entries.entryOf(plan.callees[0]),
+                                                plan.shapes[0].key));
+    } else {
+        const auto group = static_cast<uint32_t>(module.memberCells.size());
+        for (uint32_t k = 0; k < count; ++k) {
+            il::Module::MemberCell cell;
+            cell.kind = kind;
+            cell.keyIndex = site.keyIndex;
+            cell.callee = ctx.entries.entryOf(plan.callees[k]);
+            cell.group = group;
+            cell.groupSize = count;
+            module.memberCells.push_back(cell);
+            cells.push_back(group + k);
+        }
+    }
     std::vector<il::Instruction> publish;
-    for (uint32_t k = 0; k < count; ++k) {
-        il::Module::MemberCell cell;
-        cell.kind = kind;
-        cell.keyIndex = site.keyIndex;
-        cell.callee = ctx.entries.entryOf(plan.callees[k]);
-        cell.group = group;
-        cell.groupSize = count;
-        module.memberCells.push_back(cell);
+    for (uint32_t c : cells) {
         il::Instruction ask;
         ask.op = il::Op::MemberPublish;
         ask.type = il::Type::Void;
         ask.operands = {receiver};
-        ask.immI32 = static_cast<int32_t>(group + k);
+        ask.immI32 = static_cast<int32_t>(c);
         publish.push_back(std::move(ask));
     }
 
@@ -107,7 +119,7 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
             it->second = b.newBlock();
             armOrder.push_back(f);
         }
-        const ValueId cellShape = b.emit(il::Op::MemberCell, il::Type::Ptr, {}, static_cast<int32_t>(group + k));
+        const ValueId cellShape = b.emit(il::Op::MemberCell, il::Type::Ptr, {}, static_cast<int32_t>(cells[k]));
         const ValueId hit = b.emit(il::Op::PtrEq, il::Type::Bool, {shape, cellShape});
         const bool last = k + 1 == count;
         const BlockId next = last ? exit : b.newBlock();

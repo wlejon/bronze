@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "il/effects.h"
@@ -42,10 +43,39 @@ enum class FactKind : uint8_t {
     Array,       // value is an Array (`is.array`): about the value, it never ends
     Callee,      // value is a function whose code is module function `imm` (`fn.code_is`)
     InBounds,    // (uint32)value < (uint32)other (`in.bounds`)
+    // value + c is in [0, other) for every c from imm's low half to its high
+    // half (packRange), exactly: a widened `in.bounds x, n, +span` with x the
+    // i32 `add` of value and a non-negative constant (offsetForm).
+    InRange,
     PtrEq,       // ptr value == ptr other (a `ptr.eq` that is not a shape test)
 };
 
 const char* factKindName(FactKind kind);
+
+// An InRange fact's immediate: offsets lo..hi (both non-negative).
+inline int64_t packRange(int32_t lo, int32_t hi) {
+    return static_cast<int64_t>((static_cast<uint64_t>(static_cast<uint32_t>(hi)) << 32) | static_cast<uint32_t>(lo));
+}
+inline int32_t rangeLo(int64_t imm) { return static_cast<int32_t>(static_cast<uint32_t>(imm)); }
+inline int32_t rangeHi(int64_t imm) { return static_cast<int32_t>(static_cast<uint64_t>(imm) >> 32); }
+
+// `v` as base + c: the i32 `add` of a non-negative `const.i32` c (either
+// side) is (the other operand, c); anything else is (v, 0). The add wraps, so
+// this is v's value only where something proved base + c in range.
+// `defOf(v)` is v's defining instruction or null.
+template <typename DefOf>
+std::pair<ValueId, int32_t> offsetForm(ValueId v, const DefOf& defOf) {
+    const il::Instruction* d = defOf(v);
+    if (d != nullptr && d->op == il::Op::Add && d->type == il::Type::I32 && d->operands.size() == 2) {
+        for (int side = 0; side < 2; ++side) {
+            const il::Instruction* k = defOf(d->operands[side]);
+            if (k != nullptr && k->op == il::Op::ConstI32 && k->immI32 >= 0) {
+                return {d->operands[1 - side], k->immI32};
+            }
+        }
+    }
+    return {v, 0};
+}
 
 struct Fact {
     FactKind kind = FactKind::BoolValue;

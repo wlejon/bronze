@@ -12,11 +12,11 @@
 // (block, index) for determinism, and taken greedily:
 //   - a SMALL callee (at most kSmallCallee) whenever the caller stays within
 //     kMaxCallerSize: a body that small costs about what the call costs;
-//   - a MEDIUM callee (at most kMediumCallee) only in a loop (or as the
-//     constructor of a speculated `new`), and only within
-//     the caller's growth budget: kGrowthFactor times its size before the
-//     pass, at least kMinGrowth more, never past kMaxCallerSize;
+//   - a LARGER callee (at most kLargeCallee) only within the caller's growth
+//     budget: kGrowthFactor times its size before the pass, at least
+//     kMinGrowth more, never past kMaxCallerSize; deeper loops take it first;
 //   - nothing bigger.
+// A callee's size is its body's once cleaned up (InlineOptions::cleanup).
 // "The caller is hot" is no separate test: only a function hot enough to be
 // speculated is ever a caller here (opt/speculate evidence.h).
 //
@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cassert>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -43,15 +44,10 @@ namespace {
 
 // Instructions outside exit blocks (parts.h bodySize).
 constexpr uint32_t kSmallCallee = 24;
-constexpr uint32_t kMediumCallee = 120;
+constexpr uint32_t kLargeCallee = 400;
 constexpr uint32_t kGrowthFactor = 4;
-constexpr uint32_t kMinGrowth = 96;
+constexpr uint32_t kMinGrowth = 800;
 constexpr uint32_t kMaxCallerSize = 8000;
-
-struct Thresholds {
-    uint32_t small = kSmallCallee;
-    uint32_t medium = kMediumCallee;
-};
 
 // The speculated functions in post-order of the direct calls among them.
 std::vector<uint32_t> bottomUpOrder(const il::Module& module) {
@@ -151,8 +147,7 @@ std::vector<Candidate> candidatesOf(const il::Module& module, uint32_t c, const 
 
 // Ranks and takes the candidates under the policy; returns the chosen in
 // splice order (block ascending, index descending).
-std::vector<Candidate> choose(std::vector<Candidate> candidates, uint32_t callerSize, const Thresholds& t,
-                              InlineStats& stats) {
+std::vector<Candidate> choose(std::vector<Candidate> candidates, uint32_t callerSize, InlineStats& stats) {
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
         if (a.loopDepth != b.loopDepth) return a.loopDepth > b.loopDepth;
         if (a.size != b.size) return a.size < b.size;
@@ -164,9 +159,8 @@ std::vector<Candidate> choose(std::vector<Candidate> candidates, uint32_t caller
     uint32_t size = callerSize;
     std::vector<Candidate> chosen;
     for (const Candidate& cand : candidates) {
-        const bool small = cand.size <= t.small;
-        const bool medium = !small && cand.size <= t.medium && cand.loopDepth > 0;
-        if (!small && !medium) {
+        const bool small = cand.size <= kSmallCallee;
+        if (!small && cand.size > kLargeCallee) {
             ++stats.refusedSize;
             continue;
         }
@@ -185,15 +179,44 @@ std::vector<Candidate> choose(std::vector<Candidate> candidates, uint32_t caller
     return chosen;
 }
 
-void inlineInto(il::Module& module, uint32_t c, const Thresholds& t, InlineStats& stats) {
+// Callee sizes as the policy reads them (InlineOptions::cleanup), each
+// measured once: a callee's body no longer changes once the bottom-up walk
+// has passed it.
+class CalleeSizes {
+public:
+    CalleeSizes(const il::Module& module, const InlineOptions& options) : module_(module), options_(options) {}
+    uint32_t of(uint32_t f) {
+        const auto it = sizes_.find(f);
+        if (it != sizes_.end()) return it->second;
+        uint32_t size = 0;
+        if (options_.cleanup) {
+            il::Function copy = module_.functions[f];
+            options_.cleanup(copy);
+            size = bodySize(copy);
+        } else {
+            size = bodySize(module_.functions[f]);
+        }
+        sizes_.emplace(f, size);
+        return size;
+    }
+    void forget(uint32_t f) { sizes_.erase(f); }
+
+private:
+    const il::Module& module_;
+    const InlineOptions& options_;
+    std::unordered_map<uint32_t, uint32_t> sizes_;
+};
+
+void inlineInto(il::Module& module, uint32_t c, CalleeSizes& sizes, InlineStats& stats) {
     il::Function& caller = module.functions[c];
     assert(caller.isSpeculated());
     ++stats.callersVisited;
     // G_c is not edited by this pass, so the points and their predecessors
     // read here hold for every splice into S_c.
     const AfterCallPoints points(module.functions[caller.speculatedFrom]);
-    const std::vector<Candidate> chosen =
-        choose(candidatesOf(module, c, points, stats), bodySize(caller), t, stats);
+    std::vector<Candidate> candidates = candidatesOf(module, c, points, stats);
+    for (Candidate& cand : candidates) cand.size = sizes.of(cand.callee);
+    const std::vector<Candidate> chosen = choose(std::move(candidates), bodySize(caller), stats);
     if (chosen.empty()) return;
 
     std::optional<il::Function> self;
@@ -229,10 +252,11 @@ void clearResumeAfter(il::Module& module) {
 InlineStats inlineModule(il::Module& module, const InlineOptions& options) {
     InlineStats stats;
     if (options.enabled) {
-        Thresholds t;
-        if (options.smallCallee != 0) t.small = options.smallCallee;
-        if (options.mediumCallee != 0) t.medium = options.mediumCallee;
-        for (uint32_t c : bottomUpOrder(module)) inlineInto(module, c, t, stats);
+        CalleeSizes sizes(module, options);
+        for (uint32_t c : bottomUpOrder(module)) {
+            inlineInto(module, c, sizes, stats);
+            sizes.forget(c);
+        }
     }
     clearResumeAfter(module);
     return stats;

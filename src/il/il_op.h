@@ -606,6 +606,8 @@ enum class Op : uint8_t {
     ElemStore,
     // a: bool = in.bounds %i, %len. Both i32; the UNSIGNED compare
     // `(uint32)i < (uint32)len`, so a negative index is out. Pure.
+    // WIDENED (`immI32` = span > 0, opt/redundancy/bounds.cpp): i >= 0 and
+    // i + span < len, exactly (a negative len is no length).
     InBounds,
     // a: bool = is.hole %v. %v (dynamic) is the array-hole value
     // (BRONZE_ABI_HOLE_BITS), which only `elem.load` can produce. Pure.

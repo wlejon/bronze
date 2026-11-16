@@ -2,6 +2,7 @@
 #include "codegen-brass/brass_backend_debug.h"
 #include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/deopt_sites.h"
+#include "codegen-brass/elem_cells.h"
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
@@ -383,6 +384,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     for (const il::Module::MemberCell& c : module.memberCells) {
         options.member_cells.push_back({static_cast<uint32_t>(c.kind), c.keyIndex, c.group, c.groupSize});
     }
+    options.elem_cell_sites = codegen::elemCellSites(module);
     // The deopt counters (deopt_sites.h): the twins' exit counts and the
     // speculated functions' retire test.
     {
