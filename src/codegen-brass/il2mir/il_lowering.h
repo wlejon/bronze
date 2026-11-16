@@ -121,6 +121,15 @@ private:
                             const std::unordered_map<uint32_t, Value*>& val_map);
     bool lower_leave(const BronzeInstruction& inst, Builder& b, Function* fn,
                      std::unordered_map<uint32_t, Value*>& val_map);
+    // An inlined body's failed guard finishing the callee's call: G's twin
+    // from a point, its return value the instruction's result.
+    bool lower_resume_call(const BronzeInstruction& inst, Builder& b, Function* fn,
+                           std::unordered_map<uint32_t, Value*>& val_map);
+    // What a leave and a resume.call share: G's twin for `inst` (its
+    // `index`), with the state, hidden values included, stored into the leave
+    // buffer. Null after reporting when G or the buffer is missing.
+    Function* stage_twin_state(const BronzeInstruction& inst, Builder& b, Function* fn,
+                               std::unordered_map<uint32_t, Value*>& val_map);
     bool build_resume_twins(Module& mod);
     // Reports `what` at `inst` and fails the lowering (false).
     bool inst_error(const BronzeInstruction& inst, const std::string& what);

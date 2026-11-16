@@ -258,18 +258,12 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // is; Tier 1 keeps it too, unmeasured.
     const bool nativeEntries = tier == ExecutionTier::Tier2_Optimized || tier == ExecutionTier::Auto;
     const bool entersDirectly = nativeEntries && config_.livesForProcess;
-    backend.setDirectCallSites(nativeEntries);
     if (entersDirectly) backend.setDirectJsCalls(true);
     // The pipeline tiers build a function's MIR when it first runs, or a
     // tier-up first copies it: a large program's load lowers what its start
     // needs, not every function it has. Tier 1 compiles everything before
-    // running anyway. A speculation profile names every site of the
-    // program, so a run writing one lowers them all.
-    {
-        const char* profileOut = std::getenv("BRONZE_SPEC_PROFILE_OUT");
-        backend.setLazyBodies((tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter) &&
-                              !(profileOut && *profileOut));
-    }
+    // running anyway.
+    backend.setLazyBodies(tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter);
 
     bool hasEscapable = !module.censusSites.empty() && !module.censusOutPath.empty();
     if (!hasEscapable) {

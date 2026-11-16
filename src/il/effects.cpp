@@ -327,6 +327,11 @@ Effects rawEffects(const Instruction& inst) {
             return guardedOp(Loc::Elements, LocSet::none());
         case Op::ElemStore:
             return guardedOp(LocSet::none(), Loc::Elements);
+        // Runs the rest of a generic function: any user code at all. Listed
+        // rather than left to the default so that nobody tightens it by
+        // accident.
+        case Op::ResumeCall:
+            return everythingEffects();
 
         // Every call, every generic property, element and iterator operation,
         // every coercion that reaches ToPrimitive, every definition that can

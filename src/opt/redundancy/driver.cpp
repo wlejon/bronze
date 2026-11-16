@@ -42,18 +42,20 @@ bool runCleanup(JobContext& ctx) {
     return changed;
 }
 
-// Every resume point id a `leave` of some speculated function names, by the
-// generic function it names it in. Ordered containers: the ids come out
-// sorted and the walk is a function of the module alone.
+// Every resume point id a `leave` or a `resume.call` of some speculated
+// function names, by the generic function it names it in: a resume.call (an
+// inlined body's failed guard finishing the callee's call, opt/inline) starts
+// the callee's G at the point just as a leave would. Ordered containers: the
+// ids come out sorted and the walk is a function of the module alone.
 std::map<uint32_t, std::vector<uint32_t>> namedResumeIds(const il::Module& module) {
     std::map<uint32_t, std::vector<uint32_t>> named;
     for (const il::Function& fn : module.functions) {
         if (!fn.isSpeculated()) continue;
         for (const il::Block& block : fn.blocks) {
-            if (block.instructions.empty()) continue;
-            const il::Instruction& term = block.instructions.back();
-            if (term.op != il::Op::Leave || term.immI32 < 0) continue;
-            named[term.calleeIndex].push_back(static_cast<uint32_t>(term.immI32));
+            for (const il::Instruction& inst : block.instructions) {
+                if ((inst.op != il::Op::Leave && inst.op != il::Op::ResumeCall) || inst.immI32 < 0) continue;
+                named[inst.calleeIndex].push_back(static_cast<uint32_t>(inst.immI32));
+            }
         }
     }
     for (auto& [g, ids] : named) {

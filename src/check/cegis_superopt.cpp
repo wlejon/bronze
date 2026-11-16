@@ -62,7 +62,6 @@ uint32_t estimateIlFunctionCost(const il::Function& fn, std::string_view src) {
                     cost += 8;
                     break;
                 case Op::Mul:
-                case Op::MathImul:
                 case Op::Pow:
                     cost += 3;
                     break;

@@ -37,7 +37,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::string& declaredName,
                                                     const std::optional<std::string>& jsName,
                                                     const std::vector<ast::Param>& params,
-                                                    const ast::TypeNodePtr& returnTypeAnn,
+                                                    const ast::TypeNodePtr& /*returnTypeAnn*/,
                                                     const std::vector<ast::StmtPtr>& body,
                                                     Span span, il::Function& ilFn, bool isArrow,
                                                     bool bindsOwnName) {

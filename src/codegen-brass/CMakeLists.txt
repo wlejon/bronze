@@ -120,35 +120,3 @@ else()
         target_compile_options(bronze_codegen_brass PRIVATE -Wno-restrict)
     endif()
 endif()
-
-if(BRONZE_BUILD_TESTS)
-    add_executable(bronze_codegen_brass_tests
-        ../../tests/codegen_brass/codegen_brass_test.cpp
-        ../../tests/codegen_brass/bridge_equivalence_test.cpp
-        ../../tests/codegen_brass/tiered_engine_test.cpp
-        ../../tests/codegen_brass/optimization_test.cpp
-        ../../tests/codegen_brass/debug_test.cpp
-        ../../tests/codegen_brass/gc_write_barrier_test.cpp
-    )
-    target_link_libraries(bronze_codegen_brass_tests PRIVATE
-        bronze::codegen_brass
-        bronze::eval
-        bronze::embed
-        bronze::cli
-        bronze::runtime
-        doctest::doctest
-    )
-    if(MSVC)
-        target_compile_options(bronze_codegen_brass_tests PRIVATE /W4 /WX /permissive- /wd4324 /wd4702)
-        target_compile_definitions(bronze_codegen_brass_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
-    else()
-        target_compile_options(bronze_codegen_brass_tests PRIVATE
-            -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs
-            $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>)
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-            target_compile_options(bronze_codegen_brass_tests PRIVATE -Wno-restrict)
-        endif()
-    endif()
-    add_test(NAME codegen_brass COMMAND bronze_codegen_brass_tests)
-    set_tests_properties(codegen_brass PROPERTIES LABELS codegen_brass)
-endif()

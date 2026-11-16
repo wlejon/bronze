@@ -158,15 +158,12 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     res.failReason = "unsupported instanceof";
                     return res;
                 }
-                case Op::ClosureIs: case Op::IsNumber: case Op::IsDenseArray: case Op::IsNumberArray:
-                case Op::IsShape: case Op::IsArray: case Op::IsPlainArray: case Op::IsTypedArray: case Op::LayoutEpoch:
-                case Op::LayoutFact: case Op::MethodIcIs: case Op::RunMethodIs: case Op::AccessorIcIs:
+                case Op::IsNumber: case Op::IsDenseArray: case Op::IsPlainArray: case Op::IsTypedArray:
                     if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                     break;
-                case Op::ClosureEnv: { CVal v = CVal::makeI64(0); v.envId = opV(0).envId; vals[inst.result] = v; break; }
                 case Op::ClassExtend:
-                case Op::PinGuard: case Op::CensusRecord: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
-                case Op::CreateObject: case Op::CreateArray: case Op::CreateThis: {
+                case Op::PinGuard: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
+                case Op::CreateObject: case Op::CreateArray: {
                     uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
                     heap[oid].props["length"] = CVal::makeI64(std::max(0, inst.immI32));
                     vals[inst.result] = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));
@@ -244,8 +241,7 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     if (inst.result != il::kNoValue) vals[inst.result] = val;
                     break;
                 }
-                case Op::ElemGet:
-                case Op::ElemGetTyped: {
+                case Op::ElemGet: {
                     CVal recv = opV(0), idx = opV(1);
                     if (recv.kind == CVal::Kind::String) {
                         int64_t i = idx.i64;
@@ -260,7 +256,7 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     vals[inst.result] = getProp(recv, eKey);
                     break;
                 }
-                case Op::ElemSet: case Op::ElemSetTyped: {
+                case Op::ElemSet: {
                     CVal recv = opV(0), idx = opV(1), val = opV(2);
                     std::string eKey = (idx.kind == CVal::Kind::String) ? idx.str : std::to_string(idx.i64);
                     setProp(recv, eKey, val);
@@ -288,11 +284,6 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                 case Op::Mod: vals[inst.result] = CVal::makeF64(std::fmod(opV(0).num, opV(1).num)); break;
                 case Op::Pow: vals[inst.result] = CVal::makeF64(std::pow(opV(0).num, opV(1).num)); break;
                 case Op::Neg: vals[inst.result] = CVal::makeF64(-opV(0).num); break;
-                case Op::MathImul: {
-                    int32_t a = jsToInt32(opV(0).num), b = jsToInt32(opV(1).num);
-                    vals[inst.result] = CVal::makeI64(static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b)));
-                    break;
-                }
                 case Op::BitAnd: vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) & jsToInt32(opV(1).num)); break;
                 case Op::BitOr:  vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) | jsToInt32(opV(1).num)); break;
                 case Op::BitXor: vals[inst.result] = CVal::makeI64(jsToInt32(opV(0).num) ^ jsToInt32(opV(1).num)); break;
@@ -336,27 +327,6 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                         else r = (a >= b);
                     }
                     vals[inst.result] = CVal::makeBool(r);
-                    break;
-                }
-                case Op::MathUnary: {
-                    double a = opV(0).num;
-                    auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                    if (kind == il::MathUnaryFn::Abs) vals[inst.result] = CVal::makeF64(std::fabs(a));
-                    else if (kind == il::MathUnaryFn::Floor) vals[inst.result] = CVal::makeF64(std::floor(a));
-                    else if (kind == il::MathUnaryFn::Ceil) vals[inst.result] = CVal::makeF64(std::ceil(a));
-                    else if (kind == il::MathUnaryFn::Trunc) vals[inst.result] = CVal::makeF64(std::trunc(a));
-                    else if (kind == il::MathUnaryFn::Round) vals[inst.result] = CVal::makeF64(jsMathRound(a));
-                    else if (kind == il::MathUnaryFn::Sqrt) vals[inst.result] = CVal::makeF64(std::sqrt(a));
-                    else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                        double acc = a;
-                        for (size_t k = 1; k < inst.operands.size(); ++k) {
-                            acc = jsMathMinMax(acc, opV(k).num, kind == il::MathUnaryFn::Min);
-                        }
-                        vals[inst.result] = CVal::makeF64(acc);
-                    } else {
-                        res.failReason = "unsupported MathUnary";
-                        return res;
-                    }
                     break;
                 }
                 case Op::GlobalGet:

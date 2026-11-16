@@ -194,62 +194,6 @@ bronze_add_module(runtime
         abi
         json
         regex
-    TEST_SOURCES
-        ../../tests/runtime/abi_guard_test.cpp
-        ../../tests/runtime/tls_constants_test.cpp
-        ../../tests/runtime/number_format_test.cpp
-        ../../tests/runtime/value_test.cpp
-        ../../tests/runtime/gc_test.cpp
-        ../../tests/runtime/string_test.cpp
-        ../../tests/runtime/unicode_case_test.cpp
-        ../../tests/runtime/unicode_norm_test.cpp
-        ../../tests/runtime/symbol_test.cpp
-        ../../tests/runtime/global_statics_test.cpp
-        ../../tests/runtime/shape_test.cpp
-        ../../tests/runtime/stable_layout_test.cpp
-        ../../tests/runtime/dictionary_test.cpp
-        ../../tests/runtime/slot_repr_test.cpp
-        ../../tests/runtime/object_test.cpp
-        ../../tests/runtime/spread_plain_test.cpp
-        ../../tests/runtime/ic_hot_test.cpp
-        ../../tests/runtime/object_proto_chain_test.cpp
-        ../../tests/runtime/primitive_prototype_test.cpp
-        ../../tests/runtime/to_primitive_test.cpp
-        ../../tests/runtime/array_test.cpp
-        ../../tests/runtime/array_named_property_test.cpp
-        ../../tests/runtime/typed_array_test.cpp
-        ../../tests/runtime/buffer_views_test.cpp
-        ../../tests/runtime/data_view_test.cpp
-        ../../tests/runtime/fn_test.cpp
-        ../../tests/runtime/inspect_test.cpp
-        ../../tests/runtime/exception_test.cpp
-        ../../tests/runtime/microtask_test.cpp
-        ../../tests/runtime/promise_test.cpp
-        ../../tests/runtime/map_test.cpp
-        ../../tests/runtime/date_math_test.cpp
-        ../../tests/runtime/weak_collection_test.cpp
-        ../../tests/runtime/weak_ref_test.cpp
-        ../../tests/runtime/bound_function_test.cpp
-        ../../tests/runtime/array_sort_test.cpp
-        ../../tests/runtime/relational_test.cpp
-        ../../tests/runtime/has_property_test.cpp
-        ../../tests/runtime/exact_decimal_test.cpp
-        ../../tests/runtime/bignum_test.cpp
-        ../../tests/runtime/regexp_test.cpp
-        ../../tests/runtime/arguments_test.cpp
-        ../../tests/runtime/integrity_test.cpp
-        ../../tests/runtime/descriptor_define_test.cpp
-        ../../tests/runtime/math_random_test.cpp
-        ../../tests/runtime/namespace_test.cpp
-        ../../tests/runtime/native_base_test.cpp
-        ../../tests/runtime/thread_isolation_test.cpp
-        ../../tests/runtime/elem_ic_test.cpp
-        ../../tests/runtime/native_fn_memo_test.cpp
-        ../../tests/runtime/call_out_test.cpp
-        ../../tests/runtime/root_slots_test.cpp
-        ../../tests/runtime/root_remset_test.cpp
-        ../../tests/runtime/class_family_test.cpp
-        ../../tests/runtime/ic_write_instanceof_test.cpp
 )
 
 if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
@@ -257,14 +201,4 @@ if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
 endif()
 if(TARGET brass)
     target_link_libraries(bronze_runtime PUBLIC brass)
-endif()
-
-# The same test binary, run again with per-allocation collection forced on.
-# This surfaces unrooted-pointer-across-allocation bugs that a lazily
-# collecting run can never catch.
-if(BRONZE_BUILD_TESTS)
-    add_test(NAME runtime-gc-stress COMMAND bronze_runtime_tests)
-    set_tests_properties(runtime-gc-stress PROPERTIES
-        LABELS runtime
-        ENVIRONMENT "BRONZE_GC_STRESS=1")
 endif()

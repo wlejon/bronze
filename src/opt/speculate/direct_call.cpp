@@ -23,6 +23,14 @@
 // The result keeps the generic site's type, Dynamic: a callee returning
 // Dynamic defines it directly, a void one evaluates to `undefined`, a typed
 // one is boxed — what its wrapper does with the same return.
+//
+// The call records the resume point in G right AFTER the generic call
+// (il.h `resumeAfter`; GuardBuilder::resumeAfterSite), whose state is G's
+// live values there, the generic call's result among them when it is used
+// later. Nothing in S leaves to it on this account; it is the inliner's
+// (opt/inline): a guard of the callee's body inlined here finishes the call in
+// the callee's G and then leaves for this point. The MethodProto exit already
+// leaves to the same point (one point per location).
 
 #include "opt/speculate/policy.h"
 #include "opt/speculate/sites.h"
@@ -49,6 +57,7 @@ void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, Value
     call.op = il::Op::Call;
     call.calleeIndex = ctx.entries.entryOf(callee);
     call.type = f.returnType;
+    call.resumeAfter = b.resumeAfterSite();
     if (f.needsEnv) {
         // Legal on the `fn.code_is` edge the caller established.
         call.operands.push_back(b.emit(il::Op::FnEnv, il::Type::Dynamic, {calleeValue}));

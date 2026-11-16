@@ -19,15 +19,15 @@
 #include "abi/bronze_abi.h"
 #include "il/il.h"
 
-namespace bronze::codegen {
+namespace bronze::il {
 
 // Whether a function may hold resume points at all.
-inline bool canResumeIn(const il::Function& fn) {
+inline bool canResumeIn(const Function& fn) {
     if (fn.isExternal || fn.isEntryPoint || fn.isCoroutineBody() || fn.isSpeculated()) return false;
     if ((fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0) return false;
-    for (const il::Block& b : fn.blocks) {
-        for (const il::Instruction& inst : b.instructions) {
-            if (inst.op == il::Op::CoroStart || inst.op == il::Op::CoroSuspend) return false;
+    for (const Block& b : fn.blocks) {
+        for (const Instruction& inst : b.instructions) {
+            if (inst.op == Op::CoroStart || inst.op == Op::CoroSuspend) return false;
         }
     }
     return true;
@@ -35,12 +35,12 @@ inline bool canResumeIn(const il::Function& fn) {
 
 // Whether `block` of `fn` may hold a resume point (canResumeIn holding for
 // `fn`).
-inline bool canResumeAt(const il::Function& fn, const il::Block& block) {
-    if (block.handler != il::kNoBlock) return false;
-    for (const il::Block& b : fn.blocks) {
+inline bool canResumeAt(const Function& fn, const Block& block) {
+    if (block.handler != kNoBlock) return false;
+    for (const Block& b : fn.blocks) {
         if (b.handler == block.id) return false;
     }
     return true;
 }
 
-}  // namespace bronze::codegen
+}  // namespace bronze::il

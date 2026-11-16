@@ -26,7 +26,6 @@
 #include "cli/usage.h"
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
-#include "codegen-brass/il2mir/il_spec_profile.h"
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
@@ -34,6 +33,7 @@
 #include "selfhost/selfhost_library.h"
 #include "lower/native_manifest.h"
 #include "modules/modules.h"
+#include "opt/pipeline/pipeline.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
@@ -74,6 +74,18 @@ bool loadNativeManifest(const std::string& manifestPath, const std::string& nati
         return false;
     }
     return true;
+}
+
+// The optimiser pipeline (opt/pipeline/pipeline.h) between lowering and the
+// backend, for every command that compiles or shows a kept module. False
+// with `diags` holding why when the IL failed verification.
+bool runOptimizer(il::Module& module, const std::optional<spec::TypeProfile>& profile, bool optStats,
+                  DiagnosticSink& diags) {
+    opt::OptimizeOptions options;
+    options.diags = &diags;
+    const opt::OptimizeResult result = opt::optimizeModule(module, profile ? &*profile : nullptr, options);
+    if (optStats) std::fputs(opt::formatOptimizeStats(result).c_str(), stderr);
+    return result.ok;
 }
 
 }  // namespace
@@ -154,7 +166,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& importMapPath,
           const std::string& pinsPath,
           bool pinsAllowObserved, const std::string& nativeManifestPath,
-          const std::string& nativeLibPath, const std::string& feedbackOutPath) {
+          const std::string& nativeLibPath, const std::string& feedbackOutPath,
+          const std::string& feedbackInPath, bool printLowered, bool optStats) {
     // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -227,7 +240,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // program from the one `bronze build` compiles.
     lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
-    if (std::string err; !prepareFeedback(feedbackOutPath, {}, feedbackProfile, feedback, err)) {
+    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, feedbackProfile, feedback, err)) {
         if (outString) *outString = err;
         else std::fputs(err.c_str(), stderr);
         return 1;
@@ -240,6 +253,15 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        nativeManifest ? &*nativeManifest : nullptr,
                                        &feedback);
     if (diags.hasErrors() || !ilModule) {
+        std::string msg = diags.render(sources);
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
+    // The optimised module is the debugging view (what the backend is given);
+    // `--lowered` shows lowering's output before the pipeline runs.
+    if (!printLowered && !runOptimizer(*ilModule, feedbackProfile, optStats, diags)) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
         else std::fputs(msg.c_str(), stderr);
@@ -267,9 +289,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
-             const std::string& specProfilePath,
              const std::string& feedbackOutPath, const std::string& feedbackInPath,
-             const std::string& harvestOutPath, size_t buildThreads) {
+             const std::string& harvestOutPath, size_t buildThreads, bool optStats) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -341,17 +362,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
             return 1;
         }
     }
-    std::shared_ptr<const il2mir::SpecProfile> specProfile;
-    if (!specProfilePath.empty()) {
-        std::string profileErr;
-        specProfile = il2mir::SpecProfile::read_file(specProfilePath, profileErr);
-        if (!specProfile) {
-            if (errOut) *errOut = profileErr;
-            else std::fputs(profileErr.c_str(), stderr);
-            return 1;
-        }
-    }
-
     SourceSet sources;
     DiagnosticSink diags;
     modules::ModuleOptions moduleOptions{moduleRoots, importMapPath};
@@ -385,8 +395,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     // Read before the compile, like every manifest: a bad profile is a fact
-    // about the invocation. Nothing consumes it yet: the speculation step that
-    // will is still to be written.
+    // about the invocation. The optimiser's speculation step consumes it.
     lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
     if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, feedbackProfile, feedback, err)) {
@@ -410,22 +419,33 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    // Dropped AFTER lowering rather than never gathered, because the ranges on
-    // each function are what lowering produced and the texts are what they
-    // index: clearing one place is the whole of the flag, and nothing
-    // downstream has to be told about it. The backend emits a blob only for a
-    // file it still has. `lineTables` stays: Error.stack's positions come
-    // from it, and a build without function source still names the line.
-    if (!retainFnSource) ilModule->sourceTexts.clear();
     if (!harvestOutPath.empty()) {
         std::error_code ec;
         const auto abs = std::filesystem::absolute(harvestOutPath, ec);
         ilModule->harvestOutPath = ec ? harvestOutPath : abs.string();
     }
 
-    reportWarnings(diags, sources);
     inferred.reset();
     astModule.reset();
+    const bool optimized = runOptimizer(*ilModule, feedbackProfile, optStats, diags);
+    feedbackProfile.reset();
+    timer.mark("optimize");
+    if (!optimized) {
+        std::string msg = diags.render(sources);
+        if (errOut) *errOut = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+    reportWarnings(diags, sources);
+    // Dropped AFTER lowering rather than never gathered, because the ranges on
+    // each function are what lowering produced and the texts are what they
+    // index: clearing one place is the whole of the flag, and nothing
+    // downstream has to be told about it. The backend emits a blob only for a
+    // file it still has. `lineTables` stays: Error.stack's positions come
+    // from it, and a build without function source still names the line.
+    // And after optimisation: the speculation step checks a harvest against
+    // the IC layout digest of the module as lowered, which hashes the texts.
+    if (!retainFnSource) ilModule->sourceTexts.clear();
 
     // `--emit-obj`: same pipeline, stopped after object emission. The output
     // path is used exactly as given — the host's build owns naming and layout
@@ -439,7 +459,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         objBackend.setTarget(target);
         objBackend.setMachOBuildVersion(machoVersion);
         objBackend.setEmitDebugInfo(emitDebugInfo);
-        objBackend.setSpecProfile(specProfile);
         objBackend.setDirectJsCalls(true);
         objBackend.setBuildThreads(buildThreads);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
@@ -463,7 +482,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setHostGlobals(hostGlobals);
     backend.setTarget(target);
     backend.setEmitDebugInfo(emitDebugInfo);
-    backend.setSpecProfile(specProfile);
     backend.setDirectJsCalls(true);
     backend.setBuildThreads(buildThreads);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
@@ -707,11 +725,17 @@ int runDriver(int argc, char** argv) {
         std::string nativeManifestPath;
         std::string feedbackOutPath;
         std::string feedbackInPath;
+        bool printLowered = false;
+        bool optStats = false;
         std::string flagErr;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--lowered") {
+                printLowered = true;
+            } else if (arg == "--opt-stats") {
+                optStats = true;
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -763,9 +787,13 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        if (!feedbackInPath.empty()) return fail("error: --feedback-in is a `build` flag\n");
+        if (printLowered && (!feedbackInPath.empty() || optStats)) {
+            return fail("error: --lowered prints the IL before optimisation, which reads no "
+                        "--feedback-in and has no --opt-stats\n");
+        }
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     pinsPath, pinsAllowObserved, nativeManifestPath, {}, feedbackOutPath);
+                     pinsPath, pinsAllowObserved, nativeManifestPath, {}, feedbackOutPath, feedbackInPath,
+                     printLowered, optStats);
     }
 
     if (command == "build") {
@@ -787,7 +815,7 @@ int runDriver(int argc, char** argv) {
         std::string targetName;
         bool emitDebugInfo = false;
         bool publishModules = false;
-        std::string specProfilePath;
+        bool optStats = false;
         std::string feedbackOutPath;
         std::string feedbackInPath;
         std::string harvestOutPath;
@@ -813,6 +841,8 @@ int runDriver(int argc, char** argv) {
                 retainFnSource = false;
             } else if (arg == "--timings") {
                 timings = true;
+            } else if (arg == "--opt-stats") {
+                optStats = true;
             } else if (arg == "--emit-obj") {
                 emitObj = true;
             } else if (arg == "--emit-shared") {
@@ -879,15 +909,6 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--import-map=", 0) == 0) {
                 importMapPath = arg.substr(13);
                 if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
-            } else if (arg == "--spec-profile") {
-                if (i + 1 < argc) {
-                    specProfilePath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --spec-profile\n");
-                }
-            } else if (arg.rfind("--spec-profile=", 0) == 0) {
-                specProfilePath = arg.substr(15);
-                if (specProfilePath.empty()) return fail("error: missing argument for --spec-profile\n");
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -915,8 +936,8 @@ int runDriver(int argc, char** argv) {
                         hostGlobalsPath, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, pinsPath,
                         pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules, emitDebugInfo, specProfilePath,
-                        feedbackOutPath, feedbackInPath, harvestOutPath, buildThreads);
+                        targetName, publishModules, emitDebugInfo,
+                        feedbackOutPath, feedbackInPath, harvestOutPath, buildThreads, optStats);
     }
 
     return fail(kUsage);

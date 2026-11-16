@@ -75,6 +75,13 @@ public:
     // instruction AFTER the site, with `replacement` standing for the site's
     // result in the state. For a site whose first half already ran in S.
     BlockId exitAfter(std::vector<il::Instruction> work, ValueId replacement);
+    // The id of G's resume point in front of the instruction AFTER the site
+    // (the one exitAfter leaves to), made on first ask: the point a direct
+    // call the site becomes records as its `resumeAfter` (il.h), so the
+    // inliner can finish the call generically and resume G after it. Always
+    // placeable: the site's block already admitted the point in front of it,
+    // and the rule (resume_rules.h) is per block.
+    uint32_t resumeAfterSite();
 
     // ---- blocks ---------------------------------------------------------------
     // A new block with the site's handler, cold when the site's block is.

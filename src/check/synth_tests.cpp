@@ -100,14 +100,13 @@ public:
     void run() {
         if (fn_.blocks.empty() || fn_.isExternal) return;
 
-        // Count reachable non-slow-duplicate blocks from entry block 0
+        // Count reachable blocks from entry block 0
         std::unordered_set<uint32_t> reachable;
         std::vector<uint32_t> worklist{0};
         while (!worklist.empty()) {
             uint32_t bid = worklist.back();
             worklist.pop_back();
             if (bid >= fn_.blocks.size()) continue;
-            if (fn_.blocks[bid].copyClass == il::CopyClass::Slow) continue;
             if (!reachable.insert(bid).second) continue;
             for (const auto& inst : fn_.blocks[bid].instructions) {
                 if (inst.op == il::Op::Jump) {
@@ -378,7 +377,6 @@ private:
                                                     : toBV64(getVal(state, inst.operands[0]));
                     break;
                 case Op::PinGuard:
-                case Op::CensusRecord:
                 case Op::FeedbackRecord:
                 case Op::KeepAlive:
                     break;
@@ -392,13 +390,6 @@ private:
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId step = ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64);
                     state.values[inst.result] = ctx_.make_binary(BVOp::Add, a, step);
-                    break;
-                }
-                case Op::MathImul: {
-                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
-                    BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
-                    BVNodeId prod32 = ctx_.make_binary(BVOp::Mul, a32, b32);
-                    state.values[inst.result] = ctx_.make_sext(prod32, 32);
                     break;
                 }
                 case Op::Add:
@@ -472,31 +463,6 @@ private:
                     state.values[inst.result] = (inst.op == Op::Shr)
                                                     ? ctx_.make_sext(ctx_.make_binary(BVOp::AShr, a32, sh32), 32)
                                                     : ctx_.make_zext(ctx_.make_binary(BVOp::LShr, a32, sh32), 32);
-                    break;
-                }
-                case Op::MathUnary: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                    if (kind == il::MathUnaryFn::Abs) {
-                        BVNodeId isNeg = ctx_.make_binary(BVOp::Slt, a, zero64_);
-                        state.values[inst.result] = ctx_.make_ite(isNeg, ctx_.make_unary(BVOp::Neg, a), a);
-                    } else if (kind == il::MathUnaryFn::Sqrt) {
-                        tryEmitHazardReproducer(pathCond, ctx_.make_binary(BVOp::Slt, a, zero64_),
-                                                blockId, pathTrace, "Math.sqrt domain error (arg < 0 -> NaN)");
-                        state.values[inst.result] = a;
-                    } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                        BVNodeId acc = a;
-                        for (size_t k = 1; k < inst.operands.size(); ++k) {
-                            BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
-                            BVNodeId pick = kind == il::MathUnaryFn::Min
-                                                ? ctx_.make_binary(BVOp::Slt, rhs, acc)
-                                                : ctx_.make_binary(BVOp::Slt, acc, rhs);
-                            acc = ctx_.make_ite(pick, rhs, acc);
-                        }
-                        state.values[inst.result] = acc;
-                    } else {
-                        state.values[inst.result] = a;
-                    }
                     break;
                 }
                 case Op::GlobalGet: {

@@ -33,6 +33,7 @@ struct InstructionMirror {
     uint32_t envIndex;
     bool envImmutable;
     uint32_t callEnvHops;
+    uint32_t resumeAfter;
     Span span;
     BlockTarget target;
     BlockTarget elseTarget;
@@ -270,7 +271,8 @@ enum InstBits : uint64_t {
     kHasElse = 1u << 14,
     kEnvImmutable = 1u << 15,
     kHasSlowSite = 1u << 16,
-    kKnownBits = (1u << 17) - 1,
+    kHasResumeAfter = 1u << 17,
+    kKnownBits = (1u << 18) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -304,6 +306,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.envDepth != 0) m |= kHasEnvDepth;
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
+    if (inst.resumeAfter != Instruction::kNoResumeAfter) m |= kHasResumeAfter;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
@@ -328,6 +331,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasEnvDepth) w.var(inst.envDepth);
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
+    if (m & kHasResumeAfter) w.var(inst.resumeAfter);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -360,6 +364,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasEnvDepth) inst.envDepth = r.u32();
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
+    if (m & kHasResumeAfter) inst.resumeAfter = r.u32();
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());

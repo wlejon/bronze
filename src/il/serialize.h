@@ -52,7 +52,8 @@ namespace bronze::il {
 //     feedbackApplied or function placement on a module.
 // 38: the speculation ops (il_op.h, resume.point .. is.hole), Type::Ptr,
 //     Function::speculatedFrom and Module::shapeCells.
-inline constexpr uint32_t kFormatVersion = 38;
+// 39: resume.call (il_op.h) and Instruction::resumeAfter.
+inline constexpr uint32_t kFormatVersion = 39;
 
 std::string serializeModule(const Module& module);
 

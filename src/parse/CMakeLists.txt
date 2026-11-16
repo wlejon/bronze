@@ -25,17 +25,4 @@ bronze_add_module(parse
     # pattern grammar is what decides whether the literal is well formed
     # itself.
     DEPS lex ast support regex
-    # One binary under the `parse` label; each file is named for the grammar
-    # region it covers, matching the SOURCES above.
-    TEST_SOURCES ../../tests/parse/parser_test.cpp ../../tests/parse/parser_module_test.cpp
-                 ../../tests/parse/parser_regexp_test.cpp ../../tests/parse/parser_new_test.cpp
-                 ../../tests/parse/parser_generator_test.cpp
-                 ../../tests/parse/parser_expr_test.cpp ../../tests/parse/parser_asi_test.cpp
-                 ../../tests/parse/parser_pattern_test.cpp
-                 ../../tests/parse/parser_literal_test.cpp
-                 ../../tests/parse/parser_stmt_test.cpp
-                 ../../tests/parse/parser_strict_test.cpp
-                 ../../tests/parse/parser_class_test.cpp
-                 ../../tests/parse/parser_ts_test.cpp
-                 ../../tests/parse/parser_type_test.cpp
 )

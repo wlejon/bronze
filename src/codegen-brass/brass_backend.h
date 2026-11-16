@@ -87,19 +87,14 @@ public:
     // unoptimized by brass's tiered pipeline.
     void setLazyBodies(bool on) { lazyBodies_ = on; }
     // The image is code for the life of the process (an executable, a shared
-    // module, an AOT module image, a JIT program the process retains), so its
-    // calls may enter compiled callees directly (bronze_abi.h,
-    // BRONZE_ABI_FN_FLAG_DIRECT_CALL): its functions carry the flag where
-    // il::functionEntersDirectly allows, and its call sites test for it.
-    void setDirectJsCalls(bool on) { directJsCalls_ = on; directCallees_ = on; }
-    // The call sites alone: they enter whatever callee carries the flag, and
-    // this module's own functions carry none. For JIT code a program may
-    // free (an eval, a `new Function`): what keeps such code mapped while it
-    // runs is the dynamic-module token rtEnterJs pushes, which a direct entry
-    // skips, so only a runtime entry may reach it. Its own code calling an
-    // immortal callee directly is sound, as the caller is running and so
-    // already held.
-    void setDirectCallSites(bool on) { directJsCalls_ = on; }
+    // module, an AOT module image, a JIT program the process retains), so a
+    // caller may enter its compiled functions directly (bronze_abi.h,
+    // BRONZE_ABI_FN_FLAG_DIRECT_CALL; runtime rtEntersWithoutScope): its
+    // functions carry the flag where il::functionEntersDirectly allows. Off
+    // for JIT code a program may free (an eval, a `new Function`): what keeps
+    // such code mapped while it runs is the dynamic-module token rtEnterJs
+    // pushes, which a direct entry skips.
+    void setDirectJsCalls(bool on) { directCallees_ = on; }
     // Threads the per-function work of a build may use: brass's MIR
     // optimizer (brass::PipelineRunOptions) and its code generation
     // (brass::object::ModuleCompiler::set_threads). 0, the default, is the
@@ -141,7 +136,6 @@ private:
     bool perThreadModuleData_ = true;
     bool verifyLowered_ = true;
     bool lazyBodies_ = false;
-    bool directJsCalls_ = false;
     bool directCallees_ = false;
     size_t buildThreads_ = 0;
     brass::Target target_ = brass::Target::host();

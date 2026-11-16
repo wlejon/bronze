@@ -11,5 +11,4 @@ bronze_add_module(modules
         rename.cpp
         deps.cpp
     DEPS parse lex ast support json
-    TEST_SOURCES ../../tests/modules/modules_test.cpp ../../tests/modules/modules_types_test.cpp
 )

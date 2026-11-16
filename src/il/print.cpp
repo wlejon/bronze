@@ -665,8 +665,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
                         break;
                     case Op::Leave:
-                        out += "leave @" + getFnName(inst.calleeIndex) + ", " +
-                               std::to_string(inst.immI32);
+                    case Op::ResumeCall:
+                        out += std::string(opName(inst.op)) + " @" + getFnName(inst.calleeIndex) +
+                               ", " + std::to_string(inst.immI32);
                         for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
                         break;
                     // The cell's KEY beside its number: which shape a test
@@ -730,6 +731,11 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += "%" + std::to_string(inst.operands[i]);
                             }
                             out += ")";
+                            // The point in the caller's G after this call
+                            // (il.h `resumeAfter`), which the inliner reads.
+                            if (inst.resumeAfter != Instruction::kNoResumeAfter) {
+                                out += " resume.after " + std::to_string(inst.resumeAfter);
+                            }
                         } else {
                             for (size_t i = 0; i < inst.operands.size(); ++i) {
                                 out += i == 0 ? " " : ", ";

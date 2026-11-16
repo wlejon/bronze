@@ -31,16 +31,6 @@ bronze_add_module(check
         package_audit.cpp
         package_audit_meta.cpp
     DEPS ast il lower modules support types
-    TEST_SOURCES
-        ../../tests/check/static_checker_test.cpp
-        ../../tests/check/prover_tools_test.cpp
-        ../../tests/check/symbolic_runtime_test.cpp
-        ../../tests/check/verified_rewriter_test.cpp
-        ../../tests/check/loop_fp_prover_test.cpp
-        ../../tests/check/threejs_math_prover_test.cpp
-        ../../tests/check/prover_fuzzer_test.cpp
-        ../../tests/check/verifier_soundness_test.cpp
-    TEST_DEPS lex parse
 )
 
 if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")

@@ -614,10 +614,24 @@ enum class Op : uint8_t {
     // Typed-array element loads and stores are not here: they need the view's
     // byte offset, buffer indirection and nine element kinds, which do not
     // fall out of the forms above. A later chunk adds them.
+
+    // ---- speculation: finishing an inlined call generically -------------
+    // `a = resume.call @G, <id>, %s0, %s1, ...`: runs G's resume twin from
+    // G's `resume.point <id>` with the operands as its state, to G's return,
+    // and yields what G returns. NOT a terminator: control comes back. It is
+    // what a `leave` of an INLINED speculated body becomes (opt/inline): the
+    // inlined callee's guard failed, so the rest of that call runs in the
+    // callee's generic function, and the caller then leaves for its own
+    // generic function after the call with this result in the call's place.
+    // `calleeIndex` is G's index, `immI32` the id; the state matches that
+    // point's operands in count and type exactly as a `leave`'s does. The
+    // result has G's return type, and there is none when G returns void.
+    // Only in speculated functions. Effects: everything (it runs G's code).
+    ResumeCall,
 };
 
 // The last op, for the serializer's range check.
-inline constexpr Op kLastOp = Op::IsHole;
+inline constexpr Op kLastOp = Op::ResumeCall;
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).
 inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;

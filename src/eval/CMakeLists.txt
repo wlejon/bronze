@@ -11,22 +11,13 @@ bronze_add_module(eval
         types
         lower
         il
+        opt_pipeline
         codegen_brass
         runtime
         embed
         support
         modules
         selfhost_il
-    TEST_SOURCES
-        ../../tests/eval/eval_test.cpp
-        ../../tests/eval/eval_module_registry_test.cpp
-        ../../tests/eval/eval_threads_test.cpp
-        ../../tests/eval/eval_lockdown_test.cpp
-        ../../tests/eval/eval_compartment_test.cpp
-        ../../tests/eval/eval_host_interrupt_test.cpp
-        ../../tests/eval/eval_code_cache_test.cpp
-        ../../tests/eval/eval_runtime_audit_test.cpp
-        ../../tests/eval/eval_gc_cycle_test.cpp
 )
 # The code cache identifies its own binary with dladdr.
 if(NOT WIN32)

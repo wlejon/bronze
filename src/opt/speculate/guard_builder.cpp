@@ -195,12 +195,15 @@ BlockId GuardBuilder::exitBefore() {
     return exitBefore_;
 }
 
-BlockId GuardBuilder::exitAfter(std::vector<il::Instruction> work, ValueId replacement) {
-    assert(site_.result == il::kNoValue || typeOf(replacement) == site_.type);
+uint32_t GuardBuilder::resumeAfterSite() {
     // In front of the instruction after the site: always one, the block's
     // terminator at the latest, since a site is not a terminator.
-    const uint32_t id = ctx_.resume.at(siteBlock_, siteIndex_ + 1);
-    return makeExit(id, std::move(work), site_.result, replacement);
+    return ctx_.resume.at(siteBlock_, siteIndex_ + 1);
+}
+
+BlockId GuardBuilder::exitAfter(std::vector<il::Instruction> work, ValueId replacement) {
+    assert(site_.result == il::kNoValue || typeOf(replacement) == site_.type);
+    return makeExit(resumeAfterSite(), std::move(work), site_.result, replacement);
 }
 
 void GuardBuilder::finish() {

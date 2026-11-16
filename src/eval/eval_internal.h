@@ -68,9 +68,11 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
 // The front end after the graph is loaded: the eval transform (a trailing
 // expression's value kept under `resName`, top-level declarations made
 // global), inference and lowering. Null with `diags` holding why.
-// `aheadOfTime` is a module build (aot_module.cpp): lowering also runs the
-// whole-program optimizer, as `bronze build` does, whose claims are guarded
-// fast paths and so hold for a program other units and the host reach into.
+// `aheadOfTime` is a module build (aot_module.cpp): the ahead-of-time front
+// end, as `bronze build` lowers; buildModule then runs the optimiser pipeline
+// (opt/pipeline/pipeline.h). A tiered compile (compileScript) runs no
+// optimiser over its IL: generic IL is mostly calls the redundancy pass cannot
+// see through, and brass's own optimizer runs on each function it tiers up.
 std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptions& options,
                                          const CompileInputs& in, const std::string& resName,
                                          DiagnosticSink& diags, SourceSet& sources,

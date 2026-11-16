@@ -67,8 +67,7 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
         rep.error = diags.render(buf);
         return rep;
     }
-    auto ilMod = lower::lowerModule(*astMod, diags, &*inferred, &hostGlobals, &sources,
-                                    nullptr, /*assumeNoBigInt=*/true);
+    auto ilMod = lower::lowerModule(*astMod, diags, &*inferred, &hostGlobals, &sources);
     if (diags.hasErrors() || !ilMod) {
         rep.error = diags.render(buf);
         return rep;
@@ -138,33 +137,16 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
             }
         }
         for (const auto& blk : fn.blocks) {
-            if (blk.copyClass == il::CopyClass::Slow) continue;
             for (const auto& inst : blk.instructions) {
                 if (inst.type == il::Type::F64 || inst.type == il::Type::I32 ||
                     inst.type == il::Type::Bool) {
                     ++rep.unboxedF64Ops;
                 }
-                if (inst.op == il::Op::Unbox) {
+                if (inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet) {
                     ++rep.totalGuards;
-                    if (inst.rawUnbox || inst.nullishUnbox) ++rep.provenGuards;
-                } else if (inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) {
+                    if ((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0) ++rep.provenGuards;
+                } else if (inst.op == il::Op::Unbox || inst.op == il::Op::PinGuard) {
                     ++rep.totalGuards;
-                    ++rep.provenGuards;
-                    if ((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0) {
-                        ++rep.totalGuards;
-                        ++rep.provenGuards;
-                    }
-                    if ((inst.immI32 & il::kElemFlagProvenInBounds) != 0) {
-                        ++rep.totalGuards;
-                        ++rep.provenGuards;
-                    }
-                } else if (inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet ||
-                           inst.op == il::Op::PinGuard) {
-                    ++rep.totalGuards;
-                } else if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
-                           inst.staticSlot != il::Instruction::kNoStaticSlot) {
-                    ++rep.totalGuards;
-                    ++rep.provenGuards;
                 }
             }
         }

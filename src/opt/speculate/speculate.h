@@ -14,7 +14,10 @@
 //      the generic instruction the guard stands for, so a failed guard
 //      re-executes that one instruction in G and the rest of the call runs
 //      generic; and a LOOP-ENTRY point at the top of every loop header of G
-//      whose loop holds a guard (loopEntryResume below);
+//      whose loop holds a guard (loopEntryResume below); and, for every
+//      direct `call` of S (the call sites it speculated and lowering's own),
+//      a point right AFTER the generic call, recorded as the call's
+//      `resumeAfter` (il.h) for the inliner (opt/inline);
 //   4. redirects entry: every creation of, reference to and direct call of G
 //      in the module names S instead (S's own `leave`s keep naming G).
 // There is no other speculation mechanism: no flags on instructions, no
@@ -76,7 +79,7 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
 
 // THE RESUME POLICY: whether a `resume.point` may be placed in `block` of the
 // generic function `fn`. The backend decides what it can lower, and this is
-// its rule (codegen-brass/resume_rules.h canResumeIn / canResumeAt): no
+// its rule (il/resume_rules.h canResumeIn / canResumeAt): no
 // coroutine body or function starting one, not the module's top level, not a
 // block a handler protects nor a handler block. Every placement in this step
 // asks it, so a site in such a block simply stays generic in S.

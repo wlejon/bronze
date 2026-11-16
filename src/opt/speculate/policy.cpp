@@ -4,7 +4,7 @@
 // The backend's rule, header-only over il and abi: where its resume twin can
 // start from a point's state alone. Read here rather than restated, so the
 // two cannot drift.
-#include "codegen-brass/resume_rules.h"
+#include "il/resume_rules.h"
 #include "opt/speculate/speculate.h"
 
 namespace bronze::opt::speculate {
@@ -13,7 +13,7 @@ bool mayPlaceResumePoint(const il::Function& fn, BlockId block) {
     // A G with resume points is the function a leave lands in, so this is
     // asked of G as lowered (it is never speculated itself).
     if (block >= fn.blocks.size()) return false;
-    return codegen::canResumeIn(fn) && codegen::canResumeAt(fn, fn.blocks[block]);
+    return il::canResumeIn(fn) && il::canResumeAt(fn, fn.blocks[block]);
 }
 
 bool functionMaySpeculate(const il::Function& fn) {

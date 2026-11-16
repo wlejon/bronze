@@ -54,8 +54,7 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
             }
             if (!usesTracked) continue;
 
-            if (u.op == Op::KeepAlive || u.op == Op::PinGuard ||
-                u.op == Op::CensusRecord || u.op == Op::FeedbackRecord) {
+            if (u.op == Op::KeepAlive || u.op == Op::PinGuard || u.op == Op::FeedbackRecord) {
                 continue;
             }
             if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric ||
@@ -67,18 +66,6 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
                 u.op == Op::BitXor || u.op == Op::Shl || u.op == Op::Shr || u.op == Op::UShr) {
                 sawTrunc = true;
                 continue;
-            }
-            if (u.op == Op::MathUnary) {
-                auto kind = static_cast<il::MathUnaryFn>(u.immI32);
-                if (kind == il::MathUnaryFn::Trunc) {
-                    sawTrunc = true;
-                    continue;
-                }
-                if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
-                    sawFloorOrCeil = true;
-                    continue;
-                }
-                return DivUseKind::RawFloat;
             }
             if (u.op == Op::MethodCall && u.keyIndex < mod.keyConstants.size() &&
                 u.operands.size() == 2 && tracked.count(u.operands[1])) {
@@ -949,18 +936,6 @@ bool functionRequiresFloatMode(const il::Module& mod, const il::Function& fn) {
                 }
                 if ((m == "floor" || m == "ceil" || m == "trunc") &&
                     (inst.operands.size() < 2 || !divTrackedIds.count(inst.operands[1]))) {
-                    return true;
-                }
-            } else if (inst.op == Op::MathUnary) {
-                auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                if (kind == il::MathUnaryFn::Sqrt || kind == il::MathUnaryFn::Round) {
-                    return true;
-                }
-                if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                    checkMinMaxZeroArg(inst.operands, 0);
-                }
-                if ((kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil || kind == il::MathUnaryFn::Trunc) &&
-                    (inst.operands.empty() || !divTrackedIds.count(inst.operands[0]))) {
                     return true;
                 }
             } else if (inst.op == Op::Div) {

@@ -419,23 +419,14 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
                 if (!inst.operands.empty()) state.heap.propagateAlias(inst.operands[0], inst.result);
                 break;
             case Op::PinGuard:
-            case Op::CensusRecord:
             case Op::FeedbackRecord:
             case Op::KeepAlive:
             case Op::EnvInitTdz:
                 break;
             case Op::IsNumber:
             case Op::IsDenseArray:
-            case Op::IsNumberArray:
-            case Op::IsShape:
-            case Op::IsArray:
             case Op::IsPlainArray:
             case Op::IsTypedArray:
-            case Op::LayoutEpoch:
-            case Op::LayoutFact:
-            case Op::MethodIcIs:
-            case Op::RunMethodIs:
-            case Op::AccessorIcIs:
                 if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
                 break;
             case Op::CreateObject:
@@ -460,16 +451,14 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
                 if (inst.result != il::kNoValue) state.values[inst.result] = vn;
                 break;
             }
-            case Op::ElemGet:
-            case Op::ElemGetTyped: {
+            case Op::ElemGet: {
                 if (inst.operands.size() < 2) return false;
                 BVNodeId ev = zero64_;
                 if (!state.heap.evalElemGet(heapTable_, inst.operands[0], op64(1), inst.result, ev)) return false;
                 state.values[inst.result] = ev;
                 break;
             }
-            case Op::ElemSet:
-            case Op::ElemSetTyped: {
+            case Op::ElemSet: {
                 if (inst.operands.size() < 3) return false;
                 BVNodeId vn = op64(2);
                 if (!state.heap.evalElemSet(heapTable_, inst.operands[0], op64(1), vn, inst.operands[2])) return false;
@@ -479,9 +468,6 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
             case Op::NumericStep:
                 state.values[inst.result] = ctx_.make_binary(
                     BVOp::Add, op64(0), ctx_.make_const(static_cast<uint64_t>(static_cast<int64_t>(inst.immI32)), 64));
-                break;
-            case Op::MathImul:
-                state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Mul, op32(0), op32(1)), 32);
                 break;
             case Op::Add:
             case Op::Sub:
@@ -569,22 +555,6 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
                                              ? BVOp::Slt
                                              : BVOp::Sle));
                 state.values[inst.result] = toBV64(ctx_.make_binary(cop, a, b));
-                break;
-            }
-            case Op::MathUnary: {
-                BVNodeId a = op64(0);
-                auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                if (kind == il::MathUnaryFn::Abs) {
-                    state.values[inst.result] = ctx_.make_ite(
-                        ctx_.make_binary(BVOp::Slt, a, zero64_), ctx_.make_unary(BVOp::Neg, a), a);
-                } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
-                    state.values[inst.result] = evalFloorOrCeilSymbolic(
-                        ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil);
-                } else if (kind == il::MathUnaryFn::Trunc) {
-                    state.values[inst.result] = a;
-                } else {
-                    return false;
-                }
                 break;
             }
             case Op::GlobalGet:

@@ -21,6 +21,7 @@
 #include "eval/code_cache.h"
 #include "eval/eval_internal.h"
 #include "modules/modules.h"
+#include "opt/pipeline/pipeline.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/sampler.h"
@@ -151,9 +152,23 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         out.errorMessage = rendered(diags, sources, "lowering failed");
         return out;
     }
+    // The optimiser pipeline, as `bronze build` runs it: the profile or
+    // harvest (EvalOptions::feedbackInPath) is applied when it speculates at
+    // least one function, which is what `feedbackApplied` reports.
+    {
+        opt::OptimizeOptions optOptions;
+        optOptions.diags = &diags;
+        const opt::OptimizeResult optimized =
+            opt::optimizeModule(*ilModule, in.feedback ? &*in.feedback : nullptr, optOptions);
+        if (!optimized.ok) {
+            out.errorMessage = rendered(diags, sources, "the IL failed verification");
+            return out;
+        }
+        out.feedbackApplied = optimized.speculated();
+    }
+    // After the pipeline: the speculation step checks a harvest against the
+    // IC layout digest of the module as lowered, which hashes the texts.
     if (!options.retainSource) ilModule->sourceTexts.clear();
-    // Nothing specializes on a profile yet, so `out.feedbackApplied` stays
-    // false and a profile is recorded as unused below.
 
     BrassBackend backend;
     backend.setEntrySymbol(kEntrySymbol);

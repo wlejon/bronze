@@ -9,9 +9,10 @@
 //      call redirected, and a key computed afterwards names nothing.
 //   2. Fix every S's index before any rewrite, so a site that calls f can
 //      name f's speculated entry whichever order the functions go in.
-//   3. Per function: clone G into S, rewrite S's sites last to first in each
-//      block (a split at one site never moves another still to come), place
-//      the loop-entry points, then write G's resume points.
+//   3. Per function: clone G into S, give S's lowered direct calls their
+//      after-call points (markLoweredDirectCalls), rewrite S's sites last to
+//      first in each block (a split at one site never moves another still to
+//      come), place the loop-entry points, then write G's resume points.
 //   4. Redirect entry over the whole module.
 //
 // Nothing here reads the whole-program analysis (opt/wpo wpo::analyze). It is
@@ -89,6 +90,31 @@ uint32_t redirectEntry(il::Module& module, const EntryMap& entries) {
     return redirected;
 }
 
+// LOWERED DIRECT CALLS of S (lowering's own `call @f` to a declaration that is
+// never rebound) get the same resume point after them that a call the
+// rewrites make gets (direct_call.cpp): the point in G in front of the
+// instruction after the call, recorded as the call's `resumeAfter`, so the
+// inliner can take these too when f has guards of its own. Done on S as
+// cloned, before any rewrite, while S's (block, index) are still G's; the
+// field then travels with the instruction through every split. A point no
+// inlined exit ends up naming is deleted by the redundancy pass with the
+// other unnamed ones. Calls of declarations (runtime helpers, natives) and
+// calls in blocks no point may go in are left without one.
+void markLoweredDirectCalls(RewriteContext& ctx) {
+    for (BlockId b = 0; b < ctx.speculated.blocks.size(); ++b) {
+        if (!mayPlaceResumePoint(ctx.generic, b)) continue;
+        std::vector<il::Instruction>& insts = ctx.speculated.blocks[b].instructions;
+        for (uint32_t i = 0; i + 1 < insts.size(); ++i) {
+            il::Instruction& inst = insts[i];
+            if (inst.op != il::Op::Call || inst.resumeAfter != il::Instruction::kNoResumeAfter) continue;
+            if (inst.calleeIndex >= ctx.module.functions.size()) continue;
+            const il::Function& callee = ctx.module.functions[inst.calleeIndex];
+            if (callee.isExternal || callee.blocks.empty() || callee.isCoroutineBody()) continue;
+            inst.resumeAfter = ctx.resume.at(b, i + 1);
+        }
+    }
+}
+
 // Sites in the order they are rewritten: block by block, last to first.
 std::vector<SitePlan> rewriteOrder(std::vector<SitePlan> sites) {
     std::sort(sites.begin(), sites.end(), [](const SitePlan& a, const SitePlan& b) {
@@ -144,6 +170,7 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
         ResumePoints resume(generic);
         RewriteContext ctx{module, g, s, generic, speculated, resume, cells, entries, valueTypes(speculated),
                            stats};
+        markLoweredDirectCalls(ctx);
         for (const SitePlan& site : rewriteOrder(plan.sites)) rewriteSite(ctx, site);
         stats.loopEntryPoints += placeLoopEntries(ctx, plan.sites);
         stats.resumePoints += static_cast<uint32_t>(resume.size());

@@ -115,6 +115,18 @@ struct Instruction {
     // that needs none.
     static constexpr uint32_t kNoEnvHops = 0xFFFFFFFFu;
     uint32_t callEnvHops = kNoEnvHops;
+    // A direct `call` in a speculated function S that the speculation step
+    // made from a generic call of S's G (or found there, lowered): the id of
+    // the `resume.point` it placed in G immediately AFTER that generic call,
+    // whose state is what G needs from there on, the call's result among it
+    // when it is used. It is what lets the inliner (opt/inline) replace the
+    // call with the callee's body: a guard of the inlined body that fails
+    // finishes the call generically (`resume.call`) and leaves for this point.
+    // Meaningful only to the inliner, which clears it on every instruction
+    // when it is done; kNoResumeAfter where no point could be placed (a
+    // protected block), and on every other instruction.
+    static constexpr uint32_t kNoResumeAfter = 0xFFFFFFFFu;
+    uint32_t resumeAfter = kNoResumeAfter;
 
     Span span;
 

@@ -138,6 +138,7 @@ bool IlLowering::lower_instruction(
     // Speculation (il_lowering_resume.cpp, il_lowering_spec.cpp).
     if (inst_ast.op == BronzeOp::ResumePoint) return lower_resume_point(inst_ast, b, fn, val_map);
     if (inst_ast.op == BronzeOp::Leave) return lower_leave(inst_ast, b, fn, val_map);
+    if (inst_ast.op == BronzeOp::ResumeCall) return lower_resume_call(inst_ast, b, fn, val_map);
     if (is_spec_il_op(inst_ast.op)) {
         if (!lower_spec_instruction(inst_ast, b, val_map, res_val)) return false;
         set_inst_result(inst_ast.result_id, res_val, b, val_map);

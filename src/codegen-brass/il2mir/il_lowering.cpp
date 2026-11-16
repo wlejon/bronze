@@ -661,14 +661,20 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     analyze_function(fn_ast);
 
     // The argv block a call stages its arguments in (il_lowering_calls.h).
-    // A speculated function's is also the one its leaves hand their twins
-    // (il_lowering_resume.cpp), so it is as wide as theirs too; and its
-    // leaves' state goes into a buffer as wide as the widest.
+    // A speculated function's is also the one its leaves and resume.calls
+    // hand their twins (il_lowering_resume.cpp), so it is as wide as theirs
+    // too; and their state goes into one buffer as wide as the widest. One
+    // buffer serves them all: a resume.call's twin reads its state at entry,
+    // before anything after it in the exit (another resume.call, the leave)
+    // stores into the buffer again.
     uint32_t widest_method_argc = argv_block_words(this, fn_ast);
     uint32_t widest_leave = 0;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
-            if (inst.op != BronzeOp::Leave || inst.index >= current_ast_->functions.size()) continue;
+            if ((inst.op != BronzeOp::Leave && inst.op != BronzeOp::ResumeCall) ||
+                inst.index >= current_ast_->functions.size()) {
+                continue;
+            }
             const uint32_t g_argv = argv_block_words(this, current_ast_->functions[inst.index]);
             widest_method_argc = std::max(widest_method_argc, g_argv);
             const uint32_t words = static_cast<uint32_t>(inst.operands.size()) +

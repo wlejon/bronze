@@ -165,10 +165,12 @@ enum class BronzeOp {
     ElemDefine,
     ObjectLitProto,
     // Speculation (il_op.h, "leaving a speculated function"), lowered in
-    // il_lowering_resume.cpp. ResumePoint's and Leave's id is `imm_i64`;
-    // Leave's target G is `callee_name` and its AST index `index`.
+    // il_lowering_resume.cpp. ResumePoint's, Leave's and ResumeCall's id is
+    // `imm_i64`; Leave's and ResumeCall's target G is `callee_name` and its
+    // AST index `index`.
     ResumePoint,
     Leave,
+    ResumeCall,
     // The speculated function's low-level forms (il_op.h), lowered in
     // il_lowering_spec.cpp. Their immediates: LoadShape none, ShapeCell the
     // cell in `imm_i64`, SlotLoad / SlotStore the slot in `imm_i64`, FnCodeIs

@@ -6,6 +6,9 @@
 // bytes a value in state order, and runs G from there to its return. A
 // speculated function S leaves by calling it: its `leave @G, id, ...` stores
 // the state into a buffer of its frame and returns what the twin returns.
+// An INLINED speculated body (opt/inline) finishes its call the same way with
+// `resume.call @G, id, ...`, which stores the same state into the same buffer
+// and calls the same twin, but takes its return value as a value and goes on.
 // Nothing of this is in G itself: lowered, each point is a guard that never
 // fails (brass's site form, which is what build_resume_twin reads) in front
 // of a block of its own, and once the twin is cut from G the guards and their
@@ -27,7 +30,7 @@
 // and Unbox of il_lowering_inst.cpp, lower_to_int32), the 0/1 values noted
 // for branch negation are forgotten at each point, a module env read loads
 // afresh, the pinned TLS block is a register, and the coroutine frame and a
-// handler's exception never meet a point (resume_rules.h). brass's verifier
+// handler's exception never meet a point (il/resume_rules.h). brass's verifier
 // checks the rest where it runs: a resume target's live-ins must all be in
 // its guard's state (verify_guard_resume_state).
 //
@@ -142,25 +145,32 @@ bool IlLowering::lower_resume_point(const BronzeInstruction& inst, Builder& b, F
     return true;
 }
 
-bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function* fn,
-                             std::unordered_map<uint32_t, Value*>& val_map) {
+Function* IlLowering::stage_twin_state(const BronzeInstruction& inst, Builder& b, Function* fn,
+                                       std::unordered_map<uint32_t, Value*>& val_map) {
+    const char* what = inst.op == BronzeOp::Leave ? "leave" : "resume.call";
     if (current_ast_ == nullptr || inst.index >= current_ast_->functions.size() ||
         inst.index >= resolved_names_.size() || resolved_names_[inst.index].empty()) {
-        return inst_error(inst, "leave names no function of the module");
+        inst_error(inst, std::string(what) + " names no function of the module");
+        return nullptr;
     }
     const BronzeFunction& g_ast = current_ast_->functions[inst.index];
     Function* g = fn->parent()->get_function(resolved_names_[inst.index]);
-    if (g == nullptr) return inst_error(inst, "leave names a function with no body");
+    if (g == nullptr) {
+        inst_error(inst, std::string(what) + " names a function with no body");
+        return nullptr;
+    }
     const bool g_has_argv = argv_block_words(this, g_ast) > 0;
     const size_t words = inst.operands.size() + (options_.per_thread_module_data ? 1 : 0) + (g_has_argv ? 1 : 0);
+    // lower_function sized the buffer for every leave and resume.call.
     if (leave_state_ == nullptr || words > leave_state_words_) {
-        return inst_error(inst, "leave's state does not fit its buffer");
+        inst_error(inst, std::string(what) + "'s state does not fit its buffer");
+        return nullptr;
     }
-    if (g_has_argv && argv_block_ == nullptr) return inst_error(inst, "leave without an argv block for its twin");
+    if (g_has_argv && argv_block_ == nullptr) {
+        inst_error(inst, std::string(what) + " without an argv block for its twin");
+        return nullptr;
+    }
 
-    // An exit: the function's speculation failed, and the rest of the call is
-    // the twin's. Laid out after the main line.
-    b.current_block()->set_cold();
     const auto& types = il_types();
     int32_t at = 0;
     auto store_word = [&](Value* word) {
@@ -171,7 +181,8 @@ bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function
         Value* v = get_val_by_id(opd, b, val_map);
         const auto ty = types.find(opd);
         if (v == nullptr || ty == types.end()) {
-            return inst_error(inst, "leave state value %" + std::to_string(opd) + " is not defined here");
+            inst_error(inst, std::string(what) + " state value %" + std::to_string(opd) + " is not defined here");
+            return nullptr;
         }
         switch (ty->second) {
             case BronzeType::F64:
@@ -190,13 +201,41 @@ bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function
     }
     if (options_.per_thread_module_data) store_word(module_delta(b));
     if (g_has_argv) b.build_store(argv_block_->type(), leave_state_, at, argv_block_);
+    return g;
+}
 
+bool IlLowering::lower_leave(const BronzeInstruction& inst, Builder& b, Function* fn,
+                             std::unordered_map<uint32_t, Value*>& val_map) {
+    // An exit: the function's speculation failed, and the rest of the call is
+    // the twin's. Laid out after the main line.
+    b.current_block()->set_cold();
+    Function* g = stage_twin_state(inst, b, fn, val_map);
+    if (g == nullptr) return false;
     Value* r = b.build_call(brass::resume_twin_name(g->name()), g->return_type(),
                             {b.build_iconst_i32(static_cast<int32_t>(inst.imm_i64)), leave_state_});
     if (fn->return_type().is_void()) {
         b.build_ret_void();
     } else {
         b.build_ret(ensure_type(r, fn->return_type(), b));
+    }
+    return true;
+}
+
+// `resume.call @G, id, state...` (il_op.h): the same twin call a leave makes,
+// with the same state words, but its result is an ordinary value of this
+// function and control goes on. It sits in an exit block of an inlined body
+// (opt/inline), which the leave after it marks cold. A throw out of the twin
+// propagates as from any call: the block has no handler (resume_rules.h keeps
+// inlined exits out of protected blocks), so it leaves this function too.
+bool IlLowering::lower_resume_call(const BronzeInstruction& inst, Builder& b, Function* fn,
+                                   std::unordered_map<uint32_t, Value*>& val_map) {
+    Function* g = stage_twin_state(inst, b, fn, val_map);
+    if (g == nullptr) return false;
+    Value* r = b.build_call(brass::resume_twin_name(g->name()), g->return_type(),
+                            {b.build_iconst_i32(static_cast<int32_t>(inst.imm_i64)), leave_state_});
+    if (inst.result_id != UINT32_MAX) {
+        if (g->return_type().is_void()) return inst_error(inst, "resume.call has a result where G returns void");
+        set_inst_result(inst.result_id, r, b, val_map);
     }
     return true;
 }

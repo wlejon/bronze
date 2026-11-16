@@ -259,8 +259,8 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     if (aheadOfTime) {
         // A module build: the ahead-of-time front end (lower.h), which a
         // `bronze build` goes through too. Its profile or harvest
-        // (EvalOptions::feedbackInPath, `in.feedback`) is read as
-        // `--feedback-in` reads one; nothing consumes it yet.
+        // (EvalOptions::feedbackInPath, `in.feedback`) is applied after
+        // lowering, by the optimiser pipeline buildModule runs.
         lower::FeedbackOptions feedback;
         lower::AheadOfTimeOptions aot;
         aot.hostGlobals = &hostGlobals;

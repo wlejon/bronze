@@ -172,6 +172,7 @@ const char* opName(Op op) {
         case Op::ElemStore: return "elem.store";
         case Op::InBounds: return "in.bounds";
         case Op::IsHole: return "is.hole";
+        case Op::ResumeCall: return "resume.call";
     }
     return "?";
 }

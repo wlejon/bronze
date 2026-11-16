@@ -167,6 +167,69 @@ static std::vector<Type> valueTypes(const Function& fn) {
     return types;
 }
 
+// The `resume.point <id>` of `generic`, or nullptr.
+static const Instruction* findResumePoint(const Function& generic, int32_t id) {
+    for (const auto& block : generic.blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op == Op::ResumePoint && inst.immI32 == id) return &inst;
+        }
+    }
+    return nullptr;
+}
+
+// What a `leave` and a `resume.call` of the speculated function `fn` owe the
+// point they start G at, alike: G is a generic function of the module, it has
+// the point, and the state matches the point's operands one for one in type.
+// A leave's G is `fn`'s own; a resume.call's is any generic function (the
+// callee's, of a body the inliner put in `fn`), and its result has G's
+// return type. `ownTypes` is valueTypes(fn).
+static bool checkResumeState(const Module& module, const Function& fn, const Instruction& inst,
+                             const std::vector<Type>& ownTypes, DiagnosticSink& diags) {
+    const std::string what = std::string("Function ") + fn.name + ": " + opName(inst.op);
+    if (inst.op == Op::Leave && inst.calleeIndex != fn.speculatedFrom) {
+        diags.error(Span{}, what + " names a function other than the one it was speculated from");
+        return false;
+    }
+    if (inst.calleeIndex >= module.functions.size() || module.functions[inst.calleeIndex].isExternal ||
+        module.functions[inst.calleeIndex].isSpeculated()) {
+        diags.error(Span{}, what + " names no generic function of the module");
+        return false;
+    }
+    const Function& generic = module.functions[inst.calleeIndex];
+    if (inst.op == Op::ResumeCall &&
+        (inst.type != generic.returnType || (inst.result != kNoValue) != (generic.returnType != Type::Void))) {
+        diags.error(Span{}, what + " to @" + generic.name + " is " + typeName(inst.type) +
+                                " where the function returns " + typeName(generic.returnType));
+        return false;
+    }
+    const Instruction* point = findResumePoint(generic, inst.immI32);
+    if (point == nullptr) {
+        diags.error(Span{}, what + " to @" + generic.name + " names resume point " +
+                                std::to_string(inst.immI32) + ", which it does not have");
+        return false;
+    }
+    if (point->operands.size() != inst.operands.size()) {
+        diags.error(Span{}, what + " to @" + generic.name + ", " + std::to_string(inst.immI32) +
+                                " carries " + std::to_string(inst.operands.size()) + " state values for " +
+                                std::to_string(point->operands.size()));
+        return false;
+    }
+    const std::vector<Type> genericTypes = valueTypes(generic);
+    for (size_t i = 0; i < inst.operands.size(); ++i) {
+        const ValueId mine = inst.operands[i];
+        const ValueId theirs = point->operands[i];
+        const Type a = mine < ownTypes.size() ? ownTypes[mine] : Type::Void;
+        const Type b = theirs < genericTypes.size() ? genericTypes[theirs] : Type::Void;
+        if (a != b || a == Type::Void) {
+            diags.error(Span{}, what + " to @" + generic.name + ", " + std::to_string(inst.immI32) +
+                                    " state " + std::to_string(i) + " is " + typeName(a) +
+                                    " where the resume point has " + typeName(b));
+            return false;
+        }
+    }
+    return true;
+}
+
 bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     if (fn.blocks.empty()) {
         diags.error(Span{}, "Function " + fn.name + " has no blocks");
@@ -525,9 +588,19 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                     }
                 }
             }
-            if (inst.op == Op::Leave && !fn.isSpeculated()) {
-                diags.error(Span{}, "Function " + fn.name +
-                                        ": leave in a function that was not speculated from another");
+            if ((inst.op == Op::Leave || inst.op == Op::ResumeCall) && !fn.isSpeculated()) {
+                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                        " in a function that was not speculated from another");
+                return false;
+            }
+            // The point after the generic call (il.h `resumeAfter`) is a
+            // direct call's, and only a speculated function's: its id names
+            // a point of the function's G, checked with the module.
+            if (inst.resumeAfter != Instruction::kNoResumeAfter &&
+                (inst.op != Op::Call || !fn.isSpeculated())) {
+                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                        " carries a resume-after id; only a direct call in a "
+                                        "speculated function may");
                 return false;
             }
             if (inst.op == Op::IsPlainArray && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
@@ -815,49 +888,23 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             ": fn.code_is names an out-of-range function index");
                     return false;
                 }
-                if (inst.op != Op::Leave) continue;
-                if (inst.calleeIndex != fn.speculatedFrom) {
-                    diags.error(Span{}, "Function " + fn.name +
-                                            ": leave names a function other than the one it was "
-                                            "speculated from");
+                // verifyFunction let a resume-after id stand only on a direct
+                // call of a speculated function.
+                if (inst.resumeAfter != Instruction::kNoResumeAfter && fn.isSpeculated() &&
+                    inst.op == Op::Call &&
+                    findResumePoint(module.functions[fn.speculatedFrom],
+                                    static_cast<int32_t>(inst.resumeAfter)) == nullptr) {
+                    diags.error(Span{}, "Function " + fn.name + ": call @" +
+                                            module.functions[inst.calleeIndex].name +
+                                            " resumes after at point " +
+                                            std::to_string(inst.resumeAfter) + ", which @" +
+                                            module.functions[fn.speculatedFrom].name +
+                                            " does not have");
                     return false;
                 }
-                const Function& generic = module.functions[inst.calleeIndex];
-                const Instruction* point = nullptr;
-                for (const auto& gb : generic.blocks) {
-                    for (const auto& gi : gb.instructions) {
-                        if (gi.op == Op::ResumePoint && gi.immI32 == inst.immI32) point = &gi;
-                    }
-                }
-                if (point == nullptr) {
-                    diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name +
-                                            " names resume point " + std::to_string(inst.immI32) +
-                                            ", which it does not have");
-                    return false;
-                }
-                if (point->operands.size() != inst.operands.size()) {
-                    diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name + ", " +
-                                            std::to_string(inst.immI32) + " carries " +
-                                            std::to_string(inst.operands.size()) +
-                                            " state values for " +
-                                            std::to_string(point->operands.size()));
-                    return false;
-                }
+                if (inst.op != Op::Leave && inst.op != Op::ResumeCall) continue;
                 if (ownTypes.empty()) ownTypes = valueTypes(fn);
-                const std::vector<Type> genericTypes = valueTypes(generic);
-                for (size_t i = 0; i < inst.operands.size(); ++i) {
-                    const ValueId mine = inst.operands[i];
-                    const ValueId theirs = point->operands[i];
-                    const Type a = mine < ownTypes.size() ? ownTypes[mine] : Type::Void;
-                    const Type b = theirs < genericTypes.size() ? genericTypes[theirs] : Type::Void;
-                    if (a != b || a == Type::Void) {
-                        diags.error(Span{}, "Function " + fn.name + ": leave to @" + generic.name +
-                                                ", " + std::to_string(inst.immI32) + " state " +
-                                                std::to_string(i) + " is " + typeName(a) +
-                                                " where the resume point has " + typeName(b));
-                        return false;
-                    }
-                }
+                if (!checkResumeState(module, fn, inst, ownTypes, diags)) return false;
             }
         }
     }

@@ -181,25 +181,11 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     }
                     return {false, "unsupported IL operation: instanceof on unknown object", false, zero64_, {}, {}, zero1_};
                 }
-                case Op::ClosureIs:
                 case Op::IsNumber:
                 case Op::IsDenseArray:
-                case Op::IsNumberArray:
-                case Op::IsShape:
-                case Op::IsArray:
                 case Op::IsPlainArray:
                 case Op::IsTypedArray:
-                case Op::LayoutEpoch:
-                case Op::LayoutFact:
-                case Op::MethodIcIs:
-                case Op::RunMethodIs:
-                case Op::AccessorIcIs:
                     if (inst.result != il::kNoValue) state.values[inst.result] = one64_;
-                    break;
-                case Op::ClosureEnv:
-                    state.envIds[inst.result] = (!inst.operands.empty() && state.funcEnvs.count(inst.operands[0]))
-                                                    ? state.funcEnvs[inst.operands[0]] : 0;
-                    state.values[inst.result] = zero64_;
                     break;
                 case Op::ClassExtend:
                     if (!inModuleInit_ && (inst.operands.size() < 2 ||
@@ -208,7 +194,6 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     }
                     break;
                 case Op::PinGuard:
-                case Op::CensusRecord:
                 case Op::FeedbackRecord:
                 case Op::KeepAlive:
                 case Op::EnvInitTdz:
@@ -531,7 +516,6 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     state.values[inst.result] = ctx_.make_unary(
                         floatMode_ ? BVOp::FNeg : BVOp::Neg, toBV64(getVal(state, inst.operands[0])), 64);
                     break;
-                case Op::MathImul:
                 case Op::BitAnd:
                 case Op::BitOr:
                 case Op::BitXor: {
@@ -539,8 +523,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     BVNodeId b64 = toBV64(getVal(state, inst.operands[1]));
                     BVNodeId a32 = floatMode_ ? evalFloatToInt32Node(ctx_, a64) : ctx_.make_extract(a64, 31, 0);
                     BVNodeId b32 = floatMode_ ? evalFloatToInt32Node(ctx_, b64) : ctx_.make_extract(b64, 31, 0);
-                    BVOp bvOp = (inst.op == Op::MathImul) ? BVOp::Mul
-                                : (inst.op == Op::BitAnd) ? BVOp::And
+                    BVOp bvOp = (inst.op == Op::BitAnd) ? BVOp::And
                                 : (inst.op == Op::BitOr)  ? BVOp::Or : BVOp::Xor;
                     BVNodeId r32 = ctx_.make_binary(bvOp, a32, b32);
                     state.values[inst.result] = floatMode_ ? ctx_.make_unary(BVOp::SiToFp, r32, 64) : ctx_.make_sext(r32, 32);
@@ -618,8 +601,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                 case Op::ArraySpread:
                     evalArraySpreadOp(inst, state);
                     break;
-                case Op::ElemGet:
-                case Op::ElemGetTyped: {
+                case Op::ElemGet: {
                     if (inst.operands.size() < 2) return {false, "malformed ElemGet", false, zero64_, {}, {}, zero1_};
                     BVNodeId idx = toBV64(getVal(state, inst.operands[1]));
                     if (state.heap.isStringValue(inst.operands[1])) {
@@ -664,8 +646,7 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                     state.values[inst.result] = elemVal;
                     break;
                 }
-                case Op::ElemSet:
-                case Op::ElemSetTyped: {
+                case Op::ElemSet: {
                     if (inst.operands.size() < 3) return {false, "malformed ElemSet", false, zero64_, {}, {}, zero1_};
                     BVNodeId idxNode = toBV64(getVal(state, inst.operands[1]));
                     BVNodeId valNode = toBV64(getVal(state, inst.operands[2]));
@@ -685,57 +666,6 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         return {false, "unsupported ElemSet on non-tracked receiver", false, zero64_, {}, {}, zero1_};
                     }
                     if (inst.result != il::kNoValue) state.values[inst.result] = valNode;
-                    break;
-                }
-                case Op::MathUnary: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                    if (floatMode_) {
-                        if (kind == il::MathUnaryFn::Abs) {
-                            state.values[inst.result] = ctx_.make_unary(BVOp::FAbs, a, 64);
-                        } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
-                            state.values[inst.result] = (kind == il::MathUnaryFn::Ceil)
-                                ? evalFloatCeilSymbolic(ctx_, a)
-                                : evalFloatFloorSymbolic(ctx_, a);
-                        } else if (kind == il::MathUnaryFn::Trunc) {
-                            state.values[inst.result] = evalFloatTruncSymbolic(ctx_, a);
-                        } else if (kind == il::MathUnaryFn::Round) {
-                            state.values[inst.result] = evalFloatRoundSymbolic(ctx_, a);
-                        } else if (kind == il::MathUnaryFn::Sqrt) {
-                            state.values[inst.result] = ctx_.make_unary(BVOp::FSqrt, a, 64);
-                        } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                            BVNodeId acc = a;
-                            for (size_t k = 1; k < inst.operands.size(); ++k) {
-                                BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
-                                acc = ctx_.make_binary(kind == il::MathUnaryFn::Min ? BVOp::FMin : BVOp::FMax, acc, rhs, 64);
-                            }
-                            state.values[inst.result] = acc;
-                        } else {
-                            return {false, "unsupported transcendental MathUnary", false, zero64_, {}, {}, zero1_};
-                        }
-                        break;
-                    }
-                    if (kind == il::MathUnaryFn::Abs) {
-                        state.values[inst.result] = ctx_.make_ite(ctx_.make_binary(BVOp::Slt, a, zero64_),
-                                                                  ctx_.make_unary(BVOp::Neg, a), a);
-                    } else if (kind == il::MathUnaryFn::Floor || kind == il::MathUnaryFn::Ceil) {
-                        state.values[inst.result] = evalFloorOrCeilSymbolic(
-                            ctx_, state.heap, inst.operands[0], a, kind == il::MathUnaryFn::Ceil,
-                            heapTable_.domainMin(), heapTable_.domainMax());
-                    } else if (kind == il::MathUnaryFn::Trunc) {
-                        state.values[inst.result] = a;
-                    } else if (kind == il::MathUnaryFn::Min || kind == il::MathUnaryFn::Max) {
-                        BVNodeId acc = a;
-                        for (size_t k = 1; k < inst.operands.size(); ++k) {
-                            BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
-                            BVNodeId pick = (kind == il::MathUnaryFn::Min) ? ctx_.make_binary(BVOp::Slt, rhs, acc)
-                                                                           : ctx_.make_binary(BVOp::Slt, acc, rhs);
-                            acc = ctx_.make_ite(pick, rhs, acc);
-                        }
-                        state.values[inst.result] = acc;
-                    } else {
-                        return {false, "unsupported transcendental MathUnary", false, zero64_, {}, {}, zero1_};
-                    }
                     break;
                 }
                 case Op::GlobalGet:

@@ -480,6 +480,12 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.index = inst.calleeIndex;
             break;
+        case il::Op::ResumeCall:
+            out.op = il2mir::BronzeOp::ResumeCall;
+            out.imm_i64 = inst.immI32;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.index = inst.calleeIndex;
+            break;
         case il::Op::LoadShape: out.op = il2mir::BronzeOp::LoadShape; break;
         case il::Op::ShapeCell:
             out.op = il2mir::BronzeOp::ShapeCell;

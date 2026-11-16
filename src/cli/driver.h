@@ -57,7 +57,16 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
           const std::string& nativeLibPath = {},
           // `--feedback-out`: the IL of a type-feedback build
           // (docs/type-feedback.md), its `feedback.record` sites visible.
-          const std::string& feedbackOutPath = {});
+          const std::string& feedbackOutPath = {},
+          // `--feedback-in`: the profile the optimiser's speculation step
+          // reads, as `bronze build` does.
+          const std::string& feedbackInPath = {},
+          // `--lowered`: print lowering's output; otherwise the module after
+          // the optimiser pipeline (opt/pipeline/pipeline.h), which is what
+          // the backend is given.
+          bool printLowered = false,
+          // `--opt-stats`: the pipeline's counts on stderr.
+          bool optStats = false);
 // `nativeManifestPath` is `--native-manifest`: the JSON embed::writeNativeManifest
 // printed from a host's registry (or a directory of them), naming the JS paths
 // the program may call as direct native calls and their C signatures
@@ -125,14 +134,10 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // is one unit and the namespaces would be built for nothing.
              bool publishModules = false,
              bool emitDebugInfo = false,
-             // `--spec-profile`: a speculation profile a tiered run of the
-             // same program wrote (BRONZE_SPEC_PROFILE_OUT), which lays the
-             // build's fast paths out as the JIT's (il2mir/il_spec_profile.h).
-             const std::string& specProfilePath = {},
              // `--feedback-out <file.tfb>`: instrument the program so that a
              // run writes a type-feedback profile there; `--feedback-in
-             // <file.tfb>`: read one back (docs/type-feedback.md). Nothing
-             // consumes a profile yet.
+             // <file.tfb>`: read one back (docs/type-feedback.md) for the
+             // optimiser's speculation step.
              const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {},
              // `--harvest-out <file.tfb>`: the program writes its inline-cache
              // harvest there at exit (docs/type-feedback.md, "Harvest").
@@ -140,7 +145,9 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // `-j <n>` / `--jobs <n>`: threads for code generation's
              // per-function work (BrassBackend::setBuildThreads); 0 is every
              // hardware thread. The output does not depend on it.
-             size_t buildThreads = 0);
+             size_t buildThreads = 0,
+             // `--opt-stats`: the optimiser pipeline's counts on stderr.
+             bool optStats = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

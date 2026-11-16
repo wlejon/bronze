@@ -93,9 +93,10 @@ struct RedundancyOptions {
     PreheaderResumeFn preheaderResume;
     // Job 6 on a generic function G: delete each `resume.point` whose id is
     // not in `namedResumeIds` (sorted ascending). `runRedundancyModule` fills
-    // the ids from the `leave`s of every speculated function; a direct caller
-    // of `runRedundancy` that sets this must fill them itself. Off by default:
-    // with nothing named, every resume point would go.
+    // the ids from the `leave`s and `resume.call`s of every speculated
+    // function; a direct caller of `runRedundancy` that sets this must fill
+    // them itself. Off by default: with nothing named, every resume point
+    // would go.
     bool removeUnnamedResumePoints = false;
     std::vector<uint32_t> namedResumeIds;
 };

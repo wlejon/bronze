@@ -92,6 +92,7 @@ target_link_libraries(bronze_runtime_shared PRIVATE
     bronze::types
     bronze::lower
     bronze::il
+    bronze::opt_pipeline
     bronze::codegen_brass
     bronze::support
     bronze::modules
