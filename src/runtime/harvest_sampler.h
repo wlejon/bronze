@@ -28,8 +28,11 @@
 // native call, in the background), and the sampler sleeps with no timeout
 // until the poll that takes it wakes it. A busy JS thread takes a sample
 // with an uncontended lock and no system call.
-// It exits for good after kSampleLimit samples (enough for the hot set; a
-// harvesting launch samples its first seconds of JS), when the harvest is
+// Its first kSampleFullRate samples come every kSamplePeriodUs (the hot set
+// of a harvesting launch's first seconds of JS); then every
+// kSampleTailPeriodUs, each counting kSampleTailWeight, so a phase that runs
+// late (a program's closing work) is sampled too and counts stay in units of
+// one period. It exits for good after kSampleLimit samples, when the harvest is
 // disarmed or written (rtHarvestSamplerStop), and when the sampled thread
 // exits. An arm that a stack-limit store would overwrite (a fiber switch, a
 // compartment's disarm) is put back by that store (tls_block.cpp), so a
@@ -64,9 +67,12 @@
 namespace bronze::runtime {
 
 inline constexpr int kSamplePeriodUs = 250;
+inline constexpr uint64_t kSampleFullRate = 10000;
+inline constexpr uint64_t kSampleTailWeight = 16;
+inline constexpr int kSampleTailPeriodUs = kSamplePeriodUs * static_cast<int>(kSampleTailWeight);
 
 // Samples taken before the sampler stops for good in this process.
-inline constexpr uint64_t kSampleLimit = 10000;
+inline constexpr uint64_t kSampleLimit = 20000;
 
 // How many polls in a row a sample may be passed on (rtHarvestSampleAt).
 inline constexpr uint32_t kSamplePassLimit = 256;

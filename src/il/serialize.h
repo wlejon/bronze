@@ -54,7 +54,9 @@ namespace bronze::il {
 //     Function::speculatedFrom and Module::shapeCells.
 // 39: resume.call (il_op.h) and Instruction::resumeAfter.
 // 42: member.cell / member.publish and Module::memberCells.
-inline constexpr uint32_t kFormatVersion = 42;
+// 43: shape.in.
+// 44: absent member cells (Module::MemberKind::Absent).
+inline constexpr uint32_t kFormatVersion = 44;
 
 std::string serializeModule(const Module& module);
 

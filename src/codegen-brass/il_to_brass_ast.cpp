@@ -493,6 +493,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::PtrEq: out.op = il2mir::BronzeOp::PtrEq; break;
+        case il::Op::ShapeIn: out.op = il2mir::BronzeOp::ShapeIn; break;
         case il::Op::ShapeHasOwn:
             out.op = il2mir::BronzeOp::ShapeHasOwn;
             out.imm_i64 = inst.immI32;
@@ -571,7 +572,8 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::MemberPublish:
             out.op = il2mir::BronzeOp::MemberPublish;
             out.imm_i64 = inst.immI32;
-            if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < ctx.module.memberCells.size()) {
+            if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < ctx.module.memberCells.size() &&
+                ctx.module.memberCells[inst.immI32].kind != il::Module::MemberKind::Absent) {
                 out.index = ctx.module.memberCells[inst.immI32].callee;
                 out.callee_name = ctx.fnName(out.index);
             }

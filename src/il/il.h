@@ -497,8 +497,11 @@ struct Module {
     // shape word and `member.publish` asks the runtime to fill it. The
     // cells of one site form a GROUP (`group` its first cell, `groupSize`
     // its cells, in order), each with its own function; a shape the group
-    // holds is put in no second cell of it.
-    enum class MemberKind : uint8_t { Method, Getter, Setter };
+    // holds is put in no second cell of it. An ABSENT cell holds a shape
+    // whose chain has the key nowhere, so a read of it is `undefined`; it
+    // names no function (`callee` is kNoMemberCallee).
+    enum class MemberKind : uint8_t { Method, Getter, Setter, Absent };
+    static constexpr uint32_t kNoMemberCallee = UINT32_MAX;
     struct MemberCell {
         MemberKind kind = MemberKind::Method;
         uint32_t keyIndex = 0;

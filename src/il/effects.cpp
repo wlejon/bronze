@@ -312,6 +312,7 @@ Effects rawEffects(const Instruction& inst) {
         // ---- the speculation forms (il_op.h) ----------------------------
         case Op::ShapeCell:   // filled once at load, never written after
         case Op::PtrEq:
+        case Op::ShapeIn:
         case Op::IsObject:
         case Op::IsI32:
         case Op::UnboxI32:    // garbage, not a fault, off its guard

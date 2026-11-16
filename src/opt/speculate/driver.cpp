@@ -59,7 +59,8 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
         case SiteKind::MathCall: rewriteMathCall(ctx, site); return;
         case SiteKind::MemberMethod:
         case SiteKind::MemberGet:
-        case SiteKind::MemberSet: rewriteMember(ctx, site); return;
+        case SiteKind::MemberSet:
+        case SiteKind::MemberAbsent: rewriteMember(ctx, site); return;
     }
 }
 

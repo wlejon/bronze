@@ -66,10 +66,13 @@ public:
     // array kind, a callee).
     bool isObject(ValueId v) const;
     bool isNotHole(ValueId v) const { return known(FactKind::Hole, v) == false; }
-    // The layout cell `v`'s shape is known to be, if any.
+    // The layout cell `v`'s shape is known to be, if any. `v` is an object or
+    // a shape word (edge_facts.h Shape).
     std::optional<uint32_t> shapeOf(ValueId v) const;
-    // Whether `v` is known NOT to have the shape of cell `cell`.
-    bool lacksShape(ValueId v, uint32_t cell) const { return known(FactKind::Shape, v, cell) == false; }
+    // The cells `v`'s shape is known to be one of (ascending), when the live
+    // Shape and ShapeSet facts bound it: their intersection less the cells
+    // failed tests ruled out. Empty only on a path that cannot run.
+    std::optional<std::vector<uint32_t>> shapeSet(ValueId v) const;
     // The module function `v` is known to be the code of, if any.
     std::optional<uint32_t> calleeOf(ValueId v) const;
     // A dense-array fact covering index `index`: `is.dense_array v, k` held
@@ -95,6 +98,8 @@ private:
         bool added;  // false: a kill
     };
     void indexFact(uint32_t i);
+    // shapeSet's work: the bound (nullopt: none), and the cells ruled out.
+    std::optional<std::vector<uint32_t>> shapeBound(ValueId v, std::vector<uint32_t>* excluded) const;
     void unindexFact(uint32_t i);
 
     std::vector<Fact> facts_;

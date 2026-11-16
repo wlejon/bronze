@@ -113,7 +113,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     if (r.profileRead) {
         out += "speculate: " + n(s.functionsSpeculated) + "/" + n(s.functionsConsidered) + " functions";
         if (s.harvestIgnored) out += " (harvest of another build ignored)";
-        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), slot-keyed " + n(s.propSlotKeyed) + ", prop.set " +
+        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), shape sets " + n(s.shapeSetLeads) + " (followers " + n(s.shapeSetFollowers) + "), slot-keyed " + n(s.propSlotKeyed) + ", prop.set " +
                n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", math " + n(s.mathCalls) +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +

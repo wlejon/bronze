@@ -1,15 +1,17 @@
 // MEMBERS ABOVE THE RECEIVER (member_call.cpp is the rewrite): a harvested
 // site each of whose ways found its key on the receiver's prototype chain and
-// names the function it reached there.
+// names the function it reached there, or each of whose ways found the key
+// nowhere.
 //
 //   MemberMethod  a method site whose ways are all `direct` (the method cache
 //                 latched a receiver shape and the code its chain's data
 //                 property held; an own-slot way is `slot`);
 //   MemberGet     a read site whose ways are all `accessor`, by the getters
 //                 they name (harvest version 7);
-//   MemberSet     a write site whose ways are all `accessor`, by the setters.
+//   MemberSet     a write site whose ways are all `accessor`, by the setters;
+//   MemberAbsent  a read site whose ways are all `absent` (no function).
 //
-// One function per way, in the harvest's order; at most kMaxChainShapes ways,
+// One function per way, in the harvest's order; at most kMaxSetShapes ways,
 // none of them `*other*`, and a site that met receivers its ways could not
 // hold (`full`, `mega`, an `other` row) is left generic. Each function must
 // be one module function a direct call with `argc` arguments may enter
@@ -27,14 +29,19 @@ namespace bronze::opt::speculate {
 std::optional<SitePlan> Evidence::planMember(const spec::HarvestSite& h, SiteKind kind, size_t argc, BlockId block,
                                              uint32_t index) const {
     if (h.full || h.mega || h.uncached > kMaxUncachedReceivers) return std::nullopt;
-    if (h.ways.empty() || h.ways.size() > kMaxChainShapes) return std::nullopt;
-    const char* form = kind == SiteKind::MemberMethod ? "direct" : "accessor";
+    if (h.ways.empty() || h.ways.size() > kMaxSetShapes) return std::nullopt;
+    const char* form = kind == SiteKind::MemberMethod ? "direct" : kind == SiteKind::MemberAbsent ? "absent" : "accessor";
     SitePlan plan;
     plan.kind = kind;
     plan.block = block;
     plan.index = index;
     for (const spec::HarvestWay& way : h.ways) {
         if (way.form != form) return std::nullopt;
+        if (kind == SiteKind::MemberAbsent) {
+            plan.callees.push_back(il::Module::kNoMemberCallee);
+            plan.shapes.push_back(ShapeSlot{way.receiver, 0});
+            continue;
+        }
         const std::string& name = kind == SiteKind::MemberSet ? way.setter : way.callee;
         if (name.empty() || name == "*other*") return std::nullopt;
         const uint32_t f = calleeByHarvestName(name);

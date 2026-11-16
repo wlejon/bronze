@@ -6,7 +6,8 @@ namespace bronze::opt::redundancy {
 
 void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& dom, const DefUse& defs,
                        const AliasInfo& alias, FactEnv& facts, ExprTable& exprs,
-                       const std::function<void(BlockId)>& visit) {
+                       const std::function<void(BlockId)>& visit,
+                       const std::function<bool(BlockId, BlockId)>& deadEdge) {
     if (fn.blocks.empty()) return;
     // Taken before the walk: in-place rewrites only ever remove writes, so the
     // summaries stay a superset of what the blocks do.
@@ -35,7 +36,7 @@ void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& do
             if (cfg.inEdges(b).size() == 1) {
                 facts.addAll(entryFacts(fn, cfg, defs, b));
             } else {
-                const WriteSet between = regionWrites(cfg, writes, dom.idom(b), b);
+                const WriteSet between = regionWrites(cfg, writes, dom.idom(b), b, &deadEdge);
                 facts.killLocs(between.allLocs());
                 exprs.killAll(between, alias);
             }

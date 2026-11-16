@@ -37,8 +37,12 @@
 
 namespace bronze::opt::redundancy {
 
+// `deadEdge(p, b)` says an edge is known never taken: a branch `visit`
+// folded earlier in the walk. A join reached only on one live path loses
+// nothing to the writes of a dead one.
 void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& dom, const DefUse& defs,
                        const AliasInfo& alias, FactEnv& facts, ExprTable& exprs,
-                       const std::function<void(BlockId)>& visit);
+                       const std::function<void(BlockId)>& visit,
+                       const std::function<bool(BlockId, BlockId)>& deadEdge);
 
 }  // namespace bronze::opt::redundancy

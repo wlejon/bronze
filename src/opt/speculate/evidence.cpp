@@ -170,6 +170,7 @@ std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {
     }
     if (out.sites.empty()) return std::nullopt;
     shareConstBounds(fn, out);
+    shareShapeSets(fn, out);
     demoteUnsourcedInts(fn, out);
     return out;
 }
@@ -246,6 +247,7 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
             if (h->full || h->uncached > kMaxUncachedReceivers) return std::nullopt;
             return planMember(*h, SiteKind::MemberGet, 0, block, index);
         }
+        if (h->ways.front().form == "absent") return planMember(*h, SiteKind::MemberAbsent, 0, block, index);
         // More receivers than the ways held, or some no way could: what the
         // ways show is a sample, so the site tests slots, not shapes.
         if (h->full || h->uncached > kMaxUncachedReceivers) {

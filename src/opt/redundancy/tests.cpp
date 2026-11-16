@@ -2,7 +2,9 @@
 
 #include "opt/core/shape_key.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <utility>
 
 namespace bronze::opt::redundancy {
@@ -126,6 +128,23 @@ std::optional<bool> fnCodeTest(const FactEnv& facts, const ValueView& values, De
     return std::nullopt;
 }
 
+// The cells shape word `loadId` (the `load.shape` `load`) may be: what the
+// facts say of the word, met with what they say of the object when the load
+// still reads the present shape (the table entry of the load dies at any
+// write of Shapes, so finding the load itself there means the shape it read
+// is the shape now).
+std::optional<std::vector<uint32_t>> shapeSetOfLoad(const il::Instruction& load, ValueId loadId,
+                                                   const FactEnv& facts, const ExprTable& exprs) {
+    std::optional<std::vector<uint32_t>> word = facts.shapeSet(loadId);
+    if (exprs.lookup(exprKeyOf(load)).value != loadId) return word;
+    std::optional<std::vector<uint32_t>> object = facts.shapeSet(load.operands[0]);
+    if (!word) return object;
+    if (!object) return word;
+    std::vector<uint32_t> both;
+    std::set_intersection(word->begin(), word->end(), object->begin(), object->end(), std::back_inserter(both));
+    return both;
+}
+
 // `ptr.eq (load.shape x), (shape.cell n)` either way round, answered by the
 // shape fact about x when the load still reads the present shape.
 std::optional<bool> ptrEqTest(const il::Instruction& inst, const FactEnv& facts, const ExprTable& exprs,
@@ -138,12 +157,45 @@ std::optional<bool> ptrEqTest(const il::Instruction& inst, const FactEnv& facts,
         const il::Instruction* load = values.defIs(loadId, Op::LoadShape);
         const il::Instruction* cell = values.defIs(cellId, Op::ShapeCell);
         if (load == nullptr || cell == nullptr || load->operands.size() != 1) continue;
-        // The table entry of the load dies at any write of Shapes, so finding
-        // the load itself there means the shape it read is the shape now.
-        if (exprs.lookup(exprKeyOf(*load)).value != loadId) return std::nullopt;
-        return facts.known(FactKind::Shape, load->operands[0], cell->immI32);
+        const std::optional<std::vector<uint32_t>> set = shapeSetOfLoad(*load, loadId, facts, exprs);
+        if (!set) return facts.known(FactKind::Shape, loadId, cell->immI32);
+        const auto c = static_cast<uint32_t>(cell->immI32);
+        if (std::find(set->begin(), set->end(), c) == set->end()) return false;
+        if (set->size() == 1) return true;
+        return facts.known(FactKind::Shape, loadId, cell->immI32);
     }
     return facts.known(FactKind::PtrEq, a, b);
+}
+
+// `shape.in (load.shape x), (shape.cell n1), ...`: true when every shape
+// the word may be is among the cells, false when none is.
+std::optional<bool> shapeInTest(const il::Instruction& inst, const FactEnv& facts, const ExprTable& exprs,
+                                const ValueView& values) {
+    const il::Instruction* load = values.defIs(inst.operands[0], Op::LoadShape);
+    if (load == nullptr || load->operands.size() != 1) return std::nullopt;
+    std::vector<uint32_t> cells;
+    for (size_t i = 1; i < inst.operands.size(); ++i) {
+        const il::Instruction* cell = values.defIs(inst.operands[i], Op::ShapeCell);
+        if (cell == nullptr) return std::nullopt;
+        cells.push_back(static_cast<uint32_t>(cell->immI32));
+    }
+    bool none = true;
+    for (uint32_t c : cells) {
+        if (facts.known(FactKind::Shape, inst.operands[0], c) != false) none = false;
+    }
+    if (none) return false;
+    const std::optional<std::vector<uint32_t>> set = shapeSetOfLoad(*load, inst.operands[0], facts, exprs);
+    if (!set) return std::nullopt;
+    bool all = true;
+    bool any = false;
+    for (uint32_t c : *set) {
+        const bool in = std::find(cells.begin(), cells.end(), c) != cells.end();
+        all = all && in;
+        any = any || in;
+    }
+    if (all) return true;
+    if (!any) return false;
+    return std::nullopt;
 }
 
 std::pair<ValueId, int32_t> offsetOf(const ValueView& values, ValueId v) {
@@ -183,16 +235,22 @@ std::optional<bool> knownHasOwnResult(const il::Instruction& inst, const FactEnv
     if (inst.op != Op::ShapeHasOwn || inst.operands.size() != 1) return std::nullopt;
     const il::Instruction* load = values.defIs(inst.operands[0], Op::LoadShape);
     if (load == nullptr || load->operands.size() != 1) return std::nullopt;
-    if (exprs.lookup(exprKeyOf(*load)).value != inst.operands[0]) return std::nullopt;
-    const std::optional<uint32_t> cell = facts.shapeOf(load->operands[0]);
-    if (!cell || *cell >= module.shapeCells.size() || inst.keyIndex >= module.keyConstants.size()) {
-        return std::nullopt;
-    }
-    const std::optional<ShapeName> shape = parseShapeName(module.shapeCells[*cell].key);
-    if (!shape) return std::nullopt;
+    const std::optional<std::vector<uint32_t>> cells = shapeSetOfLoad(*load, inst.operands[0], facts, exprs);
+    if (!cells || cells->empty() || inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
     const std::string& key = module.keyConstants[inst.keyIndex];
-    const std::optional<int32_t> slot = (inst.immI32 & 1) != 0 ? writableSlot(*shape, key) : ownSlot(*shape, key);
-    return slot && *slot == (inst.immI32 >> 1);
+    // Every shape the word may be answers alike, or the test stays.
+    std::optional<bool> answer;
+    for (uint32_t cell : *cells) {
+        if (cell >= module.shapeCells.size()) return std::nullopt;
+        const std::optional<ShapeName> shape = parseShapeName(module.shapeCells[cell].key);
+        if (!shape) return std::nullopt;
+        const std::optional<int32_t> slot =
+            (inst.immI32 & 1) != 0 ? writableSlot(*shape, key) : ownSlot(*shape, key);
+        const bool here = slot && *slot == (inst.immI32 >> 1);
+        if (answer && *answer != here) return std::nullopt;
+        answer = here;
+    }
+    return answer;
 }
 
 ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
@@ -243,6 +301,8 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
         case Op::PtrEq:
             if (inst.operands.size() != 2) return std::nullopt;
             return ptrEqTest(inst, facts, exprs, values);
+        case Op::ShapeIn:
+            return shapeInTest(inst, facts, exprs, values);
         default:
             return std::nullopt;
     }

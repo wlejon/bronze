@@ -44,6 +44,8 @@ inline constexpr uint64_t kMinSiteObservations = 16;
 // A property read with this many own-property shapes, at most, becomes a
 // chain of shape tests; more stays generic.
 inline constexpr size_t kMaxChainShapes = 4;
+// The most shapes a receiver's shape set (shape_sets.cpp) may hold.
+inline constexpr size_t kMaxSetShapes = 8;
 // Calls whose receiver no way of the cache could hold (the harvest's `other`
 // row) a site may have and still be speculated on. Zero: every such receiver
 // would leave, and a receiver kind the cache cannot even hold is not a rare
@@ -130,6 +132,7 @@ enum class SiteKind : uint8_t {
     MemberMethod,  // method.call of a method in a prototype's data property
     MemberGet,     // prop.get of an accessor's getter
     MemberSet,     // prop.set (an assignment) of an accessor's setter
+    MemberAbsent,  // prop.get of a key on neither the receiver nor its chain
 };
 
 // Int: every operand an int32 and the operation computed on i32 (add, sub,
@@ -138,6 +141,14 @@ enum class SiteKind : uint8_t {
 // family, each operand converted to int32 by the cheaper route its evidence
 // allows (an int32 unboxed, any other Number truncated by ToInt32).
 enum class ArithForm : uint8_t { Int, Double, Bits };
+
+// A PropRead or PropWrite on a receiver value that several such sites of
+// the function share (shape_sets.cpp): the LEAD, which dominates the others,
+// tests the receiver's shape against the set of every shape they met and
+// leaves when it is none of them; a FOLLOWER, dominated by a lead, tests the
+// set and keeps a cold generic arm, so the test folds wherever the lead's
+// fact still holds.
+enum class ShapeSetRole : uint8_t { None, Lead, Follow };
 
 struct ShapeSlot {
     std::string key;  // the shape's name: the shape cell's key
@@ -153,6 +164,7 @@ struct SitePlan {
     // MemberMethod / MemberGet / MemberSet the receiver shape of each callee
     // (slot unused).
     std::vector<ShapeSlot> shapes;
+    ShapeSetRole shapeSet = ShapeSetRole::None;
     // MethodSlot, MethodProto, Call, Construct: the callee, by its index as
     // lowered. MethodProto over several (2..kMaxChainShapes): `callees`, and
     // `callee` unset. MemberMethod / MemberGet / MemberSet: `callees`, one
@@ -237,6 +249,9 @@ private:
     std::optional<SitePlan> planElem(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
                                      uint32_t index) const;
     void shareConstBounds(const il::Function& fn, FunctionPlan& plan) const;
+    // shape_sets.cpp: the lead and follower roles of the PropRead and
+    // PropWrite plans on one receiver value, their shapes widened to the set.
+    void shareShapeSets(const il::Function& fn, FunctionPlan& plan) const;
     std::optional<SitePlan> planIntrinsic(const spec::HarvestSite& h, size_t argc, BlockId block,
                                           uint32_t index) const;
     std::optional<SitePlan> planLength(const il::Instruction& inst, BlockId block, uint32_t index) const;

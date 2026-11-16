@@ -52,6 +52,7 @@
 // through its children's parent links, which the depth of an access walks.
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -168,6 +169,9 @@ std::vector<WriteSet> blockWriteSets(const il::Function& fn);
 // What every path from `from` (exclusive) to `to` (inclusive when a path
 // loops back through it) writes, for `from` dominating `to`: the precise
 // counterpart of opt::writesBetween, walked the same way.
-WriteSet regionWrites(const Cfg& cfg, const std::vector<WriteSet>& writes, BlockId from, BlockId to);
+// `deadEdge(p, b)`, when given, says the edge p -> b is known never taken (a
+// branch the walk has folded); paths through it do not count.
+WriteSet regionWrites(const Cfg& cfg, const std::vector<WriteSet>& writes, BlockId from, BlockId to,
+                      const std::function<bool(BlockId, BlockId)>* deadEdge = nullptr);
 
 }  // namespace bronze::opt::redundancy

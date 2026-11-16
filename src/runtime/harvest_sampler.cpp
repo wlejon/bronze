@@ -74,7 +74,8 @@ void run(Sampler* s, uint64_t gen) {
         g_harvestSampleWanted.store(s->tls, std::memory_order_seq_cst);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         rtArmInterrupt(s->tls);
-        s->wake.wait_for(lock, std::chrono::microseconds(kSamplePeriodUs), [&] { return !current(); });
+        const int period = s->taken < kSampleFullRate ? kSamplePeriodUs : kSampleTailPeriodUs;
+        s->wake.wait_for(lock, std::chrono::microseconds(period), [&] { return !current(); });
         if (!current()) break;
         if (!taken()) {
             s->parked = true;
@@ -150,9 +151,10 @@ void rtHarvestSampleAt(const void* pc, const void* fp, bool entry) noexcept {
         return;
     }
     s->passed = 0;
+    const uint64_t weight = s->taken < kSampleFullRate ? 1 : kSampleTailWeight;
     ++s->taken;
-    if (range != nullptr && range->desc != nullptr) ++s->counts[range];
-    if (caller != nullptr) ++s->counts[caller];
+    if (range != nullptr && range->desc != nullptr) s->counts[range] += weight;
+    if (caller != nullptr) s->counts[caller] += weight;
     g_harvestSampleWanted.store(nullptr, std::memory_order_seq_cst);
     if (s->parked) s->wake.notify_one();
 }

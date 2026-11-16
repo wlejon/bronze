@@ -1,5 +1,6 @@
 #include "opt/core/edge_facts.h"
 
+#include <algorithm>
 #include <cstdint>
 
 namespace bronze::opt {
@@ -13,6 +14,7 @@ const char* factKindName(FactKind kind) {
         case FactKind::Nullish: return "nullish";
         case FactKind::Hole: return "hole";
         case FactKind::Shape: return "shape";
+        case FactKind::ShapeSet: return "shape-set";
         case FactKind::DenseArray: return "dense-array";
         case FactKind::PlainArray: return "plain-array";
         case FactKind::TypedArray: return "typed-array";
@@ -88,6 +90,9 @@ public:
             case il::Op::PtrEq:
                 ptrEq(*d, truth, out);
                 return;
+            case il::Op::ShapeIn:
+                shapeIn(*d, truth, out);
+                return;
             case il::Op::CmpEq:
             case il::Op::CmpNe:
                 if (depth < kMaxNegationDepth) negation(*d, truth, depth, out);
@@ -130,15 +135,49 @@ private:
             const il::Instruction* load = defs_.defInstIs(fn_, loadId, il::Op::LoadShape);
             const il::Instruction* cell = defs_.defInstIs(fn_, cellId, il::Op::ShapeCell);
             if (load == nullptr || cell == nullptr) continue;
-            // The shape word was read at the load, so that is the read that
-            // has to be fresh, not the compare.
-            if (freshAtBranch(loadId, Loc::Shapes)) {
-                out.push_back(Fact{FactKind::Shape, truth, load->operands[0], kNoValue, cell->immI32,
-                                   Loc::Shapes});
-            }
+            shapeFacts(loadId, *load, {static_cast<uint32_t>(cell->immI32)}, truth, out);
             return;
         }
         out.push_back(Fact{FactKind::PtrEq, truth, a, b, 0, {}});
+    }
+
+    // `shape.in (load.shape %x), (shape.cell n1), ...`: the set on the true
+    // edge, none of the cells on the false one.
+    void shapeIn(const il::Instruction& d, bool truth, std::vector<Fact>& out) const {
+        const il::Instruction* load = defs_.defInstIs(fn_, d.operands[0], il::Op::LoadShape);
+        if (load == nullptr || load->operands.size() != 1) return;
+        std::vector<uint32_t> cells;
+        for (size_t i = 1; i < d.operands.size(); ++i) {
+            const il::Instruction* cell = defs_.defInstIs(fn_, d.operands[i], il::Op::ShapeCell);
+            if (cell == nullptr) return;
+            cells.push_back(static_cast<uint32_t>(cell->immI32));
+        }
+        shapeFacts(d.operands[0], *load, std::move(cells), truth, out);
+    }
+
+    // What a test of shape word `word` (a `load.shape` of an object) against
+    // `cells` proves: about the word always, since a word never changes; about
+    // the object only when the load is fresh at the branch (the shape word
+    // was read at the load, so that is the read that has to be fresh, not the
+    // compare). One cell is a Shape fact; on the true edge several are one
+    // ShapeSet fact; on the false edge each cell is a failed Shape fact.
+    void shapeFacts(ValueId word, const il::Instruction& load, std::vector<uint32_t> cells, bool truth,
+                    std::vector<Fact>& out) const {
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+        const ValueId object = load.operands[0];
+        const bool fresh = freshAtBranch(word, Loc::Shapes);
+        auto push = [&](ValueId subject, il::LocSet deps) {
+            if (truth && cells.size() > 1) {
+                Fact f{FactKind::ShapeSet, true, subject, kNoValue, 0, deps};
+                f.cells = cells;
+                out.push_back(std::move(f));
+                return;
+            }
+            for (uint32_t c : cells) out.push_back(Fact{FactKind::Shape, truth, subject, kNoValue, c, deps});
+        };
+        push(word, {});
+        if (fresh) push(object, Loc::Shapes);
     }
 
     // `cmp.eq %o, <const bool k>` (lowering's `!`) and `cmp.ne`, either way

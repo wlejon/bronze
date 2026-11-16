@@ -178,6 +178,7 @@ enum class BronzeOp {
     LoadShape,
     ShapeCell,
     PtrEq,
+    ShapeIn,
     // The slot and write bit packed in `imm_i64` as il_op.h's `immI32`, the
     // key's module index in `index`.
     ShapeHasOwn,

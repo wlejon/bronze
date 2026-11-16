@@ -18,9 +18,13 @@
 //     member.publish %recv, c1 ; member.publish %recv, c2
 //     leave @G, <point in front of the site>, state
 //
+// or, for a site of more cells than kMaxChainShapes, the publishing arm does
+// the generic operation and jumps to `join` (the site stays in S).
+//
 // with `args` the method call's arguments, nothing for a getter and the
 // assigned value for a setter; a setter's value is dropped (the assignment
-// has no result). Cells whose functions are the same share one arm.
+// has no result). Cells whose functions are the same share one arm. An
+// ABSENT read's cells all share the one arm `r = const.undefined`.
 //
 // Why exact: a cell holds a shape only while the runtime's check stands
 // (runtime/accessor_cell.cpp): a plain receiver of that shape lacks the key
@@ -35,9 +39,9 @@
 // (planMember refuses one that does), and its code binds `this` from the
 // receiver as the generic dispatch would. Before the call nothing observable
 // has run (a test, a header load, cell reads), so a receiver no cell holds
-// leaves in front of the site and G performs the whole generic operation;
-// the exit first asks the runtime to fill a cell for that receiver, which
-// runs no user code. The calls carry the point after the site as their
+// leaves in front of the site and G performs the whole generic operation, or
+// the cold arm performs it; either first asks the runtime to fill a cell for
+// that receiver, which runs no user code. The calls carry the point after the site as their
 // `resumeAfter`, so the inliner can fold the functions in.
 
 #include <unordered_map>
@@ -48,8 +52,8 @@ namespace bronze::opt::speculate {
 
 void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
     assert(plan.kind == SiteKind::MemberMethod || plan.kind == SiteKind::MemberGet ||
-           plan.kind == SiteKind::MemberSet);
-    assert(!plan.callees.empty() && plan.callees.size() <= kMaxChainShapes);
+           plan.kind == SiteKind::MemberSet || plan.kind == SiteKind::MemberAbsent);
+    assert(!plan.callees.empty() && plan.callees.size() <= kMaxSetShapes);
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction site = b.site();
     assert(!site.operands.empty());
@@ -65,6 +69,10 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
             assert(site.op == il::Op::PropGet && site.operands.size() == 1);
             kind = il::Module::MemberKind::Getter;
             break;
+        case SiteKind::MemberAbsent:
+            assert(site.op == il::Op::PropGet && site.operands.size() == 1);
+            kind = il::Module::MemberKind::Absent;
+            break;
         default:
             assert(site.op == il::Op::PropSet && site.operands.size() == 2 && site.result == il::kNoValue);
             kind = il::Module::MemberKind::Setter;
@@ -78,15 +86,17 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
     const auto count = static_cast<uint32_t>(plan.callees.size());
     std::vector<uint32_t> cells;
     if (count == 1 && plan.shapes.size() == 1) {
-        cells.push_back(ctx.cells.memberCellFor(kind, site.keyIndex, ctx.entries.entryOf(plan.callees[0]),
-                                                plan.shapes[0].key));
+        const uint32_t callee = plan.kind == SiteKind::MemberAbsent ? il::Module::kNoMemberCallee
+                                                                    : ctx.entries.entryOf(plan.callees[0]);
+        cells.push_back(ctx.cells.memberCellFor(kind, site.keyIndex, callee, plan.shapes[0].key));
     } else {
         const auto group = static_cast<uint32_t>(module.memberCells.size());
         for (uint32_t k = 0; k < count; ++k) {
             il::Module::MemberCell cell;
             cell.kind = kind;
             cell.keyIndex = site.keyIndex;
-            cell.callee = ctx.entries.entryOf(plan.callees[k]);
+            cell.callee = plan.kind == SiteKind::MemberAbsent ? il::Module::kNoMemberCallee
+                                                              : ctx.entries.entryOf(plan.callees[k]);
             cell.group = group;
             cell.groupSize = count;
             module.memberCells.push_back(cell);
@@ -103,10 +113,17 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
         publish.push_back(std::move(ask));
     }
 
+    // A miss asks the runtime to fill a cell for the receiver; then a site of
+    // at most a chain's cells leaves, and one of more (its receivers came in
+    // more shapes than a chain is planned for) does the generic operation in
+    // a cold arm and stays in S: with every cell taken, a receiver of one
+    // more shape would leave on every call. (A generic arm at the smaller
+    // sites measured worse: its join erases what is known after the site.)
     const ValueId shape = emitShapeOf(b, receiver);
-    const BlockId exit = b.exitBeforeWith(std::move(publish));
     const bool hasResult = site.result != il::kNoValue;
     const BlockId join = b.newBlock();
+    const BlockId exit = count <= kMaxChainShapes ? b.exitBeforeWith(std::move(publish))
+                                                  : b.genericArm(join, std::move(publish));
     if (hasResult) b.resultParam(join);
 
     // The test chain; an arm per distinct function, made on first use.
@@ -129,14 +146,16 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan) {
     }
     for (uint32_t f : armOrder) {
         b.moveTo(arms.at(f));
-        const ValueId r = emitDirectCallValue(b, f, il::kNoValue, receiver, args);
+        const ValueId r = plan.kind == SiteKind::MemberAbsent ? b.constUndefined()
+                                                              : emitDirectCallValue(b, f, il::kNoValue, receiver, args);
         b.jump(join, hasResult ? std::vector<ValueId>{r} : std::vector<ValueId>{});
     }
     b.moveTo(join);
     b.finish();
     switch (plan.kind) {
         case SiteKind::MemberMethod: ++ctx.stats.methodCalls; break;
-        case SiteKind::MemberGet: ++ctx.stats.propReads; break;
+        case SiteKind::MemberGet:
+        case SiteKind::MemberAbsent: ++ctx.stats.propReads; break;
         default: ++ctx.stats.propWrites; break;
     }
 }

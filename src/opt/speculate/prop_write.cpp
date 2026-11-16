@@ -14,7 +14,8 @@
 //     guard ptr.eq (load.shape %obj), (shape.cell n)
 //     slot.store %obj, k, %v
 //
-// On 2..kMaxChainShapes shapes the shape test is a chain, a store per
+// On 2..kMaxChainShapes shapes (or a receiver's shape set, shape_sets.cpp) the
+// shape test is the slot dispatch of prop_shape.cpp, a store per
 // distinct slot, and a receiver of none of them makes the generic `prop.set`
 // in a cold arm and continues in S (the site is polymorphic: one more class
 // is incomplete evidence, not wrong evidence).
@@ -142,7 +143,7 @@ void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan) {
 }
 
 void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan) {
-    assert(plan.kind == SiteKind::PropWrite && !plan.shapes.empty() && plan.shapes.size() <= kMaxChainShapes);
+    assert(plan.kind == SiteKind::PropWrite && !plan.shapes.empty() && plan.shapes.size() <= kMaxSetShapes);
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction& site = b.site();
     assert(site.op == il::Op::PropSet && !il::isDefineWrite(site) && site.result == il::kNoValue);
@@ -165,36 +166,12 @@ void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan) {
         return;
     }
 
-    // Several shapes: each test that matches goes to the store of its slot,
-    // one store per distinct slot (a subclass's shape extends its base's, so
-    // a base field usually sits at one slot in all of them). A receiver of
-    // none of them (a polymorphic site meeting one more class) makes the
-    // generic write in a cold arm and stays in S.
-    const ValueId shape = emitShapeOf(b, object);
-    const BlockId join = b.newBlock();
-    const BlockId other = b.genericArm(join);
-    std::vector<std::pair<int32_t, BlockId>> stores;
-    auto storeBlock = [&](int32_t slot) {
-        for (const auto& [s, block] : stores) {
-            if (s == slot) return block;
-        }
-        stores.emplace_back(slot, b.newBlock());
-        return stores.back().second;
-    };
-    for (size_t i = 0; i < plan.shapes.size(); ++i) {
-        const ValueId matches = emitShapeIs(b, shape, plan.shapes[i].key);
-        const BlockId target = storeBlock(plan.shapes[i].slot);
-        const bool last = i + 1 == plan.shapes.size();
-        const BlockId next = last ? other : b.newBlock();
-        b.branch(matches, target, {}, next, {});
-        if (!last) b.moveTo(next);
-    }
-    for (const auto& [slot, block] : stores) {
-        b.moveTo(block);
+    // Several shapes: the slot dispatch (prop_shape.cpp), one store per
+    // distinct slot.
+    emitSlotDispatch(b, plan, object, [&](int32_t slot) {
         slotStore(slot);
-        b.jump(join);
-    }
-    b.moveTo(join);
+        return il::kNoValue;
+    });
     b.finish();
     ++ctx.stats.propWrites;
 }

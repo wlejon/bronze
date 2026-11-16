@@ -548,6 +548,17 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                     return false;
                 }
             }
+            if (inst.op == Op::ShapeIn) {
+                bool ok = inst.operands.size() >= 3 && inst.type == Type::Bool && inst.result != kNoValue;
+                for (size_t i = 0; ok && i < inst.operands.size(); ++i) {
+                    ok = definedTypes[inst.operands[i]] == Type::Ptr;
+                }
+                if (!ok) {
+                    diags.error(Span{}, "Function " + fn.name + ": shape.in in b" + std::to_string(bIdx) +
+                                            " does not have the form (ptr, ptr, ptr...) -> bool");
+                    return false;
+                }
+            }
             if (inst.op == Op::ResumePoint) {
                 if (fn.isSpeculated()) {
                     diags.error(Span{}, "Function " + fn.name +

@@ -1,5 +1,7 @@
 #include "opt/redundancy/licence.h"
 
+#include <algorithm>
+
 namespace bronze::opt::redundancy {
 
 std::optional<Licence> licenceAt(const il::Instruction& inst, const FactEnv& facts) {
@@ -12,7 +14,9 @@ std::optional<Licence> licenceAt(const il::Instruction& inst, const FactEnv& fac
             return Licence{LicenceKind::Object, x, 0, {}};
         // A shape lasts until a write of Shapes changes it.
         case il::Op::SlotLoad:
-            if (const auto cell = facts.shapeOf(x)) return Licence{LicenceKind::Shape, x, *cell, il::Loc::Shapes};
+            if (auto cells = facts.shapeSet(x); cells && !cells->empty()) {
+                return Licence{LicenceKind::Shape, x, 0, il::Loc::Shapes, std::move(*cells)};
+            }
             return std::nullopt;
         // A closure's code and captured record never change.
         case il::Op::FnEnv:
@@ -40,7 +44,10 @@ bool licenceHolds(const Licence& licence, const FactEnv& facts) {
         case LicenceKind::Object:
             return facts.isObject(licence.subject);
         case LicenceKind::Shape:
-            return facts.shapeOf(licence.subject) == static_cast<uint32_t>(licence.imm);
+        {
+            const std::optional<std::vector<uint32_t>> cells = facts.shapeSet(licence.subject);
+            return cells && std::includes(licence.cells.begin(), licence.cells.end(), cells->begin(), cells->end());
+        }
         case LicenceKind::Callee:
             return facts.calleeOf(licence.subject) == static_cast<uint32_t>(licence.imm);
         case LicenceKind::Array:

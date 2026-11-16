@@ -36,7 +36,13 @@ enum class FactKind : uint8_t {
     Object,      // value is a heap object (`is.object`)
     Nullish,     // value is null or undefined (`is.nullish`)
     Hole,        // value is the array hole (`is.hole`)
-    Shape,       // value has the shape of layout cell `imm`; depends on Shapes
+    // value has the shape of layout cell `imm`. About an object (Dynamic) it
+    // depends on Shapes; about a shape word (a Ptr `load.shape` result) it is
+    // a fact about the value and never ends.
+    Shape,
+    // value's shape is one of the layout cells `cells` (`shape.in`); about an
+    // object or a shape word as Shape is.
+    ShapeSet,
     DenseArray,  // value passes `is.dense_array value, imm`; depends on Shapes, ArrayLen, Elements
     PlainArray,  // value passes `is.plain_array`; depends on Shapes
     TypedArray,  // value passes `is.typed_array value, imm`; with the pristine bit depends on Shapes, Heap
@@ -86,6 +92,8 @@ struct Fact {
     int64_t imm = 0;
     // The locations whose write kills this fact; empty for a fact about a value.
     il::LocSet dependsOn;
+    // ShapeSet: the cells, ascending.
+    std::vector<uint32_t> cells;
 
     bool operator==(const Fact&) const = default;
 };

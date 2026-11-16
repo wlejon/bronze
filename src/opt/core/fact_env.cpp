@@ -1,5 +1,8 @@
 #include "opt/core/fact_env.h"
 
+#include <algorithm>
+#include <iterator>
+
 namespace bronze::opt {
 
 void FactEnv::push() { scopes_.push_back(log_.size()); }
@@ -72,7 +75,58 @@ void FactEnv::killBy(const il::Effects& effects) {
 
 void FactEnv::stepOver(const il::Instruction& inst) { killBy(il::effectsOf(inst)); }
 
+std::optional<std::vector<uint32_t>> FactEnv::shapeBound(ValueId v, std::vector<uint32_t>* excluded) const {
+    const auto it = byValue_.find(v);
+    if (it == byValue_.end()) return std::nullopt;
+    std::optional<std::vector<uint32_t>> bound;
+    auto meet = [&](std::vector<uint32_t> cells) {
+        if (!bound) {
+            bound = std::move(cells);
+            return;
+        }
+        std::vector<uint32_t> both;
+        std::set_intersection(bound->begin(), bound->end(), cells.begin(), cells.end(), std::back_inserter(both));
+        *bound = std::move(both);
+    };
+    for (const uint32_t i : it->second) {
+        const Fact& f = facts_[i];
+        if (!alive_[i] || f.value != v) continue;
+        if (f.kind == FactKind::Shape) {
+            if (f.holds) {
+                meet({static_cast<uint32_t>(f.imm)});
+            } else if (excluded != nullptr) {
+                excluded->push_back(static_cast<uint32_t>(f.imm));
+            }
+        } else if (f.kind == FactKind::ShapeSet && f.holds) {
+            meet(f.cells);
+        }
+    }
+    return bound;
+}
+
+std::optional<std::vector<uint32_t>> FactEnv::shapeSet(ValueId v) const {
+    std::vector<uint32_t> excluded;
+    std::optional<std::vector<uint32_t>> bound = shapeBound(v, &excluded);
+    if (!bound) return std::nullopt;
+    std::erase_if(*bound, [&](uint32_t c) { return std::find(excluded.begin(), excluded.end(), c) != excluded.end(); });
+    return bound;
+}
+
 std::optional<bool> FactEnv::known(FactKind kind, ValueId v, int64_t imm, ValueId other) const {
+    // One object has one shape: the bound of the Shape and ShapeSet facts
+    // answers, and a failed test of the cell itself.
+    if (kind == FactKind::Shape) {
+        std::vector<uint32_t> excluded;
+        std::optional<std::vector<uint32_t>> bound = shapeBound(v, &excluded);
+        const auto cell = static_cast<uint32_t>(imm);
+        if (std::find(excluded.begin(), excluded.end(), cell) != excluded.end()) return false;
+        if (!bound) return std::nullopt;
+        std::erase_if(*bound,
+                      [&](uint32_t c) { return std::find(excluded.begin(), excluded.end(), c) != excluded.end(); });
+        if (std::find(bound->begin(), bound->end(), cell) == bound->end()) return false;
+        if (bound->size() == 1) return true;
+        return std::nullopt;
+    }
     const auto it = byValue_.find(v);
     if (it == byValue_.end()) return std::nullopt;
     const auto& list = it->second;
@@ -97,9 +151,8 @@ std::optional<bool> FactEnv::known(FactKind kind, ValueId v, int64_t imm, ValueI
         switch (kind) {
             case FactKind::BoolValue:
                 return f.imm == imm;
-            // One object has one shape and one function one code: knowing it
-            // is X answers "is it Y" with no.
-            case FactKind::Shape:
+            // One function has one code: knowing it is X answers "is it Y"
+            // with no.
             case FactKind::Callee:
                 if (f.imm == imm) return f.holds;
                 if (f.holds) return false;
@@ -161,6 +214,7 @@ bool FactEnv::isObject(ValueId v) const {
         switch (f.kind) {
             case FactKind::Object:
             case FactKind::Shape:
+            case FactKind::ShapeSet:
             case FactKind::DenseArray:
             case FactKind::PlainArray:
             case FactKind::TypedArray:
@@ -189,11 +243,9 @@ ValueTag FactEnv::tagOf(ValueId v) const {
 }
 
 std::optional<uint32_t> FactEnv::shapeOf(ValueId v) const {
-    const auto it = byValue_.find(v);
-    if (it == byValue_.end()) return std::nullopt;
-    const Fact* f = newestHolding(facts_, alive_, it->second, v, FactKind::Shape);
-    if (f == nullptr) return std::nullopt;
-    return static_cast<uint32_t>(f->imm);
+    const std::optional<std::vector<uint32_t>> set = shapeSet(v);
+    if (!set || set->size() != 1) return std::nullopt;
+    return set->front();
 }
 
 std::optional<uint32_t> FactEnv::calleeOf(ValueId v) const {

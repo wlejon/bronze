@@ -339,20 +339,27 @@ std::vector<WriteSet> blockWriteSets(const il::Function& fn) {
     return out;
 }
 
-WriteSet regionWrites(const Cfg& cfg, const std::vector<WriteSet>& writes, BlockId from, BlockId to) {
+WriteSet regionWrites(const Cfg& cfg, const std::vector<WriteSet>& writes, BlockId from, BlockId to,
+                      const std::function<bool(BlockId, BlockId)>* deadEdge) {
     // opt::writesBetween's walk: backwards from `to`'s predecessors, stopping
     // at `from`. Every block met is dominated by `from`.
     assert(from != kNoBlock);
     WriteSet out;
     std::vector<uint8_t> seen(cfg.size(), 0);
-    std::vector<BlockId> work(cfg.preds(to).begin(), cfg.preds(to).end());
+    std::vector<BlockId> work;
+    auto predsOf = [&](BlockId b) {
+        for (BlockId p : cfg.preds(b)) {
+            if (deadEdge == nullptr || !(*deadEdge)(p, b)) work.push_back(p);
+        }
+    };
+    predsOf(to);
     while (!work.empty()) {
         const BlockId b = work.back();
         work.pop_back();
         if (b == from || seen[b] || !cfg.reachable(b)) continue;
         seen[b] = 1;
         out.addAll(writes[b]);
-        for (BlockId p : cfg.preds(b)) work.push_back(p);
+        predsOf(b);
     }
     return out;
 }

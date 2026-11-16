@@ -544,6 +544,12 @@ enum class Op : uint8_t {
     // The prototype mark is monotone the other way (a shape becomes one, never
     // stops), which only turns a true answer false.
     ShapeHasOwn,
+    // a: bool = shape.in %shape, %c1, ..., %cn. Whether the ptr %shape (a
+    // `load.shape`) equals one of the ptrs %c1..%cn (n >= 2, each a
+    // `shape.cell`): the test of a receiver whose shape is one of a set. Its
+    // true edge proves the set (edge_facts.h), its false edge that the shape
+    // is none of them. Pure.
+    ShapeIn,
     // a: bool = is.object %v. The tag test: %v (dynamic) is a heap object
     // reference (BRONZE_ABI_TAG_OBJECT), so `load.shape` is legal on it.
     // Functions and arrays are objects. Total, pure.

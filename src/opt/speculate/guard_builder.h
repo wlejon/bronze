@@ -89,8 +89,9 @@ public:
     // a fresh IC site) and jumps to `join`, passing its result when the site
     // has one (`join` then carries the site's result as its parameter). The
     // arm for evidence that is incomplete rather than wrong: a polymorphic
-    // site meeting one more receiver stays in S.
-    BlockId genericArm(BlockId join);
+    // site meeting one more receiver stays in S. `work` (instructions with no
+    // effect G could see: `member.publish`) runs first.
+    BlockId genericArm(BlockId join, std::vector<il::Instruction> work = {});
 
     // ---- blocks ---------------------------------------------------------------
     // A new block with the site's handler, cold when the site's block is.

@@ -124,6 +124,29 @@ const FunctionHeader* resolvedMember(ObjectHeader* obj, PropertyKey key, Member 
     return nullptr;
 }
 
+// Whether [[Get]] of `key` on `obj` finds nothing at all: not own, and on no
+// link of a chain the epoch watches, ending at null. Every link must be a
+// plain object (an exotic one answers through machinery of its own) whose
+// shape a read may name: a transition-tree node, or a frozen dictionary (the
+// intrinsics after lockdown), which nothing can be added to.
+bool resolvesAbsent(ObjectHeader* obj, PropertyKey key) {
+    PropertyInfo info;
+    if (obj->shape->lookupProperty(key, info)) return false;
+    if (!obj->chainIsCacheable()) return false;
+    ObjectHeader* cur = obj;
+    for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        const Value proto = cur->shape->prototypeValue();
+        if (proto.isNull()) return true;
+        if (!proto.isObject()) return false;
+        auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags != HeapKind::Plain) return false;
+        cur = reinterpret_cast<ObjectHeader*>(hdr);
+        if (cur->shape == nullptr || !cur->shape->readCacheable()) return false;
+        if (cur->shape->lookupProperty(key, info)) return false;
+    }
+    return false;
+}
+
 }  // namespace
 
 void rtForgetPublishedCells() noexcept {
@@ -146,7 +169,8 @@ extern "C" {
 //     and its prototype only then);
 //   - the chain resolves the key, at this epoch, above the receiver, to a
 //     member of `kind` (il.h Module::MemberKind: 0 a method in a data
-//     property, 1 a getter, 2 a setter) whose function has exactly that code;
+//     property, 1 a getter, 2 a setter) whose function has exactly that code,
+//     or for kind 3 (absent) finds the key nowhere (`code` unused);
 //   - a function compiled code may enter without the runtime (no class
 //     constructor for a method, which throws when called; an accessor that
 //     needs no scope pushed), made in the realm running now.
@@ -158,7 +182,7 @@ void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
                                 uint32_t kind, uint64_t* group, uint32_t groupSize) {
     recordHelperCall("bronze_member_cell_publish");
     if (censusFillsSuppressed()) return;
-    if (cell == nullptr || kind > 2) return;
+    if (cell == nullptr || kind > 3) return;
     const uint64_t epoch = protoMutationEpoch();
     // A shape at this epoch stays; a refusal is asked again, as another
     // receiver may resolve differently.
@@ -172,9 +196,14 @@ void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
     for (uint32_t i = 0; group != nullptr && i < groupSize; ++i) {
         if (group[2 * i] == shapeWord && group[2 * i + 1] == epoch) return;
     }
+    uint64_t published = kRefused;
+    if (kind == 3) {
+        if (resolvesAbsent(obj, PropertyKey::forString(key))) published = shapeWord;
+        publish(cell, published, epoch);
+        return;
+    }
     const Member want = kind == 0 ? Member::Method : kind == 1 ? Member::Getter : Member::Setter;
     const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), want);
-    uint64_t published = kRefused;
     if (fn != nullptr && fn->code == code && (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot()) &&
         (want == Member::Method ? !(fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) : rtEntersWithoutScope(fn))) {
         published = shapeWord;

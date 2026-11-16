@@ -58,19 +58,26 @@ bool reusable(const il::Instruction& inst, const il::Effects& e) {
 
 class ValueWalk {
 public:
-    ValueWalk(JobContext& ctx, const DefUse& defs, const AliasInfo& alias, FactEnv& facts, ExprTable& exprs)
+    ValueWalk(JobContext& ctx, const Cfg& cfg, const DefUse& defs, const AliasInfo& alias, FactEnv& facts,
+              ExprTable& exprs)
         : ctx_(ctx),
           fn_(ctx.fn),
+          cfg_(cfg),
           defs_(defs),
           values_(ctx.fn, defs),
           alias_(alias),
           facts_(facts),
           exprs_(exprs),
           repl_(ctx.fn.valueCount, kNoValue),
-          dead_(ctx.fn.blocks.size()) {}
+          dead_(ctx.fn.blocks.size()),
+          folded_(ctx.fn.blocks.size(), -1),
+          deadBlock_(ctx.fn.blocks.size(), 0) {}
 
     void visitBlock(BlockId b);
     bool apply();
+    // Whether the edge from -> to is never taken: the arm of a branch this
+    // walk folded the other way, or out of a block only such edges reach.
+    bool edgeDead(BlockId from, BlockId to) const;
 
 private:
     ValueId resolve(ValueId v) const;
@@ -82,9 +89,12 @@ private:
     bool lookupAndRecord(BlockId b, size_t i, const il::Effects& e);
     void recordWrite(const il::Instruction& inst, const il::Effects& e);
     void forwardStore(const il::Instruction& inst, const Access& write);
+    // Marks `start`, and what only it reaches, dead once every edge into it is.
+    void markDead(BlockId start);
 
     JobContext& ctx_;
     il::Function& fn_;
+    const Cfg& cfg_;
     const DefUse& defs_;
     ValueView values_;
     const AliasInfo& alias_;
@@ -93,6 +103,8 @@ private:
     std::vector<ValueId> repl_;
     std::vector<std::vector<uint8_t>> dead_;
     std::vector<std::pair<BlockId, bool>> branchFolds_;
+    std::vector<int8_t> folded_;  // per block: -1, or the arm its branch folded to
+    std::vector<uint8_t> deadBlock_;
     bool changed_ = false;
 };
 
@@ -136,7 +148,34 @@ void ValueWalk::visitTerminator(BlockId b, const il::Instruction& inst) {
     const ValueId cond = inst.operands[0];
     std::optional<bool> known = constBool(values_, cond);
     if (!known) known = facts_.boolValue(cond);
-    if (known) branchFolds_.emplace_back(b, *known);
+    if (known) {
+        branchFolds_.emplace_back(b, *known);
+        folded_[b] = *known ? 1 : 0;
+        markDead(*known ? inst.elseTarget.block : inst.target.block);
+    }
+}
+
+bool ValueWalk::edgeDead(BlockId from, BlockId to) const {
+    if (from >= folded_.size()) return false;
+    if (deadBlock_[from]) return true;
+    if (folded_[from] < 0) return false;
+    const il::Instruction& term = fn_.blocks[from].instructions.back();
+    const BlockId taken = folded_[from] == 1 ? term.target.block : term.elseTarget.block;
+    return to != taken;
+}
+
+void ValueWalk::markDead(BlockId start) {
+    std::vector<BlockId> work{start};
+    while (!work.empty()) {
+        const BlockId b = work.back();
+        work.pop_back();
+        if (b == 0 || b >= deadBlock_.size() || deadBlock_[b]) continue;
+        bool live = false;
+        for (BlockId p : cfg_.preds(b)) live = live || !edgeDead(p, b);
+        if (live) continue;
+        deadBlock_[b] = 1;
+        for (BlockId s : cfg_.succs(b)) work.push_back(s);
+    }
 }
 
 void ValueWalk::visitInstruction(BlockId b, size_t i) {
@@ -315,8 +354,10 @@ bool runValueWalk(JobContext& ctx) {
     const AliasInfo alias(fn, &dom);
     FactEnv facts;
     ExprTable exprs;
-    ValueWalk walk(ctx, defs, alias, facts, exprs);
-    walkDominatorTree(fn, cfg, dom, defs, alias, facts, exprs, [&](BlockId b) { walk.visitBlock(b); });
+    ValueWalk walk(ctx, cfg, defs, alias, facts, exprs);
+    walkDominatorTree(
+        fn, cfg, dom, defs, alias, facts, exprs, [&](BlockId b) { walk.visitBlock(b); },
+        [&](BlockId from, BlockId to) { return walk.edgeDead(from, to); });
     return walk.apply();
 }
 

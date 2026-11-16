@@ -56,6 +56,7 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::LoadShape:
         case BronzeOp::ShapeCell:
         case BronzeOp::PtrEq:
+        case BronzeOp::ShapeIn:
         case BronzeOp::ShapeHasOwn:
         case BronzeOp::IsObject:
         case BronzeOp::SlotLoad:
@@ -124,6 +125,16 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         case BronzeOp::PtrEq: {
             if (!need(2)) return false;
             res_val = b.build_eq(bits(0), bits(1));
+            return true;
+        }
+        // bool = shape.in %shape, %c1, ..., %cn:  a compare per cell, or'd
+        //   cmp ; sete ; cmp ; sete ; or ...
+        case BronzeOp::ShapeIn: {
+            if (!need(3)) return false;
+            Value* shape = bits(0);
+            Value* any = b.build_eq(shape, bits(1));
+            for (size_t i = 2; i < opd.size(); ++i) any = b.build_or(any, b.build_eq(shape, bits(i)));
+            res_val = any;
             return true;
         }
         // bool = shape.has_own %shape, <slot, write>, "k": the shape's

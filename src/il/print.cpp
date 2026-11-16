@@ -700,11 +700,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         out += " " + std::to_string(inst.immI32);
                         if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < module.memberCells.size()) {
                             const Module::MemberCell& c = module.memberCells[inst.immI32];
-                            static const char* const kKinds[] = {"method", "getter", "setter"};
+                            static const char* const kKinds[] = {"method", "getter", "setter", "absent"};
                             out += std::string(" ") + kKinds[static_cast<int>(c.kind)] + " \"" +
                                    (c.keyIndex < module.keyConstants.size() ? module.keyConstants[c.keyIndex]
                                                                             : std::string("?")) +
-                                   "\" @" + getFnName(c.callee);
+                                   "\"";
+                            if (c.kind != Module::MemberKind::Absent) out += " @" + getFnName(c.callee);
                         }
                         break;
                     }

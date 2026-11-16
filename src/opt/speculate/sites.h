@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -54,6 +55,15 @@ ValueId emitShapeOf(GuardBuilder& b, ValueId object);
 ValueId emitShapeIs(GuardBuilder& b, ValueId shape, const std::string& key);
 // The two together for one shape: guards `object` is an object of the shape.
 void guardShape(GuardBuilder& b, ValueId object, const std::string& key);
+// `shape.in shape, (shape.cell <cell of k1>), ...` for two or more keys,
+// emitShapeIs for one.
+ValueId emitShapeIn(GuardBuilder& b, ValueId shape, const std::vector<std::string>& keys);
+// The own-slot access of a PropRead or PropWrite plan on several shapes (or
+// a set's: shape_sets.cpp), the site's result defined: `access(slot)` emits
+// the access of one slot at the cursor and returns its value (kNoValue for a
+// write). The forms are in prop_shape.cpp.
+void emitSlotDispatch(GuardBuilder& b, const SitePlan& plan, ValueId object,
+                      const std::function<ValueId(int32_t)>& access);
 
 // direct_call.cpp: `call @entry(f)` with the convention policy.h
 // directCallFits states, at the cursor, where a dominating `fn.code_is
