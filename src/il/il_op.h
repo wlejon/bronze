@@ -833,7 +833,7 @@ enum TypeOfKind : int32_t {
 inline constexpr int32_t kToStrKeepNumber = 1;
 
 // The last op, for the serializer's range check.
-inline constexpr Op kLastOp = Op::ConstructResult;
+inline constexpr Op kLastOp = Op::ArrayPush;
 
 // The intrinsics `fn.native_is` and `math.*` name (immI32): Math functions
 // whose native's code pointer the runtime exports, so a test can compare a
