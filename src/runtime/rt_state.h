@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "runtime/heap.h"
@@ -110,6 +111,8 @@ struct KeyInfo {
 
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
+// The index a module registered `text` under, without registering it.
+bool rtKeyIndexOf(std::string_view text, uint32_t& out);
 const KeyInfo& rtKeyInfo(uint32_t index);
 void rtTeardownThreadKeys();
 extern "C" uint32_t bronze_register_key_string_len(const char* str, size_t len);

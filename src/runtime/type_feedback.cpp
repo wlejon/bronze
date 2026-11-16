@@ -274,7 +274,7 @@ std::string shapeText(const Shape* sh, std::unordered_map<const Shape*, std::str
         // (two slots), `!k` a data property that is not writable; a plain
         // `k` is a writable data property. Two shapes whose keys differ only
         // in those attributes are told apart, and a compiler reading the name
-        // knows which slots a write may store into (opt/speculate/shape_key.h).
+        // knows which slots a write may store into (opt/core/shape_key.h).
         for (const Shape* n = sh; n != nullptr && n->parent != nullptr; n = n->parent) {
             const char* mark = n->accessor ? "&" : (n->writable ? "" : "!");
             if (StringHeader* ks = n->key.string()) keys.push_back(mark + rtUtf8Chars(ks));

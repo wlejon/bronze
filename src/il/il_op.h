@@ -531,6 +531,19 @@ enum class Op : uint8_t {
     // a: bool = ptr.eq %a, %b. Both ptr. `ptr.eq (load.shape x), (shape.cell n)`
     // is the shape test edge_facts recognises.
     PtrEq,
+    // a: bool = shape.has_own %shape, <slot, write>, "k". Whether an object
+    // at shape %shape (ptr, a `load.shape`) has the string key `keyIndex` as
+    // an own data property held boxed in slot `immI32 >> 1`, and, when bit 0
+    // of `immI32` is set, writable on a shape that is no prototype's. So on
+    // its true edge `slot.load` (and with the bit, `slot.store`) of that slot
+    // is the [[Get]] (the [[Set]]) of the key, whatever the shape is: the
+    // test of a site whose receivers come in more shapes than a chain of
+    // `ptr.eq` tests covers. Reads the shape's slot-key table (runtime
+    // shape_slot_keys.cpp), built on first use; a shape's layout never
+    // changes, so the answer for one shape never does, and the read is pure.
+    // The prototype mark is monotone the other way (a shape becomes one, never
+    // stops), which only turns a true answer false.
+    ShapeHasOwn,
     // a: bool = is.object %v. The tag test: %v (dynamic) is a heap object
     // reference (BRONZE_ABI_TAG_OBJECT), so `load.shape` is legal on it.
     // Functions and arrays are objects. Total, pure.

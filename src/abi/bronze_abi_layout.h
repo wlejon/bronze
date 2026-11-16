@@ -833,6 +833,21 @@
  * same slots as the double map, and no slot is in both. */
 #define BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET 88
 
+/* Shape::slot_keys (runtime/shape.h): null until bronze_shape_slot_keys
+ * builds it, then a table of u64 words, word 0 the number of entries and word
+ * 1 + s the entry for slot s: (key index + 1) << SLOTKEY_KEY_SHIFT, where the
+ * key index is the process-wide one `__bronze_key_map` names, ORed with
+ * SLOTKEY_DATA when the property there is a data property held boxed and
+ * SLOTKEY_WRITABLE when it is also writable. A slot no property of the
+ * shape's string-keyed own properties owns (an accessor's second word, the
+ * numbers between the inline Values and the overflow split, a symbol key, a
+ * key no module registered) is 0, which no test compares equal to. A
+ * dictionary shape's table is empty. */
+#define BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET    96
+#define BRONZE_ABI_SLOTKEY_DATA             1u
+#define BRONZE_ABI_SLOTKEY_WRITABLE         2u
+#define BRONZE_ABI_SLOTKEY_KEY_SHIFT        2
+
 /* A LAYOUT CELL's member (bronze_static_layout_publish): the third u32 of its
  * (key, slot, flags) triple. WRITE: a site stores to it, so the shape must
  * hold it writable and be no prototype's. DOUBLE: the shape must call the

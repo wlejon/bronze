@@ -113,7 +113,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     if (r.profileRead) {
         out += "speculate: " + n(s.functionsSpeculated) + "/" + n(s.functionsConsidered) + " functions";
         if (s.harvestIgnored) out += " (harvest of another build ignored)";
-        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), prop.set " +
+        out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), slot-keyed " + n(s.propSlotKeyed) + ", prop.set " +
                n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", math " + n(s.mathCalls) +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +
@@ -132,7 +132,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
                ", folded " + n(d.constantsFolded) + "+" + n(d.identitiesFolded) + ", tests " +
                n(d.testsFolded) + ", branches " + n(d.branchesFolded) + ", blocks removed " +
                n(d.blocksRemoved) + ", loads " + n(d.loadsEliminated) + "+" + n(d.loadsForwarded) +
-               " forwarded, hoisted " + n(d.hoisted) + " (guards " + n(d.guardsHoisted) + "), dead stores " +
+               " forwarded, hoisted " + n(d.hoisted) + " (guards " + n(d.guardsHoisted) + "), strengthened " + n(d.guardsStrengthened) + ", dead stores " +
                n(d.deadStores) + ", dead " + n(d.deadInstructions) + ", params " + n(d.deadBlockParams) + "+" +
                n(d.trivialBlockParams) + ", forwarders " + n(d.forwardersRemoved) + ", resume points removed " +
                n(d.resumePointsRemoved) + "\n";

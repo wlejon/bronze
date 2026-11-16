@@ -56,6 +56,7 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::LoadShape:
         case BronzeOp::ShapeCell:
         case BronzeOp::PtrEq:
+        case BronzeOp::ShapeHasOwn:
         case BronzeOp::IsObject:
         case BronzeOp::SlotLoad:
         case BronzeOp::SlotStore:
@@ -123,6 +124,53 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         case BronzeOp::PtrEq: {
             if (!need(2)) return false;
             res_val = b.build_eq(bits(0), bits(1));
+            return true;
+        }
+        // bool = shape.has_own %shape, <slot, write>, "k": the shape's
+        // slot-key table (built by the runtime on the first ask), then its
+        // entry for the slot against the key's index and the attribute bits
+        // the access needs; the write form also wants the shape no prototype's.
+        //   t = [shape+96] ; t == 0 ? t = bronze_shape_slot_keys(shape) (cold)
+        //   in = slot < [t] ; e = in ? [t + 8 + 8*slot] : 0
+        //   r = (e & mask) == ((key_map[k] + 1) << 2 | bits)
+        case BronzeOp::ShapeHasOwn: {
+            if (!need(1)) return false;
+            const int64_t slot = inst.imm_i64 >> 1;
+            const bool write = (inst.imm_i64 & 1) != 0;
+            Value* shape = bits(0);
+            BasicBlock* cur = b.current_block();
+            const std::string prefix = "hasown_" + std::to_string(cur->parent()->next_block_id());
+            BasicBlock* build = b.append_block(prefix + "_build");
+            build->set_cold();
+            BasicBlock* have = b.append_block(prefix + "_have");
+            Value* table = b.add_block_param(have, Type::i64());
+            b.position_at_end(cur);
+            Value* word = with_alias_class(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET),
+                                           kRuntimeWordAliasClass);
+            b.build_br_if(b.build_eq(word, iconst64(b, 0)), build, {}, have, {word});
+            b.position_at_end(build);
+            b.build_br(have, {b.build_call("bronze_shape_slot_keys", Type::i64(), {shape})});
+            b.position_at_end(have);
+            Value* count = with_alias_class(b.build_load(Type::i64(), table, 0), kRuntimeWordAliasClass);
+            Value* in = b.build_ult(iconst64(b, static_cast<uint64_t>(slot)), count);
+            // Past the count the entry is read as 0 through the table's own
+            // first word, which is in bounds: no branch.
+            Value* at = b.build_select(in, b.build_add(table, iconst64(b, 8 + 8 * static_cast<uint64_t>(slot))), table);
+            Value* entry = b.build_select(
+                in, with_alias_class(b.build_load(Type::i64(), at, 0), kRuntimeWordAliasClass), iconst64(b, 0));
+            const uint64_t need_bits = BRONZE_ABI_SLOTKEY_DATA | (write ? BRONZE_ABI_SLOTKEY_WRITABLE : 0u);
+            const uint64_t mask = write ? ~uint64_t{0} : ~uint64_t{BRONZE_ABI_SLOTKEY_WRITABLE};
+            Value* key = b.build_zext_i64(get_key_id(b, inst.index));
+            Value* want = b.build_or(b.build_shl(b.build_add(key, iconst64(b, 1)),
+                                                 iconst64(b, BRONZE_ABI_SLOTKEY_KEY_SHIFT)),
+                                     iconst64(b, need_bits));
+            Value* match = b.build_eq(write ? entry : b.build_and(entry, iconst64(b, mask)), want);
+            if (write) {
+                Value* proto = with_alias_class(
+                    b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET), kRuntimeWordAliasClass);
+                match = b.build_and(match, b.build_eq(b.build_zext_i64(proto), iconst64(b, 0)));
+            }
+            res_val = match;
             return true;
         }
         // bool = is.object %v:  xor rax, OBJECT_TAG<<48 ; cmp rax, 1<<48 ; setb

@@ -22,6 +22,7 @@ void RedundancyStats::add(const RedundancyStats& o) {
     loadsForwarded += o.loadsForwarded;
     hoisted += o.hoisted;
     guardsHoisted += o.guardsHoisted;
+    guardsStrengthened += o.guardsStrengthened;
     deadStores += o.deadStores;
     deadInstructions += o.deadInstructions;
     deadBlockParams += o.deadBlockParams;
@@ -36,7 +37,8 @@ using redundancy::JobContext;
 
 // The jobs that only remove or rewrite in place, cheapest first.
 bool runCleanup(JobContext& ctx) {
-    bool changed = redundancy::runBoundsWidening(ctx);
+    bool changed = redundancy::runGuardStrengthening(ctx);
+    changed |= redundancy::runBoundsWidening(ctx);
     changed |= redundancy::runValueWalk(ctx);
     changed |= redundancy::runDeadStores(ctx);
     changed |= redundancy::runDeadCode(ctx);

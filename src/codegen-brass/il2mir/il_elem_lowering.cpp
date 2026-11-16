@@ -272,11 +272,15 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     return result;
 }
 
-// A write: an Array's present element stored inline, or one appended at
-// its length within its capacity, at the bare array shape (no named property,
-// no integrity level) with no index hazard; a typed array's through the
-// module's view stub; the rest bronze_elem_set. A value that is no Number
-// clears the array's NUMBERS bit (bronze_abi_layout.h) and gets the barrier.
+// A write: an Array's element below its length stored inline, or one
+// appended at its length within its capacity, at the bare array shape (no
+// named property, no integrity level) with no index hazard; a typed array's
+// through the module's view stub; the rest bronze_elem_set. A hole below the
+// length is stored over like a present element: with the hazard clear no
+// prototype answers its index, so OrdinarySet defines the element on the
+// array, which the bare shape accepts (runtime/integrity.h
+// rtArrayElementWriteRefusal). A value that is no Number clears the array's
+// NUMBERS bit (bronze_abi_layout.h) and gets the barrier.
 void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
     Value* key = boxed_elem_key(b, index);
     const ElemIndex ei = elem_index(b, index);
@@ -320,12 +324,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* at = b.build_add(b.build_add(e.block, b.build_shl(b.build_add(b.build_zext_i64(ei.idx), e.head),
                                                             iconst(b, 3))),
                             iconst(b, kBronzeHdrBytes));
-    BasicBlock* bb_in = b.append_block(prefix + "_in");
-    b.position_at_end(bb_present);
-    b.build_br_if(b.build_ult(ei.idx, len), bb_in, bb_append_test);
-    b.position_at_end(bb_in);
-    Value* old = with_alias_class(b.build_load(Type::i64(), at, 0), kBoxedElementAliasClass);
-    b.build_br_if(b.build_eq(old, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_slow, {}, bb_hit, {});
+    b.build_br_if(b.build_ult(ei.idx, len), bb_hit, bb_append_test);
     b.position_at_end(bb_hit);
     arm_begin(b, kElemArmArray);
     b.build_br(bb_store, {at});

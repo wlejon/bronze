@@ -41,6 +41,7 @@ bronze_add_module(runtime
         builtin_bigint.cpp
         shape.cpp
         shape_cells.cpp
+        shape_slot_keys.cpp
         dictionary.cpp
         key_list.cpp
         accessor.cpp

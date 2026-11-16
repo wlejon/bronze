@@ -723,6 +723,15 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         break;
                     }
+                    case Op::ShapeHasOwn:
+                        out += "shape.has_own %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               std::to_string(inst.immI32 >> 1) + ((inst.immI32 & 1) != 0 ? " write" : "") +
+                               ", \"" +
+                               (inst.keyIndex < module.keyConstants.size() ? module.keyConstants[inst.keyIndex]
+                                                                          : std::string("?")) +
+                               "\"";
+                        break;
                     case Op::SlotLoad:
                         out += "slot.load %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

@@ -120,6 +120,14 @@ StringHeader* rtKeyHeader(uint32_t index) {
     return hdr;
 }
 
+bool rtKeyIndexOf(std::string_view text, uint32_t& out) {
+    std::lock_guard<std::mutex> lock(g_keyMutex);
+    const auto it = g_keyIndex.find(std::string(text));
+    if (it == g_keyIndex.end()) return false;
+    out = it->second;
+    return true;
+}
+
 const KeyInfo& rtKeyInfo(uint32_t index) {
     if (index < g_threadKeyInfos.size()) {
         const KeyInfo* cached = g_threadKeyInfos[index];

@@ -22,6 +22,7 @@ namespace bronze::opt::speculate {
 void rewritePropRead(RewriteContext& ctx, const SitePlan& plan);
 void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan);
 void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan);    // prop_write.cpp
+void rewritePropSlot(RewriteContext& ctx, const SitePlan& plan);   // prop_slot.cpp
 void rewriteConstruct(RewriteContext& ctx, const SitePlan& plan);  // construct.cpp
 void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan);
 void rewritePlainCall(RewriteContext& ctx, const SitePlan& plan);

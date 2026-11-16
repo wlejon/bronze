@@ -110,6 +110,11 @@ inline constexpr uint8_t kTagDouble = 2;  // any other Number (`is.number`)
 enum class SiteKind : uint8_t {
     PropRead,     // prop.get on own data slots of 1..kMaxChainShapes shapes
     PropWrite,    // prop.set (an assignment) to an existing own slot of 1..kMaxChainShapes shapes
+    // The same on receivers of more shapes than a chain covers, all keeping
+    // the key at one of 1..kMaxChainShapes slots: `shapes` holds the slots
+    // (names empty), each tested with shape.has_own (prop_slot.cpp).
+    PropSlotRead,
+    PropSlotWrite,
     PropAdd,      // prop.set (an assignment) adding the key to one shape, inline
     Construct,    // construct with one target
     MethodSlot,   // method.call whose method is an own data slot of one shape
@@ -166,6 +171,9 @@ struct SitePlan {
     // (types::TypedArrayElem), or kDenseArray; and for a prop.get / prop.set
     // of an index key its index, or kNoConstIndex.
     int32_t viewKind = kDenseArray;
+    // A typed site that met two element kinds: the other one (tested after
+    // `viewKind`), or kDenseArray.
+    int32_t otherViewKind = kDenseArray;
     int32_t constIndex = kNoConstIndex;
     // A dense constant-index access: the largest constant index planned for
     // the same receiver, which its dense-array test covers.
@@ -199,6 +207,8 @@ private:
                                          BlockId block, uint32_t index) const;
     std::optional<SitePlan> planPropWrite(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                           BlockId block, uint32_t index) const;
+    std::optional<SitePlan> planSlotKeyed(SiteKind kind, const std::vector<std::string>& names,
+                                          const std::string& key, BlockId block, uint32_t index) const;
     std::optional<SitePlan> planMethod(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                        BlockId block, uint32_t index) const;
     std::optional<SitePlan> planConstruct(const il::Instruction& inst, const SiteRefs& refs, BlockId block,

@@ -34,4 +34,13 @@ ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, 
 std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& facts,
                                     const ExprTable& exprs, const ValueView& values);
 
+// `shape.has_own (load.shape x), <slot>, "k"` answered by the shape fact
+// about x (a dominating `ptr.eq` against a shape cell), when the load still
+// reads the present shape: the cell's name places the key, so the test is
+// whether it places it at that slot with the attributes the access needs.
+// The write form is answered as the cell's own write chain is (prop_write.cpp:
+// a resolved cell's shape was no prototype's when it resolved).
+std::optional<bool> knownHasOwnResult(const il::Instruction& inst, const FactEnv& facts, const ExprTable& exprs,
+                                      const ValueView& values, const il::Module& module);
+
 }  // namespace bronze::opt::redundancy

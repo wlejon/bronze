@@ -1,4 +1,4 @@
-#include "opt/speculate/shape_key.h"
+#include "opt/core/shape_key.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -6,7 +6,7 @@
 
 #include "abi/bronze_abi_layout.h"
 
-namespace bronze::opt::speculate {
+namespace bronze::opt {
 
 namespace {
 
@@ -113,4 +113,4 @@ bool isNamedKey(std::string_view key) {
     return v >= 4294967295ull;
 }
 
-}  // namespace bronze::opt::speculate
+}  // namespace bronze::opt

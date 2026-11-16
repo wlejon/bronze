@@ -493,6 +493,11 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::PtrEq: out.op = il2mir::BronzeOp::PtrEq; break;
+        case il::Op::ShapeHasOwn:
+            out.op = il2mir::BronzeOp::ShapeHasOwn;
+            out.imm_i64 = inst.immI32;
+            out.index = inst.keyIndex;
+            break;
         case il::Op::IsObject: out.op = il2mir::BronzeOp::IsObject; break;
         case il::Op::SlotLoad:
             out.op = il2mir::BronzeOp::SlotLoad;

@@ -267,6 +267,12 @@
      * registration took it and the earlier class's sites missed into the IC \
      * forever (three.js's Matrix3 and Matrix4 are both `[elements]`). */    \
     X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* The SLOT-KEY table of a Shape* (bronze_abi_layout.h                  \
+     * BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET), built and stored in the shape on   \
+     * the first ask, its address returned. Allocates in the thread's arena  \
+     * only: no GC, no user code. Called from a `shape.has_own` test whose   \
+     * shape's table word is still null (runtime/shape_slot_keys.cpp). */    \
+    X(bronze_shape_slot_keys,     BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
     /* A MEMBER cell (runtime/accessor_cell.cpp, il.h Module::memberCells):\
      * two words, (shape, prototype-mutation epoch). Fills it from a speculated\
      * site's exit: the receiver's shape when its chain resolves the key, at\

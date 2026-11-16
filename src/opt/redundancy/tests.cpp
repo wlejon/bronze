@@ -1,5 +1,7 @@
 #include "opt/redundancy/tests.h"
 
+#include "opt/core/shape_key.h"
+
 #include <cstdint>
 #include <utility>
 
@@ -175,6 +177,23 @@ std::optional<bool> addOverflowTest(const il::Instruction& inst, const FactEnv& 
 }
 
 }  // namespace
+
+std::optional<bool> knownHasOwnResult(const il::Instruction& inst, const FactEnv& facts, const ExprTable& exprs,
+                                      const ValueView& values, const il::Module& module) {
+    if (inst.op != Op::ShapeHasOwn || inst.operands.size() != 1) return std::nullopt;
+    const il::Instruction* load = values.defIs(inst.operands[0], Op::LoadShape);
+    if (load == nullptr || load->operands.size() != 1) return std::nullopt;
+    if (exprs.lookup(exprKeyOf(*load)).value != inst.operands[0]) return std::nullopt;
+    const std::optional<uint32_t> cell = facts.shapeOf(load->operands[0]);
+    if (!cell || *cell >= module.shapeCells.size() || inst.keyIndex >= module.keyConstants.size()) {
+        return std::nullopt;
+    }
+    const std::optional<ShapeName> shape = parseShapeName(module.shapeCells[*cell].key);
+    if (!shape) return std::nullopt;
+    const std::string& key = module.keyConstants[inst.keyIndex];
+    const std::optional<int32_t> slot = (inst.immI32 & 1) != 0 ? writableSlot(*shape, key) : ownSlot(*shape, key);
+    return slot && *slot == (inst.immI32 >> 1);
+}
 
 ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
     if (inst.op != Op::ConstructResult || inst.operands.size() != 2) return kNoValue;

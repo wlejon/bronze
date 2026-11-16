@@ -41,6 +41,9 @@ struct JobContext {
 // folding and identities, test and branch folding, load elimination and
 // store-to-load forwarding; then unreachable blocks go.
 bool runBoundsWidening(JobContext& ctx);
+// A hole guard whose element is guarded as a Number next becomes that guard
+// (strengthen.cpp).
+bool runGuardStrengthening(JobContext& ctx);
 
 bool runValueWalk(JobContext& ctx);
 

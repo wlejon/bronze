@@ -57,6 +57,7 @@ struct SpeculateStats {
     uint32_t harvestIgnored = 0;       // 1 when the file's harvest named another build
     uint32_t propReads = 0;
     uint32_t propReadChains = 0;       // of those, polymorphic
+    uint32_t propSlotKeyed = 0;        // reads and writes tested by shape.has_own
     uint32_t propWrites = 0;
     uint32_t propAdds = 0;
     uint32_t constructs = 0;

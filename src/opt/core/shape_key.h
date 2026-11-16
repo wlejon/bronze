@@ -46,7 +46,7 @@
 #include <string_view>
 #include <vector>
 
-namespace bronze::opt::speculate {
+namespace bronze::opt {
 
 struct ShapeName {
     std::string prototype;     // the part before `#` / `{`
@@ -78,4 +78,4 @@ std::optional<int32_t> writableSlot(const ShapeName& shape, std::string_view key
 // elements on the paths that use one.
 bool isNamedKey(std::string_view key);
 
-}  // namespace bronze::opt::speculate
+}  // namespace bronze::opt

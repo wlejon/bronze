@@ -155,6 +155,7 @@ const char* opName(Op op) {
         case Op::LoadShape: return "load.shape";
         case Op::ShapeCell: return "shape.cell";
         case Op::PtrEq: return "ptr.eq";
+        case Op::ShapeHasOwn: return "shape.has_own";
         case Op::IsObject: return "is.object";
         case Op::SlotLoad: return "slot.load";
         case Op::SlotStore: return "slot.store";

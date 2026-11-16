@@ -172,6 +172,10 @@ void ValueWalk::visitInstruction(BlockId b, size_t i) {
         makeBoolConstant(inst, *answer);
         ++ctx_.stats.testsFolded;
         changed_ = true;
+    } else if (const std::optional<bool> owns = knownHasOwnResult(inst, facts_, exprs_, values_, ctx_.module)) {
+        makeBoolConstant(inst, *owns);
+        ++ctx_.stats.testsFolded;
+        changed_ = true;
     }
 
     // Folding may have changed the op, so the effects are read afresh.

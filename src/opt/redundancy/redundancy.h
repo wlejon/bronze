@@ -123,6 +123,7 @@ struct RedundancyStats {
     // Job 4.
     uint64_t hoisted = 0;            // instructions moved to a preheader
     uint64_t guardsHoisted = 0;      // guards executed in a preheader instead
+    uint64_t guardsStrengthened = 0; // a hole guard made the Number guard that followed it
     // Job 5.
     uint64_t deadStores = 0;
     // Job 6.

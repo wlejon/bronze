@@ -335,6 +335,10 @@ Effects rawEffects(const Instruction& inst) {
             return guardedOp(Loc::Views, Loc::TypedElements);
         case Op::LoadShape:
             return guardedOp(Loc::Shapes, LocSet::none());
+        // A shape's layout is fixed; whether it is a prototype's (the write
+        // form's last condition) changes with the program's Shapes.
+        case Op::ShapeHasOwn:
+            return (inst.immI32 & 1) != 0 ? guardedOp(Loc::Shapes, LocSet::none()) : none();
         case Op::SlotLoad:
             return guardedOp(Loc::Slots, LocSet::none());
         case Op::SlotStore:

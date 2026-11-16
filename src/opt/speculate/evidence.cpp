@@ -9,7 +9,7 @@
 #include "abi/bronze_feedback_site.h"
 #include "opt/speculate/context.h"
 #include "opt/speculate/policy.h"
-#include "opt/speculate/shape_key.h"
+#include "opt/core/shape_key.h"
 #include "opt/speculate/sites.h"
 
 namespace bronze::opt::speculate {
@@ -241,10 +241,19 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
 
     std::vector<std::string> names;
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
-        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) {
-            return std::nullopt;
+        if (h->method || h->mega || h->ways.empty()) return std::nullopt;
+        if (h->ways.front().form == "accessor") {
+            if (h->full || h->uncached > kMaxUncachedReceivers) return std::nullopt;
+            return planMember(*h, SiteKind::MemberGet, 0, block, index);
         }
-        if (h->ways.front().form == "accessor") return planMember(*h, SiteKind::MemberGet, 0, block, index);
+        // More receivers than the ways held, or some no way could: what the
+        // ways show is a sample, so the site tests slots, not shapes.
+        if (h->full || h->uncached > kMaxUncachedReceivers) {
+            for (const spec::HarvestWay& way : h->ways) {
+                if (way.form == "own") names.push_back(way.receiver);
+            }
+            return planSlotKeyed(SiteKind::PropSlotRead, names, key, block, index);
+        }
         for (const spec::HarvestWay& way : h->ways) {
             // `proto` (found on the chain: no constant holder to load from
             // here), `absent` and `array` stay generic.
@@ -277,6 +286,36 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
     return plan;
 }
 
+// A read or assignment on receivers the ways only sample (the site met more
+// shapes than its cache held, or receivers no way could hold): the slots the
+// sampled shapes keep the key at as an own data property (writable, for a
+// write), first seen first, when there are 1..kMaxChainShapes of them. The
+// test is the shape's own entry for each slot (shape.has_own), so a shape the
+// ways never saw is answered as well when it agrees.
+std::optional<SitePlan> Evidence::planSlotKeyed(SiteKind kind, const std::vector<std::string>& names,
+                                                const std::string& key, BlockId block, uint32_t index) const {
+    SitePlan plan;
+    plan.kind = kind;
+    plan.block = block;
+    plan.index = index;
+    // A way this step cannot read (a dictionary, an accessor in the name) or
+    // whose shape lacks the key as needed is one more receiver the generic arm
+    // answers.
+    for (const std::string& name : names) {
+        const std::optional<ShapeName> shape = parseShapeName(name);
+        if (!shape) continue;
+        const std::optional<int32_t> slot =
+            kind == SiteKind::PropSlotWrite ? writableSlot(*shape, key) : ownSlot(*shape, key);
+        if (!slot) continue;
+        if (std::any_of(plan.shapes.begin(), plan.shapes.end(), [&](const ShapeSlot& s) { return s.slot == *slot; })) {
+            continue;
+        }
+        plan.shapes.push_back(ShapeSlot{std::string(), *slot});
+    }
+    if (plan.shapes.empty() || plan.shapes.size() > kMaxChainShapes) return std::nullopt;
+    return plan;
+}
+
 // An assignment to a property every receiver already had as an own data
 // property, on one to kMaxChainShapes shapes. A harvest says so with `store`
 // ways (a write the cache filled for a key the receiver had); a single `own`
@@ -297,17 +336,23 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
 
     std::vector<std::string> names;
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
-        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) {
-            return std::nullopt;
+        if (h->method || h->ways.empty()) return std::nullopt;
+        const bool sample = h->full || h->mega || h->uncached > kMaxUncachedReceivers;
+        if (h->ways.front().form == "accessor") {
+            if (sample) return std::nullopt;
+            return planMember(*h, SiteKind::MemberSet, 1, block, index);
         }
-        if (h->ways.front().form == "accessor") return planMember(*h, SiteKind::MemberSet, 1, block, index);
-        if (h->ways.size() == 1 && h->ways.front().form == "own") {
+        if (!sample && h->ways.size() == 1 && h->ways.front().form == "own") {
             return planPropAdd(h->ways.front().receiver, key, block, index);
         }
         for (const spec::HarvestWay& way : h->ways) {
-            if (way.form != "store") return std::nullopt;
-            names.push_back(way.receiver);
+            if (way.form == "store") {
+                names.push_back(way.receiver);
+            } else if (!sample) {
+                return std::nullopt;
+            }
         }
+        if (sample) return planSlotKeyed(SiteKind::PropSlotWrite, names, key, block, index);
     } else {
         const auto shapeSites = refs.at(block, index, il::FeedbackKind::Shape);
         if (shapeSites.size() != 1) return std::nullopt;
@@ -658,7 +703,7 @@ Evidence::ArmEvidence Evidence::armEvidence(const il::Instruction& inst) const {
 // nor did a read or write of a view find its index out of bounds or a kind
 // with no code; and either its Array arm ran and its typed-array arm did not,
 // or the typed-array arm did, the Array arm did not, and its kind-bit arms
-// name one element kind (il2mir il_abi.h kElemViewKinds).
+// name one element kind or two (il2mir il_abi.h kElemViewKinds).
 // The fallback is where every other receiver, an index past the length, a
 // hole and a non-index key went, so none came. `o[k]` with an index key `k`
 // (a prop.get / prop.set) is the same access at a constant index.
@@ -676,15 +721,24 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
     plan.index = index;
     plan.viewKind = kDenseArray;
     if (views != 0) {
-        // One kind: every bit arm counted none or all of the views.
+        // One kind: every bit arm counted none or all of the views. Two
+        // kinds: one bit arm counted some of them, so the kinds are the code
+        // with that bit clear and with it set (two partial bits could be
+        // either pair of four codes).
         uint32_t code = 0;
+        int32_t partial = -1;
         const uint32_t bitArms[3] = {kElemArmKindBit0, kElemArmKindBit1, kElemArmKindBit2};
         for (uint32_t bit = 0; bit < 3; ++bit) {
             const uint64_t n = slowCount(site + bitArms[bit]);
-            if (n != 0 && n != views) return std::nullopt;
-            if (n != 0) code |= 1u << bit;
+            if (n == views) {
+                code |= 1u << bit;
+            } else if (n != 0) {
+                if (partial >= 0) return std::nullopt;
+                partial = static_cast<int32_t>(bit);
+            }
         }
         plan.viewKind = kElemViewKinds[code];
+        if (partial >= 0) plan.otherViewKind = kElemViewKinds[code | (1u << partial)];
     }
     const bool keyed = inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet;
     if (!keyed) {
@@ -697,6 +751,15 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
     if (inst.operands.size() != operands) return std::nullopt;
     if (inst.op == il::Op::ElemGet || inst.op == il::Op::PropGet) {
         if (inst.type != il::Type::Dynamic) return std::nullopt;
+        // Two kinds read into one join: both must load as a double (the float
+        // kinds and Uint32) or both as an int32 (elem.cpp typedValueType).
+        const auto loadsDouble = [](int32_t kind) {
+            return kind == BRONZE_ABI_TA_KIND_FLOAT32 || kind == BRONZE_ABI_TA_KIND_FLOAT64 ||
+                   kind == BRONZE_ABI_TA_KIND_UINT32;
+        };
+        if (plan.otherViewKind != kDenseArray && loadsDouble(plan.viewKind) != loadsDouble(plan.otherViewKind)) {
+            return std::nullopt;
+        }
         plan.kind = SiteKind::ElemRead;
     } else {
         const int32_t mode = il::writeMode(inst);

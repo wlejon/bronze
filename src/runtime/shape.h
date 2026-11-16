@@ -194,6 +194,15 @@ public:
     // the OBJECT representation): `double_slots`' sibling, computed the same
     // way and as immutable. Always zero on a dictionary shape.
     uint64_t object_slots{0};
+    // THE SLOT-KEY TABLE (bronze_abi_layout.h BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET):
+    // null until generated code first asks (bronze_shape_slot_keys builds it,
+    // shape_slot_keys.cpp), then word 0 the entry count and word 1 + s what
+    // slot s holds, so "does an object at this shape have key K as an own
+    // data property at slot s" is two loads and a compare whatever the shape.
+    // That is the test of a property site whose receivers come in more shapes
+    // than a chain of identity compares covers (three.js's Object3D fields,
+    // one slot in every subclass). Immutable once built, like the node.
+    const uint64_t* slot_keys{nullptr};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build
@@ -567,6 +576,7 @@ static_assert(offsetof(Shape, double_slots) == BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFS
 static_assert(offsetof(Shape, repr) == BRONZE_ABI_SHAPE_REPR_OFFSET);
 static_assert(offsetof(Shape, repr_generalized) == BRONZE_ABI_SHAPE_REPR_GENERALIZED_OFFSET);
 static_assert(offsetof(Shape, object_slots) == BRONZE_ABI_SHAPE_OBJECTSLOTS_OFFSET);
+static_assert(offsetof(Shape, slot_keys) == BRONZE_ABI_SHAPE_SLOTKEYS_OFFSET);
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
