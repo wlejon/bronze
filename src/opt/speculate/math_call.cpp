@@ -28,6 +28,15 @@
 // product of the two ToInt32s. The receiver is not tested: the read is
 // generic and the identity is what licenses the computed form.
 //
+// PINNED. When the receiver is `global.get "Math"` and the module's Math is
+// pinned (il::Module::mathPinned: lockdown froze Math and made the binding
+// read-only), `Math.<key>` can only be the intrinsic, so the read and the
+// identity test go and no harvest is needed: only the argument tests stay,
+// leaving in front of the site. The same holds for a call of a value read
+// from the pinned Math (`const cos = Math.cos; cos(x)`), which then takes
+// this form instead of the cold generic arm below, and its result stays a
+// double instead of a Dynamic joined with the generic call's.
+//
 // A plain call `r = call.dynamic %f, %this, a0[, a1]` of a Math function held
 // in a variable (`const cos = Math.cos; cos(x)`), whose harvest names the one
 // callee the site ever held `intrinsic:Math.<name>`, has nothing to undo:
@@ -108,19 +117,47 @@ void rewriteMathValueCall(RewriteContext& ctx, GuardBuilder& b, const SitePlan& 
     ++ctx.stats.mathCalls;
 }
 
+// The method form's read and identity test: the read is the call's own
+// GetValue, and a failing test finishes the call generically with the value
+// read and resumes G after it.
+void testMethod(RewriteContext& ctx, GuardBuilder& b, const SitePlan& plan, ValueId receiver,
+                const std::vector<ValueId>& args) {
+    const il::Instruction& site = b.site();
+    il::Instruction read;
+    read.op = il::Op::PropGet;
+    read.type = il::Type::Dynamic;
+    read.operands = {receiver};
+    read.keyIndex = site.keyIndex;
+    read.icIndex = ctx.newIcSite();
+    const ValueId method = b.emitInst(std::move(read));
+
+    il::Instruction rest;
+    rest.op = il::Op::DynamicCall;
+    rest.type = il::Type::Dynamic;
+    rest.result = b.freshValue(il::Type::Dynamic);
+    rest.operands = {method, receiver};
+    rest.operands.insert(rest.operands.end(), args.begin(), args.end());
+    const ValueId restResult = rest.result;
+    std::vector<il::Instruction> work;
+    work.push_back(std::move(rest));
+    const BlockId exit = b.exitAfter(std::move(work), restResult);
+    b.guardTo(b.emit(il::Op::FnNativeIs, il::Type::Bool, {method}, plan.intrinsic), true, exit);
+}
+
 }  // namespace
 
 void rewriteMathCall(RewriteContext& ctx, const SitePlan& plan) {
     assert(plan.kind == SiteKind::MathCall);
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction& site = b.site();
-    if (site.op == il::Op::DynamicCall) {
+    if (site.op == il::Op::DynamicCall && !plan.pinned) {
         rewriteMathValueCall(ctx, b, plan);
         return;
     }
-    assert(site.op == il::Op::MethodCall && site.type == il::Type::Dynamic);
-    const ValueId receiver = site.operands[0];
-    const std::vector<ValueId> args(site.operands.begin() + 1, site.operands.end());
+    assert((site.op == il::Op::MethodCall || site.op == il::Op::DynamicCall) && site.type == il::Type::Dynamic);
+    const bool value = site.op == il::Op::DynamicCall;
+    const ValueId receiver = site.operands[value ? 1 : 0];
+    const std::vector<ValueId> args(site.operands.begin() + (value ? 2 : 1), site.operands.end());
     assert(il::intrinsicInfo(plan.intrinsic) != nullptr && args.size() == il::intrinsicInfo(plan.intrinsic)->arity);
     const bool imul = static_cast<il::Intrinsic>(plan.intrinsic) == il::Intrinsic::MathImul;
 
@@ -144,25 +181,7 @@ void rewriteMathCall(RewriteContext& ctx, const SitePlan& plan) {
         xs.push_back(x);
     }
 
-    il::Instruction read;
-    read.op = il::Op::PropGet;
-    read.type = il::Type::Dynamic;
-    read.operands = {receiver};
-    read.keyIndex = site.keyIndex;
-    read.icIndex = ctx.newIcSite();
-    const ValueId method = b.emitInst(std::move(read));
-
-    il::Instruction rest;
-    rest.op = il::Op::DynamicCall;
-    rest.type = il::Type::Dynamic;
-    rest.result = b.freshValue(il::Type::Dynamic);
-    rest.operands = {method, receiver};
-    rest.operands.insert(rest.operands.end(), args.begin(), args.end());
-    const ValueId restResult = rest.result;
-    std::vector<il::Instruction> work;
-    work.push_back(std::move(rest));
-    const BlockId exit = b.exitAfter(std::move(work), restResult);
-    b.guardTo(b.emit(il::Op::FnNativeIs, il::Type::Bool, {method}, plan.intrinsic), true, exit);
+    if (!plan.pinned) testMethod(ctx, b, plan, receiver, args);
 
     const il::Type type = imul ? il::Type::I32 : il::Type::F64;
     const ValueId r = b.emit(il::Op::MathFn, type, xs, plan.intrinsic);

@@ -408,6 +408,15 @@ struct Module {
     // IC table, and the harvest reads them back (docs/type-feedback.md,
     // "Slow paths").
     uint32_t slowSiteCount = 0;
+    // Whether `global.get "Math"` / `global.get "Number"` name the builtins:
+    // lockdown freezes them and pins both bindings (docs/internals.md,
+    // "Realms and lockdown"), so only a host that claims the name
+    // (`--host-globals`) can make them anything else. A program's own
+    // `Math` is a lexical binding and never lowers to global.get. Set by
+    // lowering; the speculation step computes `Math.sin(x)` with no read of
+    // the property and no identity test when it holds.
+    bool mathPinned = false;
+    bool numberPinned = false;
     // THE CENSUS SITE TABLE, the runtime channel a type-feedback build
     // (`--feedback-out`, lower/lower_feedback.cpp) registers its sites
     // through (abi/bronze_feedback_site.h): handed to the runtime at module

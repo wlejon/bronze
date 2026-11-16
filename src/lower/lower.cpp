@@ -311,6 +311,10 @@ std::optional<il::Module> Lowerer::lower() {
     // exactly this many IC entries as a global array in the object file.
     ilModule_.icSiteCount = icSiteCounter_;
     ilModule_.templateSiteCount = templateSiteCounter_;
+    // Lockdown pins the two bindings before any program runs; a host that
+    // provides its own under the name is the one way out (il.h).
+    ilModule_.mathPinned = !selfHost_ && !hostGlobals_.contains("Math");
+    ilModule_.numberPinned = !selfHost_ && !hostGlobals_.contains("Number");
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative
     // is a remap, and the only file that can be present without a function in

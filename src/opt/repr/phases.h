@@ -28,7 +28,7 @@ bool unboxBlockParams(PhaseContext& ctx);
 // ToBoolean (`unbox.bool`) or an edge into another such become Bool.
 bool truthyBlockParams(PhaseContext& ctx);
 
-// Rule 3 (sink.cpp): boxes moved to exit blocks, or to their one use.
+// Rule 3 (sink.cpp): boxes copied to exit blocks, or to the few blocks that use them.
 bool sinkBoxes(PhaseContext& ctx);
 
 }  // namespace bronze::opt::repr

@@ -269,11 +269,30 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         // bool = mul.would_ovf %a, %b: the 32-bit overflow flag, or a zero
         // product with a negative operand (-0):
         //   imul ; seto | (a*b == 0 & (a|b) < 0)
+        // A constant factor k decides the -0 half: k > 0 never makes one (a
+        // zero product needs a == 0, which is not negative), k < 0 makes one
+        // exactly when a == 0, k == 0 when a < 0.
         case BronzeOp::MulWouldOvf: {
             if (!need(2)) return false;
             Value* a = i32(0);
             Value* c = i32(1);
             Value* zero = b.build_iconst_i32(0);
+            const Instruction* ka = a->is_instruction() ? a->defining_instruction() : nullptr;
+            const Instruction* kc = c->is_instruction() ? c->defining_instruction() : nullptr;
+            if (ka != nullptr && ka->opcode() == Opcode::iconst_i32) {
+                std::swap(a, c);
+                std::swap(ka, kc);
+            }
+            if (kc != nullptr && kc->opcode() == Opcode::iconst_i32) {
+                const int32_t k = kc->imm_i32();
+                Value* ovf = b.build_smul_overflow(a, c);
+                if (k > 0) {
+                    res_val = ovf;
+                } else {
+                    res_val = b.build_or(ovf, k < 0 ? b.build_eq(a, zero) : b.build_slt(a, zero));
+                }
+                return true;
+            }
             Value* minus_zero =
                 b.build_and(b.build_eq(b.build_mul(a, c), zero), b.build_slt(b.build_or(a, c), zero));
             res_val = b.build_or(b.build_smul_overflow(a, c), minus_zero);

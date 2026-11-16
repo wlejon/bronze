@@ -19,8 +19,8 @@
 //      parameter) becomes a parameter of that type; I32 and F64 meet at F64
 //      (params_solve.cpp, params_apply.cpp);
 //   3. a `box` whose every use is in blocks that only lead to a `leave`, or
-//      whose one use is in a block it strictly dominates in the same loops,
-//      is moved to its uses (sink.cpp).
+//      in at most four blocks it strictly dominates, none in a deeper loop,
+//      is copied to its uses (sink.cpp).
 // Stores, calls, returns and `leave` states still take the boxed value: a
 // box right in front of them is the minimum without typed slots or a typed
 // calling convention.

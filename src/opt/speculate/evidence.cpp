@@ -65,14 +65,23 @@ struct Evidence::SiteRefs {
     std::vector<il::FeedbackSite> sites;
     std::unordered_map<uint64_t, std::vector<uint32_t>> byInst;
     std::vector<il::Type> types;
+    // Per value, the instruction defining it (null for parameters and block
+    // parameters).
+    std::vector<const il::Instruction*> defs;
 
     SiteRefs(const il::Module& module, const il::Function& fn)
-        : sites(il::enumerateFeedbackSites(module, fn)), types(valueTypes(fn)) {
+        : sites(il::enumerateFeedbackSites(module, fn)), types(valueTypes(fn)), defs(fn.valueCount, nullptr) {
         for (uint32_t s = 0; s < sites.size(); ++s) {
             if (sites[s].block == il::FeedbackSite::kEntrySite) continue;
             byInst[key(sites[s].block, sites[s].inst)].push_back(s);
         }
+        for (const il::Block& b : fn.blocks) {
+            for (const il::Instruction& inst : b.instructions) {
+                if (inst.result != il::kNoValue && inst.result < defs.size()) defs[inst.result] = &inst;
+            }
+        }
     }
+    const il::Instruction* def(ValueId v) const { return v < defs.size() ? defs[v] : nullptr; }
     static uint64_t key(uint32_t block, uint32_t inst) { return (uint64_t{block} << 32) | inst; }
     // The sites of `kind` at the instruction, in ordinal order.
     std::vector<const il::FeedbackSite*> at(BlockId block, uint32_t inst, il::FeedbackKind kind) const {
@@ -381,6 +390,45 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
     return plan;
 }
 
+namespace {
+
+// The il::Intrinsic a harvest's callee name `intrinsic:Math.<name>` names,
+// when its computed form takes `argc` arguments; -1 otherwise.
+int32_t intrinsicNamed(const std::string& callee, size_t argc) {
+    static const std::string kPrefix = "intrinsic:Math.";
+    if (callee.compare(0, kPrefix.size(), kPrefix) != 0) return -1;
+    for (int32_t i = 0; i < il::kIntrinsicCount; ++i) {
+        const il::IntrinsicInfo* info = il::intrinsicInfo(i);
+        if (kPrefix + info->name != callee) continue;
+        return argc == info->arity ? i : -1;
+    }
+    return -1;
+}
+
+SitePlan mathCallPlan(int32_t intrinsic, BlockId block, uint32_t index) {
+    SitePlan plan;
+    plan.kind = SiteKind::MathCall;
+    plan.block = block;
+    plan.index = index;
+    plan.intrinsic = intrinsic;
+    return plan;
+}
+
+}  // namespace
+
+// `Math.<key>` with Math pinned (il::Module::mathPinned): `global.get "Math"`
+// is the frozen builtin, whose `<key>` is a non-writable, non-configurable
+// data property holding the intrinsic, so the read can only answer it.
+int32_t Evidence::pinnedMathIntrinsic(ValueId recv, uint32_t keyIndex, size_t argc, const SiteRefs& refs) const {
+    if (!module_.mathPinned || keyIndex >= module_.keyConstants.size()) return -1;
+    const il::Instruction* d = refs.def(recv);
+    if (d == nullptr || d->op != il::Op::GlobalGet || d->keyIndex >= module_.keyConstants.size() ||
+        module_.keyConstants[d->keyIndex] != "Math") {
+        return -1;
+    }
+    return intrinsicNamed("intrinsic:Math." + module_.keyConstants[keyIndex], argc);
+}
+
 // A method call with one callee. A harvest names it per way (`direct`: found
 // on the chain, `slot`: an own slot); a recorded Method site names the
 // receiver's shapes and the function the key resolved to. One own-slot shape
@@ -391,6 +439,12 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
                                              BlockId block, uint32_t index) const {
     if (inst.operands.empty() || refs.type(inst.operands[0]) != il::Type::Dynamic) return std::nullopt;
     if (inst.keyIndex >= module_.keyConstants.size()) return std::nullopt;
+    if (const int32_t m = pinnedMathIntrinsic(inst.operands[0], inst.keyIndex, inst.operands.size() - 1, refs);
+        m >= 0) {
+        SitePlan math = mathCallPlan(m, block, index);
+        math.pinned = true;
+        return math;
+    }
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }
@@ -462,32 +516,6 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
 // A method call whose every way's callee was one Math function the runtime
 // exports (il::Intrinsic; ic_harvest.cpp names it `intrinsic:Math.<name>`),
 // called with exactly the arguments its computed form takes.
-namespace {
-
-// The il::Intrinsic a harvest's callee name `intrinsic:Math.<name>` names,
-// when its computed form takes `argc` arguments; -1 otherwise.
-int32_t intrinsicNamed(const std::string& callee, size_t argc) {
-    static const std::string kPrefix = "intrinsic:Math.";
-    if (callee.compare(0, kPrefix.size(), kPrefix) != 0) return -1;
-    for (int32_t i = 0; i < il::kIntrinsicCount; ++i) {
-        const il::IntrinsicInfo* info = il::intrinsicInfo(i);
-        if (kPrefix + info->name != callee) continue;
-        return argc == info->arity ? i : -1;
-    }
-    return -1;
-}
-
-SitePlan mathCallPlan(int32_t intrinsic, BlockId block, uint32_t index) {
-    SitePlan plan;
-    plan.kind = SiteKind::MathCall;
-    plan.block = block;
-    plan.index = index;
-    plan.intrinsic = intrinsic;
-    return plan;
-}
-
-}  // namespace
-
 std::optional<SitePlan> Evidence::planIntrinsic(const spec::HarvestSite& h, size_t argc, BlockId block,
                                                 uint32_t index) const {
     std::string name;
@@ -583,6 +611,17 @@ std::optional<SitePlan> Evidence::planConstruct(const il::Instruction& inst, con
 std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                            BlockId block, uint32_t index) const {
     if (inst.operands.size() < 2) return std::nullopt;
+    // `const cos = Math.cos; cos(x)` with Math pinned: the callee is the
+    // read of the intrinsic.
+    if (const il::Instruction* read = refs.def(inst.operands[0]);
+        read != nullptr && read->op == il::Op::PropGet && read->operands.size() == 1) {
+        const int32_t m = pinnedMathIntrinsic(read->operands[0], read->keyIndex, inst.operands.size() - 2, refs);
+        if (m >= 0) {
+            SitePlan math = mathCallPlan(m, block, index);
+            math.pinned = true;
+            return math;
+        }
+    }
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }

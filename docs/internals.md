@@ -373,7 +373,9 @@ standard engine does that, and it is deliberate: with the object frozen and
 the name pinned, `Math.sin` is the builtin whatever the program does, so the
 compiler lowers Math and Number calls inline with no proof from the program's
 text (`types/infer.cpp`; only a module declaring its own `Math`, or a host
-claiming the name, withholds it). The proof used to be a syntactic scan that
+claiming the name, withholds it). The speculation step reads the same facts
+(`il::Module::mathPinned` / `numberPinned`): a profiled `Math.f(x)` site
+becomes the intrinsic with no test of the callee and no exit. The proof used to be a syntactic scan that
 one mention of `Function`, `eval` or a bare `globalThis` anywhere withheld for
 the whole program: pixi has such mentions, and every `Math.imul` of a program
 that had one cost about 490 instructions.

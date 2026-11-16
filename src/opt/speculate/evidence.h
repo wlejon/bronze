@@ -192,6 +192,9 @@ struct SitePlan {
     int32_t constBound = kNoConstIndex;
     // MathCall: the il::Intrinsic.
     int32_t intrinsic = -1;
+    // MathCall on the pinned global Math (il::Module::mathPinned): the callee
+    // is the intrinsic by lockdown, so no read and no identity test.
+    bool pinned = false;
 };
 
 struct FunctionPlan {
@@ -221,6 +224,10 @@ private:
                                           BlockId block, uint32_t index) const;
     std::optional<SitePlan> planSlotKeyed(SiteKind kind, const std::vector<std::string>& names,
                                           const std::string& key, BlockId block, uint32_t index) const;
+    // The il::Intrinsic `Math.<key>` is when `recv` is `global.get "Math"`
+    // of a module whose Math is pinned and the call passes `argc` arguments
+    // (what its computed form takes); -1 otherwise.
+    int32_t pinnedMathIntrinsic(ValueId recv, uint32_t keyIndex, size_t argc, const SiteRefs& refs) const;
     std::optional<SitePlan> planMethod(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                        BlockId block, uint32_t index) const;
     std::optional<SitePlan> planConstruct(const il::Instruction& inst, const SiteRefs& refs, BlockId block,

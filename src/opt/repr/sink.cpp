@@ -8,11 +8,20 @@
 //   declares, dynamic where G's values are, so the exit blocks are where the
 //   box belongs.
 //
-//   ONE USE. A `box` with a single use in a block U its own block strictly
-//   dominates, where every loop containing U also contains the box's block,
-//   moves to U, in front of the use. U runs at most as often as the box's
-//   block did (it is dominated, and no loop the box was outside of repeats
-//   it), and on the paths that skip U the box is no longer made.
+//   USE BLOCKS. Otherwise a `box` whose every use is in an exit-only block
+//   or in a block U its own block strictly dominates, where every loop
+//   containing U also contains the box's block, is copied into each such
+//   block (at most kMaxUseBlocks of the non-exit ones), in front of its first
+//   use there, and the original goes. Each U runs at most as often as the
+//   box's block did (it is dominated, and no loop the box was outside of
+//   repeats it), the paths that reach no use make no box, and the boxed copy
+//   is no longer live from the value's definition to the exits: S keeps the
+//   double, which the exits box themselves. This is what a double read for a
+//   rarely taken generic arm (slerpFlat's `t === 0` stores) and also named in
+//   every exit's state costs otherwise: a canonicalised box on the hot path
+//   and a register for it through the whole body. A path through two use
+//   blocks neither of which dominates the other boxes twice; the redundancy
+//   pass after this merges a copy dominated by another.
 //
 // Both are exact: a box is pure, and its operand dominates every new
 // position (it dominates the box's block, which dominates each use).
@@ -63,6 +72,9 @@ std::vector<uint8_t> exitOnlyBlocks(const il::Function& fn, const Cfg& cfg) {
     return exit;
 }
 
+// How many blocks other than exits one box may be copied into.
+constexpr size_t kMaxUseBlocks = 4;
+
 bool movableBox(const il::Instruction& inst) {
     return inst.op == Op::Box && inst.result != kNoValue && inst.operands.size() == 1 &&
            (inst.boxType == Type::I32 || inst.boxType == Type::F64 || inst.boxType == Type::Bool);
@@ -78,7 +90,9 @@ public:
 
 private:
     bool toExits(BlockId b, size_t i, const std::vector<UseSite>& uses);
-    bool toSingleUse(BlockId b, size_t i, const UseSite& use);
+    bool toUseBlocks(BlockId b, size_t i, const std::vector<UseSite>& uses);
+    // A copy of the box at b:i in front of each block's first use.
+    void copyToUses(BlockId b, size_t i, const std::vector<UseSite>& uses);
     // Every loop containing `to` also contains `from`.
     bool noDeeperLoop(BlockId from, BlockId to) const;
 
@@ -101,10 +115,7 @@ bool Sinker::noDeeperLoop(BlockId from, BlockId to) const {
     return true;
 }
 
-bool Sinker::toExits(BlockId b, size_t i, const std::vector<UseSite>& uses) {
-    for (const UseSite& u : uses) {
-        if (!exit_[u.block]) return false;
-    }
+void Sinker::copyToUses(BlockId b, size_t i, const std::vector<UseSite>& uses) {
     const il::Instruction& box = fn_.blocks[b].instructions[i];
     // Uses come in block then instruction order: each block's first use is
     // where its copy goes.
@@ -117,22 +128,34 @@ bool Sinker::toExits(BlockId b, size_t i, const std::vector<UseSite>& uses) {
             il::Instruction clone = makeBox(fn_, box.operands[0], box.boxType, box.span);
             copy = clone.result;
             edits_.insertBefore(current, u.inst, std::move(clone));
-            ++ctx_.stats.exitBoxClones;
+            if (exit_[current]) ++ctx_.stats.exitBoxClones;
         }
         rewrites_.emplace_back(u, copy);
     }
     edits_.remove(b, i);
+}
+
+bool Sinker::toExits(BlockId b, size_t i, const std::vector<UseSite>& uses) {
+    for (const UseSite& u : uses) {
+        if (!exit_[u.block]) return false;
+    }
+    copyToUses(b, i, uses);
     ++ctx_.stats.boxesSunkToExits;
     return true;
 }
 
-bool Sinker::toSingleUse(BlockId b, size_t i, const UseSite& use) {
-    if (!dom_.strictlyDominates(b, use.block) || !noDeeperLoop(b, use.block)) return false;
-    const il::Instruction& box = fn_.blocks[b].instructions[i];
-    il::Instruction moved = makeBox(fn_, box.operands[0], box.boxType, box.span);
-    rewrites_.emplace_back(use, moved.result);
-    edits_.insertBefore(use.block, use.inst, std::move(moved));
-    edits_.remove(b, i);
+bool Sinker::toUseBlocks(BlockId b, size_t i, const std::vector<UseSite>& uses) {
+    size_t blocks = 0;
+    BlockId last = kNoBlock;
+    for (const UseSite& u : uses) {
+        if (exit_[u.block]) continue;
+        if (u.block == b || !dom_.strictlyDominates(b, u.block) || !noDeeperLoop(b, u.block)) return false;
+        if (u.block != last) {
+            last = u.block;
+            if (++blocks > kMaxUseBlocks) return false;
+        }
+    }
+    copyToUses(b, i, uses);
     ++ctx_.stats.boxesSunk;
     return true;
 }
@@ -146,11 +169,7 @@ bool Sinker::run() {
             if (!movableBox(insts[i])) continue;
             const std::vector<UseSite>& uses = defs_.uses(insts[i].result);
             if (uses.empty()) continue;
-            if (toExits(b, i, uses)) {
-                changed = true;
-            } else if (uses.size() == 1 && toSingleUse(b, i, uses.front())) {
-                changed = true;
-            }
+            if (toExits(b, i, uses) || toUseBlocks(b, i, uses)) changed = true;
         }
     }
     if (!changed) return false;

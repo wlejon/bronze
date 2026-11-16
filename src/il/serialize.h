@@ -56,7 +56,7 @@ namespace bronze::il {
 // 42: member.cell / member.publish and Module::memberCells.
 // 43: shape.in.
 // 44: absent member cells (Module::MemberKind::Absent).
-inline constexpr uint32_t kFormatVersion = 44;
+inline constexpr uint32_t kFormatVersion = 45;
 
 std::string serializeModule(const Module& module);
 
