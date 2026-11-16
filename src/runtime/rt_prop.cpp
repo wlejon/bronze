@@ -877,6 +877,12 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         bool handled = false;
         const Value wellKnown = rtWellKnownSymbolMember(recv, key, handled);
         if (handled) return wellKnown.rawBits();
+        // A function's symbol-keyed statics, own or inherited through
+        // `extends` (`static get [Symbol.species]` on a base class).
+        if (recv.get().isObject() && recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+            Value found;
+            if (rtFunctionStaticsGet(recv, key, recv, found)) return found.rawBits();
+        }
         Rooted<Value> holderRoot{rtSymbolReadStart(recv.get())};
         // A receiver with neither own symbol-keyed storage nor a chain: an
         // array, a Map, a RegExp. Those have no own symbol-keyed property and

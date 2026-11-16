@@ -72,6 +72,14 @@ public:
     // The handler `b` throws to, or kNoBlock (no handler, or nothing in `b`
     // can throw).
     BlockId throwSucc(BlockId b) const { return throwSucc_[b]; }
+    // Whether some path enters `b` through `from`'s throw edge without
+    // passing `from` again: then nothing `from` defines is available in `b`
+    // along that path (the edge leaves from the middle of `from`, and the
+    // backend makes no value of a protected block available to its handler),
+    // even where `from` dominates `b`. Every question of the form "is a value
+    // defined in A available in B" asks this beside dominance
+    // (valueReaches). Computed per `from` on first ask.
+    bool throwReaches(BlockId from, BlockId b) const;
 
     // Reverse postorder from the entry; only reachable blocks appear.
     const std::vector<BlockId>& rpo() const { return rpo_; }
@@ -86,6 +94,8 @@ private:
     std::vector<std::vector<Edge>> out_;
     std::vector<std::vector<Edge>> in_;
     std::vector<BlockId> throwSucc_;
+    // throwReaches's sets, by `from`: one flag per block.
+    mutable std::vector<std::vector<uint8_t>> throwShadow_;
     std::vector<BlockId> rpo_;
     std::vector<uint32_t> rpoIndex_;
 };
@@ -132,5 +142,12 @@ private:
     std::vector<uint8_t> reachable_;
     std::vector<BlockId> roots_;
 };
+
+// Whether a value defined in block `def` is available at the top of block
+// `use` (def != use): `def` dominates `use` and no path reaches `use` through
+// `def`'s throw edge (Cfg::throwReaches).
+inline bool valueReaches(const Cfg& cfg, const DomTree& dom, BlockId def, BlockId use) {
+    return dom.dominates(def, use) && !cfg.throwReaches(def, use);
+}
 
 }  // namespace bronze::opt

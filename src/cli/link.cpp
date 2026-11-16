@@ -376,10 +376,24 @@ bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& out
     module.replace_extension(codegen::moduleTargetNames(obj.target).moduleExtension);
     if (!linkSharedModule(obj, module.string(), diags, "bronze_main")) return false;
 
-    // The host, under the program's name.
-    if (!copyFileForExec(host, out, ec)) {
-        diags.error(Span{}, "cannot write " + out.string() + " (a copy of " + host.string() +
-                                "): " + ec.message());
+    // The host, under the program's name: written beside it and renamed into
+    // place, because the kernel refuses a write to a file that is being
+    // executed — and an executable stays busy for a moment after its process
+    // is reaped, so rebuilding a program that just ran (a harvest build, then
+    // the build that reads the harvest) would fail with ETXTBSY. A rename
+    // replaces the name and leaves any running copy its own file.
+    const fs::path partial = fs::path(out.string() + ".partial");
+    if (!copyFileForExec(host, partial, ec)) {
+        const std::string why = ec.message();
+        fs::remove(partial, ec);
+        diags.error(Span{}, "cannot write " + partial.string() + " (a copy of " + host.string() + "): " + why);
+        return false;
+    }
+    fs::rename(partial, out, ec);
+    if (ec) {
+        const std::string why = ec.message();
+        fs::remove(partial, ec);
+        diags.error(Span{}, "cannot replace " + out.string() + " with a copy of " + host.string() + ": " + why);
         return false;
     }
 

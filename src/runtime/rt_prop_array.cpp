@@ -67,7 +67,7 @@ SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>
         OwnPropertyDetail own;
         if (!rtOwnPropertyOf(arr, key.get(), own)) {
             SetRefusal refusal = SetRefusal::None;
-            if (rtArrayInheritedNamedSet(arr, key, val, refusal)) return refusal;
+            if (rtInheritedNamedSet(arr, key, val, refusal)) return refusal;
         }
     }
     SetRefusal refusal = SetRefusal::None;

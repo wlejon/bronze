@@ -186,7 +186,8 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     if (f[0] == "mixed" || f[0] == "nonobject") {
         std::string key;
         auto& keys = f[0] == "mixed" ? harvest->mixed : harvest->nonObject;
-        if (f.size() != 2 || !unescapeName(f[1], key) || key.empty() || !keys.insert(key).second) {
+        // The empty string is a key like any other (`o[""] = v`).
+        if (f.size() != 2 || !unescapeName(f[1], key) || !keys.insert(key).second) {
             why = "malformed " + std::string(f[0]) + " row";
             return false;
         }

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <memory>
 
+#include "il/resume_rules.h"
 #include "opt/core/clone.h"
 #include "opt/speculate/evidence.h"
 #include "opt/speculate/policy.h"
@@ -107,6 +108,7 @@ void markLoweredDirectCalls(RewriteContext& ctx) {
         for (uint32_t i = 0; i + 1 < insts.size(); ++i) {
             il::Instruction& inst = insts[i];
             if (inst.op != il::Op::Call || inst.resumeAfter != il::Instruction::kNoResumeAfter) continue;
+            if (!il::canResumeBefore(ctx.generic.blocks[b], i + 1)) continue;
             if (inst.calleeIndex >= ctx.module.functions.size()) continue;
             const il::Function& callee = ctx.module.functions[inst.calleeIndex];
             if (callee.isExternal || callee.blocks.empty() || callee.isCoroutineBody()) continue;

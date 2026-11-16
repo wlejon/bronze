@@ -109,6 +109,21 @@ ObjectHeader* rtStaticsAncestor(ObjectHeader* fnObj, uint32_t depth, bool* cross
     return cur;
 }
 
+bool rtFunctionStaticsGet(Rooted<Value>& fn, Rooted<Value>& key, Rooted<Value>& receiver, Value& out) {
+    const PropertyKey pkey = PropertyKey::fromValue(key.get());
+    ObjectHeader* fnObj = fn.get().asObject<ObjectHeader>();
+    for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        ObjectHeader* holder = depth == 0 ? fnObj : rtStaticsAncestor(fnObj, depth);
+        if (!holder) return false;
+        PropertyInfo info;
+        if (holder->shape && holder->shape->lookupProperty(pkey, info)) {
+            out = holder->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr());
+            return true;
+        }
+    }
+    return false;
+}
+
 bool rtStaticsArmServes(Value fnVal) noexcept {
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
     const uint8_t flags = fnVal.asObject<FunctionHeader>()->function_flags;

@@ -824,8 +824,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             }
             // The sites' packed way-0 rows (bronze_abi_layout.h, "the HOT
             // array"), which the way-0 guards read and only the runtime's
-            // fills keep current: registered before any site can fill.
-            if (options_.ic_site_count > 0) {
+            // fills keep current: registered before any site can fill. A
+            // module with no sites registers too: the range is what its
+            // harvest's slow counts and samples are folded through.
+            {
                 Value* table_addr = module_data_addr(b, "__bronze_ic_table");
                 Value* hot_addr = b.build_add(table_addr, b.build_iconst_i64(ic_hot_table_offset(options_.ic_site_count)));
                 Value* site_count = b.build_iconst_i64(static_cast<int64_t>(options_.ic_site_count));

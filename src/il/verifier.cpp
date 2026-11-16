@@ -447,6 +447,38 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         return false;
     };
 
+    // Whether a path enters `b` through the handler of `from` without passing
+    // `from` again. The handler is entered from the middle of `from`, and the
+    // backend makes no value an instruction of `from` defines available to
+    // it (a helper call there is an invoke whose result exists only on its
+    // normal edge), so such a value does not reach `b` on that path even
+    // where `from` dominates `b`. Block parameters are defined on entry and
+    // do. One set per `from`, made on first ask.
+    std::vector<std::vector<uint8_t>> throwShadow(numBlocks);
+    auto throwReaches = [&](BlockId from, BlockId b) -> bool {
+        const BlockId handler = fn.blocks[from].handler;
+        if (handler == kNoBlock || handler >= numBlocks) return false;
+        std::vector<uint8_t>& shadow = throwShadow[from];
+        if (shadow.empty()) {
+            shadow.assign(numBlocks, 0);
+            std::vector<BlockId> work;
+            if (handler != from) {
+                shadow[handler] = 1;
+                work.push_back(handler);
+            }
+            while (!work.empty()) {
+                const BlockId at = work.back();
+                work.pop_back();
+                for (BlockId next : succs[at]) {
+                    if (next == from || shadow[next]) continue;
+                    shadow[next] = 1;
+                    work.push_back(next);
+                }
+            }
+        }
+        return shadow[b] != 0;
+    };
+
     // Helper to check use of a value
     auto checkUse = [&](ValueId id, size_t useBlockIdx, size_t useInstIdx) -> bool {
         auto it = definedTypes.find(id);
@@ -465,6 +497,13 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 diags.error(Span{}, "Function " + fn.name + ": definition of %" +
                                       std::to_string(id) + " in b" + std::to_string(loc.blockIdx) +
                                       " does not dominate use in b" + std::to_string(useBlockIdx));
+                return false;
+            }
+            if (loc.instIdx >= 0 && throwReaches(static_cast<BlockId>(loc.blockIdx), static_cast<BlockId>(useBlockIdx))) {
+                diags.error(Span{}, "Function " + fn.name + ": definition of %" + std::to_string(id) + " in b" +
+                                      std::to_string(loc.blockIdx) + " is used in b" + std::to_string(useBlockIdx) +
+                                      ", which a path reaches through b" + std::to_string(loc.blockIdx) +
+                                      "'s handler");
                 return false;
             }
         }

@@ -10,6 +10,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/accessor.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/elem_ic.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
@@ -477,6 +478,13 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         }
         rtPrepareFunctionOwnWrite(fnRoot);
         SetRefusal refusal = SetRefusal::None;
+        // 10.1.9.2: a name the function does not own is asked of its chain
+        // first (rtInheritedNamedSet says why the own write cannot).
+        OwnPropertyDetail own;
+        if (!rtOwnPropertyOf(fnRoot, key.get(), own) && rtInheritedNamedSet(fnRoot, key, val, refusal)) {
+            rtReportSetRefusal(refusal, strict, keyText);
+            return;
+        }
         fnRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                          /*ic=*/nullptr, /*enumerable=*/true,
                                                          /*defineOwn=*/false,

@@ -36,7 +36,11 @@ namespace {
 
 struct HotRange {
     uintptr_t lo;   // the first site
-    uintptr_t hi;   // one past the last
+    // One past the last: the table's extent, which is one site wide when the
+    // module has none (brass_backend_sections.cpp), so every instance's range
+    // is non-empty and is dropped (and folded) with the instance.
+    uintptr_t hi;
+    uint64_t sites;  // the module's site count, what its identity records
     uint64_t* rows;
     // The module's IC identity record (bronze_abi_layout.h): what a harvest
     // of this range is filed under (ic_harvest.h).
@@ -129,8 +133,7 @@ void foldRange(const HotRange& r) {
     for (const MethodRange& m : t_methodRanges) {
         if (m.lo == r.lo) methods = &m.sites;
     }
-    runtime::rtIcHarvestFold(reinterpret_cast<const uint64_t*>(r.lo), (r.hi - r.lo) / BRONZE_ABI_IC_SITE_SIZE,
-                             r.identity, methods);
+    runtime::rtIcHarvestFold(reinterpret_cast<const uint64_t*>(r.lo), r.sites, r.identity, methods);
 }
 
 }  // namespace
@@ -234,13 +237,15 @@ void rtIcHotFoldLiveRanges() {
 extern "C" void bronze_register_ic_hot(uint64_t* icTable, uint64_t* hot, uint64_t siteCount,
                                        const uint64_t* identity) {
     using namespace bronze;
-    if (!icTable || !hot || siteCount == 0) return;
+    if (!icTable || !hot) return;
+    // A module with no sites still registers: its harvest carries the slow
+    // sites' counts and the samples, folded through this range.
     const auto lo = reinterpret_cast<uintptr_t>(icTable);
-    const uintptr_t hi = lo + siteCount * BRONZE_ABI_IC_SITE_SIZE;
+    const uintptr_t hi = lo + (siteCount != 0 ? siteCount : 1) * BRONZE_ABI_IC_SITE_SIZE;
     // An instance registered again (a module whose init runs twice in one
     // instance) replaces its range rather than adding a second copy of it.
     runtime::rtIcHotDropWithin(icTable, static_cast<size_t>(hi - lo));
-    t_ranges.push_back({lo, hi, hot, identity});
+    t_ranges.push_back({lo, hi, siteCount, hot, identity});
     recomputeHotBounds();
     // A standalone program built with `--harvest-out` names its file here.
     runtime::rtIcHarvestNoteIdentity(identity);

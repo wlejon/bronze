@@ -70,6 +70,12 @@ public:
     void visit(const ast::SuperCall&) override { splits = true; }
     void visit(const ast::TaggedTemplate&) override { splits = true; }
     void visit(const ast::DynamicImportExpr&) override { splits = true; }
+    // The function's own `arguments` may be the count rather than the list
+    // (il.h `argumentsIsCount`), and a read of it branches on which it is
+    // (Lowerer::lazyArgumentsList, emitArgumentsIsCountBranch).
+    void visit(const ast::Ident& n) override {
+        if (n.name == "arguments") splits = true;
+    }
 
     // The short-circuiting operators and their assignment forms, which are
     // branches in the source however they are spelled.

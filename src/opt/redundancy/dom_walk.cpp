@@ -4,19 +4,6 @@
 
 namespace bronze::opt::redundancy {
 
-namespace {
-
-// Whether `b` is entered by a throw edge from its immediate dominator.
-bool thrownIntoFromIdom(const Cfg& cfg, const DomTree& dom, BlockId b) {
-    const BlockId idom = dom.idom(b);
-    for (const Edge& e : cfg.inEdges(b)) {
-        if (e.kind == EdgeKind::Throw && e.from == idom) return true;
-    }
-    return false;
-}
-
-}  // namespace
-
 void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& dom, const DefUse& defs,
                        const AliasInfo& alias, FactEnv& facts, ExprTable& exprs,
                        const std::function<void(BlockId)>& visit) {
@@ -52,7 +39,9 @@ void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& do
                 facts.killLocs(between.allLocs());
                 exprs.killAll(between, alias);
             }
-            if (thrownIntoFromIdom(cfg, dom, b)) exprs.hideAll();
+            // Entered, on some path, through the throw edge of the immediate
+            // dominator: what that block computed may not exist here.
+            if (cfg.throwReaches(dom.idom(b), b)) exprs.hideAll();
         }
         visit(b);
         const auto& kids = dom.children(b);

@@ -234,7 +234,7 @@ bool unboxBlockParams(PhaseContext& ctx) {
     const Cfg cfg(fn);
     const DomTree dom(cfg);
     const DefUse defs(fn);
-    const UnboxIndex unboxes(fn);
+    const UnboxIndex unboxes(fn, cfg);
     const std::vector<std::vector<InEdge>> inEdges = collectInEdges(fn);
     const std::vector<ParamPlan> plan = planParams(fn, defs, dom, unboxes, inEdges);
     if (plan.empty()) return removed;

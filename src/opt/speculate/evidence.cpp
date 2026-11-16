@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <unordered_map>
 
+#include "il/resume_rules.h"
 #include "abi/bronze_feedback_site.h"
 #include "opt/speculate/context.h"
 #include "opt/speculate/policy.h"
@@ -138,6 +139,8 @@ std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {
         // Not the terminator: a site has an instruction after it, which an
         // exit after the site resumes in front of.
         for (uint32_t i = 0; i + 1 < insts.size(); ++i) {
+            // A site's guards resume in front of it or after it.
+            if (!il::canResumeBefore(fn.blocks[b], i) || !il::canResumeBefore(fn.blocks[b], i + 1)) continue;
             if (auto site = planSite(fnIndex, b, i, refs)) out.sites.push_back(std::move(*site));
         }
     }

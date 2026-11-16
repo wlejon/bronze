@@ -43,7 +43,7 @@ Type latType(Lat l) {
     }
 }
 
-UnboxIndex::UnboxIndex(const il::Function& fn) : byValue_(fn.valueCount) {
+UnboxIndex::UnboxIndex(const il::Function& fn, const Cfg& cfg) : byValue_(fn.valueCount), cfg_(cfg) {
     for (size_t b = 0; b < fn.blocks.size(); ++b) {
         for (const il::Instruction& inst : fn.blocks[b].instructions) {
             if (inst.op != Op::UnboxI32 && inst.op != Op::UnboxF64) continue;
@@ -58,7 +58,7 @@ UnboxIndex::UnboxIndex(const il::Function& fn) : byValue_(fn.valueCount) {
 ValueId UnboxIndex::available(ValueId v, Type type, BlockId from, const DomTree& dom) const {
     if (v >= byValue_.size()) return kNoValue;
     for (const Entry& e : byValue_[v]) {
-        if (e.type == type && dom.dominates(e.block, from)) return e.result;
+        if (e.type == type && (e.block == from || valueReaches(cfg_, dom, e.block, from))) return e.result;
     }
     return kNoValue;
 }

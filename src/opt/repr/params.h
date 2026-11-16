@@ -40,12 +40,12 @@ il::Type latType(Lat l);
 // each dynamic value, in block then instruction order.
 class UnboxIndex {
 public:
-    explicit UnboxIndex(const il::Function& fn);
+    UnboxIndex(const il::Function& fn, const Cfg& cfg);
 
-    // The result of an unchecked unbox of `v` yielding `type` whose block
-    // dominates `from` (the same block counts: every instruction precedes
-    // the terminator the edge leaves by), or kNoValue. The first such in
-    // block order, so the answer is a function of the IL.
+    // The result of an unchecked unbox of `v` yielding `type` available at
+    // the end of `from` (valueReaches; the same block counts: every
+    // instruction precedes the terminator the edge leaves by), or kNoValue.
+    // The first such in block order, so the answer is a function of the IL.
     ValueId available(ValueId v, il::Type type, BlockId from, const DomTree& dom) const;
 
 private:
@@ -55,6 +55,7 @@ private:
         ValueId result;
     };
     std::vector<std::vector<Entry>> byValue_;
+    const Cfg& cfg_;
 };
 
 // One normal edge into a block: the terminator of `from`, its else-target

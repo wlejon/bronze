@@ -288,7 +288,7 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
             if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
                 if (rtValueToElementIndex(key.get(), index)) return rtArrayOwnIndexWrite(receiver, index, val);
                 // A named key the same way: its own property, the chain
-                // (rtArrayInheritedNamedSet) not asked again.
+                // (rtInheritedNamedSet) not asked again.
                 Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get() : rtElemKeyAsString(key.get())};
                 if (!keyAsKey.get().isSymbol() &&
                     rtUtf8Chars(keyAsKey.get().asString<StringHeader>()) == "length") {
@@ -345,17 +345,8 @@ static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
             // holder is what makes the receiver arrive at `getProp`. A key no
             // static holds is the target's own answer.
             key.set(rtToPropertyKey(key));
-            const PropertyKey pkey = PropertyKey::fromValue(key.get());
-            ObjectHeader* fnObj = target.get().asObject<ObjectHeader>();
-            for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
-                ObjectHeader* holder = depth == 0 ? fnObj : rtStaticsAncestor(fnObj, depth);
-                if (!holder) break;
-                PropertyInfo info;
-                if (holder->shape && holder->shape->lookupProperty(pkey, info)) {
-                    return holder->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr())
-                        .rawBits();
-                }
-            }
+            Value found;
+            if (rtFunctionStaticsGet(target, key, receiver, found)) return found.rawBits();
             return bronze_elem_get(target.get().rawBits(), key.get().rawBits());
         }
         case ReceiverRoute::Plain:

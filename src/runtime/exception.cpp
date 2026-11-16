@@ -2,6 +2,7 @@
 // travels).
 
 #include "runtime/exception.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/harvest_sampler.h"
 #include "runtime/stack_trace.h"
 #include "runtime/tls_block.h"
@@ -658,6 +659,10 @@ void rtRunModuleEntry(void (*entry)()) {
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);
+    // The run is over as surely as at a normal end: `--harvest-out` writes
+    // what it observed, read while the heap its shapes name is still live
+    // (ic_harvest.h; the atexit writer reads no heap, so it folds nothing).
+    rtIcHarvestWriteAll();
     disableCrashDialogs();
     std::exit(1);
 }

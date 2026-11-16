@@ -262,9 +262,10 @@ bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val,
     return false;
 }
 
-bool rtArrayInheritedNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal) {
+bool rtInheritedNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal) {
     refusal = SetRefusal::None;
-    Rooted<Value> holder{prototypeOf(arr.get())};
+    const uint64_t first[1] = {arr.get().rawBits()};
+    Rooted<Value> holder{Value(objectGetPrototypeOf(0, 0, 1, first))};
     for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
         if (!holder.get().isObject()) return false;
         if (holder.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {

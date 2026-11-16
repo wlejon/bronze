@@ -26,6 +26,32 @@ il::BlockTarget* edgeTarget(il::Function& fn, const Edge& edge) {
     return edge.kind == EdgeKind::BranchElse ? &term.elseTarget : &term.target;
 }
 
+bool Cfg::throwReaches(BlockId from, BlockId b) const {
+    const BlockId handler = throwSucc_[from];
+    if (handler == kNoBlock) return false;
+    if (throwShadow_.empty()) throwShadow_.resize(succs_.size());
+    std::vector<uint8_t>& shadow = throwShadow_[from];
+    if (shadow.empty()) {
+        // Everything the handler reaches without passing `from`.
+        shadow.assign(succs_.size(), 0);
+        std::vector<BlockId> work;
+        if (handler != from) {
+            shadow[handler] = 1;
+            work.push_back(handler);
+        }
+        while (!work.empty()) {
+            const BlockId at = work.back();
+            work.pop_back();
+            for (BlockId s : succs_[at]) {
+                if (s == from || shadow[s]) continue;
+                shadow[s] = 1;
+                work.push_back(s);
+            }
+        }
+    }
+    return shadow[b] != 0;
+}
+
 Cfg::Cfg(const il::Function& fn) {
     const size_t n = fn.blocks.size();
     succs_.resize(n);

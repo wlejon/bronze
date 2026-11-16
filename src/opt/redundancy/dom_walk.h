@@ -13,10 +13,11 @@
 //     facts and the table entries that depended on it. At a loop header that
 //     is the loop body's writes, so what survives is exactly what is
 //     available on every iteration;
-//   - an incoming THROW edge from b's own immediate dominator: the table is
-//     hidden (expr_table.h). The handler is entered from the middle of that
-//     block, so the values it computed after the throwing instruction may not
-//     exist. FactEnv needs no such care: its facts are only added at block
+//   - a path into b through the THROW edge of b's own immediate dominator
+//     (Cfg::throwReaches; the handler itself, or a join after it): the table
+//     is hidden (expr_table.h). The handler is entered from the middle of
+//     that block, so the values it computed after the throwing instruction
+//     may not exist. FactEnv needs no such care: its facts are only added at block
 //     entry, so every fact of the dominator held throughout it.
 // Then `visit(b)` walks b's instructions itself, querying and updating both,
 // and calling `facts.stepOver(inst)` and the table's kills as it goes.

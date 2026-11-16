@@ -173,6 +173,17 @@ bool rtStaticsCacheable(Value fnVal, const ObjectHeader* self) noexcept;
 ObjectHeader* rtStaticsAncestor(ObjectHeader* fnObj, uint32_t depth,
                                 bool* crossedDictionary = nullptr);
 
+// A key some static on the function's statics chain holds (own, or up the
+// chain `rtStaticsAncestor` walks), read off its holder with `receiver` as
+// `this` for an accessor: true with the value in `out`. False when no link
+// holds it: the answer is then the function's header properties' or
+// %Function.prototype%'s, which the caller asks. The one walk for every read
+// that starts at a function: `ObjectHeader::getProp` stops at a function link
+// (its root names the statics chain, not the [[Prototype]]: heap.h
+// shapeNamesPrototype), so reading a function's statics through it alone
+// misses every inherited one.
+bool rtFunctionStaticsGet(Rooted<Value>& fn, Rooted<Value>& key, Rooted<Value>& receiver, Value& out);
+
 // Whether the function arms of the read paths (the read stub's, and
 // rtFunctionCachedMember) serve this receiver: a function compiled from
 // source (BRONZE_ABI_FN_FLAG_NATIVE clear, so no intrinsic constructor, bound
@@ -376,12 +387,14 @@ Value rtArrayIndexGet(Value arr, uint32_t index);
 // own element, which the caller then makes (its own refusals included).
 bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val, bool strict, bool& ok);
 
-// The same walk for a NAMED key (no index, not `length`) the array does not
-// own: true when the chain took the write — a setter run with the array as
-// `this` (Object.prototype's `__proto__` among them), a non-writable data
-// property refusing it, a proxy's [[Set]] — with its refusal in `refusal`;
-// false when the write lands on the array as its own property.
-bool rtArrayInheritedNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal);
+// The same walk for a NAMED key (no index, not `length`) an array or a
+// function does not own (their shape roots are bare, not their
+// [[Prototype]], so the own write's chain walk never sees it): true when the
+// chain took the write — a setter run with the receiver as `this`
+// (Object.prototype's `__proto__` among them), a non-writable data property
+// refusing it, a proxy's [[Set]] — with its refusal in `refusal`; false when
+// the write lands on the receiver as its own property.
+bool rtInheritedNamedSet(Rooted<Value>& receiver, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal);
 
 // An own element write: the array's own refusals (frozen, sealed,
 // non-extensible), then the store, growing `length` past it. No chain is

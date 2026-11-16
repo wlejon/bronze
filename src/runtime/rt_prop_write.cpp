@@ -32,6 +32,7 @@
 #include "runtime/accessor.h"
 #include "runtime/array.h"
 #include "runtime/bigint.h"
+#include "runtime/builtin_object.h"
 #include "runtime/elem_ic.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -342,6 +343,13 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             rtPrepareFunctionOwnWrite(fnRoot);
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
             SetRefusal refusal = SetRefusal::None;
+            // 10.1.9.2: a name the function does not own is asked of its
+            // chain first (rtInheritedNamedSet says why the own write cannot).
+            OwnPropertyDetail own;
+            if (!rtOwnPropertyOf(fnRoot, key.get(), own) && rtInheritedNamedSet(fnRoot, key, val, refusal)) {
+                rtReportSetRefusal(refusal, strict, keyStr);
+                return;
+            }
             fnRoot.get().asObject<ObjectHeader>()->setProp(
                 rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
                 /*defineOwn=*/false, fnRoot.slot_ptr(), &refusal);
