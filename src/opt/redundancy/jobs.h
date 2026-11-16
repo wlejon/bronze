@@ -5,6 +5,8 @@
 // the function and answers whether it changed anything. None relies on an
 // analysis another job built: every snapshot is rebuilt where it is used.
 
+#include <vector>
+
 #include "il/il.h"
 #include "opt/redundancy/redundancy.h"
 
@@ -15,6 +17,24 @@ struct JobContext {
     il::Function& fn;
     const RedundancyOptions& options;
     RedundancyStats& stats;
+    // Every value a job replaced by an equal one (a trivial block parameter,
+    // a numbered duplicate), by id: kNoValue where none. Kept for the whole
+    // run so a speculated function's state can still be named by the ids G
+    // has (PreheaderResumeFn's `current`).
+    std::vector<il::ValueId> replacedBy;
+
+    void noteReplaced(il::ValueId from, il::ValueId to) {
+        if (from == to) return;
+        if (replacedBy.size() <= from) replacedBy.resize(from + 1, il::kNoValue);
+        replacedBy[from] = to;
+    }
+    // The value standing for `v` now: `v`, or what it was replaced by.
+    il::ValueId current(il::ValueId v) const {
+        for (size_t steps = 0; v < replacedBy.size() && replacedBy[v] != il::kNoValue && steps <= replacedBy.size(); ++steps) {
+            v = replacedBy[v];
+        }
+        return v;
+    }
 };
 
 // Jobs 1-3 in one dominator walk (value_walk.cpp): value numbering, constant

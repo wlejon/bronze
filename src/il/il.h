@@ -490,6 +490,24 @@ struct Module {
         bool operator==(const ProtoCell&) const = default;
     };
     std::vector<ProtoCell> protoCells;
+    // MEMBER CELLS (runtime/accessor_cell.cpp): what lets a speculated
+    // method call, getter read or setter write whose member lives above the
+    // receiver be a shape test and a direct call. A cell is two words in the
+    // module's per-thread data, (shape, epoch); `member.cell c` reads the
+    // shape word and `member.publish` asks the runtime to fill it. The
+    // cells of one site form a GROUP (`group` its first cell, `groupSize`
+    // its cells, in order), each with its own function; a shape the group
+    // holds is put in no second cell of it.
+    enum class MemberKind : uint8_t { Method, Getter, Setter };
+    struct MemberCell {
+        MemberKind kind = MemberKind::Method;
+        uint32_t keyIndex = 0;
+        uint32_t callee = 0;  // module function whose code the cell's function runs
+        uint32_t group = 0;
+        uint32_t groupSize = 1;
+        bool operator==(const MemberCell&) const = default;
+    };
+    std::vector<MemberCell> memberCells;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

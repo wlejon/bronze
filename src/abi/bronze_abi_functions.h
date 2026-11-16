@@ -267,16 +267,14 @@
      * registration took it and the earlier class's sites missed into the IC \
      * forever (three.js's Matrix3 and Matrix4 are both `[elements]`). */    \
     X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
-    /* The ACCESSOR cell (runtime/accessor_cell.cpp): a site whose receiver's\
-     * class declares an accessor for its key guards on a two-word module cell,\
-     * (shape, prototype-mutation epoch), and on a hit calls that accessor's\
-     * getter or setter directly. This fills the cell from a slow path: the\
-     * receiver's shape when its chain resolves the key, at the current epoch,\
-     * to an accessor whose half for the site (the getter, or with the BOOL the\
-     * setter) has exactly the given code word; else a refusal for this epoch.\
-     * Called only while the cell's epoch is not the thread's. */ \
-    X(bronze_accessor_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR, BRONZE_ABI_BOOL)) \
-    X(bronze_method_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR)) \
+    /* A MEMBER cell (runtime/accessor_cell.cpp, il.h Module::memberCells):\
+     * two words, (shape, prototype-mutation epoch). Fills it from a speculated\
+     * site's exit: the receiver's shape when its chain resolves the key, at\
+     * the current epoch, above the receiver to a member of the given kind\
+     * (0 a method in a data property, 1 a getter, 2 a setter) whose function\
+     * has exactly the given code word, and no cell of the site's group (the\
+     * group's first cell and its count) holds that shape already. */ \
+    X(bronze_member_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U32)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_cell_fill,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \

@@ -706,6 +706,19 @@ enum class Op : uint8_t {
     // nothing on the JS heap. Writes `Protos`. Only in an exit block, before
     // its leave.
     ProtoPublish,
+    // a: ptr = member.cell <c>. Word 0 of member cell c (Module::memberCells):
+    // the receiver shape the runtime last found to resolve the cell's key,
+    // above the receiver, to the cell's function (a method in a data
+    // property, or an accessor's getter or setter) at this thread's
+    // prototype epoch, or a word no shape has. The runtime empties every
+    // such cell at each bump of the epoch. `immI32` = c. Reads `Protos`.
+    MemberCell,
+    // member.publish %recv, <c>. Asks the runtime to check what %recv's
+    // chain resolves the cell's key to and, when it is the cell's function
+    // and no other cell of its group holds %recv's shape, to put that shape
+    // in the cell. Runs no user code and allocates nothing on the JS heap.
+    // Writes `Protos`. Only in an exit block, before its leave.
+    MemberPublish,
     // a = construct.result %r, %this: %r when it is an object, else %this —
     // the value of `new` given what a base constructor returned (10.2.2
     // [[Construct]] steps 10-12). Pure.

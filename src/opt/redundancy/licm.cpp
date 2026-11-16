@@ -28,7 +28,9 @@
 // (RedundancyOptions::preheaderResume). The preheader's jump then becomes
 //     br cond, cont, exit'      (arms in the guard's own orientation)
 // with `cont` the new end of the preheader chain (jumping to the header) and
-// `exit'` a fresh cold block ending in `leave` to that resume point. The
+// `exit'` a fresh cold block ending in `leave` to that resume point, after
+// the cache fills of the guard's own exit (isCacheFill; a guard whose fills
+// read a value of the loop stays). The
 // guard in the loop stays as it was: its condition is now a value fact on
 // entry to the loop, which the next value walk (job 2) folds, deleting the
 // in-loop exit. Hoisting a guard executes its test before work the first
@@ -90,6 +92,9 @@ struct Step {
     ValueId cond = kNoValue;
     bool exitOnTrue = false;
     LeaveTarget target;
+    // The cache fills the guard's own exit made before leaving, copied to the
+    // hoisted exit (cacheFills).
+    std::vector<il::Instruction> fills;
 };
 
 // What the facts say inside one loop and at its preheader's end.
@@ -101,6 +106,12 @@ struct LoopFacts {
 bool endsInLeave(const il::Block& block) {
     return !block.instructions.empty() && block.instructions.back().op == Op::Leave;
 }
+
+// The CACHE FILLS of a guard's exit: `proto.publish` and `member.publish`,
+// which ask the runtime to fill the cell the guard tested (il_op.h) and run
+// no user code. Without them the cell is never filled and the guard fails
+// for good, so a hoisted guard's exit makes them too.
+bool isCacheFill(Op op) { return op == Op::ProtoPublish || op == Op::MemberPublish; }
 
 // Gives every loop a preheader where one can be made. Each new block changes
 // the CFG, so the loops are found afresh after each.
@@ -239,7 +250,8 @@ const std::optional<LeaveTarget>& LoopPlanner::resumeTarget() {
     if (!resumeAsked_) {
         resumeAsked_ = true;
         if (fn_.isSpeculated() && ctx_.options.preheaderResume) {
-            resume_ = ctx_.options.preheaderResume(fn_, loop_.header, preheader_);
+            resume_ = ctx_.options.preheaderResume(fn_, loop_.header, preheader_,
+                                                   [this](ValueId v) { return ctx_.current(v); });
             if (resume_ && !resume_->buildState) resume_.reset();
         }
     }
@@ -257,6 +269,16 @@ std::optional<Step> LoopPlanner::guardStep(BlockId b) {
     if (thenExits == elseExits) return std::nullopt;
     const ValueId cond = term.operands[0];
     if (!invariant(cond) || !dominatesLatches(b)) return std::nullopt;
+    // The exit's cache fills go with the guard, so their operands must be
+    // there at the preheader's end too.
+    std::vector<il::Instruction> fills;
+    for (const il::Instruction& inst : fn_.blocks[thenExits ? thenBlock : elseBlock].instructions) {
+        if (!isCacheFill(inst.op)) continue;
+        for (ValueId v : inst.operands) {
+            if (!invariant(v)) return std::nullopt;
+        }
+        fills.push_back(inst);
+    }
     const std::optional<LeaveTarget>& target = resumeTarget();
     if (!target) return std::nullopt;
 
@@ -272,6 +294,7 @@ std::optional<Step> LoopPlanner::guardStep(BlockId b) {
     step.cond = cond;
     step.exitOnTrue = thenExits;
     step.target = *target;
+    step.fills = std::move(fills);
     return step;
 }
 
@@ -321,6 +344,7 @@ BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step) {
     const BlockId exit = newBlock(fn).id;
     fn.blocks[exit].handler = handler;
     fn.blocks[exit].cold = true;
+    for (const il::Instruction& fill : step.fills) fn.blocks[exit].instructions.push_back(fill);
     std::vector<ValueId> state = step.target.buildState(fn, exit);
     il::Instruction leave;
     leave.op = Op::Leave;

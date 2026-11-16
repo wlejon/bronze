@@ -238,9 +238,10 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
         if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) {
             return std::nullopt;
         }
+        if (h->ways.front().form == "accessor") return planMember(*h, SiteKind::MemberGet, 0, block, index);
         for (const spec::HarvestWay& way : h->ways) {
             // `proto` (found on the chain: no constant holder to load from
-            // here), `absent`, `accessor` and `array` stay generic.
+            // here), `absent` and `array` stay generic.
             if (way.form != "own") return std::nullopt;
             names.push_back(way.receiver);
         }
@@ -290,9 +291,11 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
 
     std::string name;
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
-        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.size() != 1) {
+        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) {
             return std::nullopt;
         }
+        if (h->ways.front().form == "accessor") return planMember(*h, SiteKind::MemberSet, 1, block, index);
+        if (h->ways.size() != 1) return std::nullopt;
         if (h->ways.front().form == "own") return planPropAdd(h->ways.front().receiver, key, block, index);
         if (h->ways.front().form != "store") return std::nullopt;
         name = h->ways.front().receiver;
@@ -339,6 +342,9 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
         if (!h->method || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) return std::nullopt;
         if (std::optional<SitePlan> math = planIntrinsic(*h, argc, block, index)) return math;
+        if (std::optional<SitePlan> member = planMember(*h, SiteKind::MemberMethod, argc, block, index)) {
+            return member;
+        }
         std::vector<std::string> callees;
         bool anySlot = false;
         for (const spec::HarvestWay& way : h->ways) {

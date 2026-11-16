@@ -264,6 +264,9 @@ bool ValueWalk::apply() {
         changed_ = true;
     }
     replaceAllUses(fn_, repl_);
+    for (size_t v = 0; v < repl_.size(); ++v) {
+        if (repl_[v] != kNoValue) ctx_.noteReplaced(static_cast<ValueId>(v), repl_[v]);
+    }
     for (size_t b = 0; b < fn_.blocks.size(); ++b) {
         if (dead_[b].empty()) continue;
         auto& insts = fn_.blocks[b].instructions;

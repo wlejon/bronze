@@ -110,6 +110,7 @@ bool removeTrivialParams(JobContext& ctx) {
                 const ValueId p = fn.blocks[b].params[k].id;
                 eraseParam(fn, in[b], id, k);
                 replaceAllUses(fn, p, v);
+                ctx.noteReplaced(p, v);
                 ++ctx.stats.trivialBlockParams;
                 changed = again = true;
             }
@@ -320,8 +321,9 @@ bool runDeadCode(JobContext& ctx) {
     if (fn.blocks.empty()) return false;
     // Trivial parameters and liveness both assume every edge they read comes
     // from a reachable block.
+    bool changed = dropDeadHandlers(fn) != 0;
     size_t removed = removeUnreachableBlocks(fn);
-    bool changed = removeTrivialParams(ctx);
+    changed |= removeTrivialParams(ctx);
     changed |= sweepDeadValues(ctx);
     changed |= removeForwarders(ctx);
     removed += removeUnreachableBlocks(fn);

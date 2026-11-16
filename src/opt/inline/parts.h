@@ -57,9 +57,10 @@ struct AfterCall {
 // by id. The speculation step put each `resumeAfter` point in front of the
 // instruction after the generic call, and G is unchanged since (the inliner
 // runs before any pass edits G), so the instruction just before such a point
-// IS the generic call: `call.dynamic`, `method.call`, or lowering's direct
-// `call` (resume_points.h places points back to front, and one location has
-// one point, so nothing else is inserted between the two).
+// IS the generic call: `call.dynamic`, `method.call`, lowering's direct
+// `call`, or the `prop.get` / `prop.set` a getter or setter call stands for
+// (resume_points.h places points back to front, and one location has one
+// point, so nothing else is inserted between the two).
 class AfterCallPoints {
 public:
     explicit AfterCallPoints(const il::Function& generic);

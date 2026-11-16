@@ -15,9 +15,9 @@
 // point goes in. The query runs later, on S as passes have left it, so it
 // identifies the loop from the IL alone: S keeps G's value ids, and a block
 // parameter is never moved to another block, so the ids of S's header
-// parameters name G's header. Everything that could have changed since —
-// a parameter removed, a value replaced by an equal one, a type changed —
-// answers nullopt, which keeps the guard in the loop.
+// parameters name G's header. A value the redundancy pass replaced by an
+// equal one is followed to its replacement; a value gone otherwise or of
+// another type than G's answers nullopt, which keeps the guard in the loop.
 
 #include <algorithm>
 
@@ -50,7 +50,7 @@ uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& plan
 }
 
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& s, BlockId header,
-                                               BlockId preheader) {
+                                               BlockId preheader, const std::function<ValueId(ValueId)>& current) {
     if (!s.isSpeculated() || s.speculatedFrom >= module.functions.size()) return std::nullopt;
     const il::Function& g = module.functions[s.speculatedFrom];
     if (header >= s.blocks.size() || preheader >= s.blocks.size() || header == preheader) return std::nullopt;
@@ -105,14 +105,15 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
     LoopEntryResume out;
     out.resumeId = static_cast<uint32_t>(point.immI32);
     for (const ValueId v : point.operands) {
-        ValueId mine = v;
+        // A header parameter S still has: its value on entry is what the
+        // preheader passes it. Anything else, a header parameter a pass found
+        // trivial included (every edge passed it one value), is the value
+        // standing for it now.
+        ValueId mine = current(v);
         if (v < paramOwner.size() && paramOwner[v] == gHeader) {
-            // A header parameter: its value on entry is what the preheader
-            // passes it.
             auto it = std::find_if(sHeader.params.begin(), sHeader.params.end(),
                                    [&](const il::BlockParam& p) { return p.id == v; });
-            if (it == sHeader.params.end()) return std::nullopt;  // removed by a pass
-            mine = entry.target.args[static_cast<size_t>(it - sHeader.params.begin())];
+            if (it != sHeader.params.end()) mine = entry.target.args[static_cast<size_t>(it - sHeader.params.begin())];
         }
         if (mine >= defBlock.size() || defBlock[mine] == il::kNoBlock) return std::nullopt;
         const BlockId def = defBlock[mine];

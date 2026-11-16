@@ -19,6 +19,7 @@
 #include "abi/bronze_feedback_site.h"
 #include "runtime/harvest_sampler.h"
 #include "runtime/ic_hot.h"
+#include "runtime/fn.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
@@ -35,13 +36,16 @@ namespace {
 // One thing a cache held: how the site's key was found (a property way's
 // form, or a method way's), the receiver it was latched for, and for a method
 // site the callee (`*other*` when the entry does not name a source function,
-// such as a native or a build without function source names).
+// such as a native or a build without function source names). A property
+// site's `accessor` way names the accessor's getter as its callee and its
+// setter as `setter`.
 struct Fact {
     std::string form;
     std::string receiver;
     std::string callee;
+    std::string setter;
     bool operator<(const Fact& o) const {
-        return std::tie(form, receiver, callee) < std::tie(o.form, o.receiver, o.callee);
+        return std::tie(form, receiver, callee, setter) < std::tie(o.form, o.receiver, o.callee, o.setter);
     }
 };
 
@@ -251,6 +255,42 @@ std::string calleeOf(const void* code) {
     return "*other*";
 }
 
+// An accessor way's getter and setter, by the names calleeOf gives: walked
+// from the way's receiver shape to the holder its depth names, as the chain
+// stands now. The run may have changed the chain since the way was filled
+// (the epoch it was filled at is often gone by the end of a run, which bumps
+// it for reasons of its own), so the holder's shape must still have an
+// accessor at the way's slot; a name read off another one costs the build
+// that reads it speed, never an answer (the member cell checks the function
+// at run time). `*other*` for a half that is no function, an accessor own on
+// the receiver (depth 0: no member above it), a function receiver's statics
+// chain, or a holder with no accessor at the slot.
+std::pair<std::string, std::string> accessorHalves(const InlineCache& way) {
+    const std::pair<std::string, std::string> none{"*other*", "*other*"};
+    const uint32_t depth = way.realDepth();
+    if (depth == 0 || way.isStatics() || depth > ObjectHeader::kMaxPrototypeDepth) return none;
+    const Shape* shape = way.cached_shape;
+    const ObjectHeader* holder = nullptr;
+    for (uint32_t d = 0; d < depth; ++d) {
+        const Value proto = shape->prototypeValue();
+        if (!proto.isObject() || proto.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return none;
+        holder = proto.asObject<ObjectHeader>();
+        shape = holder->shape;
+        if (shape == nullptr || shape->isDictionary()) return none;
+    }
+    const Shape* node = shape;
+    while (node != nullptr && node != node->root && !(node->accessor && node->slot_index == way.cached_slot)) {
+        node = node->parent;
+    }
+    if (node == nullptr || node == node->root) return none;
+    auto name = [](Value half) -> std::string {
+        if (!half.isObject() || half.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return "*other*";
+        return calleeOf(reinterpret_cast<const void*>(half.asObject<FunctionHeader>()->code));
+    };
+    // The setter is the slot after the getter (accessor.cpp).
+    return {name(holder->getSlot(way.cached_slot)), name(holder->getSlot(way.cached_slot + 1))};
+}
+
 // A property site: its ways, one fact each, in the forms the read and write
 // paths fill (object.h InlineCache).
 void foldProperty(State& s, Site& site, const uint64_t* words) {
@@ -260,11 +300,16 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
         if (way->cached_shape == nullptr) continue;
         ++used;
         if (way->isArrayMethod()) {
-            site.facts.insert(Fact{"array", "array", {}});
+            site.facts.insert(Fact{"array", "array", {}, {}});
             continue;
         }
-        const char* form = way->isAbsent() ? "absent" : way->isAccessor() ? "accessor" : way->realDepth() != 0 ? "proto" : way->isStoreFilled() ? "store" : "own";
-        site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}});
+        if (way->isAccessor() && !way->isAbsent()) {
+            auto [getter, setter] = accessorHalves(*way);
+            site.facts.insert(Fact{"accessor", shapeName(s, way->cached_shape), std::move(getter), std::move(setter)});
+            continue;
+        }
+        const char* form = way->isAbsent() ? "absent" : way->realDepth() != 0 ? "proto" : way->isStoreFilled() ? "store" : "own";
+        site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}, {}});
     }
     if (used == BRONZE_ABI_IC_WAYS) site.full = true;
     // A write uses ways 0..2 (`BRONZE_ABI_IC_SET_WAYS`), leaving way 3's
@@ -286,21 +331,22 @@ void foldMethodWay(State& s, Site& site, uint64_t shapeWord, uint64_t codeWord, 
         // methods are String.prototype's, or the number word.
         if (kind >= BRONZE_ABI_METHOD_IC_KIND_NUMBER) {
             const char* prim = kind == BRONZE_ABI_METHOD_IC_KIND_NUMBER ? "number" : "string";
-            site.facts.insert(Fact{"native", prim, std::string("native:") + prim});
+            site.facts.insert(Fact{"native", prim, std::string("native:") + prim, {}});
             return;
         }
         const std::string word = typeFeedbackKindWord(static_cast<uint16_t>(kind));
-        site.facts.insert(Fact{"native", word, "native:" + word});
+        site.facts.insert(Fact{"native", word, "native:" + word, {}});
         return;
     }
     const std::string& receiver = shapeName(s, reinterpret_cast<const Shape*>(shapeWord));
     if (slotForm) {
         site.facts.insert(Fact{"slot", receiver,
                                codeWord != 0 ? calleeOf(reinterpret_cast<const void*>(codeWord))
-                                             : std::string("*other*")});
+                                             : std::string("*other*"),
+                               {}});
         return;
     }
-    site.facts.insert(Fact{"direct", receiver, calleeOf(reinterpret_cast<const void*>(codeWord))});
+    site.facts.insert(Fact{"direct", receiver, calleeOf(reinterpret_cast<const void*>(codeWord)), {}});
 }
 
 // Appends `in` to `out`, escaped. Most names need nothing escaped and are
@@ -362,9 +408,13 @@ std::string textOf(const State& s, const Module& m) {
             out += f.form;
             out += '\t';
             appendEscaped(out, f.receiver);
-            if (site.method) {
+            if (site.method || f.form == "accessor") {
                 out += '\t';
                 appendEscaped(out, f.callee);
+            }
+            if (!site.method && f.form == "accessor") {
+                out += '\t';
+                appendEscaped(out, f.setter);
             }
             out += '\n';
         }

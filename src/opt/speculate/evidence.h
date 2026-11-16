@@ -113,6 +113,11 @@ enum class SiteKind : uint8_t {
     ElemWrite,    // elem.set (or prop.set of an index key): an existing element of either
     ArrayLength,  // prop.get "length" of an Array
     MathCall,     // method.call of a Math intrinsic
+    // A member found above the receiver, one function per receiver shape
+    // (1..kMaxChainShapes), each behind a member cell (member_call.cpp):
+    MemberMethod,  // method.call of a method in a prototype's data property
+    MemberGet,     // prop.get of an accessor's getter
+    MemberSet,     // prop.set (an assignment) of an accessor's setter
 };
 
 // Int: every operand an int32 and the operation computed on i32 (add, sub,
@@ -136,7 +141,8 @@ struct SitePlan {
     std::vector<ShapeSlot> shapes;
     // MethodSlot, MethodProto, Call, Construct: the callee, by its index as
     // lowered. MethodProto over several (2..kMaxChainShapes): `callees`, and
-    // `callee` unset.
+    // `callee` unset. MemberMethod / MemberGet / MemberSet: `callees`, one
+    // per receiver shape the harvest held (a function may repeat).
     uint32_t callee = kNoFunction;
     std::vector<uint32_t> callees;
     // Arith: one mask per operand, and the form chosen from them.
@@ -183,6 +189,10 @@ private:
                                        BlockId block, uint32_t index) const;
     std::optional<SitePlan> planConstruct(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
                                           uint32_t index) const;
+    // evidence_member.cpp: a harvested site whose every way found its member
+    // above the receiver, as MemberMethod / MemberGet / MemberSet.
+    std::optional<SitePlan> planMember(const spec::HarvestSite& h, SiteKind kind, size_t argc, BlockId block,
+                                       uint32_t index) const;
     // The callee a harvested slow site entered, when it entered one only.
     uint32_t harvestedCallee(const il::Instruction& inst) const;
     std::optional<SitePlan> planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,

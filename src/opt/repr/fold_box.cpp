@@ -31,6 +31,10 @@
 //                    Numbers; cmp.* answers false at NaN as 13.10 does).
 // Mixed i32/f64 compare operands meet as f64 through `i32.to_f64`, which is
 // exact.
+//   cmp.* on f64 operands that are each exactly an int32 (rewrite.h
+//   exactInt32: `i32.to_f64 x` or an int32 constant) -> cmp.* on the
+//                    int32s: the conversion is exact and keeps order, so the
+//                    double compare and the int32 one agree on every input.
 //
 // A replaced instruction is deleted explicitly rather than left to dead code:
 // a checked unbox or a boxed conversion calls unknown code by the effect
@@ -82,6 +86,7 @@ private:
     bool foldToInt32(BlockId b, size_t i, const BoxSource& s);
     bool foldEquality(BlockId b, size_t i, const BoxSource& l, const BoxSource& r);
     bool foldRelational(BlockId b, size_t i, const BoxSource& l, const BoxSource& r);
+    bool narrowCompare(BlockId b, size_t i);
     // `x` as an f64 operand: itself, or an `i32.to_f64` planned before (b, i).
     ValueId asF64(BlockId b, size_t i, const BoxSource& s);
 
@@ -166,6 +171,14 @@ void BoxFolder::visit(BlockId b, size_t i) {
                 return;
             }
             if (s && inst.boxType == Type::Dynamic && foldToInt32(b, i, *s)) ++ctx_.stats.conversionsFolded;
+            return;
+        case Op::CmpLt:
+        case Op::CmpGt:
+        case Op::CmpLe:
+        case Op::CmpGe:
+        case Op::CmpEq:
+        case Op::CmpNe:
+            if (narrowCompare(b, i)) ++ctx_.stats.comparesTyped;
             return;
         case Op::StrictEq:
         case Op::LooseEq:
@@ -363,6 +376,37 @@ bool BoxFolder::foldRelational(BlockId b, size_t i, const BoxSource& l, const Bo
         c = asF64(b, i, r);
     }
     rewriteInPlace(fn_.blocks[b].instructions[i], op, {a, c});
+    changed_ = true;
+    return true;
+}
+
+bool BoxFolder::narrowCompare(BlockId b, size_t i) {
+    const il::Instruction& inst = fn_.blocks[b].instructions[i];
+    if (inst.operands.size() != 2 || defs_.type(inst.operands[0]) != Type::F64 ||
+        defs_.type(inst.operands[1]) != Type::F64) {
+        return false;
+    }
+    std::optional<Int32Source> sides[2];
+    bool converted = false;
+    for (int k = 0; k < 2; ++k) {
+        sides[k] = exactInt32(fn_, defs_, inst.operands[k]);
+        if (!sides[k]) return false;
+        converted = converted || !sides[k]->isConst;
+    }
+    // Two constants are the fold's.
+    if (!converted) return false;
+    ValueId xs[2];
+    for (int k = 0; k < 2; ++k) {
+        if (!sides[k]->isConst) {
+            xs[k] = sides[k]->value;
+            continue;
+        }
+        il::Instruction c = makeConstI32(fn_, sides[k]->constant, fn_.blocks[b].instructions[i].span);
+        xs[k] = c.result;
+        edits_.insertBefore(b, i, std::move(c));
+    }
+    il::Instruction& site = fn_.blocks[b].instructions[i];
+    rewriteInPlace(site, site.op, {xs[0], xs[1]});
     changed_ = true;
     return true;
 }

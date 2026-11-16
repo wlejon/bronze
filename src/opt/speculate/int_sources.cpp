@@ -1,7 +1,7 @@
 // INT SOURCES: which int-form arithmetic plans keep their int form.
 //
 // A boxed Number is the double's bits (runtime/value.h). The int form of
-// `+ - ++ --`, of a compare and of ToBoolean begins with `is.i32` and
+// `+ - * ++ --`, of a compare and of ToBoolean begins with `is.i32` and
 // `unbox.i32.unchecked` on each Dynamic operand: a convert, a convert back and
 // three compares when the value really is a double box, and nothing once
 // representation selection (opt/repr) has paired the unbox with the
@@ -21,7 +21,7 @@
 //   - a block parameter at least one of whose incoming values is one (a loop
 //     counter entered from a parameter is unboxed once per loop entry and is
 //     an i32 on every iteration after).
-// An Int-form plan of `+`, `-`, `++`/`--`, a compare or ToBoolean whose
+// An Int-form plan of `+`, `-`, `*`, `++`/`--`, a compare or ToBoolean whose
 // Dynamic operands are not all int sources becomes Double. `%` keeps its int
 // form: its double form is a library remainder, dearer than the test.
 // The sources are a greatest fixpoint: everything planned Int starts as a
@@ -41,7 +41,7 @@ namespace {
 
 bool demotable(il::Op op) {
     switch (op) {
-        case il::Op::Add: case il::Op::Sub: case il::Op::NumericStep:
+        case il::Op::Add: case il::Op::Sub: case il::Op::Mul: case il::Op::NumericStep:
         case il::Op::RelLt: case il::Op::RelGt: case il::Op::RelLe: case il::Op::RelGe:
         case il::Op::StrictEq: case il::Op::LooseEq:
         case il::Op::Unbox:

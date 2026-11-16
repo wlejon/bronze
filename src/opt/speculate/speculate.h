@@ -28,6 +28,7 @@
 // elem.cpp); evidence.cpp is the only reader of the profile.
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -109,6 +110,8 @@ bool mayPlaceResumePoint(const il::Function& fn, BlockId block);
 //     G's (cloneFunction keeps ids; block renumbering by later passes does not
 //     touch values). A header without parameters, or whose parameters name no
 //     single block of G, answers nullopt.
+//   - a value of G a pass replaced in S by an equal one is named by what
+//     `current` answers for it (RedundancyOptions::preheaderResume);
 //   - nullopt as well when a needed value no longer exists in S, is not
 //     available at the end of `preheader` (defined inside the loop, or not on
 //     every path), or has a type other than G's — or when `preheader` does not
@@ -119,6 +122,7 @@ struct LoopEntryResume {
     std::vector<ValueId> stateInS;
 };
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& S,
-                                               BlockId header, BlockId preheader);
+                                               BlockId header, BlockId preheader,
+                                               const std::function<ValueId(ValueId)>& current);
 
 }  // namespace bronze::opt::speculate

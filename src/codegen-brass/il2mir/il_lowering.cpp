@@ -602,7 +602,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
                                  "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells",
-                                 "__bronze_literal_shapes", "__bronze_proto_cells"}) {
+                                 "__bronze_literal_shapes", "__bronze_proto_cells", "__bronze_member_cells"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }

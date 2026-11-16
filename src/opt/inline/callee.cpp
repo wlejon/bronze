@@ -115,11 +115,13 @@ AfterCallPoints::AfterCallPoints(const il::Function& generic) {
             if (point.op != il::Op::ResumePoint || point.immI32 < 0) continue;
             const il::Instruction& call = block.instructions[i - 1];
             // Only the forms a `resumeAfter` is placed behind
-            // (method_call.cpp, plain_call.cpp, construct.cpp, driver.cpp
+            // (method_call.cpp, plain_call.cpp, construct.cpp, member_call.cpp
+            // for a getter's read and a setter's write, driver.cpp
             // markLoweredDirectCalls). A point behind anything else stands in
-            // front of a site and is no after-call point.
+            // front of a site and is no after-call point. The value of a read
+            // through a getter is what the getter returned; a write has none.
             if (call.op != il::Op::DynamicCall && call.op != il::Op::MethodCall && call.op != il::Op::Call &&
-                call.op != il::Op::Construct) {
+                call.op != il::Op::Construct && call.op != il::Op::PropGet && call.op != il::Op::PropSet) {
                 continue;
             }
             AfterCall after;

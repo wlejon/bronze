@@ -81,6 +81,8 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   harvest <16 hex digits> <sites>
 //   ic      <index> property|method <flags: -, or full / mega, comma-separated>
 //   way     <index> <form> <receiver> [<callee>, method sites]
+//                                     [<getter> <setter>, a property site's
+//                                      `accessor` way, version 7 on]
 //   other   <index> <times a receiver no way could hold reached the runtime>
 //   slowsites <the build's slow-site count> <the sites it armed: per 64, a
 //             word of 16 hex digits whose bit i is site 64 * word + i>
@@ -249,9 +251,14 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     }
     HarvestWay way;
     const bool method = it->second.method;
-    if (f.size() != (method ? 5u : 4u) || !(method ? isMethodForm(f[2]) : isPropertyForm(f[2])) ||
+    // An accessor way names its getter and setter from version 7 on; an
+    // older one names neither.
+    const bool halves = !method && f.size() == 6 && f[2] == "accessor";
+    if (f.size() != (method ? 5u : halves ? 6u : 4u) || !(method ? isMethodForm(f[2]) : isPropertyForm(f[2])) ||
         !unescapeName(f[3], way.receiver) || way.receiver.empty() ||
-        (method && (!unescapeName(f[4], way.callee) || way.callee.empty()))) {
+        (method && (!unescapeName(f[4], way.callee) || way.callee.empty())) ||
+        (halves && (!unescapeName(f[4], way.callee) || way.callee.empty() || !unescapeName(f[5], way.setter) ||
+                    way.setter.empty()))) {
         why = "malformed way row";
         return false;
     }
@@ -316,7 +323,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
             if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2" &&
                 line != "bronze-type-feedback 3" && line != "bronze-type-feedback 4" &&
-                line != "bronze-type-feedback 5") {
+                line != "bronze-type-feedback 5" && line != "bronze-type-feedback 6") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;
@@ -463,6 +470,9 @@ std::string TypeProfile::serialize() const {
             for (const HarvestWay& way : site.ways) {
                 out += "way\t" + std::to_string(index) + "\t" + way.form + "\t" + escapeName(way.receiver);
                 if (site.method) out += "\t" + escapeName(way.callee);
+                if (!site.method && !way.callee.empty()) {
+                    out += "\t" + escapeName(way.callee) + "\t" + escapeName(way.setter);
+                }
                 out += "\n";
             }
             if (site.uncached != 0) {

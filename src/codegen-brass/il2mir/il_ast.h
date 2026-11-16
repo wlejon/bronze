@@ -205,7 +205,9 @@ enum class BronzeOp {
     FnNativeIs,
     MathFn,
     // il_op.h's literal and construction forms: ObjectLiteral the literal in
-    // `imm_i64`, ProtoCell / ProtoPublish the cell in `imm_i64`.
+    // `imm_i64`, ProtoCell / ProtoPublish / MemberCell / MemberPublish the
+    // cell in `imm_i64` (MemberPublish its cell's function in `index` and
+    // `callee_name`).
     ObjectLiteral,
     ArrayLiteral,
     FnConstructs,
@@ -214,6 +216,8 @@ enum class BronzeOp {
     ShapeStore,
     ProtoCell,
     ProtoPublish,
+    MemberCell,
+    MemberPublish,
     ConstructResult,
     Unknown
 };

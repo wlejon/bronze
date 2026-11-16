@@ -16,7 +16,6 @@
 // forms), where the receiver can be rooted across the call, and what arrives
 // here is always the primitive that step produced.
 
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -215,9 +214,13 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
         return true;
     }
     if (!idxVal.isNumber()) return false;
-    double d = idxVal.asNumber();
-    if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) return false;
-    out = static_cast<uint32_t>(d);
+    // In range first (NaN fails it), then integral: the truncation is exact
+    // only for an integer.
+    const double d = idxVal.asNumber();
+    if (!(d >= 0.0 && d <= 4294967294.0)) return false;
+    const auto u = static_cast<uint32_t>(d);
+    if (static_cast<double>(u) != d) return false;
+    out = u;
     return true;
 }
 

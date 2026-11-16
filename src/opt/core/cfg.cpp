@@ -84,7 +84,7 @@ Cfg::Cfg(const il::Function& fn) {
                 addEdge(id, term.elseTarget.block, EdgeKind::BranchElse);
             }
         }
-        if (block.handler != kNoBlock && block.handler < n && blockCanThrow(block)) {
+        if (block.handler != kNoBlock && block.handler < n) {
             throwSucc_[b] = block.handler;
             addEdge(id, block.handler, EdgeKind::Throw);
         }

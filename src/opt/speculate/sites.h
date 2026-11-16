@@ -29,6 +29,7 @@ void rewriteArith(RewriteContext& ctx, const SitePlan& plan);
 void rewriteElem(RewriteContext& ctx, const SitePlan& plan);
 void rewriteArrayLength(RewriteContext& ctx, const SitePlan& plan);  // elem.cpp
 void rewriteMathCall(RewriteContext& ctx, const SitePlan& plan);     // math_call.cpp
+void rewriteMember(RewriteContext& ctx, const SitePlan& plan);       // member_call.cpp
 
 // arith.cpp: whether `inst` is an operation the arithmetic rewrite knows;
 // whether its generic lowering marks the numeric arms (evidence.h

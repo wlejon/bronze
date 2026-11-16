@@ -92,6 +92,16 @@ BlockId ensurePreheader(il::Function& fn, const Cfg& cfg, const LoopForest& loop
     return pre;
 }
 
+size_t dropDeadHandlers(il::Function& fn) {
+    size_t dropped = 0;
+    for (il::Block& block : fn.blocks) {
+        if (block.handler == kNoBlock || blockCanThrow(block)) continue;
+        block.handler = kNoBlock;
+        ++dropped;
+    }
+    return dropped;
+}
+
 size_t removeUnreachableBlocks(il::Function& fn) {
     if (fn.blocks.empty()) return 0;
     const Cfg cfg(fn);

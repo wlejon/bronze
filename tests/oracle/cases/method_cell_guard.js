@@ -1,6 +1,6 @@
 // An inlined method body's guard asks a cell pair (shape, prototype epoch)
 // before the site's method cache (runtime/accessor_cell.cpp,
-// `bronze_method_cell_publish`). Each block warms a site on one class and
+// `bronze_member_cell_publish`). Each block warms a site on one class and
 // then gives it what a stale pair would answer wrongly: a second shape, a
 // subclass override, an own property of the method's name, the method
 // replaced or deleted on the prototype, a prototype swap, a receiver that is

@@ -556,6 +556,18 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::ProtoPublish;
             out.imm_i64 = inst.immI32;
             break;
+        case il::Op::MemberCell:
+            out.op = il2mir::BronzeOp::MemberCell;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::MemberPublish:
+            out.op = il2mir::BronzeOp::MemberPublish;
+            out.imm_i64 = inst.immI32;
+            if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < ctx.module.memberCells.size()) {
+                out.index = ctx.module.memberCells[inst.immI32].callee;
+                out.callee_name = ctx.fnName(out.index);
+            }
+            break;
         case il::Op::ConstructResult: out.op = il2mir::BronzeOp::ConstructResult; break;
     }
 

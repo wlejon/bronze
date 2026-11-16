@@ -187,6 +187,8 @@ const char* opName(Op op) {
         case Op::ShapeStore: return "shape.store";
         case Op::ProtoCell: return "proto.cell";
         case Op::ProtoPublish: return "proto.publish";
+        case Op::MemberCell: return "member.cell";
+        case Op::MemberPublish: return "member.publish";
         case Op::ConstructResult: return "construct.result";
     }
     return "?";

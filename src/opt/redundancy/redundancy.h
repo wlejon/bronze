@@ -73,13 +73,18 @@ struct LeaveTarget {
 //     ones), so ids recorded when S was made do not identify the loop;
 //     identify it from the IL itself (for example the header's parameters
 //     and the values the preheader's jump passes them).
+//   - `current(v)` names the value standing for `v` now: the pass replaces a
+//     value by an equal one (a trivial block parameter by its one incoming
+//     value, a duplicate by the value numbered first) and deletes it, so an
+//     id of G that S had may be gone from S while its value is still there.
 //   - Returning nullopt keeps every guard of the loop inside it. Without a
 //     resume point at the loop's entry a guard cannot be executed before the
 //     loop: the per-iteration test remains, because the facts a guard
 //     establishes do not survive the back edge into the next iteration
 //     unless the guard dominates the header from outside.
 using PreheaderResumeFn = std::function<std::optional<LeaveTarget>(
-    const il::Function& fn, il::BlockId header, il::BlockId preheader)>;
+    const il::Function& fn, il::BlockId header, il::BlockId preheader,
+    const std::function<il::ValueId(il::ValueId)>& current)>;
 
 struct RedundancyOptions {
     // Rounds of the job sequence per function; each round runs every job

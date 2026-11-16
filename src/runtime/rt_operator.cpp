@@ -698,6 +698,16 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     // throw rather than answer. A symbol is arena-allocated and never moves
     // (runtime/symbol.h), so holding these bits across the calls below is safe.
     if (Value(keyBits).isSymbol()) return hasSymbolProperty(objRoot, Value(keyBits));
+    // A NUMBER key naming an element an array holds (`k in O` in the array
+    // builtins' loops): an own element, so the answer is true with no
+    // conversion. A hole or an index past the end goes the general way below,
+    // where the chain may hold it.
+    if (uint32_t index = 0; Value(keyBits).isNumber() &&
+                            objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+                            rtValueToElementIndex(Value(keyBits), index) &&
+                            objRoot.get().asObject<ArrayHeader>()->hasElem(index)) {
+        return true;
+    }
     // A STRING key on a plain object that is no String wrapper: the key is
     // already its own ToPropertyKey, and the Plain arm below would only copy
     // its characters out and back into a fresh string to make the same walk.

@@ -75,8 +75,11 @@ struct HarvestWay {
     // sites: `direct`, `slot`, `native`.
     std::string form;
     std::string receiver;
-    // Method sites only: the callee, `*other*` when the entry does not say.
+    // Method sites: the callee, `*other*` when the entry does not say. A
+    // property site's `accessor` way (version 7 on): the getter here and the
+    // setter in `setter`, each `*other*` when the harvest could not name it.
     std::string callee;
+    std::string setter;
 };
 
 struct HarvestSite {

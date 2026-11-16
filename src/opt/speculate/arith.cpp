@@ -13,15 +13,19 @@
 // compares. The FORM is chosen so that an int32 test is made only where an
 // int32 operation pays for it (chooseArithForm):
 //
-// INT — `+ -` and `++ --` whose operands and result were int32s, `%` whose
-// int32 arm was the only one run, and the compares of two int32s:
+// INT — `+ - *` and `++ --` whose operands and result were int32s (for `*`
+// no product was out of range or -0), `%` whose int32 arm was the only one
+// run, and the compares of two int32s:
 //     guard is.i32 %a ; x = unbox.i32.unchecked %a     (per Dynamic operand)
 //     guard !add.would_ovf x, y                         (add, sub, ++, --)
+//     guard !mul.would_ovf x, y                         (mul: range and -0)
 //     guard x >= 0 ; guard y > 0                         (`%`)
 //     s = add x, y          : i32
 //     r = box.i32 s
-// DOUBLE — everything else on Numbers, `*` and `/` always (an int32 product
-// overflows and has -0; a quotient is a fraction):
+// int_sources.cpp keeps the int form only where its Dynamic operands come
+// from int-producing code of the function.
+// DOUBLE — everything else on Numbers, `/` always (a quotient is a
+// fraction):
 //     guard is.number %a ; x = unbox.f64.unchecked %a  (per Dynamic operand)
 //     s = mul x, y          : f64
 //     r = box.f64 s
@@ -200,7 +204,7 @@ std::optional<ArithForm> chooseArithForm(const il::Instruction& inst, const std:
         allInt = allInt && isIntOnly(t);
     }
     switch (inst.op) {
-        case il::Op::Add: case il::Op::Sub: case il::Op::NumericStep:
+        case il::Op::Add: case il::Op::Sub: case il::Op::Mul: case il::Op::NumericStep:
             return allInt && !resultDouble ? ArithForm::Int : ArithForm::Double;
         case il::Op::Mod:
         case il::Op::RelLt: case il::Op::RelGt: case il::Op::RelLe: case il::Op::RelGe:
@@ -211,7 +215,7 @@ std::optional<ArithForm> chooseArithForm(const il::Instruction& inst, const std:
         case il::Op::Shl: case il::Op::Shr: case il::Op::UShr:
         case il::Op::BitNot: case il::Op::ToInt32:
             return ArithForm::Bits;
-        default:  // mul, div, neg, to.numeric
+        default:  // div, neg, to.numeric
             return ArithForm::Double;
     }
 }
@@ -243,9 +247,11 @@ void rewriteArith(RewriteContext& ctx, const SitePlan& plan) {
     const il::Type num = asInts ? il::Type::I32 : il::Type::F64;
 
     switch (site.op) {
-        case il::Op::Add: case il::Op::Sub:
+        case il::Op::Add: case il::Op::Sub: case il::Op::Mul:
             if (asInts) {
-                const il::Op test = site.op == il::Op::Add ? il::Op::AddWouldOvf : il::Op::SubWouldOvf;
+                const il::Op test = site.op == il::Op::Add   ? il::Op::AddWouldOvf
+                                  : site.op == il::Op::Sub   ? il::Op::SubWouldOvf
+                                                             : il::Op::MulWouldOvf;
                 b.guard(b.emit(test, il::Type::Bool, {xs[0], xs[1]}), false);
             }
             boxResult(b, b.emit(site.op, num, {xs[0], xs[1]}));
@@ -257,7 +263,7 @@ void rewriteArith(RewriteContext& ctx, const SitePlan& plan) {
             }
             boxResult(b, b.emit(il::Op::Mod, num, {xs[0], xs[1]}));
             break;
-        case il::Op::Mul: case il::Op::Div:
+        case il::Op::Div:
             assert(!asInts);
             boxResult(b, b.emit(site.op, il::Type::F64, {xs[0], xs[1]}));
             break;

@@ -129,7 +129,7 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 5)
+## File format (version 7)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
@@ -142,11 +142,13 @@ one keeps every fallback in line. Version 5 adds the shape turns among the
 harvest's `slow` rows and its `last` rows ("Phases", below); a build on an
 older harvest reads no site as a phase. Version 6 adds the `callee` row (a
 call's or a `new`'s last directly entered callee, below); a build on an older
-harvest plans a plain call from a recorded profile only. The reader takes all
-six versions.
+harvest plans a plain call from a recorded profile only. Version 7 adds the
+getter and setter names to a harvest's `accessor` ways (below); a build on an
+older harvest reads every accessor way as naming neither, and leaves those
+sites generic. The reader takes all seven versions.
 
 ```
-bronze-type-feedback 6
+bronze-type-feedback 7
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -353,7 +355,14 @@ realm released, a reload resetting the image) and at the end of the run. A
 property site's four ways give `<form> <receiver>` per way:
 
 - `own`, `proto`, `absent` or `accessor`, from the depth word's flags, or
-  `store` for a write way a store filled;
+  `store` for a write way a store filled. An `accessor` way also names the
+  getter and the setter of the accessor it found above the receiver,
+  `accessor <receiver> <getter> <setter>`, named as a method way's callee
+  (below): the harvest walks the way's depth from its receiver shape to the
+  holder as the chain stands at the end of the run and reads the pair at the
+  way's slot. `*other*` for a half that is no function, an accessor own on
+  the receiver, a function receiver's statics, or a holder whose shape has no
+  accessor at that slot (the chain changed since the way was filled);
 - `array`, from the array-method sentinel.
 
 A method site's two ways give `<form> <receiver> <callee>`:
@@ -365,6 +374,21 @@ A method site's two ways give `<form> <receiver> <callee>`:
   `intrinsic:Math.<name>` when the code is a Math function's native
   (`rtMathNativeName`), which `planIntrinsic` reads as a `math.*` call;
 - `native`: an exotic receiver, named by kind.
+
+A read site all of whose ways are `accessor` with named getters, a write site
+whose ways name setters, and a method site whose ways are all `direct` become
+MEMBER CELL sites in speculation (`opt/speculate/member_call.cpp`,
+`evidence_member.cpp`): one cell per way (il.h `Module::memberCells`, two
+words a cell in `__bronze_member_cells`), a shape test per cell, and a direct
+call to the way's function, which the inliner can copy in. A cell holds a
+receiver shape only while the runtime's check stands
+(`bronze_member_cell_publish`, `runtime/accessor_cell.cpp`): a plain receiver
+of that shape lacks the key as its own and its chain resolves the key, at the
+prototype epoch, to a function (or an accessor half) with the cell's code; a
+bump of the epoch empties it. A receiver no cell holds leaves in front of the
+site, after asking the runtime to fill the site's cells for it, and G does the
+generic access. A function that reads its environment record is not called
+this way (the cell has no function object to give it one).
 
 Two flags record that a site met more receivers than its cache holds:
 

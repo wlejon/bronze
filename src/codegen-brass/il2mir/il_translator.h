@@ -189,6 +189,15 @@ struct TranslatorOptions {
         int32_t slot = 0;
     };
     std::vector<ProtoCellMeta> proto_cells;
+    // The module's member cells (il.h Module::memberCells): `member.cell n`
+    // reads word 2n of `__bronze_member_cells` (il_abi.h kMemberCellsSymbol).
+    struct MemberCellMeta {
+        uint32_t kind = 0;  // il::Module::MemberKind
+        uint32_t key_index = 0;
+        uint32_t group = 0;
+        uint32_t group_size = 1;
+    };
+    std::vector<MemberCellMeta> member_cells;
     // SLOW SITES (il.h `slowSite`, il_property.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image

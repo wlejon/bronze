@@ -693,6 +693,21 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
                         break;
                     }
+                    case Op::MemberCell:
+                    case Op::MemberPublish: {
+                        out += std::string(opName(inst.op));
+                        for (ValueId v : inst.operands) out += " %" + std::to_string(v) + ",";
+                        out += " " + std::to_string(inst.immI32);
+                        if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < module.memberCells.size()) {
+                            const Module::MemberCell& c = module.memberCells[inst.immI32];
+                            static const char* const kKinds[] = {"method", "getter", "setter"};
+                            out += std::string(" ") + kKinds[static_cast<int>(c.kind)] + " \"" +
+                                   (c.keyIndex < module.keyConstants.size() ? module.keyConstants[c.keyIndex]
+                                                                            : std::string("?")) +
+                                   "\" @" + getFnName(c.callee);
+                        }
+                        break;
+                    }
                     case Op::ProtoCell:
                     case Op::ProtoPublish: {
                         out += std::string(opName(inst.op)) + " " + std::to_string(inst.immI32);

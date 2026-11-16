@@ -169,6 +169,18 @@ void bronze_elem_define(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
     recordElemCall("bronze_elem_define", objBits, keyBits);
     Rooted<Value> target{Value(objBits)};
     Rooted<Value> value{Value(valBits)};
+    // A NUMBER key naming an element of an array at the bare array shape
+    // (CreateDataPropertyOrThrow in the array builtins, `[i]: v` on an
+    // array): an own element defined where it is, as bronze_prop_define's
+    // index arm does; no conversion runs and no integrity level can refuse.
+    if (uint32_t index = 0; Value(keyBits).isNumber() && target.get().isObject() &&
+                            target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+                            target.get().asObject<ArrayHeader>()->isBare() &&
+                            rtValueToElementIndex(Value(keyBits), index)) {
+        const SetRefusal refusal = rtArrayOwnIndexWrite(target, index, value);
+        if (refusal != SetRefusal::None) rtReportSetRefusal(refusal, /*strict=*/true, std::to_string(index));
+        return;
+    }
     Rooted<Value> keyRoot{Value(keyBits)};
     keyRoot.set(rtToPropertyKey(keyRoot));
     keyRoot.set(rtPropertyKeyValue(keyRoot.get()));

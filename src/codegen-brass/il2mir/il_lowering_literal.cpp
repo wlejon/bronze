@@ -49,6 +49,8 @@ bool is_literal_il_op(BronzeOp op) {
         case BronzeOp::ShapeStore:
         case BronzeOp::ProtoCell:
         case BronzeOp::ProtoPublish:
+        case BronzeOp::MemberCell:
+        case BronzeOp::MemberPublish:
         case BronzeOp::ConstructResult:
             return true;
         default:
@@ -213,6 +215,31 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             Value* to = b.build_load(Type::i64(), shapes, static_cast<int32_t>(c.to_cell * 8));
             b.build_call("bronze_transition_publish", Type::void_type(),
                          {cell, from, get_key_id(b, c.key_index), to, b.build_iconst_i32(c.slot)});
+            return true;
+        }
+        // ptr = member.cell <c>: the cell's shape word.
+        case BronzeOp::MemberCell: {
+            Value* cells = module_data_addr(b, std::string(kMemberCellsSymbol));
+            res_val = with_alias_class(b.build_load(Type::i64(), cells, static_cast<int32_t>(inst.imm_i64 * 16)),
+                                       kRuntimeWordAliasClass);
+            return true;
+        }
+        // member.publish %recv, <c>: bronze_member_cell_publish with the
+        // cell's function's code word and its group.
+        case BronzeOp::MemberPublish: {
+            if (!need(1)) return false;
+            if (inst.imm_i64 < 0 || static_cast<size_t>(inst.imm_i64) >= options_.member_cells.size() ||
+                inst.index >= resolved_names_.size() || resolved_names_[inst.index].empty()) {
+                return inst_error(inst, "member.publish names no member cell of the module");
+            }
+            const TranslatorOptions::MemberCellMeta& c = options_.member_cells[inst.imm_i64];
+            Value* cells = module_data_addr(b, std::string(kMemberCellsSymbol));
+            Value* cell = b.build_add(cells, b.build_iconst_i64(inst.imm_i64 * 16));
+            Value* group = b.build_add(cells, b.build_iconst_i64(int64_t{c.group} * 16));
+            Value* code = b.build_func_addr("__wrapper_" + resolved_names_[inst.index]);
+            b.build_call("bronze_member_cell_publish", Type::void_type(),
+                         {opd[0], get_key_id(b, c.key_index), cell, code, b.build_iconst_i32(static_cast<int32_t>(c.kind)),
+                          group, b.build_iconst_i32(static_cast<int32_t>(c.group_size))});
             return true;
         }
         // dynamic = construct.result %r, %this.

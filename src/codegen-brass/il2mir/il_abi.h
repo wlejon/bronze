@@ -225,6 +225,10 @@ inline constexpr std::string_view kLiteralShapesSymbol = "__bronze_literal_shape
 // module's per-thread data, the prototype epoch the runtime stamped it with
 // (runtime/transition_cells.cpp), zero (no epoch) until then.
 inline constexpr std::string_view kProtoCellsSymbol = "__bronze_proto_cells";
+// THE MEMBER CELLS (il.h Module::memberCells): two u64 per cell in the
+// module's per-thread data, (shape, epoch), zero until the runtime fills them
+// (runtime/accessor_cell.cpp).
+inline constexpr std::string_view kMemberCellsSymbol = "__bronze_member_cells";
 
 // The function object's code and environment words (bronze_abi_layout.h,
 // BRONZE_ABI_FN_*): what `fn.code_is` and `fn.env` read.

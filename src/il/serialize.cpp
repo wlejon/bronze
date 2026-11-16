@@ -118,6 +118,7 @@ struct ModuleMirror {
     std::vector<Module::ShapeCell> shapeCells;
     std::vector<Module::ObjectLiteral> objectLiterals;
     std::vector<Module::ProtoCell> protoCells;
+    std::vector<Module::MemberCell> memberCells;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
     std::vector<std::string> sourceFiles;
@@ -143,6 +144,15 @@ struct ProtoCellMirror {
 };
 static_assert(sizeof(Module::ProtoCell) == sizeof(ProtoCellMirror),
               "il::Module::ProtoCell changed: update il/serialize.cpp and bump kFormatVersion");
+struct MemberCellMirror {
+    uint8_t kind;
+    uint32_t keyIndex;
+    uint32_t callee;
+    uint32_t group;
+    uint32_t groupSize;
+};
+static_assert(sizeof(Module::MemberCell) == sizeof(MemberCellMirror),
+              "il::Module::MemberCell changed: update il/serialize.cpp and bump kFormatVersion");
 
 static_assert(sizeof(Module) == sizeof(ModuleMirror),
               "il::Module changed: update il/serialize.cpp and bump kFormatVersion");
@@ -593,6 +603,14 @@ std::string serializeModule(const Module& module) {
         w.var(c.toCell);
         w.var(static_cast<uint32_t>(c.slot));
     }
+    w.var(module.memberCells.size());
+    for (const auto& c : module.memberCells) {
+        w.var(static_cast<uint32_t>(c.kind));
+        w.var(c.keyIndex);
+        w.var(c.callee);
+        w.var(c.group);
+        w.var(c.groupSize);
+    }
     w.var(module.sourceFiles.size());
     for (const auto& f : module.sourceFiles) w.str(f);
     w.var(module.functions.size());
@@ -646,6 +664,14 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
         c.keyIndex = r.u32();
         c.toCell = r.u32();
         c.slot = static_cast<int32_t>(r.u32());
+    }
+    out.memberCells.resize(r.count());
+    for (auto& c : out.memberCells) {
+        c.kind = static_cast<Module::MemberKind>(r.u32());
+        c.keyIndex = r.u32();
+        c.callee = r.u32();
+        c.group = r.u32();
+        c.groupSize = r.u32();
     }
     out.sourceFiles.resize(r.count());
     for (auto& f : out.sourceFiles) f = r.str();

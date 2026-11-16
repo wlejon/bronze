@@ -7,12 +7,13 @@
 // edits the CFG rebuilds them; they are cheap (linear, and the dominator
 // iteration converges in two or three passes over a reducible function).
 //
-// The THROW EDGE: a block whose instructions can throw (il/effects.h, `throws`,
-// the `throw` terminator included) and that names a handler has an edge to
-// it. It is an edge like the others for reachability, dominance, loops and
-// liveness, but it leaves from the middle of the block, carries no arguments
-// and cannot be split. A block that cannot throw has no edge to its handler,
-// so a handler only such blocks name is unreachable.
+// The THROW EDGE: a block that names a handler has an edge to it, as the IL
+// verifier and the backend have (every call the backend makes in a protected
+// block unwinds to the handler, allocation helpers included). It is an edge
+// like the others for reachability, dominance, loops and liveness, but it
+// leaves from the middle of the block, carries no arguments and cannot be
+// split. A block nothing in can throw (il/effects.h, `throws`) loses its
+// handler in dropDeadHandlers (cfg_edit.h), and with it the edge.
 
 #include <cstdint>
 #include <optional>
@@ -69,8 +70,7 @@ public:
     const std::vector<Edge>& inEdges(BlockId b) const { return in_[b]; }
     // The one edge into `b`, when there is exactly one.
     std::optional<Edge> uniqueInEdge(BlockId b) const;
-    // The handler `b` throws to, or kNoBlock (no handler, or nothing in `b`
-    // can throw).
+    // The handler `b` names, or kNoBlock.
     BlockId throwSucc(BlockId b) const { return throwSucc_[b]; }
     // Whether some path enters `b` through `from`'s throw edge without
     // passing `from` again: then nothing `from` defines is available in `b`

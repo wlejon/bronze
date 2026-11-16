@@ -1,13 +1,15 @@
-// Reconciling a compile-time accessor guess with a run-time prototype chain.
+// MEMBER CELLS (il.h Module::memberCells): reconciling a compile-time guess
+// with a run-time prototype chain.
 //
-// A property site whose receiver's class declares an accessor for the key
-// (lower/direct_method_table.h, `resolveAccessors`) compiles to a guard on a
-// two-word module CELL and then a direct call of — or the inlined body of —
-// that accessor's getter or setter. Lowering can only GUESS: the receiver's
-// static class is not its run-time shape, a subclass may override the
-// accessor, an instance may carry an own property of the same name, and any
-// of the prototypes may be patched. This is the one function that decides,
-// for one shape, that the guess is what [[Get]] or [[Set]] would actually do.
+// A speculated method call, getter read or setter write whose harvest found
+// the member above the receiver (opt/speculate/member_call.cpp) compiles to
+// shape tests against two-word module CELLS, each followed by a direct call
+// of — or the inlined body of — the function the cell is for. The compiler
+// can only GUESS: a receiver may carry an own property of the same name, a
+// subclass may override the member, and any of the prototypes may be
+// patched. This is the one function that decides, for one shape, that the
+// guess is what [[Get]] or [[Set]] (and the call after the [[Get]]) would
+// actually do.
 //
 // The cell is (shape, epoch), and the guard is
 //
@@ -41,14 +43,13 @@
 //
 //   [0, 0]               never tried; the guard misses (no live shape is 0).
 //   [kRefused, epoch]    tried at this epoch and the chain did not answer the
-//                        guess; the guard misses and the slow path stops
-//                        calling here until the epoch moves.
-//   [shape, epoch]       this shape resolves the key to the guessed accessor.
+//                        guess for that receiver; the guard misses.
+//   [shape, epoch]       this shape resolves the key to the guessed member.
 //
-// Unlike a static-slot cell, an accessor cell is re-published when the epoch
-// moves: setup bumps it often (every class body adds methods to a prototype),
-// and a cell pinned once would go stale for good. It is still one call per
-// site per epoch, not one per miss.
+// A cell is re-published when the epoch moves: setup bumps it often (every
+// class body adds methods to a prototype), and a cell pinned once would go
+// stale for good. The site's exit asks again on every miss, and leaves for
+// the generic code either way.
 //
 // The list is also emptied, cells and all, before a compiled-in-process
 // module's memory can go (its cells live there) and when the thread's
@@ -137,74 +138,46 @@ void rtForgetPublishedCells() noexcept {
 
 extern "C" {
 
-// `code` is the guessed accessor's call wrapper: the code word its function
-// object carries. The fast path calls the accessor's body with no function
-// object in hand, so each condition below is one it will not re-check:
+// `code` is the cell's function's code word: what its function object
+// carries. The fast path calls that function's body with no function object
+// in hand, so each condition below is one it will not re-check:
 //
 //   - a plain, non-dictionary receiver (the shape word stands for its keys
 //     and its prototype only then);
-//   - the chain resolves the key, at this epoch, to an accessor whose half
-//     for this site is a function with exactly that code;
-//   - a function compiled code may enter without the runtime, made in the
-//     realm running now — what the runtime's own dispatch would enter.
-void bronze_accessor_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell, bronze_fn_code code,
-                                  bool forSet) {
-    recordHelperCall("bronze_accessor_cell_publish");
-    // Census mode: never publish, so every access reaches the helpers the
-    // census counts in (static_shape.cpp says the same of its cells).
+//   - the chain resolves the key, at this epoch, above the receiver, to a
+//     member of `kind` (il.h Module::MemberKind: 0 a method in a data
+//     property, 1 a getter, 2 a setter) whose function has exactly that code;
+//   - a function compiled code may enter without the runtime (no class
+//     constructor for a method, which throws when called; an accessor that
+//     needs no scope pushed), made in the realm running now.
+//
+// The cells of one site (`group`, `groupSize` of them) are tested in order by
+// the fast path, so a shape goes into one of them only: a site whose
+// receivers of several shapes all reach one function gets one cell per shape.
+void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell, bronze_fn_code code,
+                                uint32_t kind, uint64_t* group, uint32_t groupSize) {
+    recordHelperCall("bronze_member_cell_publish");
     if (censusFillsSuppressed()) return;
-    if (cell == nullptr) return;
+    if (cell == nullptr || kind > 2) return;
     const uint64_t epoch = protoMutationEpoch();
-    if (cell[1] == epoch) return;
-
-    uint64_t published = kRefused;
+    // A shape at this epoch stays; a refusal is asked again, as another
+    // receiver may resolve differently.
+    if (cell[1] == epoch && cell[0] != kRefused && cell[0] != 0) return;
     Value objVal(objBits);
     StringHeader* key = rtKeyHeader(keyIndex);
-    if (key != nullptr && objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
-        auto* obj = objVal.asObject<ObjectHeader>();
-        if (obj->shape != nullptr && !obj->shape->isDictionary()) {
-            const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), forSet ? Member::Setter : Member::Getter);
-            if (fn != nullptr && fn->code == code && rtEntersWithoutScope(fn) &&
-                (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot())) {
-                published = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
-            }
-        }
+    if (key == nullptr || !objVal.isObject() || objVal.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return;
+    auto* obj = objVal.asObject<ObjectHeader>();
+    if (obj->shape == nullptr || obj->shape->isDictionary()) return;
+    const uint64_t shapeWord = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
+    for (uint32_t i = 0; group != nullptr && i < groupSize; ++i) {
+        if (group[2 * i] == shapeWord && group[2 * i + 1] == epoch) return;
     }
-    publish(cell, published, epoch);
-}
-
-// The same reconciliation for an inlined METHOD body's guard (`method.ic.is`
-// at a site whose miss is the generic call, il_shape_memo.cpp
-// `find_guard_misses`): the cell says this shape resolves the key, at this
-// epoch, to a data property above the receiver holding a function with
-// exactly the guessed code. What the site's method cache's DIRECT form says
-// in four words (rt_method_call.cpp, `latchMethodIc`) is two here, and the
-// same conditions: never a class constructor (calling one throws), never
-// another realm's function, never an own slot (a write to it moves no shape
-// and no epoch).
-void bronze_method_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell, bronze_fn_code code) {
-    recordHelperCall("bronze_method_cell_publish");
-    if (censusFillsSuppressed()) return;
-    if (cell == nullptr) return;
-    const uint64_t epoch = protoMutationEpoch();
-    // A pair that names a shape at this epoch is listed and stays as it is. A
-    // refusal is asked again: it was one receiver's answer, and a guard whose
-    // cache entry hit sends another (il_accessor_direct.h,
-    // `emit_method_cell_learn`).
-    if (cell[1] == epoch && cell[0] != kRefused) return;
-
+    const Member want = kind == 0 ? Member::Method : kind == 1 ? Member::Getter : Member::Setter;
+    const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), want);
     uint64_t published = kRefused;
-    Value objVal(objBits);
-    StringHeader* key = rtKeyHeader(keyIndex);
-    if (key != nullptr && objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
-        auto* obj = objVal.asObject<ObjectHeader>();
-        if (obj->shape != nullptr && !obj->shape->isDictionary()) {
-            const FunctionHeader* fn = resolvedMember(obj, PropertyKey::forString(key), Member::Method);
-            if (fn != nullptr && fn->code == code && !(fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) &&
-                (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot())) {
-                published = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
-            }
-        }
+    if (fn != nullptr && fn->code == code && (fn->realmSlot() == 0 || fn->realmSlot() == rtCurrentRealmSlot()) &&
+        (want == Member::Method ? !(fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) : rtEntersWithoutScope(fn))) {
+        published = shapeWord;
     }
     publish(cell, published, epoch);
 }

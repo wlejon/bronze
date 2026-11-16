@@ -31,8 +31,13 @@ BlockId splitEdge(il::Function& fn, const Edge& edge);
 BlockId ensurePreheader(il::Function& fn, const Cfg& cfg, const LoopForest& loops,
                         uint32_t loopIndex);
 
-// Deletes every block the Cfg cannot reach from b0 (throw edges only from
-// blocks that can throw, so a handler nothing throwing names goes too), and
+// Clears the handler of every block nothing in can throw (blockCanThrow), so
+// that its throw edge goes: values it defines then reach the handler's side,
+// and a handler only such blocks named becomes unreachable. Answers how many
+// blocks lost theirs.
+size_t dropDeadHandlers(il::Function& fn);
+
+// Deletes every block the Cfg cannot reach from b0, and
 // renumbers the rest in their old order, rewriting every target and handler.
 // A handler that was deleted becomes kNoBlock on the blocks that named it,
 // which can never throw to it. Answers how many blocks went.

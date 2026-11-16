@@ -38,10 +38,10 @@ bool verified(const il::Module& module, const OptimizeOptions& options, const ch
 // every value has G's type at the resume point (speculate.h), so the state is
 // passed as it is: nothing to box in the exit block.
 PreheaderResumeFn loopEntryResumes(const il::Module& module) {
-    return [&module](const il::Function& fn, il::BlockId header,
-                     il::BlockId preheader) -> std::optional<LeaveTarget> {
+    return [&module](const il::Function& fn, il::BlockId header, il::BlockId preheader,
+                     const std::function<il::ValueId(il::ValueId)>& current) -> std::optional<LeaveTarget> {
         std::optional<speculate::LoopEntryResume> entry =
-            speculate::loopEntryResume(module, fn, header, preheader);
+            speculate::loopEntryResume(module, fn, header, preheader, current);
         if (!entry) return std::nullopt;
         LeaveTarget target;
         target.resumeId = entry->resumeId;

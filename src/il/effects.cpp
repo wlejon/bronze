@@ -368,6 +368,15 @@ Effects rawEffects(const Instruction& inst) {
             e.writes = Loc::Protos;
             return e;
         }
+        case Op::MemberCell:
+            return reading(Loc::Protos);
+        // Reads the receiver's shape and its chain; fills a cell.
+        case Op::MemberPublish: {
+            Effects e;
+            e.reads = Loc::Protos | Loc::Shapes | Loc::Slots;
+            e.writes = Loc::Protos;
+            return e;
+        }
         // Runs the rest of a generic function: any user code at all. Listed
         // rather than left to the default so that nobody tightens it by
         // accident.
