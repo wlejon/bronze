@@ -42,8 +42,12 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     eqInst.operands = {cur.id, undefId};
     emitInst(ilFn, eqInst);
 
+    // Not cold: a default runs on every call that leaves its argument out,
+    // which is as often the common case as not (three.js's Euler.set(x, y,
+    // z) takes `order` from its default on every call). Marked cold, it laid
+    // out a hot inlined body as an off-path arm and weighed its values as
+    // rarely read.
     il::BlockId bDefault = createBlock(ilFn);
-    ilFn.blocks[bDefault].cold = true;
     il::BlockId bJoin = createBlock(ilFn);
     const size_t entryBlockIdx = currentBlockIdx_;
     auto statePre = snapshotVarStates();
@@ -55,9 +59,6 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     auto defOpt = bindingName.empty() ? lowerExpr(defaultExpr, ilFn)
                                       : lowerNamedEvaluation(defaultExpr, sourceSpelling(bindingName), ilFn);
     if (!defOpt) return std::nullopt;
-    for (size_t bi = static_cast<size_t>(bJoin) + 1; bi < ilFn.blocks.size(); ++bi) {
-        ilFn.blocks[bi].cold = true;
-    }
     auto stateDefault = snapshotVarStates();
     const bool defaultReaches = !currentBlockIsTerminated(ilFn);
     const size_t defaultEndBlockIdx = currentBlockIdx_;
