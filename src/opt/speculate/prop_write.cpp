@@ -14,6 +14,11 @@
 //     guard ptr.eq (load.shape %obj), (shape.cell n)
 //     slot.store %obj, k, %v
 //
+// On 2..kMaxChainShapes shapes the shape test is a chain, a store per
+// distinct slot, and a receiver of none of them makes the generic `prop.set`
+// in a cold arm and continues in S (the site is polymorphic: one more class
+// is incomplete evidence, not wrong evidence).
+//
 // Why exact: for an object at the cell's shape the key is an own data
 // property that is WRITABLE (the loader contract, shape_key.h: every property
 // of a resolved shape has the attributes an assignment creates; a read-only
@@ -162,10 +167,12 @@ void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan) {
 
     // Several shapes: each test that matches goes to the store of its slot,
     // one store per distinct slot (a subclass's shape extends its base's, so
-    // a base field usually sits at one slot in all of them); the last test is
-    // the guard.
+    // a base field usually sits at one slot in all of them). A receiver of
+    // none of them (a polymorphic site meeting one more class) makes the
+    // generic write in a cold arm and stays in S.
     const ValueId shape = emitShapeOf(b, object);
     const BlockId join = b.newBlock();
+    const BlockId other = b.genericArm(join);
     std::vector<std::pair<int32_t, BlockId>> stores;
     auto storeBlock = [&](int32_t slot) {
         for (const auto& [s, block] : stores) {
@@ -177,14 +184,10 @@ void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan) {
     for (size_t i = 0; i < plan.shapes.size(); ++i) {
         const ValueId matches = emitShapeIs(b, shape, plan.shapes[i].key);
         const BlockId target = storeBlock(plan.shapes[i].slot);
-        if (i + 1 == plan.shapes.size()) {
-            b.guard(matches);
-            b.jump(target);
-        } else {
-            const BlockId next = b.newBlock();
-            b.branch(matches, target, {}, next, {});
-            b.moveTo(next);
-        }
+        const bool last = i + 1 == plan.shapes.size();
+        const BlockId next = last ? other : b.newBlock();
+        b.branch(matches, target, {}, next, {});
+        if (!last) b.moveTo(next);
     }
     for (const auto& [slot, block] : stores) {
         b.moveTo(block);

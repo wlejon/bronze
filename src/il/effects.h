@@ -35,8 +35,11 @@ namespace bronze::il {
 enum class Loc : uint16_t {
     Slots = 1u << 0,          // named-property storage of any object, inline and overflow
     Shapes = 1u << 1,         // the shape word of any object; a transition writes it
-    Elements = 1u << 2,       // array element storage
-    ArrayLen = 1u << 3,       // array length words
+    Elements = 1u << 2,       // the contents of array element blocks
+    // Array length words, and with them the element block's pointer and
+    // capacity, which only an append that grows (or code that writes
+    // everything) moves.
+    ArrayLen = 1u << 3,
     EnvSlots = 1u << 4,       // closure environment record slots
     ModuleEnv = 1u << 5,      // the module scope's singleton record pointer
     Globals = 1u << 6,        // the global object's bindings

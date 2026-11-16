@@ -85,6 +85,12 @@ public:
     // placeable: the site's block already admitted the point in front of it,
     // and the rule (resume_rules.h) is per block.
     uint32_t resumeAfterSite();
+    // A cold block that runs the site's generic instruction (an IC op takes
+    // a fresh IC site) and jumps to `join`, passing its result when the site
+    // has one (`join` then carries the site's result as its parameter). The
+    // arm for evidence that is incomplete rather than wrong: a polymorphic
+    // site meeting one more receiver stays in S.
+    BlockId genericArm(BlockId join);
 
     // ---- blocks ---------------------------------------------------------------
     // A new block with the site's handler, cold when the site's block is.

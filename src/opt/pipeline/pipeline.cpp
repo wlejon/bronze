@@ -143,7 +143,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
         out += "repr: rounds " + n(p.rounds) + "; tests " + n(p.testsFolded) + ", unboxes " + n(p.unboxesFolded) +
                ", conversions " + n(p.conversionsFolded) + ", compares " + n(p.comparesTyped) + ", params " +
                n(p.paramsUnboxed) + " (widened " + n(p.paramsWidened) + ", edge conversions " +
-               n(p.edgeConversions) + "), boxes sunk " + n(p.boxesSunk) + ", to exits " + n(p.boxesSunkToExits) +
+               n(p.edgeConversions) + "), truthy params " + n(p.paramsTruthy) + ", boxes sunk " + n(p.boxesSunk) + ", to exits " + n(p.boxesSunkToExits) +
                " (" + n(p.exitBoxClones) + " copies), dead " + n(p.deadRemoved) + "\n";
         redundancyLine("repr cleanup", p.redundancy);
     }

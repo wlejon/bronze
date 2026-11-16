@@ -1,0 +1,16 @@
+warm 1296750
+108 512
+string 23 24 23
+string 25 26 26
+number 23 24 23
+number 23 24 23
+number 25 26 26
+object 25 26 26
+object 23 24 23
+undefined 23 24 23
+object 25 26 26
+bigint 23 24 23
+bigint 25 26 26
+boolean 25 26 26
+boolean 23 24 23
+symbol 25 26 26

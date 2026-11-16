@@ -70,7 +70,7 @@ using il::Op;
 // The snapshots one loop's planning reads. Rebuilt for every loop: applying a
 // plan moves instructions and adds blocks.
 struct Analyses {
-    explicit Analyses(const il::Function& fn) : cfg(fn), dom(cfg), loops(cfg, dom), defs(fn), alias(fn) {}
+    explicit Analyses(const il::Function& fn) : cfg(fn), dom(cfg), loops(cfg, dom), defs(fn), alias(fn, &dom) {}
 
     Cfg cfg;
     DomTree dom;

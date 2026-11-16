@@ -300,6 +300,12 @@ FoldOutcome foldUnary(il::Instruction& inst, const ValueView& values) {
                 values.type(d->operands[0]) == inst.type) {
                 return identity(d->operands[0]);
             }
+            // `unbox.bool` is ToBoolean: undefined and null are false.
+            if (inst.op == Op::Unbox && inst.type == Type::Bool && d != nullptr &&
+                (d->op == Op::ConstUndefined || d->op == Op::ConstNull)) {
+                makeBoolConstant(inst, false);
+                return constant();
+            }
             return none();
         default:
             return none();

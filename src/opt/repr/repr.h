@@ -52,6 +52,8 @@ struct ReprStats {
     uint64_t paramsUnboxed = 0;      // dynamic block parameters given a typed type
     uint64_t paramsWidened = 0;      // of those, F64 parameters some edge feeds an i32
     uint64_t edgeConversions = 0;    // i32.to_f64 / const.i32 placed on an edge's source
+    // Rule 4.
+    uint64_t paramsTruthy = 0;       // dynamic block parameters only tested, made Bool
     // Rule 3.
     uint64_t boxesSunkToExits = 0;   // boxes whose every use was in exit blocks
     uint64_t exitBoxClones = 0;      // the copies placed in those exit blocks

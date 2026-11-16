@@ -751,9 +751,7 @@ bool IlLowering::lower_instruction(
             std::vector<Value*> target_args;
             for (size_t i = 0; i < inst_ast.target.args.size(); ++i) {
                 Value* aval = get_val_by_id(inst_ast.target.args[i]);
-                if (i < target_bb->params().size() && aval) {
-                    aval = ensure_type(aval, target_bb->params()[i]->type(), b);
-                }
+                if (i < target_bb->params().size() && aval) aval = edge_arg(aval, target_bb->params()[i], b);
                 target_args.push_back(aval);
             }
             b.build_br(target_bb, target_args);
@@ -786,7 +784,7 @@ bool IlLowering::lower_instruction(
                 std::vector<Value*> args;
                 for (size_t i = 0; i < tgt.args.size(); ++i) {
                     Value* a = get_val_by_id(tgt.args[i]);
-                    if (i < bb->params().size() && a) a = ensure_type(a, bb->params()[i]->type(), b);
+                    if (i < bb->params().size() && a) a = edge_arg(a, bb->params()[i], b);
                     args.push_back(a);
                 }
                 return args;

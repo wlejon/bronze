@@ -927,11 +927,19 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     }
 
     // 3. Set up non-entry block parameters
+    // A Boolean one is an i32 that is 0 or 1 (zero_one_params_).
+    zero_one_params_.clear();
     for (size_t i = 1; i < fn_ast.blocks.size(); ++i) {
         const auto& blk_ast = fn_ast.blocks[i];
         BasicBlock* bb = block_map[blk_ast.id];
         for (const auto& p : blk_ast.params) {
-            val_map[p.first] = b.add_block_param(bb, lower_abi_type(p.second));
+            if (p.second == BronzeType::Bool) {
+                Value* param = b.add_block_param(bb, Type::i32());
+                zero_one_params_.insert(param);
+                val_map[p.first] = param;
+            } else {
+                val_map[p.first] = b.add_block_param(bb, lower_abi_type(p.second));
+            }
         }
     }
     add_handler_params(fn_ast, b, block_map);

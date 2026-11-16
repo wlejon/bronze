@@ -205,6 +205,20 @@ uint32_t GuardBuilder::resumeAfterSite() {
     return ctx_.resume.at(siteBlock_, siteIndex_ + 1);
 }
 
+BlockId GuardBuilder::genericArm(BlockId join) {
+    const BlockId arm = newBlock();
+    fn_.blocks[arm].cold = true;
+    const BlockId resumeCursor = cursor_;
+    cursor_ = arm;
+    il::Instruction inst = site_;
+    if (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) inst.icIndex = ctx_.newIcSite();
+    inst.result = il::kNoValue;
+    const ValueId r = emitInst(std::move(inst));
+    jump(join, r != il::kNoValue ? std::vector<ValueId>{r} : std::vector<ValueId>{});
+    cursor_ = resumeCursor;
+    return arm;
+}
+
 BlockId GuardBuilder::exitAfter(std::vector<il::Instruction> work, ValueId replacement) {
     assert(site_.result == il::kNoValue || typeOf(replacement) == site_.type);
     return makeExit(resumeAfterSite(), std::move(work), site_.result, replacement);

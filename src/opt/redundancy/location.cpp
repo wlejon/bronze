@@ -37,10 +37,23 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::IsArray:
         case Op::FnCodeIs:
         case Op::FnNativeIs:
+        // A way out of S: no instruction of S runs after it (location.h).
+        case Op::Leave:
+        case Op::ResumeCall:
             return true;
         default:
             return false;
     }
+}
+
+bool isAllocation(Op op) {
+    return op == Op::CreateObject || op == Op::CreateArray || op == Op::ObjectLiteral || op == Op::ArrayLiteral ||
+           op == Op::CreateThis;
+}
+
+// Whether a place names memory of one object, its `base`.
+bool objectPlace(Place place) {
+    return place == Place::Slot || place == Place::Elem || place == Place::Shape || place == Place::Array;
 }
 
 // The location class a place lives in. A place is only attached to an access
@@ -53,6 +66,7 @@ il::Loc naturalLoc(Place place) {
         case Place::Env: return il::Loc::EnvSlots;
         case Place::ModuleEnv: return il::Loc::ModuleEnv;
         case Place::Shape: return il::Loc::Shapes;
+        case Place::Array: return il::Loc::ArrayLen;
         case Place::None: break;
     }
     return il::Loc::Heap;
@@ -97,6 +111,12 @@ Location placeOf(const il::Instruction& inst) {
             at.place = Place::Shape;
             at.base = inst.operands[0];
             return at;
+        case Op::IsDenseArray:
+        case Op::ArrayLength:
+            if (inst.operands.empty()) return at;
+            at.place = Place::Array;
+            at.base = inst.operands[0];
+            return at;
         // The new object's shape word, written as it is made.
         case Op::CreateThis:
             at.place = Place::Shape;
@@ -120,7 +140,7 @@ Access accessOf(const il::Instruction& inst, il::LocSet locs, bool callsUnknown)
 // the same memory.
 bool placesMayMeet(const Location& x, const Location& y, const AliasInfo& alias) {
     if (x.place == Place::None || y.place == Place::None) return true;
-    if (x.place != y.place) return true;
+    if (x.place != y.place) return !(objectPlace(x.place) && objectPlace(y.place)) || alias.mayAlias(x.base, y.base);
     switch (x.place) {
         case Place::Slot:
             return x.a == y.a && alias.mayAlias(x.base, y.base);
@@ -139,6 +159,7 @@ bool placesMayMeet(const Location& x, const Location& y, const AliasInfo& alias)
         case Place::ModuleEnv:
             return true;
         case Place::Shape:
+        case Place::Array:
             return alias.mayAlias(x.base, y.base);
         case Place::None:
             break;
@@ -148,17 +169,27 @@ bool placesMayMeet(const Location& x, const Location& y, const AliasInfo& alias)
 
 }  // namespace
 
-AliasInfo::AliasInfo(const il::Function& fn) {
+AliasInfo::AliasInfo(const il::Function& fn, const DomTree* dom) : dom_(dom) {
     const size_t n = fn.valueCount;
     fresh_.assign(n, 0);
+    alloc_.assign(n, 0);
+    defBlock_.assign(n, kNoBlock);
+    defPos_.assign(n, -1);
     isConst_.assign(n, 0);
     constValue_.assign(n, 0);
-    for (const il::Block& block : fn.blocks) {
-        for (const il::Instruction& inst : block.instructions) {
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        const il::Block& block = fn.blocks[b];
+        for (const il::BlockParam& p : block.params) {
+            if (p.id < n) defBlock_[p.id] = static_cast<BlockId>(b);
+        }
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const il::Instruction& inst = block.instructions[i];
             if (inst.result == kNoValue || inst.result >= n) continue;
-            if (inst.op == Op::CreateObject || inst.op == Op::CreateArray || inst.op == Op::ObjectLiteral ||
-                inst.op == Op::ArrayLiteral || inst.op == Op::CreateThis) {
+            defBlock_[inst.result] = static_cast<BlockId>(b);
+            defPos_[inst.result] = static_cast<int32_t>(i);
+            if (isAllocation(inst.op)) {
                 fresh_[inst.result] = 1;
+                alloc_[inst.result] = 1;
             }
             if (inst.op == Op::ConstI32 && inst.type == il::Type::I32) {
                 isConst_[inst.result] = 1;
@@ -181,9 +212,20 @@ AliasInfo::AliasInfo(const il::Function& fn) {
     }
 }
 
+bool AliasInfo::definedBefore(ValueId v, ValueId a) const {
+    if (dom_ == nullptr || a >= alloc_.size() || !alloc_[a] || v >= defBlock_.size()) return false;
+    const BlockId ab = defBlock_[a];
+    const BlockId vb = defBlock_[v];
+    if (ab == kNoBlock) return false;
+    if (vb == kNoBlock) return true;  // a function parameter
+    if (vb == ab) return defPos_[v] < defPos_[a];
+    return dom_->strictlyDominates(vb, ab);
+}
+
 bool AliasInfo::mayAlias(ValueId a, ValueId b) const {
     if (a == b) return true;
-    return !isFreshUnescaped(a) && !isFreshUnescaped(b);
+    if (isFreshUnescaped(a) || isFreshUnescaped(b)) return false;
+    return !definedBefore(a, b) && !definedBefore(b, a);
 }
 
 std::optional<int32_t> AliasInfo::constI32(ValueId v) const {
@@ -230,6 +272,7 @@ bool sameLocation(const Location& x, const Location& y, const AliasInfo& alias) 
         case Place::ModuleEnv:
             return true;
         case Place::Shape:
+        case Place::Array:
             return x.base == y.base;
         case Place::None:
             break;

@@ -37,7 +37,7 @@ bool is_iconst(const Value* v, int64_t want) {
 
 bool IlLowering::is_zero_one(const Value* v) const {
     if (!v || v->type() != Type::i32()) return false;
-    if (boolean_values_.count(v) || is_iconst(v, 0) || is_iconst(v, 1)) return true;
+    if (boolean_values_.count(v) || zero_one_params_.count(v) || is_iconst(v, 0) || is_iconst(v, 1)) return true;
     const Instruction* d = v->is_instruction() ? v->defining_instruction() : nullptr;
     if (!d) return false;
     if (is_compare(d->opcode())) return true;
@@ -47,6 +47,12 @@ bool IlLowering::is_zero_one(const Value* v) const {
                is_zero_one(d->operand(1));
     }
     return d->opcode() == Opcode::or_ && is_zero_one(d->operand(0)) && is_zero_one(d->operand(1));
+}
+
+Value* IlLowering::edge_arg(Value* v, const Value* param, Builder& b) {
+    v = ensure_type(v, param->type(), b);
+    if (zero_one_params_.count(param) && !is_zero_one(v)) v = b.build_and(v, b.build_iconst_i32(1));
+    return v;
 }
 
 Value* IlLowering::negated_boolean(Value* cond, const BasicBlock* here) const {

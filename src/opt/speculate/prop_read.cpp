@@ -13,11 +13,14 @@
 //
 // A chain (2..kMaxChainShapes shapes): one `is.object` guard and one shape
 // load, then a test per shape; each passing test loads its own slot and jumps
-// to a join whose parameter is `r`; the LAST failing test leaves.
+// to a join whose parameter is `r`; the LAST failing test makes the generic
+// read in a cold arm into the join (a polymorphic site meeting one more class
+// stays in S).
 //
 //     s = load.shape %obj
 //     br (ptr.eq s, c1), L1, N1      L1: v1 = slot.load %obj, k1; jump J(v1)
-//  N1: br (ptr.eq s, c2), L2, exit   L2: v2 = slot.load %obj, k2; jump J(v2)
+//  N1: br (ptr.eq s, c2), L2, G      L2: v2 = slot.load %obj, k2; jump J(v2)
+//   G: v3 = prop.get %obj, <key>, <a fresh IC>; jump J(v3)        (cold)
 //   J(r): ...
 //
 // Why exact: the loader resolves a cell only to a shape whose every property
@@ -59,23 +62,18 @@ void rewritePropRead(RewriteContext& ctx, const SitePlan& plan) {
 
     const ValueId shape = emitShapeOf(b, object);
     const BlockId join = b.newBlock();
+    const BlockId other = b.genericArm(join);
     b.resultParam(join);
     for (size_t i = 0; i < plan.shapes.size(); ++i) {
         const ValueId matches = emitShapeIs(b, shape, plan.shapes[i].key);
-        BlockId next = il::kNoBlock;
-        if (i + 1 == plan.shapes.size()) {
-            // The last test is the guard: no shape matched, so leave. The
-            // cursor continues at its passing block.
-            b.guard(matches);
-        } else {
-            const BlockId hit = b.newBlock();
-            next = b.newBlock();
-            b.branch(matches, hit, {}, next, {});
-            b.moveTo(hit);
-        }
+        const bool last = i + 1 == plan.shapes.size();
+        const BlockId hit = b.newBlock();
+        const BlockId next = last ? other : b.newBlock();
+        b.branch(matches, hit, {}, next, {});
+        b.moveTo(hit);
         const ValueId value = b.emitInst(slotLoad(plan.shapes[i].slot));
         b.jump(join, {value});
-        if (next != il::kNoBlock) b.moveTo(next);
+        if (!last) b.moveTo(next);
     }
     b.moveTo(join);
     b.finish();

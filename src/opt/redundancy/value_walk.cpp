@@ -308,7 +308,7 @@ bool runValueWalk(JobContext& ctx) {
     }
     const DomTree dom(cfg, resumed);
     const DefUse defs(fn);
-    const AliasInfo alias(fn);
+    const AliasInfo alias(fn, &dom);
     FactEnv facts;
     ExprTable exprs;
     ValueWalk walk(ctx, defs, alias, facts, exprs);

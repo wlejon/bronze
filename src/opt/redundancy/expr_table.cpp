@@ -87,6 +87,7 @@ ExprKey loadKey(il::Op loadOp, il::Type type, const Location& where) {
             inst.operands = {where.base, where.index};
             break;
         case Place::Shape:
+        case Place::Array:
             inst.operands = {where.base};
             break;
         case Place::Env:

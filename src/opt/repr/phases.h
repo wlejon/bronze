@@ -24,6 +24,10 @@ bool foldBoxedUses(PhaseContext& ctx);
 // boxes of one type become parameters of that type.
 bool unboxBlockParams(PhaseContext& ctx);
 
+// Rule 4 (params_truthy.cpp): dynamic block parameters whose every use is a
+// ToBoolean (`unbox.bool`) or an edge into another such become Bool.
+bool truthyBlockParams(PhaseContext& ctx);
+
 // Rule 3 (sink.cpp): boxes moved to exit blocks, or to their one use.
 bool sinkBoxes(PhaseContext& ctx);
 

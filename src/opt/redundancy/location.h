@@ -23,20 +23,33 @@
 //        env      same slot index AND NOT (same record value at different
 //                 depths, which are different records of one chain);
 //        module   always (one location).
-//   5. Places of different kinds: kills (cannot happen for one LocSet, but
-//      the safe answer costs nothing).
+//        array    the arrays may alias (the header words of one array:
+//                 its length, kind and element block pointer);
+//   5. Places of different kinds: kills, unless both name an object (slot,
+//      element, shape, array) and the two objects cannot alias.
 // `callsUnknown` arrives as a write of every location (effects.h) and so kills
 // everything but rule 1.
 //
 // ALIASING (AliasInfo): two different SSA values may name the same object,
-// except when one of them is a FRESH, NON-ESCAPING allocation: the result of
-// `create.object` / `create.array` whose every use is the object operand of a
-// non-capturing access (the list in location.cpp). Nothing else can hold such
-// an object, so no other value names it. This is flow-insensitive: an object
-// that escapes anywhere (an edge argument, a call, a leave's state, a store of
-// it as a value) may alias everywhere. Environment records are never treated
-// as fresh: a record is reachable through its children's parent links, which
-// the depth of an access walks.
+// except when
+//   - one of them is a FRESH, NON-ESCAPING allocation: the result of an
+//     allocating op (location.cpp) whose every use is the object operand of
+//     a non-capturing access or the state of a `leave` / `resume.call`.
+//     Nothing else can hold such an object, so no other value names it. A
+//     way out of S hands the object to G, but no instruction of S runs after
+//     it (a `resume.call` is followed by its `leave`), so it is not an
+//     escape for S. Flow-insensitive otherwise: an object that escapes
+//     anywhere (an edge argument, a call, a store of it as a value) may alias
+//     everywhere;
+//   - or one of them is an allocation A and the other's definition comes
+//     strictly before A's on every path (its block strictly dominates A's,
+//     or it is earlier in A's block): wherever both are available, the other
+//     was last evaluated before A last made its object, so it cannot hold
+//     that object. (A path reaching a use of both through a later
+//     evaluation of the other without passing A again would make A not
+//     dominate the use.)
+// Environment records are never treated as fresh: a record is reachable
+// through its children's parent links, which the depth of an access walks.
 
 #include <cstdint>
 #include <optional>
@@ -55,6 +68,7 @@ enum class Place : uint8_t {
     Env,        // slot `b` of the record `a` parent hops above `base`
     ModuleEnv,  // the module scope's record pointer
     Shape,      // the shape word of object `base`
+    Array,      // the header words of array `base`: length, kind, element block
 };
 
 struct Location {
@@ -80,7 +94,9 @@ struct Access {
 // constant. Built from the function as it stands; a snapshot like a Cfg.
 class AliasInfo {
 public:
-    explicit AliasInfo(const il::Function& fn);
+    // `dom` (of `fn` as it stands) enables the ordering rule; without it only
+    // fresh allocations are told apart.
+    explicit AliasInfo(const il::Function& fn, const DomTree* dom = nullptr);
 
     // Whether `a` and `b` may name the same object. A value always may alias
     // itself.
@@ -89,7 +105,16 @@ public:
     std::optional<int32_t> constI32(ValueId v) const;
 
 private:
+    // Whether `v`'s definition comes strictly before allocation `a`'s.
+    bool definedBefore(ValueId v, ValueId a) const;
+
+    const DomTree* dom_ = nullptr;
     std::vector<uint8_t> fresh_;
+    std::vector<uint8_t> alloc_;
+    // Each value's defining block and position in it (-1 for a block
+    // parameter; function parameters have block kNoBlock: before everything).
+    std::vector<BlockId> defBlock_;
+    std::vector<int32_t> defPos_;
     std::vector<uint8_t> isConst_;
     std::vector<int32_t> constValue_;
 };

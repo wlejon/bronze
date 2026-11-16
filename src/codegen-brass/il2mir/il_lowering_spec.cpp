@@ -48,13 +48,6 @@ Value* slot_address(Builder& b, Value* ptr, int64_t slot) {
     return b.build_add(block, b.build_iconst_i64(kBronzeHdrBytes + 8 * (slot - kBronzeObjOverflowSlot)));
 }
 
-// Element `idx` (an i32, in bounds) of the Array at `ptr`: its address.
-Value* element_address(Builder& b, Value* ptr, Value* idx) {
-    const ArrayElements e = array_elements(b, ptr);
-    Value* at = b.build_add(b.build_zext_i64(idx), e.head);
-    return b.build_add(b.build_add(e.block, b.build_shl(at, b.build_iconst_i64(3))),
-                       b.build_iconst_i64(kBronzeHdrBytes));
-}
 
 }  // namespace
 
@@ -278,7 +271,8 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         case BronzeOp::ElemStore: {
             if (!need(3)) return false;
             Value* ptr = object_address(b, bits(0));
-            Value* addr = element_address(b, ptr, i32(1));
+            const ArrayElements e = array_elements(b, ptr);
+            Value* at = b.build_add(b.build_zext_i64(i32(1)), e.head);
             Value* v = bits(2);
             const bool primitive = is_primitive_value(inst.operands[2]) || prop_lowering_.is_known_non_ref(v);
             const bool always_number = opd[2]->type() == Type::f64() || boxed_f64_source(v) != nullptr;
@@ -288,9 +282,11 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
                                    bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
             };
             if (always_number) {
-                prop_lowering_.store_value(b, addr, v, kBoxedElementAliasClass, /*need_barrier=*/false);
+                prop_lowering_.store_value_indexed(b, e.block, at, kBronzeHdrBytes, v, kBoxedElementAliasClass,
+                                                   /*need_barrier=*/false);
             } else {
-                prop_lowering_.store_value(b, addr, v, kBoxedElementAliasClass, !primitive, forget_numbers);
+                prop_lowering_.store_value_indexed(b, e.block, at, kBronzeHdrBytes, v, kBoxedElementAliasClass,
+                                                   !primitive, forget_numbers);
             }
             return true;
         }

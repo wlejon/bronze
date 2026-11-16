@@ -191,6 +191,10 @@ public:
     // every C++ slot store gives it (HeapValue). The builder leaves in the join.
     void store_value(Builder& b, Value* addr, Value* val, uint8_t alias_class, bool need_barrier,
                      const std::function<void(Builder&)>& on_non_number = {});
+    // The same store at `base + index * 8 + offset`, one scaled-index store;
+    // the address itself is computed only on the barrier's path.
+    void store_value_indexed(Builder& b, Value* base, Value* index, int32_t offset, Value* val, uint8_t alias_class,
+                             bool need_barrier, const std::function<void(Builder&)>& on_non_number = {});
     Value* box_number(Builder& b, Value* f64_val);
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);

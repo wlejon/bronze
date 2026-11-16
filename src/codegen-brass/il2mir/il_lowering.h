@@ -109,6 +109,9 @@ public:
     // a branch on its negation can branch on it with its targets swapped.
     void note_boolean(Value* v) { if (v) boolean_values_.insert(v); }
     bool is_zero_one(const Value* v) const;
+    // An edge's argument for the target's parameter `param`, converted to
+    // its type; 0 or 1 for a Boolean parameter.
+    Value* edge_arg(Value* v, const Value* param, Builder& b);
     // c when `cond` is `eq c, 0` of a 0/1 value c made in block `here`, else null.
     Value* negated_boolean(Value* cond, const BasicBlock* here) const;
 
@@ -267,6 +270,9 @@ private:
     };
     std::unordered_map<std::string, ExternalSig> external_signatures_;
     std::unordered_set<const Value*> boolean_values_;
+    // The function's Boolean block parameters: i32 words every edge passes a
+    // 0 or 1 (edge_arg), so a branch on one tests it as it is.
+    std::unordered_set<const Value*> zero_one_params_;
 };
 
 } // namespace il2mir

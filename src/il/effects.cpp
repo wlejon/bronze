@@ -147,9 +147,14 @@ Effects rawEffects(const Instruction& inst) {
             Effects e = allocation();
             return e;
         }
-        // A tag test, a kind byte, a length compare and the element block.
+        // A tag test, a kind byte, a length compare and whether the array has
+        // an element block (its pointer, under the index-hazard mask). The
+        // block's pointer and capacity move only with the length (an append
+        // that grows writes `ArrayLen`) or under code that writes everything;
+        // the block's CONTENTS (`Elements`, what `elem.store` writes) are not
+        // read.
         case Op::IsDenseArray:
-            return reading(Loc::Shapes | Loc::ArrayLen | Loc::Elements);
+            return reading(Loc::Shapes | Loc::ArrayLen);
         // The array's shape word (bare or not) is what the
         // test reads; a write that changes it is a transition.
         case Op::IsPlainArray:

@@ -4,7 +4,8 @@
 // Within a round: rule 1 first (it answers uses of the boxes speculation
 // placed and of those the previous round put at block tops), dead
 // instructions next (a folded unbox must not count as a use of a box), then
-// rule 2, whose new parameter boxes the next round's rule 1 folds. Rule 3
+// rule 2, whose new parameter boxes the next round's rule 1 folds, then rule
+// 4, which takes the parameters rule 2 left dynamic that are only tested. Rule 3
 // runs once, last: it only moves boxes the other rules are done with.
 
 #include "opt/core/cfg_edit.h"
@@ -23,6 +24,7 @@ void ReprStats::add(const ReprStats& o) {
     paramsUnboxed += o.paramsUnboxed;
     paramsWidened += o.paramsWidened;
     edgeConversions += o.edgeConversions;
+    paramsTruthy += o.paramsTruthy;
     boxesSunkToExits += o.boxesSunkToExits;
     exitBoxClones += o.exitBoxClones;
     boxesSunk += o.boxesSunk;
@@ -57,6 +59,7 @@ bool selectRepresentations(il::Module& module, il::Function& fn, ReprStats* stat
         bool changed = repr::foldBoxedUses(ctx);
         changed |= removeDead(ctx);
         changed |= repr::unboxBlockParams(ctx);
+        changed |= repr::truthyBlockParams(ctx);
         lastRoundChanged = changed;
         any |= changed;
         if (!changed) break;

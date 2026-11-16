@@ -367,6 +367,29 @@ void PropertyLoweringHelper::store_value(Builder& b, Value* addr, Value* val, ui
     b.position_at_end(bb_join);
 }
 
+void PropertyLoweringHelper::store_value_indexed(Builder& b, Value* base, Value* index, int32_t offset, Value* val,
+                                                 uint8_t alias_class, bool need_barrier,
+                                                 const std::function<void(Builder&)>& on_non_number) {
+    with_alias_class(b.build_store_indexed(Type::i64(), base, index, 8, offset, val), alias_class);
+    if (!need_barrier && !on_non_number) return;
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "store_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_other = b.append_block(prefix + "_ref");
+    BasicBlock* bb_join = b.append_block(prefix + "_done");
+    b.position_at_end(cur);
+    Value* other = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    b.build_br_if(other, bb_other, bb_join);
+    b.position_at_end(bb_other);
+    if (on_non_number) on_non_number(b);
+    if (need_barrier) {
+        Value* addr = b.build_add(b.build_add(base, b.build_shl(index, b.build_iconst_i64(3))),
+                                  b.build_iconst_i64(offset));
+        b.build_write_barrier(addr, val);
+    }
+    b.build_br(bb_join);
+    b.position_at_end(bb_join);
+}
+
 void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
                                             Value* ic_entry) {
     // The fourth operand is the site pointer and nothing else: a site the
