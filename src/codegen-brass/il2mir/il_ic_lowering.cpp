@@ -123,6 +123,65 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     return merge_val;
 }
 
+// `x.length`. An Array's `length` is an own data property no program can
+// make an accessor (10.4.2: non-configurable), so the header's length word is
+// the answer for every Array; a String's is its code-unit count; a typed
+// array's comes from its header when the view and its prototype chain are
+// pristine (typed_array_chain_pristine), as the runtime's own read decides.
+// Everything else, and a typed array that is not, is the cache's.
+Value* PropertyLoweringHelper::lower_length_get(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "len_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_notarr = b.append_block(prefix + "_notarr");
+    BasicBlock* bb_view = b.append_block(prefix + "_view");
+    BasicBlock* bb_view_len = b.append_block(prefix + "_viewlen");
+    BasicBlock* bb_notobj = b.append_block(prefix + "_notobj");
+    BasicBlock* bb_str = b.append_block(prefix + "_str");
+    BasicBlock* bb_other = b.append_block(prefix + "_other");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+    constexpr int32_t kArrayLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+    constexpr int32_t kViewLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+    // A uint32 length as a Number's bits.
+    auto number = [&](Value* len) { return b.build_bitcast_i64_f64(b.build_sitofp_f64_i64(b.build_zext_i64(len))); };
+
+    b.position_at_end(cur);
+    Value* ptr = object_address(b, obj);
+    b.build_br_if(is_object_address(b, ptr), bb_obj, bb_notobj);
+
+    b.position_at_end(bb_obj);
+    Value* header = b.build_load(Type::i32(), ptr, 0);
+    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayLow)), bb_arr, bb_notarr);
+    b.position_at_end(bb_arr);
+    arm_begin(b, kLengthArmArray);
+    b.build_br(bb_merge, {number(array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET))});
+
+    b.position_at_end(bb_notarr);
+    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kViewLow)), bb_view, bb_other);
+    b.position_at_end(bb_view);
+    Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
+    b.build_br_if(typed_array_chain_pristine(b, ptr, b.build_zext_i64(kind)), bb_view_len, bb_other);
+    b.position_at_end(bb_view_len);
+    arm_begin(b, kLengthArmView);
+    b.build_br(bb_merge, {number(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET),
+                                                  kTypedArrayHeaderAliasClass))});
+
+    b.position_at_end(bb_notobj);
+    Value* tag = b.build_lshr(obj, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT));
+    b.build_br_if(b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), bb_str, bb_other);
+    b.position_at_end(bb_str);
+    arm_begin(b, kLengthArmString);
+    Value* text = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    b.build_br(bb_merge, {number(b.build_load(Type::i32(), text, BRONZE_ABI_STRING_LENGTH_OFFSET))});
+
+    b.position_at_end(bb_other);
+    b.build_br(bb_merge, {lower_prop_get_mono(b, obj, key_index, site)});
+    b.position_at_end(bb_merge);
+    return result;
+}
+
 void PropertyLoweringHelper::count_shape_turn(Builder& b, Value* obj, const IcSite& site) {
     if (!site || !shape_turn_fn_ || slow_sites_.size() != 1) return;
     // Zero for a receiver that is no object: the harvest reads the word as a

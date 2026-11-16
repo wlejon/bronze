@@ -165,6 +165,10 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
         case Op::IsTypedArray:
             return either(facts.known(FactKind::TypedArray, x, inst.immI32),
                           knownNotObject(facts, def, x) ? std::optional<bool>(false) : std::nullopt);
+        case Op::IsArray:
+            if (facts.isArray(x)) return true;
+            return either(facts.known(FactKind::Array, x),
+                          knownNotObject(facts, def, x) ? std::optional<bool>(false) : std::nullopt);
         case Op::FnCodeIs:
             return fnCodeTest(facts, values, def, inst);
         case Op::InBounds:

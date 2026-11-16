@@ -43,6 +43,8 @@ enum class Loc : uint16_t {
     FnFields = 1u << 7,       // function object fields (prototype, home object, ...)
     PrivateFields = 1u << 8,  // private-name tables
     Heap = 1u << 9,           // everything else, and anything not known to be above
+    Views = 1u << 10,         // a typed array's length and data address (its buffer can detach)
+    TypedElements = 1u << 11, // the bytes of every ArrayBuffer
 };
 
 class LocSet {
@@ -67,7 +69,7 @@ public:
     constexpr bool operator==(const LocSet&) const = default;
 
 private:
-    static constexpr uint16_t kAllBits = (1u << 10) - 1;
+    static constexpr uint16_t kAllBits = (1u << 12) - 1;
     explicit constexpr LocSet(uint16_t bits) : bits_(bits) {}
     uint16_t bits_ = 0;
 };

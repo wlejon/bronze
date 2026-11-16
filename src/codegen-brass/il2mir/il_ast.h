@@ -195,6 +195,15 @@ enum class BronzeOp {
     ElemStore,
     InBounds,
     IsHole,
+    // il_op.h, "kinds, typed arrays and intrinsics": TypedLoad / TypedStore
+    // carry the element kind, FnNativeIs / MathFn the il::Intrinsic, in
+    // `imm_i64`.
+    IsArray,
+    TypedLength,
+    TypedLoad,
+    TypedStore,
+    FnNativeIs,
+    MathFn,
     Unknown
 };
 

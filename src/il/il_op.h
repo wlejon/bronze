@@ -610,9 +610,6 @@ enum class Op : uint8_t {
     // a: bool = is.hole %v. %v (dynamic) is the array-hole value
     // (BRONZE_ABI_HOLE_BITS), which only `elem.load` can produce. Pure.
     IsHole,
-    // Typed-array element loads and stores are not here: they need the view's
-    // byte offset, buffer indirection and nine element kinds, which do not
-    // fall out of the forms above. A later chunk adds them.
 
     // ---- speculation: finishing an inlined call generically -------------
     // `a = resume.call @G, <id>, %s0, %s1, ...`: runs G's resume twin from
@@ -627,10 +624,74 @@ enum class Op : uint8_t {
     // result has G's return type, and there is none when G returns void.
     // Only in speculated functions. Effects: everything (it runs G's code).
     ResumeCall,
+
+    // ---- speculation: kinds, typed arrays and intrinsics ----------------
+    // a: bool = is.array %v. %v (dynamic) is an Array exotic object. An
+    // object's kind is fixed when it is made, so the fact never ends and the
+    // test reads nothing that changes. Total, pure. Licenses `array.length`.
+    IsArray,
+    // a: i32 = typed.length %ta. The view's length in elements, as its header
+    // holds it now (zero once its buffer is detached). Unchecked: %ta is a
+    // typed array (`is.typed_array` true edge). Reads `Views`.
+    TypedLength,
+    // a: f64|i32 = typed.load %ta, %i, <kind>. Element %i (i32) of the view,
+    // whose element kind is `immI32` (types::TypedArrayElem): f64 for the
+    // float kinds and Uint32, i32 for the other integer kinds. Unchecked: %ta
+    // is a view of that kind and %i is below its `typed.length`. Reads
+    // `Views` (where the bytes are) and `TypedElements`.
+    TypedLoad,
+    // typed.store %ta, %i, %v, <kind>. Stores %v (f64 for the float kinds,
+    // i32 for the integer kinds: the low bits, or the clamped byte for
+    // Uint8Clamped from an f64) as element %i, converted as [[Set]] on a
+    // Number does. Unchecked as `typed.load` is. Reads `Views`, writes
+    // `TypedElements`.
+    TypedStore,
+    // a: bool = fn.native_is %f, <intrinsic>. Whether dynamic %f is a function
+    // object whose code is the runtime's native for `immI32` (il::Intrinsic):
+    // the identity that makes `Math.floor(x)` the floor of x. A function's
+    // code never changes, so the fact never dies. Total, pure.
+    FnNativeIs,
+    // a = math.<intrinsic> %x[, %y]. The intrinsic `immI32` computed on
+    // numbers: f64 operands and result, except `imul` (i32, i32 -> i32).
+    // Exactly the Math function on Numbers. Pure.
+    MathFn,
 };
 
 // The last op, for the serializer's range check.
-inline constexpr Op kLastOp = Op::ResumeCall;
+inline constexpr Op kLastOp = Op::MathFn;
+
+// The intrinsics `fn.native_is` and `math.*` name (immI32): Math functions
+// whose native's code pointer the runtime exports, so a test can compare a
+// callee against it (bronze_abi_functions.h). `intrinsicInfo` has each one's
+// JS name, argument count and native symbol.
+enum class Intrinsic : int32_t {
+    MathAbs,
+    MathFloor,
+    MathCeil,
+    MathRound,
+    MathSqrt,
+    MathMin,
+    MathMax,
+    MathImul,
+    MathSin,
+    MathCos,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathAtan2,
+    MathExp,
+    MathLog,
+};
+inline constexpr int32_t kIntrinsicCount = static_cast<int32_t>(Intrinsic::MathLog) + 1;
+
+struct IntrinsicInfo {
+    const char* name;    // the Math member: "floor"
+    uint8_t arity;       // the arguments the computed form takes
+    const char* native;  // the function object's code: "bronze_math_floor"
+};
+// Info for `i`, or nullptr when `i` is no intrinsic.
+const IntrinsicInfo* intrinsicInfo(int32_t i);
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).
 inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;

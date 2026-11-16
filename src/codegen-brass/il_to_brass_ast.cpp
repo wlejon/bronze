@@ -519,6 +519,25 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::ElemStore: out.op = il2mir::BronzeOp::ElemStore; break;
         case il::Op::InBounds: out.op = il2mir::BronzeOp::InBounds; break;
         case il::Op::IsHole: out.op = il2mir::BronzeOp::IsHole; break;
+        case il::Op::IsArray: out.op = il2mir::BronzeOp::IsArray; break;
+        case il::Op::TypedLength: out.op = il2mir::BronzeOp::TypedLength; break;
+        case il::Op::TypedLoad:
+            out.op = il2mir::BronzeOp::TypedLoad;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::TypedStore:
+            out.op = il2mir::BronzeOp::TypedStore;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::FnNativeIs:
+            out.op = il2mir::BronzeOp::FnNativeIs;
+            out.imm_i64 = inst.immI32;
+            if (const il::IntrinsicInfo* info = il::intrinsicInfo(inst.immI32)) out.callee_name = info->native;
+            break;
+        case il::Op::MathFn:
+            out.op = il2mir::BronzeOp::MathFn;
+            out.imm_i64 = inst.immI32;
+            break;
     }
 
     return out;

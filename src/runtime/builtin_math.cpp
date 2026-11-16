@@ -526,6 +526,14 @@ extern "C" double bronze_math_round_f64(double x) {
     return jsRound(x);
 }
 
+const char* rtMathNativeName(const void* code) {
+    if (code == nullptr) return nullptr;
+    for (const MathFn& f : kMathFunctions) {
+        if (reinterpret_cast<const void*>(f.code) == code) return f.name;
+    }
+    return nullptr;
+}
+
 Value rtMathObject() {
     if (g_mathObject.isObject()) return g_mathObject;
 

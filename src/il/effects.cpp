@@ -105,12 +105,17 @@ Effects rawEffects(const Instruction& inst) {
         // instruction, on boxed operands 13.15.3 and the ToPrimitive ladder
         // behind it (user code, a mixing TypeError, a RangeError for 0n). The
         // result type says which.
+        // An i32 `/` or `%` traps on a zero divisor (and INT32_MIN by -1):
+        // speculated code puts one behind guards on its operands, and it may
+        // not move above them.
+        case Op::Div:
+        case Op::Mod:
+            if (inst.type == Type::I32) return guardedOp(LocSet::none(), LocSet::none());
+            return inst.type == Type::Dynamic ? everythingEffects() : none();
         case Op::Add:
         case Op::Neg:
         case Op::Sub:
         case Op::Mul:
-        case Op::Div:
-        case Op::Mod:
         case Op::Pow:
         case Op::BitAnd:
         case Op::BitOr:
@@ -311,7 +316,16 @@ Effects rawEffects(const Instruction& inst) {
         case Op::FnCodeIs:    // a function's code never changes
         case Op::InBounds:
         case Op::IsHole:
+        case Op::IsArray:     // an object's kind never changes
+        case Op::FnNativeIs:
+        case Op::MathFn:
             return none();
+        case Op::TypedLength:
+            return guardedOp(Loc::Views, LocSet::none());
+        case Op::TypedLoad:
+            return guardedOp(Loc::Views | Loc::TypedElements, LocSet::none());
+        case Op::TypedStore:
+            return guardedOp(Loc::Views, Loc::TypedElements);
         case Op::LoadShape:
             return guardedOp(Loc::Shapes, LocSet::none());
         case Op::SlotLoad:

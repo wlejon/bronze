@@ -62,6 +62,8 @@ struct SpeculateStats {
     uint32_t arithmetic = 0;
     uint32_t elementReads = 0;
     uint32_t elementWrites = 0;
+    uint32_t arrayLengths = 0;
+    uint32_t mathCalls = 0;
     uint32_t guards = 0;               // branches whose failing edge leaves
     uint32_t resumePoints = 0;         // placed in generic functions
     uint32_t loopEntryPoints = 0;      // of those, at a loop header's top

@@ -146,6 +146,10 @@ inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
 // member loud instead of `undefined`.
 
 Value rtMathObject();
+// The Math member whose native `code` is ("floor"), or nullptr: how a harvest
+// names a callee that is a Math function (ic_harvest.cpp, the `intrinsic:`
+// callee names of docs/type-feedback.md).
+const char* rtMathNativeName(const void* code);
 
 // The `performance` namespace (W3C hr-time-3), built once on first use like
 // `Math`. Only `now()` is real; the User Timing surface around it is a named

@@ -690,6 +690,27 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                ", " + std::to_string(inst.immI32) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
                         break;
+                    case Op::TypedLoad:
+                    case Op::TypedStore:
+                        out += std::string(opName(inst.op));
+                        for (size_t k = 0; k < inst.operands.size(); ++k) {
+                            out += (k == 0 ? " %" : ", %") + std::to_string(inst.operands[k]);
+                        }
+                        out += ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::FnNativeIs:
+                    case Op::MathFn: {
+                        const IntrinsicInfo* info = intrinsicInfo(inst.immI32);
+                        out += inst.op == Op::MathFn ? std::string("math.") : std::string("fn.native_is ");
+                        if (inst.op == Op::FnNativeIs) {
+                            out += "%" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", ";
+                        }
+                        out += info != nullptr ? info->name : "?";
+                        for (size_t k = inst.op == Op::FnNativeIs ? 1 : 0; k < inst.operands.size(); ++k) {
+                            out += (k == 0 ? " %" : ", %") + std::to_string(inst.operands[k]);
+                        }
+                        break;
+                    }
                     case Op::FnCodeIs:
                         out += "fn.code_is %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

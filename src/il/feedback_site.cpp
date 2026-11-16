@@ -367,6 +367,16 @@ void numberSlowSites(Module& module) {
                     case Op::StrictEq: case Op::Unbox:
                     case Op::Add: case Op::Sub: case Op::Mul: case Op::Div:
                     case Op::Branch: case Op::DynamicCall: case Op::Construct:
+                    case Op::RelLt: case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::LooseEq:
+                    case Op::ToNumeric: case Op::NumericStep: case Op::BitNot:
+                        inst.slowSite = next;
+                        next += kSlowSiteArms;
+                        break;
+                    // The numeric ops with a typed form count only as their
+                    // dynamic one, which has the inline arm and the helper.
+                    case Op::Mod: case Op::Neg: case Op::BitAnd: case Op::BitOr: case Op::BitXor:
+                    case Op::Shl: case Op::Shr: case Op::UShr:
+                        if (inst.type != Type::Dynamic) break;
                         inst.slowSite = next;
                         next += kSlowSiteArms;
                         break;

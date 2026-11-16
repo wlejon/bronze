@@ -135,6 +135,8 @@ private:
     // The speculated function's low-level forms (il_lowering_spec.cpp).
     bool lower_spec_instruction(const BronzeInstruction& inst, Builder& b,
                                 std::unordered_map<uint32_t, Value*>& val_map, Value*& res_val);
+    bool lower_math_fn(const BronzeInstruction& inst, Builder& b, const std::vector<Value*>& opd,
+                       Value*& res_val);
     // The IL type of each of the current function's values, built on first
     // ask (a resume point's and a leave's state words follow it).
     const std::unordered_map<uint32_t, BronzeType>& il_types();

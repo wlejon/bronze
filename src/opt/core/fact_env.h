@@ -75,8 +75,10 @@ public:
     // A dense-array fact covering index `index`: `is.dense_array v, k` held
     // for some k >= index.
     bool isDenseArray(ValueId v, int32_t index = 0) const;
-    // An Array: dense or plain.
+    // An Array: `is.array`, dense or plain.
     bool isArray(ValueId v) const;
+    // Whether a holding `is.typed_array` fact (of any kind) is known of `v`.
+    bool isTypedArray(ValueId v) const;
     bool inBounds(ValueId index, ValueId length) const {
         return known(FactKind::InBounds, index, 0, length) == true;
     }

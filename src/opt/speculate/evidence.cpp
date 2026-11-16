@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "il/resume_rules.h"
+#include "abi/bronze_abi.h"
 #include "abi/bronze_feedback_site.h"
 #include "opt/speculate/context.h"
 #include "opt/speculate/policy.h"
@@ -31,6 +32,20 @@ bool namesComplete(const std::vector<std::pair<std::string, uint64_t>>& names) {
         if (name == "*other*" || count == 0) return false;
     }
     return true;
+}
+
+// The index a key constant names when it is a canonical array index below
+// 2^31 ("0", "17"; not "01"): the keys the backend lowers `o[k]`'s element
+// paths for (il2mir il_property_lowering.cpp index_key).
+std::optional<int32_t> indexKey(const std::string& k) {
+    if (k.empty() || k.size() > 10 || (k.size() > 1 && k[0] == '0')) return std::nullopt;
+    int64_t v = 0;
+    for (char c : k) {
+        if (c < '0' || c > '9') return std::nullopt;
+        v = v * 10 + (c - '0');
+    }
+    if (v > INT32_MAX) return std::nullopt;
+    return static_cast<int32_t>(v);
 }
 
 std::string hex8(uint32_t v) {
@@ -145,7 +160,27 @@ std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {
         }
     }
     if (out.sites.empty()) return std::nullopt;
+    shareConstBounds(fn, out);
     return out;
+}
+
+// The dense-array test of a constant-index access covers every index up to
+// its bound (`is.dense_array %a, k`), so the accesses of one receiver all
+// test the largest index any of them was planned for: the first test proves
+// the rest, which the redundancy pass then folds. Each of those accesses ran
+// in bounds on the evidence, so a receiver that fails the largest bound would
+// have left at one of them.
+void Evidence::shareConstBounds(const il::Function& fn, FunctionPlan& plan) const {
+    std::unordered_map<ValueId, int32_t> bound;
+    auto receiver = [&](const SitePlan& p) { return fn.blocks[p.block].instructions[p.index].operands[0]; };
+    for (const SitePlan& p : plan.sites) {
+        if (p.constIndex == kNoConstIndex || p.viewKind != kDenseArray) continue;
+        int32_t& k = bound.try_emplace(receiver(p), p.constIndex).first->second;
+        k = std::max(k, p.constIndex);
+    }
+    for (SitePlan& p : plan.sites) {
+        if (p.constIndex != kNoConstIndex && p.viewKind == kDenseArray) p.constBound = bound.at(receiver(p));
+    }
 }
 
 std::optional<SitePlan> Evidence::planSite(uint32_t fnIndex, BlockId block, uint32_t index,
@@ -153,9 +188,24 @@ std::optional<SitePlan> Evidence::planSite(uint32_t fnIndex, BlockId block, uint
     const il::Function& fn = module_.functions[fnIndex];
     const il::Instruction& inst = fn.blocks[block].instructions[index];
     std::optional<SitePlan> plan;
+    const std::string* key = inst.keyIndex < module_.keyConstants.size() ? &module_.keyConstants[inst.keyIndex] : nullptr;
     switch (inst.op) {
-        case il::Op::PropGet: plan = planPropRead(fnIndex, inst, refs, block, index); break;
-        case il::Op::PropSet: plan = planPropWrite(fnIndex, inst, refs, block, index); break;
+        case il::Op::PropGet:
+            if (key != nullptr && *key == "length") {
+                plan = planLength(inst, block, index);
+            } else if (key != nullptr && indexKey(*key)) {
+                plan = planElem(inst, refs, block, index);
+            } else {
+                plan = planPropRead(fnIndex, inst, refs, block, index);
+            }
+            break;
+        case il::Op::PropSet:
+            if (key != nullptr && indexKey(*key)) {
+                plan = planElem(inst, refs, block, index);
+            } else {
+                plan = planPropWrite(fnIndex, inst, refs, block, index);
+            }
+            break;
         case il::Op::MethodCall: plan = planMethod(fnIndex, inst, refs, block, index); break;
         case il::Op::DynamicCall: plan = planCall(fnIndex, inst, refs, block, index); break;
         case il::Op::ElemGet:
@@ -282,6 +332,7 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     std::string ownShape;  // set when one own-slot shape holds the method
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
         if (!h->method || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) return std::nullopt;
+        if (std::optional<SitePlan> math = planIntrinsic(*h, argc, block, index)) return math;
         std::string callee;
         bool anySlot = false;
         for (const spec::HarvestWay& way : h->ways) {
@@ -320,6 +371,32 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     return plan;
 }
 
+// A method call whose every way's callee was one Math function the runtime
+// exports (il::Intrinsic; ic_harvest.cpp names it `intrinsic:Math.<name>`),
+// called with exactly the arguments its computed form takes.
+std::optional<SitePlan> Evidence::planIntrinsic(const spec::HarvestSite& h, size_t argc, BlockId block,
+                                                uint32_t index) const {
+    static const std::string kPrefix = "intrinsic:Math.";
+    std::string name;
+    for (const spec::HarvestWay& way : h.ways) {
+        if (way.callee.compare(0, kPrefix.size(), kPrefix) != 0) return std::nullopt;
+        if (!name.empty() && way.callee != name) return std::nullopt;
+        name = way.callee;
+    }
+    for (int32_t i = 0; i < il::kIntrinsicCount; ++i) {
+        const il::IntrinsicInfo* info = il::intrinsicInfo(i);
+        if (kPrefix + info->name != name) continue;
+        if (argc != info->arity) return std::nullopt;
+        SitePlan plan;
+        plan.kind = SiteKind::MathCall;
+        plan.block = block;
+        plan.index = index;
+        plan.intrinsic = i;
+        return plan;
+    }
+    return std::nullopt;
+}
+
 // A plain call whose callee was always one function: a recorded Target
 // site's, or a harvest's callee turns (il/feedback_site.h kLastShapeArm) —
 // the site's code entered one callee directly, once it first changed from
@@ -332,9 +409,9 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
     }
     uint32_t callee = kNoFunction;
     const auto targetSites = refs.at(block, index, il::FeedbackKind::Target);
-    if (targetSites.size() == 1) {
-        const spec::SiteFeedback* site = recorded(fn, targetSites.front()->ordinal);
-        if (site == nullptr || site->tagMask() != kTagBit(BRONZE_FEEDBACK_TAG_FUNCTION) ||
+    const spec::SiteFeedback* site = targetSites.size() == 1 ? recorded(fn, targetSites.front()->ordinal) : nullptr;
+    if (site != nullptr) {
+        if (site->tagMask() != kTagBit(BRONZE_FEEDBACK_TAG_FUNCTION) ||
             !namesComplete(site->targets)) {
             return std::nullopt;
         }
@@ -359,19 +436,23 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
     return plan;
 }
 
-// Numbers in, from the recorded VALUE sites: one per Dynamic operand, in
-// operand order (il/feedback_site.cpp). An operand qualifies when every value
-// it held was a Number; a typed operand counts as its type. With no recorded
-// site, a harvest's arms say the same of a `+ - * /` whose helper never ran
-// and whose Numbers arm did: each operand an int32 unless its double arm ran.
+// Numbers in. A harvest's arms (evidence.h kArithArm*) say it of a dynamic
+// numeric op whose helper never ran and whose Numbers arm did: each operand
+// an int32 unless its double arm ran, and the result too unless its result
+// arm ran. `===` and ToBoolean have arms of their own, which say "Numbers"
+// and nothing about int32s. Without a harvest word, the recorded VALUE sites
+// (one per Dynamic operand, in operand order, il/feedback_site.cpp) say it of
+// an operand every value of which was a Number. A typed operand counts as
+// its type.
 std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                             BlockId block, uint32_t index) const {
     const auto valueSites = refs.at(block, index, il::FeedbackKind::Value);
-    const bool armed = valueSites.empty() && inst.operands.size() == 2 &&
-                       inst.slowSite != il::Instruction::kNoSlowSite && slowArmed(inst.slowSite) &&
-                       !slowRan(inst.slowSite) && slowRan(inst.slowSite + kArithArmNumbers);
+    bool anyRecorded = false;
+    for (const il::FeedbackSite* vs : valueSites) anyRecorded = anyRecorded || recorded(fn, vs->ordinal) != nullptr;
+    const ArmEvidence arms = anyRecorded ? ArmEvidence{} : armEvidence(inst);
     std::vector<uint8_t> tags;
     size_t next = 0;
+    size_t boxed = 0;
     for (ValueId v : inst.operands) {
         switch (refs.type(v)) {
             case il::Type::I32: tags.push_back(kTagInt); continue;
@@ -379,10 +460,10 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
             case il::Type::Dynamic: break;
             default: return std::nullopt;
         }
-        if (armed) {
-            const uint32_t arm = tags.empty() ? kArithArmDouble0 : kArithArmDouble1;
-            tags.push_back(slowRan(inst.slowSite + arm) ? kTagDouble : kTagInt);
-            ++next;
+        ++boxed;
+        if (arms.numbers) {
+            const size_t i = tags.size();
+            tags.push_back(arms.intKnown && i < 2 && !arms.operandDouble[i] ? kTagInt : kTagDouble);
             continue;
         }
         if (next >= valueSites.size() || valueSites[next]->value != v) return std::nullopt;
@@ -397,8 +478,8 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
         tags.push_back(t);
     }
     // Nothing boxed, nothing to speculate on.
-    if (next == 0) return std::nullopt;
-    const std::optional<ArithForm> form = chooseArithForm(inst, tags);
+    if (boxed == 0) return std::nullopt;
+    const std::optional<ArithForm> form = chooseArithForm(inst, tags, arms.resultDouble);
     if (!form) return std::nullopt;
     SitePlan plan;
     plan.kind = SiteKind::Arith;
@@ -409,32 +490,106 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
     return plan;
 }
 
-// An element access the harvested build answered from an Array every time:
-// the site was armed, its generic fallback never ran, its Array arm ran and
-// its typed-array arm did not, nor (a write) its append. The fallback is where
-// every other receiver, an index past the length, a hole and a non-index key
-// went, so none came.
+// What a harvest's arms say of a numeric site: nothing (numbers false) unless
+// the site was armed, its helper never ran and only Number arms did.
+Evidence::ArmEvidence Evidence::armEvidence(const il::Instruction& inst) const {
+    ArmEvidence out;
+    const uint32_t site = inst.slowSite;
+    if (site == il::Instruction::kNoSlowSite || !slowArmed(site) || slowRan(site)) return out;
+    switch (inst.op) {
+        case il::Op::StrictEq:
+            for (uint32_t arm = kStrictEqArmSame; arm <= kStrictEqArmLast; ++arm) {
+                const bool number = arm == kStrictEqArmSameNumber || arm == kStrictEqArmNumbers;
+                if (!number && slowRan(site + arm)) return out;
+            }
+            out.numbers = slowRan(site + kStrictEqArmSameNumber) || slowRan(site + kStrictEqArmNumbers);
+            return out;
+        case il::Op::Unbox:
+            if (inst.type != il::Type::Bool) return out;
+            for (uint32_t arm = 1; arm <= kTruthyArmLast; ++arm) {
+                if (arm != kTruthyArmNumber && slowRan(site + arm)) return out;
+            }
+            out.numbers = slowRan(site + kTruthyArmNumber);
+            return out;
+        default:
+            if (!numericArms(inst)) return out;
+            out.numbers = slowRan(site + kArithArmNumbers);
+            out.intKnown = true;
+            out.operandDouble[0] = slowRan(site + kArithArmDouble0);
+            out.operandDouble[1] = slowRan(site + kArithArmDouble1);
+            out.resultDouble = slowRan(site + kArithArmResultDouble);
+            return out;
+    }
+}
+
+// An element access the harvested build answered one way every time: the
+// site was armed, its generic fallback never ran, nor (a write) its append,
+// nor did a read or write of a view find its index out of bounds; and either
+// its Array arm ran and no typed-array arm did, or exactly one typed-array arm
+// of one element kind (Float32, Float64, Int32) ran and the Array arm did not.
+// The fallback is where every other receiver, an index past the length, a
+// hole and a non-index key went, so none came. `o[k]` with an index key `k`
+// (a prop.get / prop.set) is the same access at a constant index.
 std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
                                            uint32_t index) const {
-    if (inst.slowSite == il::Instruction::kNoSlowSite || !slowArmed(inst.slowSite)) return std::nullopt;
-    if (slowRan(inst.slowSite) || !slowRan(inst.slowSite + kElemArmArray) || slowRan(inst.slowSite + kElemArmView) ||
-        slowRan(inst.slowSite + kElemArmGrow)) {
+    const uint32_t site = inst.slowSite;
+    if (site == il::Instruction::kNoSlowSite || !slowArmed(site)) return std::nullopt;
+    if (slowRan(site) || slowRan(site + kElemArmGrow) || slowRan(site + kElemArmMiss) ||
+        slowRan(site + kElemArmViewOther)) {
         return std::nullopt;
     }
+    const bool array = slowRan(site + kElemArmArray);
+    const bool f32 = slowRan(site + kElemArmView);
+    const bool f64 = slowRan(site + kElemArmViewF64);
+    const bool i32 = slowRan(site + kElemArmViewI32);
+    if (int(array) + int(f32) + int(f64) + int(i32) != 1) return std::nullopt;
+
     SitePlan plan;
     plan.block = block;
     plan.index = index;
-    if (inst.op == il::Op::ElemGet) {
-        if (inst.operands.size() != 2 || inst.type != il::Type::Dynamic) return std::nullopt;
+    plan.viewKind = array ? kDenseArray
+                  : f32   ? BRONZE_ABI_TA_KIND_FLOAT32
+                  : f64   ? BRONZE_ABI_TA_KIND_FLOAT64
+                          : BRONZE_ABI_TA_KIND_INT32;
+    const bool keyed = inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet;
+    if (!keyed) {
+        const std::optional<int32_t> k = indexKey(module_.keyConstants[inst.keyIndex]);
+        if (!k) return std::nullopt;
+        plan.constIndex = *k;
+    }
+    // The receiver, then (keyed) the index, then (a write) the value.
+    const size_t operands = (keyed ? 2 : 1) + (inst.op == il::Op::ElemSet || inst.op == il::Op::PropSet ? 1 : 0);
+    if (inst.operands.size() != operands) return std::nullopt;
+    if (inst.op == il::Op::ElemGet || inst.op == il::Op::PropGet) {
+        if (inst.type != il::Type::Dynamic) return std::nullopt;
         plan.kind = SiteKind::ElemRead;
     } else {
         const int32_t mode = il::writeMode(inst);
-        if (inst.operands.size() != 3 || (mode != il::kWriteSloppy && mode != il::kWriteStrict)) return std::nullopt;
+        if (mode != il::kWriteSloppy && mode != il::kWriteStrict) return std::nullopt;
         plan.kind = SiteKind::ElemWrite;
     }
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }
+    return plan;
+}
+
+// `x.length` the harvested build answered from an Array's header every time:
+// its Array arm ran, its String and typed-array arms did not, and no other
+// receiver reached the cache (the slow arm, a filled way, a shape turn).
+std::optional<SitePlan> Evidence::planLength(const il::Instruction& inst, BlockId block, uint32_t index) const {
+    const uint32_t site = inst.slowSite;
+    if (inst.operands.size() != 1 || inst.type != il::Type::Dynamic) return std::nullopt;
+    if (site == il::Instruction::kNoSlowSite || !slowArmed(site) || slowRan(site)) return std::nullopt;
+    if (!slowRan(site + kLengthArmArray) || slowRan(site + kLengthArmString) || slowRan(site + kLengthArmView) ||
+        slowRan(site + il::kShapeTurnArm)) {
+        return std::nullopt;
+    }
+    if (const spec::HarvestSite* h = harvested(inst.icIndex); h != nullptr && !h->ways.empty()) return std::nullopt;
+    SitePlan plan;
+    plan.kind = SiteKind::ArrayLength;
+    plan.block = block;
+    plan.index = index;
     return plan;
 }
 

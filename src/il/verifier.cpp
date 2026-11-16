@@ -132,7 +132,10 @@ static const SpecSignature* specSignature(Op op) {
         case Op::IsI32:
         case Op::IsHole:
         case Op::FnCodeIs:
+        case Op::IsArray:
+        case Op::FnNativeIs:
             return &kDynTest;
+        case Op::TypedLength: return &kArrayLength;
         case Op::SlotLoad: return &kSlotLoad;
         case Op::SlotStore: return &kSlotStore;
         case Op::UnboxI32: return &kUnboxI32;

@@ -25,14 +25,18 @@ void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan);
 void rewritePlainCall(RewriteContext& ctx, const SitePlan& plan);
 void rewriteArith(RewriteContext& ctx, const SitePlan& plan);
 void rewriteElem(RewriteContext& ctx, const SitePlan& plan);
+void rewriteArrayLength(RewriteContext& ctx, const SitePlan& plan);  // elem.cpp
+void rewriteMathCall(RewriteContext& ctx, const SitePlan& plan);     // math_call.cpp
 
-// arith.cpp: whether `inst` is an operation the arithmetic rewrite knows, and
-// the form a set of operand masks (evidence.h kTagInt / kTagDouble, one per
-// operand) allows for it — Int when every operand held only int32 Numbers and
-// the operation has an exact int32 form, else Double when every operand held
-// only Numbers, else nothing.
+// arith.cpp: whether `inst` is an operation the arithmetic rewrite knows;
+// whether its generic lowering marks the numeric arms (evidence.h
+// kArithArm*); and the form the operand masks (evidence.h kTagInt /
+// kTagDouble, one per operand) and the result's evidence choose for it
+// (arith.cpp says which and why), or nothing.
 bool arithSupported(const il::Instruction& inst);
-std::optional<ArithForm> chooseArithForm(const il::Instruction& inst, const std::vector<uint8_t>& operandTags);
+bool numericArms(const il::Instruction& inst);
+std::optional<ArithForm> chooseArithForm(const il::Instruction& inst, const std::vector<uint8_t>& operandTags,
+                                         bool resultDouble);
 
 // prop_shape.cpp: the shape test every own-slot rewrite starts with.
 // Guards that `object` (Dynamic) is a heap object and returns its shape word.

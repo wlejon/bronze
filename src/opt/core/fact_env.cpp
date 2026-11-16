@@ -152,6 +152,7 @@ bool FactEnv::isObject(ValueId v) const {
             case FactKind::DenseArray:
             case FactKind::PlainArray:
             case FactKind::TypedArray:
+            case FactKind::Array:
             case FactKind::Callee:
                 return true;
             // A primitive tag rules it out.
@@ -196,10 +197,16 @@ bool FactEnv::isDenseArray(ValueId v, int32_t index) const {
 }
 
 bool FactEnv::isArray(ValueId v) const {
-    if (known(FactKind::PlainArray, v) == true) return true;
+    if (known(FactKind::Array, v) == true || known(FactKind::PlainArray, v) == true) return true;
     const auto it = byValue_.find(v);
     if (it == byValue_.end()) return false;
     return newestHolding(facts_, alive_, it->second, v, FactKind::DenseArray) != nullptr;
+}
+
+bool FactEnv::isTypedArray(ValueId v) const {
+    const auto it = byValue_.find(v);
+    if (it == byValue_.end()) return false;
+    return newestHolding(facts_, alive_, it->second, v, FactKind::TypedArray) != nullptr;
 }
 
 std::vector<Fact> FactEnv::live() const {

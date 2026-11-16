@@ -21,6 +21,9 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::ElemLoad:
         case Op::ElemStore:     // operand 2 is the stored value
         case Op::ArrayLength:
+        case Op::TypedLength:
+        case Op::TypedLoad:
+        case Op::TypedStore:
             return slot == 0;
         case Op::IsObject:
         case Op::IsI32:
@@ -30,7 +33,9 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::IsDenseArray:
         case Op::IsPlainArray:
         case Op::IsTypedArray:
+        case Op::IsArray:
         case Op::FnCodeIs:
+        case Op::FnNativeIs:
             return true;
         default:
             return false;

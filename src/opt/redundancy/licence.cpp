@@ -18,11 +18,18 @@ std::optional<Licence> licenceAt(const il::Instruction& inst, const FactEnv& fac
         case il::Op::FnEnv:
             if (const auto fn = facts.calleeOf(x)) return Licence{LicenceKind::Callee, x, *fn, {}};
             return std::nullopt;
-        // An Array stays an Array; the facts that say so (dense, plain) are
-        // memory facts, so the licence carries what they depend on.
+        // An Array stays an Array. `is.array` says so of the value; the other
+        // facts that do (dense, plain) are memory facts, so the licence then
+        // carries what they depend on.
         case il::Op::ArrayLength:
+            if (facts.known(FactKind::Array, x) == true) return Licence{LicenceKind::Array, x, 0, {}};
             if (!facts.isArray(x)) return std::nullopt;
             return Licence{LicenceKind::Array, x, 0, il::Loc::Shapes | il::Loc::ArrayLen | il::Loc::Elements};
+        // A typed array's kind never changes, and the bare kind test is a
+        // fact about the value.
+        case il::Op::TypedLength:
+            if (!facts.isTypedArray(x)) return std::nullopt;
+            return Licence{LicenceKind::TypedArray, x, 0, {}};
         default:
             return std::nullopt;
     }
@@ -38,6 +45,8 @@ bool licenceHolds(const Licence& licence, const FactEnv& facts) {
             return facts.calleeOf(licence.subject) == static_cast<uint32_t>(licence.imm);
         case LicenceKind::Array:
             return facts.isArray(licence.subject);
+        case LicenceKind::TypedArray:
+            return facts.isTypedArray(licence.subject);
     }
     return false;
 }

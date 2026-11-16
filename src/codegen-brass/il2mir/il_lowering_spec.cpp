@@ -14,6 +14,7 @@
 #include "il_abi.h"
 #include "il_lowering.h"
 #include "il_lowering_ops.h"
+#include "il_prop_stubs.h"
 
 namespace il2mir {
 
@@ -29,6 +30,8 @@ constexpr uint64_t kBelowTwoTo63Bits = 0x43E0000000000000ULL;
 constexpr int32_t kFunctionHeaderLow =
     static_cast<int32_t>((uint32_t{BRONZE_ABI_OBJ_FLAGS_FUNCTION} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
 static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the kind flags are the header word's second half-word");
+constexpr int32_t kArrayHeaderLow =
+    static_cast<int32_t>((uint32_t{BRONZE_ABI_OBJ_FLAGS_ARRAY} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
 
 Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -77,6 +80,12 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::ElemStore:
         case BronzeOp::InBounds:
         case BronzeOp::IsHole:
+        case BronzeOp::IsArray:
+        case BronzeOp::TypedLength:
+        case BronzeOp::TypedLoad:
+        case BronzeOp::TypedStore:
+        case BronzeOp::FnNativeIs:
+        case BronzeOp::MathFn:
             return true;
         default:
             return false;
@@ -297,8 +306,133 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             res_val = b.build_eq(bits(0), iconst64(b, BRONZE_ABI_HOLE_BITS));
             return true;
         }
+        // bool = is.array %v: an object whose header word is the Array's.
+        // Branch-free, as fn.code_is: the header read goes through a mapped
+        // block for a non-object.
+        case BronzeOp::IsArray: {
+            if (!need(1)) return false;
+            Value* ptr = object_address(b, bits(0));
+            Value* is_obj = is_object_address(b, ptr);
+            Value* base = prop_lowering_.object_or_blank(b, ptr, is_obj);
+            res_val = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0),
+                                                     b.build_iconst_i32(kArrayHeaderLow)));
+            return true;
+        }
+        // i32 = typed.length %ta: the view header's length.  xor ; mov eax, [rax+68]
+        case BronzeOp::TypedLength: {
+            if (!need(1)) return false;
+            res_val = with_alias_class(
+                b.build_load(Type::i32(), object_address(b, bits(0)), BRONZE_ABI_TA_LENGTH_OFFSET),
+                kTypedArrayHeaderAliasClass);
+            return true;
+        }
+        // f64|i32 = typed.load %ta, %i, <kind>: the element at the view's data
+        // address (its buffer's bytes plus its byte offset, il_view_stubs.cpp
+        // view_data): movss + cvtss2sd, movsd, or mov.
+        case BronzeOp::TypedLoad: {
+            if (!need(2)) return false;
+            Value* data = view_data(b, object_address(b, bits(0)));
+            Value* idx = b.build_zext_i64(i32(1));
+            switch (inst.imm_i64) {
+                case BRONZE_ABI_TA_KIND_FLOAT32:
+                    res_val = b.build_fpext_f64_f32(with_alias_class(b.build_load_indexed(Type::f32(), data, idx, 4),
+                                                                     kTypedElementAliasClass));
+                    return true;
+                case BRONZE_ABI_TA_KIND_FLOAT64:
+                    res_val = with_alias_class(b.build_load_indexed(Type::f64(), data, idx, 8), kTypedElementAliasClass);
+                    return true;
+                case BRONZE_ABI_TA_KIND_INT32:
+                    res_val = with_alias_class(b.build_load_indexed(Type::i32(), data, idx, 4), kTypedElementAliasClass);
+                    return true;
+                default:
+                    return inst_error(inst, "typed.load of an element kind it has no form for");
+            }
+        }
+        // typed.store %ta, %i, %v, <kind>: the store at typed.load's address,
+        // a Float32 element rounded from the double (cvtsd2ss).
+        case BronzeOp::TypedStore: {
+            if (!need(3)) return false;
+            Value* data = view_data(b, object_address(b, bits(0)));
+            Value* idx = b.build_zext_i64(i32(1));
+            switch (inst.imm_i64) {
+                case BRONZE_ABI_TA_KIND_FLOAT32:
+                    with_alias_class(b.build_store_indexed(Type::f32(), data, idx, 4,
+                                                           b.build_fptrunc_f32_f64(ensure_type(opd[2], Type::f64(), b))),
+                                     kTypedElementAliasClass);
+                    return true;
+                case BRONZE_ABI_TA_KIND_FLOAT64:
+                    with_alias_class(b.build_store_indexed(Type::f64(), data, idx, 8, ensure_type(opd[2], Type::f64(), b)),
+                                     kTypedElementAliasClass);
+                    return true;
+                case BRONZE_ABI_TA_KIND_INT32:
+                    with_alias_class(b.build_store_indexed(Type::i32(), data, idx, 4, i32(2)), kTypedElementAliasClass);
+                    return true;
+                default:
+                    return inst_error(inst, "typed.store of an element kind it has no form for");
+            }
+        }
+        // bool = fn.native_is %f, <intrinsic>: fn.code_is against the
+        // runtime's exported native (`callee_name`) instead of a module
+        // function's wrapper.
+        case BronzeOp::FnNativeIs: {
+            if (!need(1)) return false;
+            if (inst.callee_name.empty()) return inst_error(inst, "fn.native_is names no intrinsic");
+            Value* ptr = object_address(b, bits(0));
+            Value* is_obj = is_object_address(b, ptr);
+            Value* base = prop_lowering_.object_or_blank(b, ptr, is_obj);
+            Value* is_fn = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kFunctionHeaderLow));
+            Value* code = b.build_load(Type::ptr(), base, kBronzeFnCodeOffset);
+            Value* is_f = b.build_eq(code, b.build_func_addr(inst.callee_name));
+            res_val = b.build_and(is_obj, b.build_and(is_fn, is_f));
+            return true;
+        }
+        // math.<intrinsic>: one instruction where the machine has it, else
+        // the runtime's f64 kernel, the same function the native calls.
+        case BronzeOp::MathFn:
+            return lower_math_fn(inst, b, opd, res_val);
         default:
             return inst_error(inst, "not a speculation form");
+    }
+}
+
+// The kernels below are the ones the natives themselves call
+// (runtime/builtin_math.cpp), so S and G compute the same bits.
+bool IlLowering::lower_math_fn(const BronzeInstruction& inst, Builder& b, const std::vector<Value*>& opd,
+                               Value*& res_val) {
+    // il::Intrinsic, in its order.
+    enum : int64_t { kAbs, kFloor, kCeil, kRound, kSqrt, kMin, kMax, kImul, kSin, kCos, kTan, kAsin, kAcos, kAtan,
+                     kAtan2, kExp, kLog };
+    const size_t arity = (inst.imm_i64 == kMin || inst.imm_i64 == kMax || inst.imm_i64 == kImul ||
+                          inst.imm_i64 == kAtan2) ? 2 : 1;
+    if (opd.size() != arity) return inst_error(inst, "math with the wrong number of operands");
+    if (inst.imm_i64 == kImul) {
+        res_val = b.build_mul(ensure_type(opd[0], Type::i32(), b), ensure_type(opd[1], Type::i32(), b));
+        return true;
+    }
+    Value* x = ensure_type(opd[0], Type::f64(), b);
+    Value* y = arity == 2 ? ensure_type(opd[1], Type::f64(), b) : nullptr;
+    auto kernel = [&](const char* name) {
+        res_val = y != nullptr ? b.build_call(name, Type::f64(), {x, y}) : b.build_call(name, Type::f64(), {x});
+        return true;
+    };
+    switch (inst.imm_i64) {
+        case kAbs: res_val = b.build_fabs_f64(x); return true;
+        case kFloor: res_val = b.build_floor_f64(x); return true;
+        case kCeil: res_val = b.build_ceil_f64(x); return true;
+        case kSqrt: res_val = b.build_sqrt_f64(x); return true;
+        case kRound: return kernel("bronze_math_round_f64");
+        case kMin: return kernel("bronze_math_min2_f64");
+        case kMax: return kernel("bronze_math_max2_f64");
+        case kSin: return kernel("bronze_math_sin_f64");
+        case kCos: return kernel("bronze_math_cos_f64");
+        case kTan: return kernel("bronze_math_tan_f64");
+        case kAsin: return kernel("bronze_math_asin_f64");
+        case kAcos: return kernel("bronze_math_acos_f64");
+        case kAtan: return kernel("bronze_math_atan_f64");
+        case kAtan2: return kernel("bronze_math_atan2_f64");
+        case kExp: return kernel("bronze_math_exp_f64");
+        case kLog: return kernel("bronze_math_log_f64");
+        default: return inst_error(inst, "math names no intrinsic");
     }
 }
 

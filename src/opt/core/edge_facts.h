@@ -39,6 +39,7 @@ enum class FactKind : uint8_t {
     DenseArray,  // value passes `is.dense_array value, imm`; depends on Shapes, ArrayLen, Elements
     PlainArray,  // value passes `is.plain_array`; depends on Shapes
     TypedArray,  // value passes `is.typed_array value, imm`; with the pristine bit depends on Shapes, Heap
+    Array,       // value is an Array (`is.array`): about the value, it never ends
     Callee,      // value is a function whose code is module function `imm` (`fn.code_is`)
     InBounds,    // (uint32)value < (uint32)other (`in.bounds`)
     PtrEq,       // ptr value == ptr other (a `ptr.eq` that is not a shape test)

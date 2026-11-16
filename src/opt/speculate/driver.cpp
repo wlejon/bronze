@@ -51,6 +51,8 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
         case SiteKind::Arith: rewriteArith(ctx, site); return;
         case SiteKind::ElemRead:
         case SiteKind::ElemWrite: rewriteElem(ctx, site); return;
+        case SiteKind::ArrayLength: rewriteArrayLength(ctx, site); return;
+        case SiteKind::MathCall: rewriteMathCall(ctx, site); return;
     }
 }
 

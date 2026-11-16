@@ -53,6 +53,11 @@ bool index_key(const IlLowering* lowering, uint32_t key_index, int32_t& out) {
     return true;
 }
 
+bool length_key(const IlLowering* lowering, uint32_t key_index) {
+    const auto& keys = lowering->options().key_constants;
+    return key_index < keys.size() && keys[key_index] == "length";
+}
+
 }  // namespace
 
 bool lower_property_instruction(
@@ -86,7 +91,9 @@ bool lower_property_instruction(
                 return true;
             }
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
-            if (site && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+            if (site && length_key(lowering, inst_ast.index)) {
+                res_val = prop_lowering.lower_length_get(b, obj_val, inst_ast.index, site);
+            } else if (site && inst_ast.index != PropertyLoweringHelper::kNoKey) {
                 res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
             } else {
                 res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);

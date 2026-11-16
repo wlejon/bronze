@@ -40,6 +40,55 @@ Value* tls_block_word(Builder& b, int32_t off) {
     return b.build_load(Type::i64(), tls, off);
 }
 
+// The typed-array arm of an element access. A build made to be harvested
+// marks it by the view's element kind (il_abi.h kElemArmView for Float32,
+// kElemArmViewF64, kElemArmViewI32, kElemArmViewOther) and marks
+// kElemArmMiss for an index at or past the view's length; any other build
+// marks kElemArmView alone.
+void mark_view_arm(PropertyLoweringHelper& prop, Builder& b, Value* ptr, Value* idx, const std::string& prefix) {
+    if (!prop.evidence_marked()) {
+        prop.arm_begin(b, kElemArmView);
+        return;
+    }
+    struct Case {
+        int32_t kind;
+        uint32_t arm;
+    };
+    const Case cases[] = {{BRONZE_ABI_TA_KIND_FLOAT32, kElemArmView},
+                          {BRONZE_ABI_TA_KIND_FLOAT64, kElemArmViewF64},
+                          {BRONZE_ABI_TA_KIND_INT32, kElemArmViewI32}};
+    // append_block moves the cursor, so every block is made first.
+    BasicBlock* at = b.current_block();
+    BasicBlock* hits[3];
+    BasicBlock* nexts[3];
+    for (int i = 0; i < 3; ++i) {
+        hits[i] = b.append_block(prefix + "_vk" + std::to_string(cases[i].kind));
+        nexts[i] = b.append_block(prefix + "_vkn" + std::to_string(cases[i].kind));
+    }
+    BasicBlock* done = b.append_block(prefix + "_vkdone");
+    BasicBlock* miss = b.append_block(prefix + "_vmiss");
+    BasicBlock* in = b.append_block(prefix + "_vin");
+
+    b.position_at_end(at);
+    Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
+    Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
+    for (int i = 0; i < 3; ++i) {
+        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(cases[i].kind)), hits[i], nexts[i]);
+        b.position_at_end(hits[i]);
+        prop.arm_begin(b, cases[i].arm);
+        b.build_br(done);
+        b.position_at_end(nexts[i]);
+    }
+    prop.arm_begin(b, kElemArmViewOther);
+    b.build_br(done);
+    b.position_at_end(done);
+    b.build_br_if(b.build_ult(idx, vlen), in, miss);
+    b.position_at_end(miss);
+    prop.arm_begin(b, kElemArmMiss);
+    b.build_br(in);
+    b.position_at_end(in);
+}
+
 }  // namespace
 
 // An element key as the Value the helpers take: an i32 is an int32 Number, an
@@ -139,11 +188,12 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // a call per element costs most against); every other kind and every
     // index past the length is the module's stub.
     b.position_at_end(bb_view);
-    arm_begin(b, kElemArmView);
+    mark_view_arm(*this, b, ptr, ei.idx, prefix);
     {
+        BasicBlock* at = b.current_block();
         BasicBlock* f32 = b.append_block(prefix + "_f32");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
-        b.position_at_end(bb_view);
+        b.position_at_end(at);
         Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
         Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
         b.build_br_if(b.build_and(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), b.build_ult(ei.idx, vlen)),
@@ -247,11 +297,12 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     // A Number stored into a Float32 element in bounds is written here (as
     // the read is, lower_elem_get); everything else is the module's stub.
     b.position_at_end(bb_view);
-    arm_begin(b, kElemArmView);
+    mark_view_arm(*this, b, ptr, ei.idx, prefix);
     {
+        BasicBlock* at = b.current_block();
         BasicBlock* f32 = b.append_block(prefix + "_f32");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
-        b.position_at_end(bb_view);
+        b.position_at_end(at);
         Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
         Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
         Value* number = b.build_ule(val, iconst(b, static_cast<int64_t>(kBronzeNumberMaxBits)));

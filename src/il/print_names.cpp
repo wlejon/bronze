@@ -173,8 +173,27 @@ const char* opName(Op op) {
         case Op::InBounds: return "in.bounds";
         case Op::IsHole: return "is.hole";
         case Op::ResumeCall: return "resume.call";
+        case Op::IsArray: return "is.array";
+        case Op::TypedLength: return "typed.length";
+        case Op::TypedLoad: return "typed.load";
+        case Op::TypedStore: return "typed.store";
+        case Op::FnNativeIs: return "fn.native_is";
+        case Op::MathFn: return "math";
     }
     return "?";
+}
+
+const IntrinsicInfo* intrinsicInfo(int32_t i) {
+    static const IntrinsicInfo kInfo[kIntrinsicCount] = {
+        {"abs", 1, "bronze_math_abs"},     {"floor", 1, "bronze_math_floor"}, {"ceil", 1, "bronze_math_ceil"},
+        {"round", 1, "bronze_math_round"}, {"sqrt", 1, "bronze_math_sqrt"},   {"min", 2, "bronze_math_min"},
+        {"max", 2, "bronze_math_max"},     {"imul", 2, "bronze_math_imul"},   {"sin", 1, "bronze_math_sin"},
+        {"cos", 1, "bronze_math_cos"},     {"tan", 1, "bronze_math_tan"},     {"asin", 1, "bronze_math_asin"},
+        {"acos", 1, "bronze_math_acos"},   {"atan", 1, "bronze_math_atan"},   {"atan2", 2, "bronze_math_atan2"},
+        {"exp", 1, "bronze_math_exp"},     {"log", 1, "bronze_math_log"},
+    };
+    if (i < 0 || i >= kIntrinsicCount) return nullptr;
+    return &kInfo[i];
 }
 
 }  // namespace bronze::il

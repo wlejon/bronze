@@ -14,6 +14,7 @@ const char* factKindName(FactKind kind) {
         case FactKind::DenseArray: return "dense-array";
         case FactKind::PlainArray: return "plain-array";
         case FactKind::TypedArray: return "typed-array";
+        case FactKind::Array: return "array";
         case FactKind::Callee: return "callee";
         case FactKind::InBounds: return "in-bounds";
         case FactKind::PtrEq: return "ptr-eq";
@@ -48,6 +49,7 @@ public:
             case il::Op::IsNullish: valueFact(FactKind::Nullish); return;
             case il::Op::IsHole: valueFact(FactKind::Hole); return;
             case il::Op::FnCodeIs: valueFact(FactKind::Callee, d->calleeIndex); return;
+            case il::Op::IsArray: valueFact(FactKind::Array); return;
             case il::Op::InBounds:
                 if (d->operands.size() != 2) return;
                 out.push_back(Fact{FactKind::InBounds, truth, d->operands[0], d->operands[1], 0, {}});

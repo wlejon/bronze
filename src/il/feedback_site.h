@@ -107,8 +107,9 @@ uint64_t icLayoutDigest(const Module& module);
 // SLOW SITES (docs/type-feedback.md, "Slow paths"): hands every instruction
 // whose lowering has an inline fast path with a generic fallback (an element
 // read or write, a named or indexed read or write and the runs of them, a
-// strict compare, a checked unbox, a `+ - * /` whose dynamic form computes two
-// Numbers inline) the next index in
+// strict compare, a checked unbox, a dynamic numeric op — `+ - * / %`, unary
+// `-`, `~`, the bitwise and shift ops, `< <= > >=`, `==`, `++`/`--`,
+// ToNumeric — whose form computes Numbers inline) the next index in
 // `slowSiteCount`, in function, block and instruction order. Run first thing
 // in the final passes, on the module every build of the program starts them
 // from, so a harvest's counts name the same instructions in the build that

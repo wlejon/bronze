@@ -185,11 +185,25 @@ inline constexpr uint32_t kElemArmArray = 1;
 inline constexpr uint32_t kElemArmView = 2;
 inline constexpr uint32_t kElemArmGrow = 3;
 inline constexpr uint32_t kElemArmMiss = 4;
-// A dynamic `+ - * /`'s arms (opt/speculate/evidence.h kArithArmNumbers and
-// on): two Numbers computed inline, and per operand one that was no int32.
+// A build made to be harvested splits the typed-array arm by element kind:
+// kElemArmView is then a Float32 view, these the others, and it marks
+// kElemArmMiss for a view index at or past the length (il_elem_lowering.cpp
+// mark_view_arm).
+inline constexpr uint32_t kElemArmViewF64 = 5;
+inline constexpr uint32_t kElemArmViewI32 = 6;
+inline constexpr uint32_t kElemArmViewOther = 7;
+// A dynamic numeric op's arms (il_lowering_numeric.cpp; opt/speculate/
+// evidence.h kArithArmNumbers and on): its Numbers computed inline, per
+// operand one that was no int32, and a Number result that was no int32.
 inline constexpr uint32_t kArithArmNumbers = 1;
 inline constexpr uint32_t kArithArmDouble0 = 2;
 inline constexpr uint32_t kArithArmDouble1 = 3;
+inline constexpr uint32_t kArithArmResultDouble = 4;
+// A `.length` read's arms (opt/speculate/evidence.h kLengthArmArray and on):
+// answered from an Array's, a String's or a typed array's header.
+inline constexpr uint32_t kLengthArmArray = 1;
+inline constexpr uint32_t kLengthArmString = 2;
+inline constexpr uint32_t kLengthArmView = 3;
 inline constexpr uint32_t kShapeTurnArm = 7;
 // The bit a call site's kLastShapeArm word carries beside bit 63 when it holds
 // a callee's code pointer rather than a shape (il/feedback_site.h).

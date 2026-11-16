@@ -1,6 +1,6 @@
-// The dynamic (NaN-boxed) forms of the arithmetic, bitwise, equality,
-// relational and truthiness ops: an inline arm for the operands whose answer
-// is in their bits, and the runtime helper for the rest.
+// The dynamic (NaN-boxed) forms of `===` and ToBoolean: an inline arm for
+// the operands whose answer is in their bits, and the runtime helper for the
+// rest. The numeric ops' forms are il_lowering_numeric.cpp.
 
 #include "il_lowering_dynamic.h"
 #include "il_lowering.h"
@@ -10,152 +10,6 @@
 #include <vector>
 
 namespace il2mir {
-
-// A dynamic `+ - * /` (`bronze_dynamic_*`): two Numbers compute inline as f64
-// and box the result, NaN canonicalized; anything else takes the helper.
-Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
-                           const char* helper) {
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "num_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-
-    // The helper's arm is a slow arm (il_property.h, "SLOW ARMS"), counted
-    // in a build that may be harvested.
-    PropertyLoweringHelper& prop = lowering->prop_lowering();
-    b.position_at_end(cur);
-    Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
-    Value* both = b.build_and(b.build_ule(op0, max), b.build_ule(op1, max));
-    b.build_br_if(both, fast, slow);
-    b.position_at_end(slow);
-    prop.slow_arm(b);
-    b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
-
-    b.position_at_end(fast);
-    Value* f0 = b.build_bitcast_f64_i64(op0);
-    Value* f1 = b.build_bitcast_f64_i64(op1);
-    // The operands' KINDS, in a build made to be harvested: the Numbers arm,
-    // then per operand an arm marked when it held a Number that is no int32
-    // (a fraction, -0, NaN, the infinities, or past the range): what a build
-    // on the harvest reads as the operand's tag (opt/speculate/evidence.cpp
-    // planArith).
-    if (prop.evidence_marked()) {
-        prop.arm_begin(b, kArithArmNumbers);
-        const uint32_t arms[2] = {kArithArmDouble0, kArithArmDouble1};
-        Value* fs[2] = {f0, f1};
-        Value* ops[2] = {op0, op1};
-        for (int i = 0; i < 2; ++i) {
-            BasicBlock* at = b.current_block();
-            BasicBlock* mark = b.append_block(prefix + "_dbl" + std::to_string(i));
-            BasicBlock* next = b.append_block(prefix + "_kind" + std::to_string(i));
-            b.position_at_end(at);
-            Value* in_range = int32_convertible(b, ops[i]);
-            Value* exact = b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(inline_to_int32(b, fs[i]))), fs[i]);
-            Value* neg_zero = b.build_eq(ops[i], b.build_iconst_i64(INT64_MIN));
-            Value* is_int = b.build_and(b.build_and(in_range, exact), b.build_xor(neg_zero, b.build_iconst_i32(1)));
-            b.build_br_if(is_int, next, mark);
-            b.position_at_end(mark);
-            prop.arm_begin(b, arms[i]);
-            b.build_br(next);
-            b.position_at_end(next);
-        }
-    }
-    Value* f = op == BronzeOp::Add ? b.build_add(f0, f1)
-             : op == BronzeOp::Sub ? b.build_sub(f0, f1)
-             : op == BronzeOp::Mul ? b.build_mul(f0, f1)
-                                   : b.build_sdiv(f0, f1);
-    b.build_br(merge, {box_f64_bits(b, f)});
-
-    b.position_at_end(merge);
-    return result;
-}
-
-Value* lower_dynamic_mod(Builder& b, Value* op0, Value* op1) {
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "mod_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* ints = b.append_block(prefix + "_ints");
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-    slow->set_cold();
-
-    b.position_at_end(cur);
-    b.build_br_if(b.build_and(int32_convertible(b, op0), int32_convertible(b, op1)), ints, slow);
-    b.position_at_end(ints);
-    Value* f0 = b.build_bitcast_f64_i64(op0);
-    Value* f1 = b.build_bitcast_f64_i64(op1);
-    Value* i0 = inline_to_int32(b, f0);
-    Value* i1 = inline_to_int32(b, f1);
-    // Exact int32 values (the round trip), the dividend >= 0 and the divisor
-    // > 0: the sign bit of the bits rules out -0 as well as the negatives.
-    Value* exact = b.build_and(b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i0)), f0),
-                               b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i1)), f1));
-    Value* signs = b.build_and(b.build_sge(op0, b.build_iconst_i64(0)), b.build_sgt(i1, b.build_iconst_i32(0)));
-    b.build_br_if(b.build_and(exact, signs), fast, slow);
-    b.position_at_end(fast);
-    Value* r = b.build_smod(i0, i1);
-    b.build_br(merge, {b.build_bitcast_i64_f64(b.build_sitofp_f64_i64(b.build_sext_i64(r)))});
-
-    b.position_at_end(slow);
-    b.build_br(merge, {b.build_call("bronze_dynamic_mod", Type::i64(), {op0, op1})});
-    b.position_at_end(merge);
-    return result;
-}
-
-// Whether the inline ToInt32 below applies to the Value (or f64) bits `bits`:
-// a Number of magnitude below 2^63, whose truncation fptosi computes exactly
-// and whose low 32 bits are then ToInt32. NaN, the infinities and every
-// non-Number (a NaN-boxed tag, above 0x7FF0... once the sign is masked off)
-// fail it.
-Value* int32_convertible(Builder& b, Value* bits) {
-    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
-    return b.build_ult(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x43E0000000000000ULL)));
-}
-
-// ToInt32 of the double `f`, where int32_convertible holds.
-Value* inline_to_int32(Builder& b, Value* f) {
-    return b.build_trunc_i32(b.build_fptosi_i64(f));
-}
-
-// A dynamic `& | ^ << >> >>>`: two Numbers whose ToInt32 is inline compute on
-// i32 and box the Number result; anything else (a BigInt, a string, a huge or
-// non-finite Number) takes the helper.
-Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper) {
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "bit_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-
-    b.position_at_end(cur);
-    b.build_br_if(b.build_and(int32_convertible(b, op0), int32_convertible(b, op1)), fast, slow);
-
-    b.position_at_end(slow);
-    b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
-
-    b.position_at_end(fast);
-    Value* l = inline_to_int32(b, b.build_bitcast_f64_i64(op0));
-    Value* r = inline_to_int32(b, b.build_bitcast_f64_i64(op1));
-    Value* v = nullptr;
-    switch (op) {
-        case BronzeOp::BitAnd: v = b.build_and(l, r); break;
-        case BronzeOp::BitOr: v = b.build_or(l, r); break;
-        case BronzeOp::BitXor: v = b.build_xor(l, r); break;
-        case BronzeOp::Shl: v = b.build_shl(l, b.build_and(r, b.build_iconst_i32(31))); break;
-        case BronzeOp::Shr: v = b.build_ashr(l, b.build_and(r, b.build_iconst_i32(31))); break;
-        default: v = b.build_lshr(l, b.build_and(r, b.build_iconst_i32(31))); break;
-    }
-    // `>>>` is the one whose result is a uint32.
-    Value* f = op == BronzeOp::UShr ? b.build_sitofp_f64_i64(b.build_zext_i64(v)) : b.build_sitofp_f64_i32(v);
-    b.build_br(merge, {b.build_bitcast_i64_f64(f)});
-
-    b.position_at_end(merge);
-    return result;
-}
 
 bool is_bits_identity_constant(const Value* v) {
     if (!v || !v->is_instruction()) return false;
@@ -321,38 +175,6 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, PropertyLower
     if (arms) arms->slow_arm(b);
     b.build_br(merge, {b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}),
                                    b.build_iconst_i32(1))});
-
-    b.position_at_end(merge);
-    return result;
-}
-
-// A dynamic `< <= > >=`: two Numbers compare inline as doubles (the ordered
-// compare, false at NaN, as IsLessThan answers); anything else takes the
-// helper, which owns ToPrimitive and the string and BigInt orders.
-Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper) {
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "rel_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i32());
-
-    b.position_at_end(cur);
-    Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
-    b.build_br_if(b.build_and(b.build_ule(op0, max), b.build_ule(op1, max)), fast, slow);
-
-    b.position_at_end(slow);
-    Value* called = b.build_and(b.build_call(helper, Type::i32(), {op0, op1}), b.build_iconst_i32(1));
-    b.build_br(merge, {called});
-
-    b.position_at_end(fast);
-    Value* l = b.build_bitcast_f64_i64(op0);
-    Value* r = b.build_bitcast_f64_i64(op1);
-    Value* v = op == BronzeOp::RelLt ? b.build_slt(l, r)
-             : op == BronzeOp::RelLe ? b.build_sle(l, r)
-             : op == BronzeOp::RelGt ? b.build_sgt(l, r)
-                                     : b.build_sge(l, r);
-    b.build_br(merge, {v});
 
     b.position_at_end(merge);
     return result;

@@ -21,6 +21,7 @@
 #include "runtime/ic_hot.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
@@ -242,9 +243,12 @@ void measureRepresentation(State& s) {
     }
 }
 
+// A source function by its text; a Math function as `intrinsic:Math.<name>`.
 std::string calleeOf(const void* code) {
     std::string name = typeFeedbackCodeName(code);
-    return name.empty() ? std::string("*other*") : name;
+    if (!name.empty()) return name;
+    if (const char* math = rtMathNativeName(code)) return std::string("intrinsic:Math.") + math;
+    return "*other*";
 }
 
 // A property site: its ways, one fact each, in the forms the read and write

@@ -117,6 +117,10 @@ public:
     // (bronze_abi.h, BRONZE_ABI_IC_SLOTWORD_OFFSET), one slot load on a hit
     // and `bronze_prop_get` on a miss. Requires a real site.
     Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
+    // `x.length`: an Array's, a String's and a pristine typed array's from
+    // their headers (each an ARM, il_abi.h kLengthArm*), anything else
+    // lower_prop_get_mono's (il_ic_lowering.cpp).
+    Value* lower_length_get(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
 
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.
     void lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm, Value* ic_entry);

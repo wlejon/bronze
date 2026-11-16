@@ -361,7 +361,9 @@ A method site's two ways give `<form> <receiver> <callee>`:
 - `direct`: a receiver shape and the code it calls. The callee is named
   `~<source offset>@<fnv32 of its source>`, which the plan matches against an
   IL function's `sourceBegin`;
-- `slot`: an own-slot entry, whose callee is `*other*`;
+- `slot`: an own-slot entry, whose callee is `*other*`, or
+  `intrinsic:Math.<name>` when the code is a Math function's native
+  (`rtMathNativeName`), which `planIntrinsic` reads as a `math.*` call;
 - `native`: an exotic receiver, named by kind.
 
 Two flags record that a site met more receivers than its cache holds:
@@ -475,12 +477,21 @@ bits 63 and 62 set (`kLastCalleeBit`), and the count of entries whose callee
 was not the last one's. The harvest names the callee in a `callee` row
 (`*other*` for a native); a call the helper made counts the slow arm. A
 harvest `planCall` reads as one callee when the site turned once and its
-helper never ran. The same build marks a dynamic `+ - * /`'s operand kinds as
-arms (`kArithArmNumbers`, then per operand a Number that was no int32), which
-`planArith` reads when no recorded value site exists. Every build that counts
+helper never ran. The same build marks a dynamic numeric op's operand kinds
+as arms (il2mir `il_lowering_numeric.cpp`: arithmetic, `%`, the bitwise ops
+and shifts, unary `-` and `~`, the relational compares, `==`, `to.numeric`
+and the loop step; `kArithArmNumbers`, then per operand a Number that was no
+int32, then `kArithArmResultDouble` for a Number result that was no int32),
+which `planArith` reads when no recorded value site exists. It also splits an
+element access's typed-array arm by element kind (`kElemArmView` for
+Float32, `kElemArmViewF64`, `kElemArmViewI32`, `kElemArmViewOther`) and marks
+`kElemArmMiss` for a view index past the length. Every build that counts
 slow sites marks an element access's append (`kElemArmGrow`, which keeps
 `planElem` off a write that grew its Array) and an Array read that found no
-element (`kElemArmMiss`).
+element (`kElemArmMiss`), and a `.length` read's header answers
+(`kLengthArmArray`, `kLengthArmString`, `kLengthArmView`): `planLength` reads
+an Array's alone as `array.length`. An element access and an index-named
+`o[0]` (a `prop.get` / `prop.set` of an index key) plan alike.
 
 `planHarvest` reads a site that held several shapes, none of them through
 `*other*`, as a PHASE when its turns are at most `kPhaseTurns` (16; a site

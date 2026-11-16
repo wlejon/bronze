@@ -33,6 +33,7 @@ enum class LicenceKind : uint8_t {
     Shape,   // the subject has the shape of layout cell `imm` (`slot.load`)
     Callee,  // the subject is a closure of module function `imm` (`fn.env`)
     Array,   // the subject is an Array (`array.length`)
+    TypedArray,  // the subject is a typed array (`typed.length`)
 };
 
 struct Licence {

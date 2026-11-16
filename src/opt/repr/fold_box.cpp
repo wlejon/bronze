@@ -152,6 +152,19 @@ void BoxFolder::visit(BlockId b, size_t i) {
             }
             return;
         case Op::ToInt32:
+            if (inst.boxType == Type::F64 && inst.type == Type::I32) {
+                // ToInt32 of a double that is an exact int32 is that int32.
+                if (const std::optional<Int32Source> k = exactInt32(fn_, defs_, inst.operands[0])) {
+                    if (!k->isConst) {
+                        replaceBy(b, i, k->value);
+                    } else {
+                        redundancy::makeI32Constant(inst, k->constant);
+                        changed_ = true;
+                    }
+                    ++ctx_.stats.conversionsFolded;
+                }
+                return;
+            }
             if (s && inst.boxType == Type::Dynamic && foldToInt32(b, i, *s)) ++ctx_.stats.conversionsFolded;
             return;
         case Op::StrictEq:

@@ -238,7 +238,7 @@ bool lower_ops_instruction(
             } else if (res_type == Type::i64()) {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = lower_dynamic_arith(lowering, b, BronzeOp::Add, op0, op1, "bronze_dynamic_add");
+                res_val = lower_dynamic_arith(lowering->prop_lowering(), b, BronzeOp::Add, op0, op1, "bronze_dynamic_add");
             } else {
                 op0 = lowering->ensure_type(op0, Type::i32(), b);
                 op1 = lowering->ensure_type(op1, Type::i32(), b);
@@ -259,7 +259,7 @@ bool lower_ops_instruction(
                 const char* fn_name = (inst_ast.op == BronzeOp::Sub) ? "bronze_dynamic_sub" :
                                       (inst_ast.op == BronzeOp::Mul) ? "bronze_dynamic_mul" :
                                                                        "bronze_dynamic_div";
-                res_val = lower_dynamic_arith(lowering, b, inst_ast.op, op0, op1, fn_name);
+                res_val = lower_dynamic_arith(lowering->prop_lowering(), b, inst_ast.op, op0, op1, fn_name);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 op1 = lowering->ensure_type(op1, Type::f64(), b);
@@ -283,7 +283,7 @@ bool lower_ops_instruction(
             if (res_type == Type::i64()) {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = lower_dynamic_mod(b, op0, op1);
+                res_val = lower_dynamic_mod(lowering->prop_lowering(), b, op0, op1);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 op1 = lowering->ensure_type(op1, Type::f64(), b);
@@ -301,7 +301,7 @@ bool lower_ops_instruction(
             if (!op0) return false;
             if (res_type == Type::i64()) {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
-                res_val = b.build_call("bronze_dynamic_neg", Type::i64(), {op0});
+                res_val = lower_dynamic_neg(lowering->prop_lowering(), b, op0);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 res_val = b.build_neg(op0);
@@ -328,7 +328,7 @@ bool lower_ops_instruction(
                     inst_ast.op == BronzeOp::Shl    ? "bronze_dynamic_shl" :
                     inst_ast.op == BronzeOp::Shr    ? "bronze_dynamic_shr" :
                                                       "bronze_dynamic_ushr";
-                res_val = lower_dynamic_bitwise(b, inst_ast.op, op0, op1, helper);
+                res_val = lower_dynamic_bitwise(lowering->prop_lowering(), b, inst_ast.op, op0, op1, helper);
                 return true;
             }
             Value* op0 = lowering->ensure_type(get_opd(0), Type::i32(), b);
@@ -369,7 +369,7 @@ bool lower_ops_instruction(
         case BronzeOp::BitNot: {
             if (res_type == Type::i64()) {
                 Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
-                res_val = b.build_call("bronze_dynamic_bitnot", Type::i64(), {op0});
+                res_val = lower_dynamic_bitnot(lowering->prop_lowering(), b, op0);
             } else {
                 Value* op0 = lowering->ensure_type(get_opd(0), Type::i32(), b);
                 Value* r = b.build_xor(op0, b.build_iconst_i32(-1));
@@ -397,44 +397,16 @@ bool lower_ops_instruction(
             if (res_type == Type::f64()) {
                 res_val = lowering->ensure_type(op0, Type::f64(), b);
             } else {
-                Value* lhs = lowering->ensure_type(op0, Type::i64(), b);
-                BasicBlock* cur = b.current_block();
-                const std::string pfx = "tonum_" + std::to_string(cur->parent()->next_block_id());
-                BasicBlock* slow = b.append_block(pfx + "_slow");
-                BasicBlock* merge = b.append_block(pfx + "_merge");
-                Value* result = b.add_block_param(merge, Type::i64());
-                b.position_at_end(cur);
-                Value* is_num = b.build_ule(lhs, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-                b.build_br_if(is_num, merge, {lhs}, slow, {});
-                b.position_at_end(slow);
-                b.build_br(merge, {b.build_call("bronze_to_numeric", Type::i64(), {lhs})});
-                b.position_at_end(merge);
-                res_val = result;
+                res_val = lower_dynamic_to_numeric(lowering->prop_lowering(), b,
+                                                   lowering->ensure_type(op0, Type::i64(), b));
             }
             return true;
         }
         case BronzeOp::NumericStep: {
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            Value* lhs = lowering->ensure_type(op0, Type::i64(), b);
-            Value* is_inc = b.build_iconst_i32(inst_ast.imm_i64 >= 0 ? 1 : 0);
-            BasicBlock* cur = b.current_block();
-            const std::string pfx = "numstep_" + std::to_string(cur->parent()->next_block_id());
-            BasicBlock* fast = b.append_block(pfx + "_fast");
-            BasicBlock* slow = b.append_block(pfx + "_slow");
-            BasicBlock* merge = b.append_block(pfx + "_merge");
-            Value* result = b.add_block_param(merge, Type::i64());
-            b.position_at_end(cur);
-            Value* is_num = b.build_ule(lhs, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-            b.build_br_if(is_num, fast, slow);
-            b.position_at_end(slow);
-            b.build_br(merge, {b.build_call("bronze_numeric_step", Type::i64(), {lhs, is_inc})});
-            b.position_at_end(fast);
-            Value* delta = b.build_fconst_f64(inst_ast.imm_i64 >= 0 ? 1.0 : -1.0);
-            Value* sum = b.build_fadd(b.build_bitcast_f64_i64(lhs), delta);
-            b.build_br(merge, {lowering->prop_lowering().box_number(b, sum)});
-            b.position_at_end(merge);
-            res_val = result;
+            res_val = lower_numeric_step(lowering->prop_lowering(), b, lowering->ensure_type(op0, Type::i64(), b),
+                                         inst_ast.imm_i64 >= 0 ? 1 : -1);
             return true;
         }
 
@@ -447,7 +419,7 @@ bool lower_ops_instruction(
             const char* helper = (inst_ast.op == BronzeOp::RelLt) ? "bronze_rel_lt" :
                                  (inst_ast.op == BronzeOp::RelLe) ? "bronze_rel_le" :
                                  (inst_ast.op == BronzeOp::RelGt) ? "bronze_rel_gt" : "bronze_rel_ge";
-            res_val = lower_dynamic_relational(b, inst_ast.op, op0, op1, helper);
+            res_val = lower_dynamic_relational(lowering->prop_lowering(), b, inst_ast.op, op0, op1, helper);
             lowering->note_boolean(res_val);
             return true;
         }
@@ -495,8 +467,7 @@ bool lower_ops_instruction(
             } else {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = b.build_call("bronze_loose_eq", Type::i32(), {op0, op1});
-                res_val = b.build_and(res_val, b.build_iconst_i32(1));
+                res_val = lower_dynamic_loose_eq(lowering->prop_lowering(), b, op0, op1);
             }
             return true;
         }

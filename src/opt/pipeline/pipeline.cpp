@@ -108,7 +108,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
         if (s.harvestIgnored) out += " (harvest of another build ignored)";
         out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), prop.set " +
                n(s.propWrites) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", arith " +
-               n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) +
+               n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", math " + n(s.mathCalls) +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +
                n(s.loopEntryPoints) + "), shape cells " + n(s.shapeCells) + ", redirected " + n(s.redirected) +
                "\n";
