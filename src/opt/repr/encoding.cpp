@@ -13,10 +13,11 @@ std::optional<BoxedForm> boxedForm(il::Type boxType) {
     form.isHole = false;
     switch (boxType) {
         case il::Type::I32:
-            // The Int32 tag.
+            // The double box of the int32's value: integral, in range, never
+            // -0.
             form.isI32 = true;
-            form.isNumber = false;
-            form.unboxF64ReadsValue = false;
+            form.isNumber = true;
+            form.unboxF64ReadsValue = true;
             return form;
         case il::Type::F64:
             // The double box: always `is.number`; `is.i32` only for an

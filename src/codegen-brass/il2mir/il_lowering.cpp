@@ -593,6 +593,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     ltimer.mark("data syms");
 
     // 3. Verify module
+    dumpMir(*mod, "lowered, before");
     if (options_.verify_lowered_module && !verify_bridge_module(*mod, diag_, options_.build_threads)) {
         return nullptr;
     }

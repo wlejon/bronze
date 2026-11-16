@@ -49,11 +49,90 @@ Value* boxed_elem_key(Builder& b, Value* index) {
     return index;
 }
 
+// The arms are the speculation step's element guards (opt/speculate/elem.cpp)
+// asked of the values at hand: for a write `is.plain_array`, then
+// `is.dense_array %arr, 0`, an int32 index (a double that is integral, in
+// range and not -0), in bounds, and an element that is not the hole.
+//   arm Array : every test passed       arm View : a typed array
+//   slow arm  : anything else
+void PropertyLoweringHelper::mark_elem_arm(Builder& b, Value* obj, Value* index, bool write) {
+    if (!elem_arms_ || !arms_marked()) return;
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "elem_arm_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_dense = b.append_block(prefix + "_dense");
+    BasicBlock* bb_index = b.append_block(prefix + "_index");
+    BasicBlock* bb_load = b.append_block(prefix + "_load");
+    BasicBlock* bb_array = b.append_block(prefix + "_array");
+    BasicBlock* bb_other = b.append_block(prefix + "_other");
+    BasicBlock* bb_view = b.append_block(prefix + "_view");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_done = b.append_block(prefix + "_done");
+    bb_other->set_cold();
+    bb_view->set_cold();
+    bb_slow->set_cold();
+
+    b.position_at_end(cur);  // append_block moved it
+    Value* plain = write ? lower_is_plain_array(b, obj) : b.build_iconst_i32(1);
+    b.build_br_if(plain, bb_dense, {}, bb_other, {});
+
+    b.position_at_end(bb_dense);
+    b.build_br_if(lower_is_dense_array(b, obj, 0), bb_index, {}, bb_other, {});
+
+    // The key as a Value: a Number in its double form whose value is an
+    // int32 (the Int32 box is no Number's), below the length.
+    b.position_at_end(bb_index);
+    Value* key = boxed_elem_key(b, index);
+    if (key->type().is_tagged()) key = b.build_bitcast_tagged_i64(key);
+    Value* abs_bits = b.build_and(key, iconst(b, 0x7FFFFFFFFFFFFFFFULL));
+    Value* in_range = b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL));  // |x| < 2^63, no NaN
+    Value* f = b.build_bitcast_f64_i64(b.build_select(in_range, key, b.build_iconst_i64(0)));
+    Value* k = b.build_fptosi_i64(f);
+    Value* integral = b.build_eq(b.build_sitofp_f64_i64(k), f);
+    Value* fits = b.build_eq(b.build_sext_i64(b.build_trunc_i32(k)), k);
+    Value* not_minus_zero = b.build_ne(key, iconst(b, 0x8000000000000000ULL));
+    Value* idx = b.build_trunc_i32(k);
+    Value* ptr = object_address(b, obj);
+    Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    Value* ok = b.build_and(b.build_and(in_range, integral),
+                            b.build_and(b.build_and(fits, not_minus_zero), b.build_ult(idx, len)));
+    b.build_br_if(ok, bb_load, {}, bb_other, {});
+
+    b.position_at_end(bb_load);
+    Value* elem = array_element_load(b, array_elements(b, ptr), b.build_zext_i64(idx));
+    b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_other, {}, bb_array, {});
+
+    b.position_at_end(bb_array);
+    arm_begin(b, kElemArmArray);
+    b.build_br(bb_done);
+
+    b.position_at_end(bb_other);
+    Value* optr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, optr, is_obj);
+    Value* base = object_or_blank(b, optr, is_obj);
+    Value* is_view = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0),
+                                                     b.build_iconst_i32(kTypedArrayHeaderLow)));
+    b.build_br_if(is_view, bb_view, {}, bb_slow, {});
+
+    b.position_at_end(bb_view);
+    arm_begin(b, kElemArmView);
+    b.build_br(bb_done);
+
+    b.position_at_end(bb_slow);
+    slow_arm(b);
+    b.build_br(bb_done);
+
+    b.position_at_end(bb_done);
+}
+
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
+    mark_elem_arm(b, obj, index, /*write=*/false);
     return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
 }
 
 void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
+    mark_elem_arm(b, obj, index, /*write=*/true);
     b.build_call("bronze_elem_set", Type::void_type(),
                  {obj, boxed_elem_key(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
 }

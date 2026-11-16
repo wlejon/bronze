@@ -536,11 +536,8 @@ uint64_t bronze_to_string(uint64_t bits) {
 
 uint64_t bronze_box_f64(double v) { return Value::fromDouble(v).rawBits(); }
 
-uint64_t bronze_box_i32(int32_t v) {
-    return Value::fromTagAndPayload(static_cast<uint16_t>(Tag::Int32),
-                                    static_cast<uint32_t>(v))
-        .rawBits();
-}
+// A Number has one box, the double's bits: an int32 is boxed as its double.
+uint64_t bronze_box_i32(int32_t v) { return Value::fromDouble(static_cast<double>(v)).rawBits(); }
 
 uint64_t bronze_box_bool(bool v) { return Value::fromBool(v).rawBits(); }
 

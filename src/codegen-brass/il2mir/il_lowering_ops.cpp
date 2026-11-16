@@ -109,8 +109,15 @@ Value* boxed_f64_source(Value* v, const BasicBlock* here) {
             def = inner->operand(0)->defining_instruction();
         }
     }
+    if (def != nullptr && here != nullptr && def->parent() != here) return nullptr;
+    // The box of an int32 (`box.i32`): the bits of its conversion, which is
+    // never NaN and so needs no canonicalizing select.
+    if (def && def->opcode() == Opcode::bitcast_i64_f64 && def->operand_count() >= 1) {
+        const Instruction* conv = def->operand(0)->defining_instruction();
+        if (conv && conv->opcode() == Opcode::sitofp_f64_i32) return def->operand(0);
+        return nullptr;
+    }
     if (!def || def->opcode() != Opcode::select || def->operand_count() < 3) return nullptr;
-    if (here != nullptr && def->parent() != here) return nullptr;
     const Instruction* nan = def->operand(1)->defining_instruction();
     if (!nan || nan->opcode() != Opcode::iconst_i64 ||
         static_cast<uint64_t>(nan->imm_i64()) != BRONZE_ABI_CANONICAL_NAN_BITS) {

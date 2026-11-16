@@ -547,10 +547,10 @@ enum class Op : uint8_t {
     // `prop.set`, or a later dedicated op).
     SlotStore,
     // a: bool = is.i32 %v. %v (dynamic) is a Number whose value is an int32:
-    // whatever its box (the Int32 tag, or a double that is integral, in range
-    // and not -0). Total, pure. The F64 test is the existing `is.number`
-    // (the double box: bits <= BRONZE_ABI_NUMBER_MAX_BITS), so there is no
-    // separate `is.f64`.
+    // a double that is integral, in range and not -0 (a Number has one box,
+    // the double's bits; the backend also accepts the unused Int32 tag).
+    // Total, pure. The Number test is the existing `is.number` (bits <=
+    // BRONZE_ABI_NUMBER_MAX_BITS), so there is no separate `is.f64`.
     IsI32,
     // a: i32 = unbox.i32.unchecked %v. The int32 a dynamic %v holds.
     // Unchecked: legal only on `is.i32`'s true edge. Unlike `unbox.i32`
@@ -558,8 +558,7 @@ enum class Op : uint8_t {
     // another tag it computes a wrong number and touches no memory.
     UnboxI32,
     // a: f64 = unbox.f64.unchecked %v. The double a dynamic %v holds.
-    // Unchecked: legal only on `is.number`'s true edge — NOT `is.i32`'s, whose
-    // value may sit in the Int32 box, which `is.number` does not count. Not
+    // Unchecked: legal on `is.number`'s true edge (and so on `is.i32`'s). Not
     // ToNumber: `unbox.f64` stays the checked conversion.
     UnboxF64,
     // a: f64 = i32.to_f64 %i. Exact; pure.

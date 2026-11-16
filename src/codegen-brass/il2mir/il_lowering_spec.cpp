@@ -233,7 +233,7 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             Value* is_obj = is_object_address(b, ptr);
             Value* base = prop_lowering_.object_or_blank(b, ptr, is_obj);
             Value* is_fn = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kFunctionHeaderLow));
-            Value* code = b.build_load(Type::i64(), base, kBronzeFnCodeOffset);
+            Value* code = b.build_load(Type::ptr(), base, kBronzeFnCodeOffset);
             Value* is_f = b.build_eq(code, b.build_func_addr("__wrapper_" + resolved_names_[inst.index]));
             res_val = b.build_and(is_obj, b.build_and(is_fn, is_f));
             return true;

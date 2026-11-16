@@ -276,7 +276,25 @@ bool runValueWalk(JobContext& ctx) {
     il::Function& fn = ctx.fn;
     if (fn.blocks.empty()) return false;
     const Cfg cfg(fn);
-    const DomTree dom(cfg);
+    // A block holding a resume point of G is also entered by a resumption,
+    // with only the point's state in hand: what is computed before it, or on
+    // a path that does not run through it, is not available after it. Walked
+    // as the root of a tree of its own, the block and everything only it
+    // dominates start with an empty table; the point itself hides what the
+    // block computed in front of it (visitInstruction). A use the walk makes
+    // after a point is thus always of a value computed after it or of one in
+    // its state, and G's points need no state but the one they were made
+    // with.
+    std::vector<BlockId> resumed;
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        for (const il::Instruction& inst : fn.blocks[b].instructions) {
+            if (inst.op == Op::ResumePoint) {
+                resumed.push_back(static_cast<BlockId>(b));
+                break;
+            }
+        }
+    }
+    const DomTree dom(cfg, resumed);
     const DefUse defs(fn);
     const AliasInfo alias(fn);
     FactEnv facts;

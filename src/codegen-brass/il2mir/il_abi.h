@@ -176,6 +176,11 @@ inline constexpr uint32_t kSlowSiteArms = 8;
 // A named property site's last shape and its count of shape turns
 // (il/feedback_site.h).
 inline constexpr uint32_t kLastShapeArm = 6;
+// An element read's or write's arms (opt/speculate/evidence.h kElemArmArray,
+// kElemArmView): an in-bounds present element of a dense Array at an int32
+// index, and a typed array. Anything else counts the site's slow arm.
+inline constexpr uint32_t kElemArmArray = 1;
+inline constexpr uint32_t kElemArmView = 2;
 inline constexpr uint32_t kShapeTurnArm = 7;
 // THE SHAPE CELLS (il.h Module::shapeCells): `__bronze_shape_cells`, one u64
 // per cell in the module's per-thread data, zero until the runtime fills it

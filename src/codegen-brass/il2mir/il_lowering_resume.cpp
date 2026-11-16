@@ -77,7 +77,10 @@ namespace {
 bool state_type_matches(BronzeType il, Type t) {
     switch (il) {
         case BronzeType::Dynamic:
-        case BronzeType::Unknown: return t.is_tagged();
+        // Tagged, or the raw word of one the lowering knows is a primitive
+        // (a box of a number or boolean: no root to keep), which the leave's
+        // word holds bit for bit.
+        case BronzeType::Unknown: return t.is_tagged() || t == Type::i64();
         case BronzeType::F64: return t == Type::f64();
         case BronzeType::I32: return t == Type::i32();
         case BronzeType::Bool: return t == Type::i32() || t == Type::i8();

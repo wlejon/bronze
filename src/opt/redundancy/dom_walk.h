@@ -3,6 +3,9 @@
 // The dominator-tree walk jobs 1-3 share: opt::walkWithFacts, extended to keep
 // an ExprTable in step with the FactEnv.
 //
+// `dom` may be a forest (DomTree's extra entries); each root is walked with
+// both empty, as the entry is.
+//
 // On entry to block `b` (after pushing a scope on both):
 //   - one incoming edge, a branch arm: the edge's facts are added;
 //   - a JOIN (several incoming edges, a loop header among them): whatever any

@@ -95,7 +95,9 @@ std::optional<Edge> Cfg::uniqueInEdge(BlockId b) const {
     return in_[b].front();
 }
 
-DomTree::DomTree(const Cfg& cfg) {
+DomTree::DomTree(const Cfg& cfg) : DomTree(cfg, {}) {}
+
+DomTree::DomTree(const Cfg& cfg, const std::vector<BlockId>& extraEntries) {
     const size_t n = cfg.size();
     idom_.assign(n, kNoBlock);
     children_.resize(n);
@@ -106,58 +108,81 @@ DomTree::DomTree(const Cfg& cfg) {
     if (n == 0) return;
     for (BlockId b : cfg.rpo()) reachable_[b] = 1;
 
-    // Cooper-Harvey-Kennedy, with the entry as its own idom during the
-    // iteration so `intersect` terminates there.
-    const auto& rpo = cfg.rpo();
-    idom_[0] = 0;
+    // Cooper-Harvey-Kennedy over the graph with a VIRTUAL ROOT whose edges go
+    // to the entry and to every extra entry; it is its own idom during the
+    // iteration so `intersect` terminates there. Its position is before the
+    // entry in the order: the reverse postorder from the entry still orders
+    // every dominator before what it dominates, since an extra entry only
+    // removes dominators.
+    const BlockId virt = static_cast<BlockId>(n);
+    std::vector<BlockId> idom(n + 1, kNoBlock);
+    std::vector<uint8_t> isRoot(n, 0);
+    isRoot[0] = 1;
+    for (BlockId e : extraEntries) {
+        if (e < n && reachable_[e]) isRoot[e] = 1;
+    }
+    auto order = [&](BlockId b) -> uint64_t { return b == virt ? 0 : uint64_t{cfg.rpoIndex(b)} + 1; };
+    idom[virt] = virt;
+    for (size_t b = 0; b < n; ++b) {
+        if (isRoot[b]) idom[b] = virt;
+    }
     auto intersect = [&](BlockId a, BlockId b) {
         while (a != b) {
-            while (cfg.rpoIndex(a) > cfg.rpoIndex(b)) a = idom_[a];
-            while (cfg.rpoIndex(b) > cfg.rpoIndex(a)) b = idom_[b];
+            while (order(a) > order(b)) a = idom[a];
+            while (order(b) > order(a)) b = idom[b];
         }
         return a;
     };
+    const auto& rpo = cfg.rpo();
     bool changed = true;
     while (changed) {
         changed = false;
-        for (size_t i = 1; i < rpo.size(); ++i) {
-            const BlockId b = rpo[i];
+        for (BlockId b : rpo) {
+            if (isRoot[b]) continue;
             BlockId next = kNoBlock;
             for (BlockId p : cfg.preds(b)) {
-                if (!cfg.reachable(p) || idom_[p] == kNoBlock) continue;
+                if (!cfg.reachable(p) || idom[p] == kNoBlock) continue;
                 next = next == kNoBlock ? p : intersect(next, p);
             }
-            if (next != kNoBlock && idom_[b] != next) {
-                idom_[b] = next;
+            if (next != kNoBlock && idom[b] != next) {
+                idom[b] = next;
                 changed = true;
             }
         }
     }
-    idom_[0] = kNoBlock;
-
-    for (size_t b = 1; b < n; ++b) {
-        if (idom_[b] != kNoBlock) children_[idom_[b]].push_back(static_cast<BlockId>(b));
+    std::vector<BlockId> roots;
+    for (size_t b = 0; b < n; ++b) {
+        if (idom[b] == virt) {
+            roots.push_back(static_cast<BlockId>(b));
+        } else if (idom[b] != kNoBlock) {
+            idom_[b] = idom[b];
+            children_[idom[b]].push_back(static_cast<BlockId>(b));
+        }
     }
     // Children are pushed in ascending order already; the preorder walk below
-    // visits them in that order.
+    // visits them in that order, the entry's tree first, then each extra
+    // entry's.
     uint32_t clock = 0;
     std::vector<std::pair<BlockId, size_t>> stack;
-    stack.push_back({0, 0});
-    pre_[0] = clock++;
-    preorder_.push_back(0);
-    while (!stack.empty()) {
-        auto& [b, next] = stack.back();
-        if (next < children_[b].size()) {
-            const BlockId c = children_[b][next++];
-            depth_[c] = depth_[b] + 1;
-            pre_[c] = clock++;
-            preorder_.push_back(c);
-            stack.push_back({c, 0});
-            continue;
+    for (BlockId root : roots) {
+        stack.push_back({root, 0});
+        pre_[root] = clock++;
+        preorder_.push_back(root);
+        while (!stack.empty()) {
+            auto& [b, next] = stack.back();
+            if (next < children_[b].size()) {
+                const BlockId c = children_[b][next++];
+                depth_[c] = depth_[b] + 1;
+                pre_[c] = clock++;
+                preorder_.push_back(c);
+                stack.push_back({c, 0});
+                continue;
+            }
+            post_[b] = clock++;
+            stack.pop_back();
         }
-        post_[b] = clock++;
-        stack.pop_back();
     }
+    roots_ = std::move(roots);
 }
 
 bool DomTree::dominates(BlockId a, BlockId b) const {

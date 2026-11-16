@@ -128,6 +128,14 @@ public:
 
     // `bronze_elem_get` / `bronze_elem_set` (il_elem_lowering.cpp).
     Value* lower_elem_get(Builder& b, Value* obj, Value* index);
+    // In an image built to be harvested (cache_evidence; set_elem_arms), the
+    // ARM an element access takes, marked in front of its helper call: what
+    // the speculation step's guards for it would have passed (kElemArmArray),
+    // a typed array (kElemArmView), or anything else (the slow arm). Not in
+    // other images: the classification is code of its own in front of every
+    // access, not a mark on a path the access takes anyway.
+    void mark_elem_arm(Builder& b, Value* obj, Value* index, bool write);
+    void set_elem_arms(bool on) { elem_arms_ = on; }
     void lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict);
 
     // `is.dense_array`: whether `obj` is an Array with an elements block and
@@ -195,6 +203,7 @@ private:
     std::function<void(Builder&, uint32_t)> slow_count_fn_;
     std::function<void(Builder&, uint32_t)> arm_mark_fn_;
     std::vector<uint32_t> slow_sites_;
+    bool elem_arms_ = false;
     std::function<void(Builder&, uint32_t, Value*)> shape_turn_fn_;
 };
 

@@ -95,6 +95,15 @@ private:
 class DomTree {
 public:
     explicit DomTree(const Cfg& cfg);
+    // The dominators of the graph in which each block of `extraEntries` is
+    // also entered from outside the function, as the block holding a
+    // `resume.point` of G is by a resumption: a FOREST, rooted at the entry
+    // and at each extra entry (idom kNoBlock), and a block dominates another
+    // only within one tree. `commonDominator` is not meaningful across trees.
+    DomTree(const Cfg& cfg, const std::vector<BlockId>& extraEntries);
+
+    // The entry, then each extra entry that is a root, ascending.
+    const std::vector<BlockId>& roots() const { return roots_; }
 
     // The immediate dominator; kNoBlock for the entry and unreachable blocks.
     BlockId idom(BlockId b) const { return idom_[b]; }
@@ -121,6 +130,7 @@ private:
     std::vector<uint32_t> post_;
     std::vector<BlockId> preorder_;
     std::vector<uint8_t> reachable_;
+    std::vector<BlockId> roots_;
 };
 
 }  // namespace bronze::opt

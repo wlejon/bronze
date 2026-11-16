@@ -18,15 +18,11 @@
 //
 // WHY THE VALUE IS THE SAME. p held, on each path, the box of a Number (or
 // Boolean) v; it now holds v typed and pb boxes it again. The JS value is
-// the same on every path. The box can differ in ENCODING from the one the
-// edge made: an F64 parameter fed `box.i32 x` on one edge now holds
-// `box.f64 (i32.to_f64 x)`; an I32 parameter fed `box.f64 0.0` now holds
-// `box.i32 0`; a value the speculation step unboxed with `unbox.i32` may have
-// arrived as an integral double and leaves as an Int32 box. encoding.h
-// (INTERCHANGEABILITY) is why no consumer can tell: G already makes both
-// boxes for one Number, and inside S the tests that read the encoding read
-// the same SSA value as the unboxes they license. -0 cannot arise from an
-// int32, so no widened value is a -0 that was a 0.
+// the same on every path, and so is the box: a Number has one, the double's
+// bits, so an F64 parameter fed `box.i32 x` on one edge and now holding
+// `box.f64 (i32.to_f64 x)` holds the same word (encoding.h,
+// INTERCHANGEABILITY). -0 cannot arise from an int32, so no widened value is
+// a -0 that was a 0.
 
 #include <cassert>
 #include <utility>

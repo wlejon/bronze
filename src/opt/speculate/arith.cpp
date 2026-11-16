@@ -4,7 +4,7 @@
 // operands boxed because a boxed value may be a String, a BigInt or an object
 // with valueOf, and each of those is a different algorithm. Evidence
 // (evidence.cpp planArith): the recorded VALUE site of every Dynamic operand
-// saw Numbers only — `i32` (an int32-valued Number in either box) and/or
+// saw Numbers only — `i32` (an int32-valued Number) and/or
 // `f64` (any other) — at least kMinSiteObservations times. A typed operand
 // counts as its type.
 //
@@ -15,14 +15,11 @@
 //     s = add x, y          : i32 (wrapping, exact on the guard's edge)
 //     r = box.i32 s
 // DOUBLE FORM — every operand held Numbers:
-//     f64 only:   guard is.number %a ; x = unbox.f64.unchecked %a
-//     i32 only:   guard is.i32 %a    ; x = i32.to_f64 (unbox.i32.unchecked %a)
-//     both:       br is.number %a, D, I
-//                 D: unbox.f64.unchecked -> J ; I: guard is.i32, convert -> J
+//     guard is.number %a ; x = unbox.f64.unchecked %a  (per Dynamic operand)
 //     s = add x, y          : f64
 //     r = box.f64 s
-// (`is.number` tests the double box only, so a value in the Int32 box needs
-// the second arm.) The result is boxed again so the rest of S, written
+// (A Number has one box, the double's bits, so one test admits int32 and
+// other Numbers alike.) The result is boxed again so the rest of S, written
 // against the Dynamic result, is unchanged; a representation pass removes the
 // box/unbox pairs later.
 //
@@ -91,7 +88,9 @@ ValueId asInt(GuardBuilder& b, ValueId v) {
     return b.emit(il::Op::UnboxI32, il::Type::I32, {v});
 }
 
-// The double a Number operand holds, guarded by the tags it was seen with.
+// The double a Number operand holds. A Number has one box, the double's bits
+// (runtime/value.h), so `is.number` admits every Number whatever tags it was
+// seen with, and the unbox reads it.
 ValueId asDouble(GuardBuilder& b, ValueId v, uint8_t tags) {
     switch (b.typeOf(v)) {
         case il::Type::F64: return v;
@@ -99,47 +98,16 @@ ValueId asDouble(GuardBuilder& b, ValueId v, uint8_t tags) {
         default: break;
     }
     assert(b.typeOf(v) == il::Type::Dynamic && tags != 0);
-    if (tags == kTagDouble) {
-        b.guard(b.emit(il::Op::IsNumber, il::Type::Bool, {v}));
-        return b.emit(il::Op::UnboxF64, il::Type::F64, {v});
-    }
-    if (tags == kTagInt) {
-        return b.emit(il::Op::I32ToF64, il::Type::F64, {asInt(b, v)});
-    }
-    // Both: the double box, or the Int32 box, or leave.
-    const ValueId inDoubleBox = b.emit(il::Op::IsNumber, il::Type::Bool, {v});
-    const BlockId dbl = b.newBlock();
-    const BlockId other = b.newBlock();
-    const BlockId join = b.newBlock();
-    const ValueId joined = b.addParam(join, il::Type::F64);
-    b.branch(inDoubleBox, dbl, {}, other, {});
-    b.moveTo(dbl);
-    b.jump(join, {b.emit(il::Op::UnboxF64, il::Type::F64, {v})});
-    b.moveTo(other);
-    b.jump(join, {b.emit(il::Op::I32ToF64, il::Type::F64, {asInt(b, v)})});
-    b.moveTo(join);
-    return joined;
+    (void)tags;
+    b.guard(b.emit(il::Op::IsNumber, il::Type::Bool, {v}));
+    return b.emit(il::Op::UnboxF64, il::Type::F64, {v});
 }
 
 // Guards that a Dynamic operand is a Number of the tags seen, converting
-// nothing (ToNumeric of a Number is the Number itself).
+// nothing (ToNumeric of a Number is the Number itself): an int32 when only
+// int32s were seen, else any Number.
 void guardNumber(GuardBuilder& b, ValueId v, uint8_t tags) {
-    if (tags == kTagInt) {
-        b.guard(b.emit(il::Op::IsI32, il::Type::Bool, {v}));
-        return;
-    }
-    if (tags == kTagDouble) {
-        b.guard(b.emit(il::Op::IsNumber, il::Type::Bool, {v}));
-        return;
-    }
-    const ValueId inDoubleBox = b.emit(il::Op::IsNumber, il::Type::Bool, {v});
-    const BlockId other = b.newBlock();
-    const BlockId join = b.newBlock();
-    b.branch(inDoubleBox, join, {}, other, {});
-    b.moveTo(other);
-    b.guard(b.emit(il::Op::IsI32, il::Type::Bool, {v}));
-    b.jump(join);
-    b.moveTo(join);
+    b.guard(b.emit(tags == kTagInt ? il::Op::IsI32 : il::Op::IsNumber, il::Type::Bool, {v}));
 }
 
 // Defines the site's result as `v` through a join parameter: the IL has no

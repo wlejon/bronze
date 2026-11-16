@@ -28,7 +28,8 @@ void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& do
         BlockId block;
         bool leaving;
     };
-    std::vector<Frame> stack{{0, false}};
+    std::vector<Frame> stack;
+    for (auto it = dom.roots().rbegin(); it != dom.roots().rend(); ++it) stack.push_back({*it, false});
     while (!stack.empty()) {
         const Frame frame = stack.back();
         stack.pop_back();
@@ -41,7 +42,9 @@ void walkDominatorTree(const il::Function& fn, const Cfg& cfg, const DomTree& do
         facts.push();
         exprs.push();
         stack.push_back({b, true});
-        if (b != 0) {
+        // A root (the entry, or a block a resumption enters) starts with
+        // nothing known.
+        if (dom.idom(b) != kNoBlock) {
             if (cfg.inEdges(b).size() == 1) {
                 facts.addAll(entryFacts(fn, cfg, defs, b));
             } else {

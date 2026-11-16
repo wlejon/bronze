@@ -9,20 +9,20 @@
 //     same JS Number. Every operation defined on JS values (arithmetic,
 //     compares, ToBoolean, stores, calls, a `leave` handing the value to G)
 //     treats them alike.
-//   - ENCODING: the two boxes have different bits (an Int32-tagged word and a
-//     double), and a few speculation forms test or read the bits: `is.number`
-//     (il_op.h: the DOUBLE box only) and the two unchecked unboxes.
+//   - ENCODING: what the tag tests and the unchecked unboxes read off the
+//     bits. A Number has one box, the double's bits (runtime/value.h), so
+//     today the two boxes above are the same word; the table still states
+//     each form's answers rather than letting rules assume it.
 // `boxedForm` answers the second. The first needs no table, and the rules
 // that rely on it (rule 2 replacing one box of a Number by another, see
 // params_apply.cpp) state the argument where they use it:
 //
-//   INTERCHANGEABILITY. A generic function already produces both boxes for
-//   the same Number (`box.i32` of an int, `box.f64` of a computed 3.0), so
-//   every consumer it hands a value to is correct for either. Inside S the
+//   INTERCHANGEABILITY. `box.i32 %x` and `box.f64 (i32.to_f64 %x)` are one
+//   word, so any consumer is correct for either. Inside S the
 //   encoding-reading forms are guards and the unbox each guard licenses, and
-//   both read the SAME SSA value: whatever box that value has, the test and
-//   the unbox agree about it, and a test that now fails where it passed only
-//   sends S to G, which is correct either way.
+//   both read the SAME SSA value: the test and the unbox agree about it, and
+//   a test that now fails where it passed only sends S to G, which is correct
+//   either way.
 
 #include <optional>
 
@@ -47,16 +47,16 @@ struct BoxedForm {
 //
 // THE ASSUMED ENCODING (runtime/value.h, the backend's `box` lowering in
 // codegen-brass/il2mir/il_lowering_inst.cpp):
-//   box.i32  -> the Int32 tag (0xFFF3 << 48 | uint32 payload). Above
-//               BRONZE_ABI_NUMBER_MAX_BITS, so `is.number` is false; `is.i32`
-//               is true; `unbox.f64.unchecked` would read the tagged word as
-//               a double (a NaN), so it does not read the value.
+//   box.i32  -> the bits of the int32's double (bronze_box_i32 and the
+//               backend's `box`): `is.number` and `is.i32` true, and
+//               `unbox.f64.unchecked` reads the value. (The Int32 tag of
+//               runtime/value.h is no Number's box; nothing makes one.)
 //   box.f64  -> the double's own bits, NaN canonicalised: `is.number` true;
 //               `is.i32` depends on the value (integral, in range, not -0).
 //   box.bool -> the Bool tag; box.str -> the String tag: no number test passes.
 // None of them is an object, nullish or the hole.
-// If the runtime changes how an int32 is boxed (for example to always use the
-// double form), this function is the one to change.
+// If the runtime changes how an int32 is boxed, this function is the one to
+// change.
 std::optional<BoxedForm> boxedForm(il::Type boxType);
 
 // Whether a double is a Number `is.i32` accepts: integral, within int32 and

@@ -12,8 +12,8 @@
 //                    and `to.int32 y` (7.1.6) is the identity on those; it is
 //                    total and pure, so it no longer needs the licence.
 //   unbox.f64.unchecked (box.f64 y)            -> y
-//   unbox.f64.unchecked (box.i32 x)            -> i32.to_f64 x, only if the
-//                    encoding says that unbox reads an Int32 box's value.
+//   unbox.f64.unchecked (box.i32 x)            -> i32.to_f64 x, as the
+//                    encoding says that unbox reads an int32's box.
 //   unbox.f64 (checked: ToNumber) of a Number  -> the Number as f64.
 //   unbox.i32 (checked) of box.i32 x           -> x.
 //   unbox.bool (ToBoolean, 7.1.2)              -> b for a Boolean, `num.truthy`

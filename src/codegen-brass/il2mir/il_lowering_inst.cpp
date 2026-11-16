@@ -579,10 +579,11 @@ bool IlLowering::lower_instruction(
                     res_val = box_f64_bits(b, ensure_type(op0, Type::f64(), b));
                 }
             } else if (inst_ast.box_type == BronzeType::I32) {
+                // A Number has one box, the double's own bits (runtime/value.h
+                // isNumber); an int32 is never NaN, so nothing to canonicalize.
+                //   cvtsi2sd ; movq
                 Value* i_val = ensure_type(op0, Type::i32(), b);
-                Value* sext = b.build_sext_i64(i_val);
-                Value* tag = b.build_iconst_i64(static_cast<int64_t>(kInt32Tag));
-                res_val = b.build_or(b.build_and(sext, b.build_iconst_i64(0xFFFFFFFFLL)), tag);
+                res_val = b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(i_val));
             } else if (inst_ast.box_type == BronzeType::Bool) {
                 Value* b_val = ensure_type(op0, Type::i32(), b);
                 b_val = b.build_and(b_val, b.build_iconst_i32(1));
