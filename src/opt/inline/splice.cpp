@@ -61,7 +61,7 @@ namespace {
 // state, and the caller's own leave after the call. `leave` is the copied
 // leave, already removed from `blockId`.
 uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blockId, const il::Instruction& leave,
-                           const AfterCall& after) {
+                           const AfterCall& after, ValueId instance) {
     const il::Function& calleeGeneric = module.functions[leave.calleeIndex];
     std::vector<il::Instruction>& insts = caller.blocks[blockId].instructions;
     uint32_t added = 0;
@@ -100,6 +100,18 @@ uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blo
             }
             standIn = conv.result;
             insts.push_back(std::move(conv));
+            ++added;
+        }
+        if (after.construct) {
+            assert(instance != kNoValue && after.callResultType == il::Type::Dynamic);
+            il::Instruction rule;
+            rule.op = il::Op::ConstructResult;
+            rule.result = newValue(caller);
+            rule.type = il::Type::Dynamic;
+            rule.operands = {standIn, instance};
+            rule.span = leave.span;
+            standIn = rule.result;
+            insts.push_back(std::move(rule));
             ++added;
         }
     }
@@ -154,6 +166,22 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
     const BlockId entry = map.block(0);
     assert(entry == first && caller.blocks[entry].params.empty() && "b0 takes no parameters");
 
+    // The copy's positions are the callee's, in a scope of the caller's for
+    // this call (il.h Function::inlineScopes); the callee's own scopes nest
+    // under it.
+    const auto scopeBase = static_cast<uint32_t>(caller.inlineScopes.size());
+    const uint32_t ownScope = scopeBase + 1;
+    caller.inlineScopes.push_back(il::Function::InlineScope{call.calleeIndex, call.span, call.inlineScope});
+    for (const il::Function::InlineScope& inner : callee.inlineScopes) {
+        caller.inlineScopes.push_back(
+            il::Function::InlineScope{inner.callee, inner.call, inner.parent == 0 ? ownScope : scopeBase + 1 + inner.parent});
+    }
+    for (BlockId id = first; id < static_cast<BlockId>(caller.blocks.size()); ++id) {
+        for (il::Instruction& inst : caller.blocks[id].instructions) {
+            inst.inlineScope = inst.inlineScope == 0 ? ownScope : scopeBase + 1 + inst.inlineScope;
+        }
+    }
+
     // B enters the copy instead of T.
     {
         il::Instruction& jump = caller.blocks[block].instructions.back();
@@ -195,7 +223,17 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
         assert(copy.handler == kNoBlock && "an exit block is never protected");
         const il::Instruction leave = std::move(term);
         copy.instructions.pop_back();
-        result.instructionsAdded += finishGenerically(module, caller, id, leave, *after);
+        // A speculated `new` passed its instance as `__this` (construct.cpp).
+        const ValueId instance =
+            callee.needsThis ? call.operands[callee.needsEnv ? 1 : 0] : kNoValue;
+        const size_t kept = caller.blocks[id].instructions.size();
+        result.instructionsAdded += finishGenerically(module, caller, id, leave, *after, instance);
+        // The generic finish is the caller's call of the callee's G, made
+        // where the call was: a trace through it shows G's own frame.
+        for (size_t k = kept; k < caller.blocks[id].instructions.size(); ++k) {
+            caller.blocks[id].instructions[k].inlineScope = call.inlineScope;
+            caller.blocks[id].instructions[k].span = call.span;
+        }
         ++result.leavesRewritten;
     }
     return result;

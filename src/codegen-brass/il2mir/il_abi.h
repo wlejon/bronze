@@ -215,6 +215,16 @@ inline constexpr uint32_t kLastCalleeBit = 62;
 // and its bytes, one after another (brass_backend_sections.cpp).
 inline constexpr std::string_view kShapeCellsSymbol = "__bronze_shape_cells";
 inline constexpr std::string_view kShapeCellKeysSymbol = "__bronze_shape_cell_keys";
+// THE LITERAL SHAPES (il.h Module::objectLiterals): two u64 per object
+// literal in the module's per-thread data, zero until bronze_object_literal
+// fills them: the empty root the literal starts from (the TLS block's sized
+// plain shape, which names the realm's Object.prototype) and the shape the
+// literal ends at from it.
+inline constexpr std::string_view kLiteralShapesSymbol = "__bronze_literal_shapes";
+// THE TRANSITION CELLS (il.h Module::protoCells): one u64 per cell in the
+// module's per-thread data, the prototype epoch the runtime stamped it with
+// (runtime/transition_cells.cpp), zero (no epoch) until then.
+inline constexpr std::string_view kProtoCellsSymbol = "__bronze_proto_cells";
 
 // The function object's code and environment words (bronze_abi_layout.h,
 // BRONZE_ABI_FN_*): what `fn.code_is` and `fn.env` read.

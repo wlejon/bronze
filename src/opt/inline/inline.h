@@ -29,7 +29,8 @@
 // have done for this call, G_f from point `id` does the rest of exactly that
 // call (that is what the leave in S_f already meant), and G_c from `a`
 // continues the caller from just after the call with the call's value in the
-// place of the generic call's result. Every other state value of `a` is
+// place of the generic call's result — for a speculated `new`, the value
+// `construct.result` makes of it and the instance the call was given. Every other state value of `a` is
 // S_c's own value of the same id (S keeps G's ids), defined before the call,
 // so available in the copy, which the call's block dominates.
 //
@@ -51,7 +52,7 @@
 //
 // WHAT IS NOT INLINED (callee.cpp has the rules and why): a callee that is a
 // declaration, the entry or a top-level function, a coroutine or starts one,
-// reads new.target or calls super(), is a class constructor, has an
+// reads new.target or calls super(), has an
 // `arguments` object or a rest parameter, or whose returns do not match its
 // return type; a call with an environment hop count above zero; a call whose
 // callee has leaves but which has no `resumeAfter` (a protected block: the

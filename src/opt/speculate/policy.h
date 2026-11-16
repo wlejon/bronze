@@ -40,4 +40,10 @@ bool functionMaySpeculate(const il::Function& fn);
 // wrapper does with them. Missing ones are `undefined`, the wrapper's padding.
 bool directCallFits(const il::Function& callee, size_t argc);
 
+// The same convention for the constructor of a `new` (construct.cpp): a
+// class constructor too (what makes calling one throw is the runtime's call
+// path, never its body), but one that binds `this`, so the instance is
+// a parameter of the call.
+bool constructFits(const il::Function& callee, size_t argc);
+
 }  // namespace bronze::opt::speculate

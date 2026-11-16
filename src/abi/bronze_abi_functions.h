@@ -322,6 +322,13 @@
     /* `create.this f` when the inline bump had no room: a plain object of the
      * vetted constructor `f`'s instance shape. */ \
     X(bronze_create_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    /* `object.literal`'s slow path (runtime/literal.cpp): the literal's two\
+     * cache words, its inline slots, its value count, and argv holding the\
+     * values and then their runtime key ids. */ \
+    /* A TRANSITION CELL's stamp (runtime/transition_cells.cpp): the cell,\
+     * the add's from-shape, runtime key id, to-shape and slot. */ \
+    X(bronze_transition_publish,  BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+    X(bronze_object_literal,      BRONZE_ABI_U64,  (BRONZE_ABI_MU64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     /* The one function object for a mention of a declaration. The last argument
      * is the calling module's own {code, value} cache slot for this mention, or
      * null: the runtime's native-builtin interning has no module to hold a slot

@@ -48,6 +48,9 @@ struct AfterCall {
     // the call), else kNoValue; and its type in G.
     ValueId callResult = kNoValue;
     il::Type callResultType = il::Type::Void;
+    // The generic site is a `construct`, whose value is what the constructor
+    // returned when that is an object and its instance otherwise.
+    bool construct = false;
 };
 
 // Every resume point of a generic function G that stands right after a call,

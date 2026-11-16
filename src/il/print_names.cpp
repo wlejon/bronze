@@ -179,6 +179,15 @@ const char* opName(Op op) {
         case Op::TypedStore: return "typed.store";
         case Op::FnNativeIs: return "fn.native_is";
         case Op::MathFn: return "math";
+        case Op::ObjectLiteral: return "object.literal";
+        case Op::ArrayLiteral: return "array.literal";
+        case Op::FnConstructs: return "fn.constructs";
+        case Op::FnInstanceShape: return "fn.instance_shape";
+        case Op::CreateThis: return "create.this";
+        case Op::ShapeStore: return "shape.store";
+        case Op::ProtoCell: return "proto.cell";
+        case Op::ProtoPublish: return "proto.publish";
+        case Op::ConstructResult: return "construct.result";
     }
     return "?";
 }

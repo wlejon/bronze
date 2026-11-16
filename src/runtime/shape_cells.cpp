@@ -122,6 +122,13 @@ void fill(uint64_t* cell, const Shape* shape) {
 void rtShapeCellsNoteShape(const Shape* shape) {
     Registry& r = t_cells;
     if (r.pending.empty() || shape == nullptr || !eligible(shape)) return;
+    // A root is noted when it is made, which for a class's instances is
+    // before its prototype has the `constructor` its name is read from; its
+    // first child asks again for it.
+    if (shape->parent != nullptr && shape->root != nullptr && shape->root != shape) {
+        rtShapeCellsNoteShape(shape->root);
+        if (r.pending.empty()) return;
+    }
     std::string last;
     if (shape->parent != nullptr) {
         const StringHeader* s = shape->key.string();

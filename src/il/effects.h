@@ -45,6 +45,11 @@ enum class Loc : uint16_t {
     Heap = 1u << 9,           // everything else, and anything not known to be above
     Views = 1u << 10,         // a typed array's length and data address (its buffer can detach)
     TypedElements = 1u << 11, // the bytes of every ArrayBuffer
+    // The prototype-mutation epoch and the module cells published under it
+    // (`proto.cell`): what every change to a prototype chain moves. Any
+    // instruction that can add to, delete from or swap a prototype writes
+    // everything anyway.
+    Protos = 1u << 12,
 };
 
 class LocSet {
@@ -69,7 +74,7 @@ public:
     constexpr bool operator==(const LocSet&) const = default;
 
 private:
-    static constexpr uint16_t kAllBits = (1u << 12) - 1;
+    static constexpr uint16_t kAllBits = (1u << 13) - 1;
     explicit constexpr LocSet(uint16_t bits) : bits_(bits) {}
     uint16_t bits_ = 0;
 };

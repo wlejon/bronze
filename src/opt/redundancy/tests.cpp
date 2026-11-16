@@ -23,6 +23,9 @@ DefTag tagByDefinition(const ValueView& values, ValueId v) {
     switch (d->op) {
         case Op::CreateObject:
         case Op::CreateArray:
+        case Op::ObjectLiteral:
+        case Op::ArrayLiteral:
+        case Op::CreateThis:
         case Op::CreateFunction:
             return DefTag::Object;
         case Op::ConstUndefined:
@@ -139,6 +142,14 @@ std::optional<bool> ptrEqTest(const il::Instruction& inst, const FactEnv& facts,
 }
 
 }  // namespace
+
+ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
+    if (inst.op != Op::ConstructResult || inst.operands.size() != 2) return kNoValue;
+    const ValueId r = inst.operands[0];
+    const std::optional<bool> object = isObjectTest(facts, tagByDefinition(values, r), r);
+    if (!object) return kNoValue;
+    return *object ? r : inst.operands[1];
+}
 
 std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& facts,
                                     const ExprTable& exprs, const ValueView& values) {

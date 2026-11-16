@@ -3,6 +3,7 @@
 #include "il_abi.h"
 #include "il_call_entry.h"
 #include <brass/mir/module.hpp>
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <string>
@@ -44,6 +45,10 @@ uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& 
                                 inst.op == BronzeOp::CallDynamic ||
                                 (inst.op == BronzeOp::SuperCall && inst.param_count > 16);
             if (stages && inst.param_count > widest) widest = inst.param_count;
+            // object.literal's slow path stages its values and their keys.
+            if (inst.op == BronzeOp::ObjectLiteral) {
+                widest = std::max<uint32_t>(widest, static_cast<uint32_t>(2 * inst.operands.size()));
+            }
         }
     }
     return widest;

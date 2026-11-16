@@ -195,6 +195,10 @@ BlockId GuardBuilder::exitBefore() {
     return exitBefore_;
 }
 
+BlockId GuardBuilder::exitBeforeWith(std::vector<il::Instruction> work) {
+    return makeExit(ctx_.resume.at(siteBlock_, siteIndex_), std::move(work), il::kNoValue, il::kNoValue);
+}
+
 uint32_t GuardBuilder::resumeAfterSite() {
     // In front of the instruction after the site: always one, the block's
     // terminator at the latest, since a site is not a terminator.

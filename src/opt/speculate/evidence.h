@@ -103,6 +103,8 @@ inline constexpr uint8_t kTagDouble = 2;  // any other Number (`is.number`)
 enum class SiteKind : uint8_t {
     PropRead,     // prop.get on own data slots of 1..kMaxChainShapes shapes
     PropWrite,    // prop.set (an assignment) to an existing own slot of one shape
+    PropAdd,      // prop.set (an assignment) adding the key to one shape, inline
+    Construct,    // construct with one target
     MethodSlot,   // method.call whose method is an own data slot of one shape
     MethodProto,  // method.call whose method is found on the prototype chain
     Call,         // call.dynamic with one target
@@ -129,10 +131,14 @@ struct SitePlan {
     SiteKind kind = SiteKind::PropRead;
     BlockId block = 0;
     uint32_t index = 0;
-    // PropRead (one or a chain), PropWrite and MethodSlot (one).
+    // PropRead (one or a chain), PropWrite and MethodSlot (one); PropAdd
+    // the shape before the add, then the one after it with the key's slot.
     std::vector<ShapeSlot> shapes;
-    // MethodSlot, MethodProto, Call: the callee, by its index as lowered.
+    // MethodSlot, MethodProto, Call, Construct: the callee, by its index as
+    // lowered. MethodProto over several (2..kMaxChainShapes): `callees`, and
+    // `callee` unset.
     uint32_t callee = kNoFunction;
+    std::vector<uint32_t> callees;
     // Arith: one mask per operand, and the form chosen from them.
     std::vector<uint8_t> operandTags;
     ArithForm form = ArithForm::Int;
@@ -175,6 +181,10 @@ private:
                                           BlockId block, uint32_t index) const;
     std::optional<SitePlan> planMethod(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                        BlockId block, uint32_t index) const;
+    std::optional<SitePlan> planConstruct(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
+                                          uint32_t index) const;
+    // The callee a harvested slow site entered, when it entered one only.
+    uint32_t harvestedCallee(const il::Instruction& inst) const;
     std::optional<SitePlan> planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                      BlockId block, uint32_t index) const;
     std::optional<SitePlan> planArith(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,

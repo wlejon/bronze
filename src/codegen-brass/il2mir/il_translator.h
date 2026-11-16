@@ -171,6 +171,24 @@ struct TranslatorOptions {
     // reads word n of `__bronze_shape_cells`, which the entry registers with
     // the runtime with the cells' keys (il_abi.h kShapeCellsSymbol).
     uint32_t shape_cell_count = 0;
+    // The module's object literals (il.h Module::objectLiterals): their keys
+    // and inline slots. `object.literal n` caches its shape in words 2n and
+    // 2n+1 of `__bronze_literal_shapes` (il_abi.h kLiteralShapesSymbol).
+    struct ObjectLiteralMeta {
+        std::vector<uint32_t> keys;
+        uint32_t inline_slots = 0;
+    };
+    std::vector<ObjectLiteralMeta> object_literals;
+    // The module's transition cells (il.h Module::protoCells): `proto.cell
+    // n` compares word n of `__bronze_proto_cells` with the thread's
+    // prototype epoch (il_abi.h kProtoCellsSymbol).
+    struct ProtoCellMeta {
+        uint32_t from_cell = 0;
+        uint32_t key_index = 0;
+        uint32_t to_cell = 0;
+        int32_t slot = 0;
+    };
+    std::vector<ProtoCellMeta> proto_cells;
     // SLOW SITES (il.h `slowSite`, il_property.h "SLOW ARMS"): the module's
     // count, laid out as u64 counters right before the IC table
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image

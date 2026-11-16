@@ -93,6 +93,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         out.file = inst.span.file;
     }
     out.slow_site = inst.slowSite;
+    out.inline_scope = inst.inlineScope;
 
     switch (inst.op) {
         // --- Constants ---
@@ -538,6 +539,24 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::MathFn;
             out.imm_i64 = inst.immI32;
             break;
+        case il::Op::ObjectLiteral:
+            out.op = il2mir::BronzeOp::ObjectLiteral;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::ArrayLiteral: out.op = il2mir::BronzeOp::ArrayLiteral; break;
+        case il::Op::FnConstructs: out.op = il2mir::BronzeOp::FnConstructs; break;
+        case il::Op::FnInstanceShape: out.op = il2mir::BronzeOp::FnInstanceShape; break;
+        case il::Op::CreateThis: out.op = il2mir::BronzeOp::CreateThis; break;
+        case il::Op::ShapeStore: out.op = il2mir::BronzeOp::ShapeStore; break;
+        case il::Op::ProtoCell:
+            out.op = il2mir::BronzeOp::ProtoCell;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::ProtoPublish:
+            out.op = il2mir::BronzeOp::ProtoPublish;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::ConstructResult: out.op = il2mir::BronzeOp::ConstructResult; break;
     }
 
     return out;
@@ -629,6 +648,18 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
                               : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
         bfn.coro_kind = fn.coroKind;
+        for (const il::Function::InlineScope& scope : fn.inlineScopes) {
+            il2mir::BronzeFunction::InlineScope out;
+            out.callee = ctx.fnName(scope.callee);
+            out.parent = scope.parent;
+            if ((scope.call.begin != 0 || scope.call.end != 0) && scope.call.file < ctx.lineTables.size()) {
+                const SourceBuffer::LineCol lc = ctx.lineTables[scope.call.file].lineCol(scope.call.begin);
+                out.line = lc.line;
+                out.column = lc.column;
+                out.file = scope.call.file;
+            }
+            bfn.inline_scopes.push_back(std::move(out));
+        }
         bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
 
         bfn.params.reserve(fn.params.size());

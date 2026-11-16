@@ -45,6 +45,8 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
     switch (site.kind) {
         case SiteKind::PropRead: rewritePropRead(ctx, site); return;
         case SiteKind::PropWrite: rewritePropWrite(ctx, site); return;
+        case SiteKind::PropAdd: rewritePropAdd(ctx, site); return;
+        case SiteKind::Construct: rewriteConstruct(ctx, site); return;
         case SiteKind::MethodSlot:
         case SiteKind::MethodProto: rewriteMethodCall(ctx, site); return;
         case SiteKind::Call: rewritePlainCall(ctx, site); return;

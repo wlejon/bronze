@@ -679,6 +679,35 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             out += " \"" + module.shapeCells[inst.immI32].key + "\"";
                         }
                         break;
+                    case Op::ObjectLiteral: {
+                        out += "object.literal " + std::to_string(inst.immI32) + " {";
+                        if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < module.objectLiterals.size()) {
+                            const auto& keys = module.objectLiterals[inst.immI32].keys;
+                            for (size_t k = 0; k < keys.size(); ++k) {
+                                out += (k ? "," : "") +
+                                       (keys[k] < module.keyConstants.size() ? module.keyConstants[keys[k]]
+                                                                              : std::string("?"));
+                            }
+                        }
+                        out += "}";
+                        for (ValueId v : inst.operands) out += ", %" + std::to_string(v);
+                        break;
+                    }
+                    case Op::ProtoCell:
+                    case Op::ProtoPublish: {
+                        out += std::string(opName(inst.op)) + " " + std::to_string(inst.immI32);
+                        if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < module.protoCells.size()) {
+                            const Module::ProtoCell& c = module.protoCells[inst.immI32];
+                            out += std::string(" add \"") +
+                                   (c.keyIndex < module.keyConstants.size() ? module.keyConstants[c.keyIndex]
+                                                                            : std::string("?")) +
+                                   "\" on \"" +
+                                   (c.fromCell < module.shapeCells.size() ? module.shapeCells[c.fromCell].key
+                                                                           : std::string("?")) +
+                                   "\"";
+                        }
+                        break;
+                    }
                     case Op::SlotLoad:
                         out += "slot.load %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

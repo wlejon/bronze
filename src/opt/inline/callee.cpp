@@ -23,7 +23,10 @@
 //   - coro.start / coro.suspend / coro.mode: a coroutine frame is the
 //     function's own (and brass pairs each coro_create with its body over the
 //     whole module); refused.
-//   - a class constructor: calling one throws, so no direct call reaches one.
+//   - a class constructor: calling one throws, so the only direct call of
+//     one is the speculated `new` (opt/speculate construct.cpp), which made
+//     the instance and binds it as `__this` like any other; what tells the
+//     two apart is the runtime's call path, never the body.
 //   - strictness: the backend reads Function::isStrict only in the call
 //     wrapper, for the `arguments` object (il_lowering_wrapper.cpp); every
 //     strict-dependent instruction carries its mode in its own immediate
@@ -71,7 +74,6 @@ bool calleeInlinable(const il::Function& fn) {
     if (fn.isExternal || fn.blocks.empty() || fn.isEntryPoint) return false;
     if ((fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0) return false;
     if (!il::functionEntersDirectly(fn)) return false;
-    if ((fn.fnFlags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0) return false;
     if (fn.needsArguments || fn.hasRestParam) return false;
     for (const il::Block& block : fn.blocks) {
         for (const il::Instruction& inst : block.instructions) {
@@ -112,14 +114,16 @@ AfterCallPoints::AfterCallPoints(const il::Function& generic) {
             const il::Instruction& point = block.instructions[i];
             if (point.op != il::Op::ResumePoint || point.immI32 < 0) continue;
             const il::Instruction& call = block.instructions[i - 1];
-            // Only the three forms a `resumeAfter` is placed behind
-            // (method_call.cpp, plain_call.cpp, driver.cpp
+            // Only the forms a `resumeAfter` is placed behind
+            // (method_call.cpp, plain_call.cpp, construct.cpp, driver.cpp
             // markLoweredDirectCalls). A point behind anything else stands in
             // front of a site and is no after-call point.
-            if (call.op != il::Op::DynamicCall && call.op != il::Op::MethodCall && call.op != il::Op::Call) {
+            if (call.op != il::Op::DynamicCall && call.op != il::Op::MethodCall && call.op != il::Op::Call &&
+                call.op != il::Op::Construct) {
                 continue;
             }
             AfterCall after;
+            after.construct = call.op == il::Op::Construct;
             after.resumeId = static_cast<uint32_t>(point.immI32);
             after.state = point.operands;
             for (ValueId v : point.operands) {

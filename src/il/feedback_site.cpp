@@ -248,7 +248,14 @@ uint64_t functionIlHash(const Module& module, const Function& fn) {
             std::memcpy(&f64bits, &inst.immF64, sizeof f64bits);
             h.u64(f64bits);
             // create.object's immI32 is its inline-slot prediction, as above.
-            h.u64(inst.op == Op::CreateObject ? 0u : static_cast<uint32_t>(inst.immI32));
+            // object.literal's is a module-wide numbering: its keys stand for it.
+            if (inst.op == Op::ObjectLiteral && inst.immI32 >= 0 &&
+                static_cast<size_t>(inst.immI32) < module.objectLiterals.size()) {
+                for (uint32_t k : module.objectLiterals[inst.immI32].keys) key(k);
+                h.u64(0);
+            } else {
+                h.u64(inst.op == Op::CreateObject ? 0u : static_cast<uint32_t>(inst.immI32));
+            }
             h.u64(static_cast<uint64_t>(inst.boxType));
             key(inst.keyIndex);
             if (namesCallee(inst.op)) h.str(fnName(inst.calleeIndex));

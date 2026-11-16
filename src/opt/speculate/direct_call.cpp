@@ -46,12 +46,14 @@ ValueId emitCodeIs(GuardBuilder& b, ValueId calleeValue, uint32_t callee) {
     return b.emitInst(std::move(test));
 }
 
-void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
-                    const std::vector<ValueId>& args) {
+namespace {
+
+// The call, and the instruction that makes its value Dynamic; `asResult`
+// makes that instruction define the site's result.
+ValueId directCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
+                   const std::vector<ValueId>& args, bool asResult) {
     RewriteContext& ctx = b.context();
     const il::Function& f = ctx.module.functions[callee];
-    assert(directCallFits(f, args.size()));
-    assert(b.site().type == il::Type::Dynamic && b.site().result != il::kNoValue);
 
     il::Instruction call;
     call.op = il::Op::Call;
@@ -76,17 +78,20 @@ void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, Value
     }
     assert(call.operands.size() == f.params.size());
 
+    auto value = [&](il::Instruction inst) {
+        if (!asResult) return b.emitInst(std::move(inst));
+        b.emitResult(std::move(inst));
+        return b.site().result;
+    };
     switch (f.returnType) {
         case il::Type::Dynamic:
-            b.emitResult(std::move(call));
-            return;
+            return value(std::move(call));
         case il::Type::Void: {
             b.emitInst(std::move(call));
             il::Instruction undef;
             undef.op = il::Op::ConstUndefined;
             undef.type = il::Type::Dynamic;
-            b.emitResult(std::move(undef));
-            return;
+            return value(std::move(undef));
         }
         default: {
             const ValueId raw = b.emitInst(std::move(call));
@@ -95,10 +100,23 @@ void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, Value
             boxed.type = il::Type::Dynamic;
             boxed.boxType = f.returnType;
             boxed.operands = {raw};
-            b.emitResult(std::move(boxed));
-            return;
+            return value(std::move(boxed));
         }
     }
+}
+
+}  // namespace
+
+void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
+                    const std::vector<ValueId>& args) {
+    assert(directCallFits(b.context().module.functions[callee], args.size()));
+    assert(b.site().type == il::Type::Dynamic && b.site().result != il::kNoValue);
+    directCall(b, callee, calleeValue, thisValue, args, true);
+}
+
+ValueId emitDirectCallValue(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
+                            const std::vector<ValueId>& args) {
+    return directCall(b, callee, calleeValue, thisValue, args, false);
 }
 
 }  // namespace bronze::opt::speculate

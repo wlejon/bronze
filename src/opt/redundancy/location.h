@@ -54,6 +54,7 @@ enum class Place : uint8_t {
     Elem,       // element `index` of array `base`
     Env,        // slot `b` of the record `a` parent hops above `base`
     ModuleEnv,  // the module scope's record pointer
+    Shape,      // the shape word of object `base`
 };
 
 struct Location {

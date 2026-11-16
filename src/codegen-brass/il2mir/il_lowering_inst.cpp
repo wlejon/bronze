@@ -140,8 +140,10 @@ bool IlLowering::lower_instruction(
     if (inst_ast.op == BronzeOp::ResumePoint) return lower_resume_point(inst_ast, b, fn, val_map);
     if (inst_ast.op == BronzeOp::Leave) return lower_leave(inst_ast, b, fn, val_map);
     if (inst_ast.op == BronzeOp::ResumeCall) return lower_resume_call(inst_ast, b, fn, val_map);
-    if (is_spec_il_op(inst_ast.op)) {
-        if (!lower_spec_instruction(inst_ast, b, val_map, res_val)) return false;
+    if (is_literal_il_op(inst_ast.op) || is_spec_il_op(inst_ast.op)) {
+        const bool lowered = is_literal_il_op(inst_ast.op) ? lower_literal_instruction(inst_ast, b, val_map, res_val)
+                                                           : lower_spec_instruction(inst_ast, b, val_map, res_val);
+        if (!lowered) return false;
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
         return true;
     }

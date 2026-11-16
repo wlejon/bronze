@@ -128,6 +128,11 @@ struct Instruction {
     static constexpr uint32_t kNoResumeAfter = 0xFFFFFFFFu;
     uint32_t resumeAfter = kNoResumeAfter;
 
+    // The inlined call this instruction's code came from (opt/inline): a
+    // 1-based index into its function's `inlineScopes`, 0 for the function's
+    // own code. What an Error.stack frame for a position here names.
+    uint32_t inlineScope = 0;
+
     Span span;
 
     BlockTarget target;              // Jump target / Branch then-target
@@ -363,6 +368,15 @@ struct Function {
     static constexpr uint32_t kNotSpeculated = UINT32_MAX;
     uint32_t speculatedFrom = kNotSpeculated;
     bool isSpeculated() const { return speculatedFrom != kNotSpeculated; }
+    // The calls the inliner replaced by their callee's body: scope k + 1 is
+    // the body of module function `callee` (whose frame a stack trace shows)
+    // called at `call`, in scope `parent` (0: this function's own code).
+    struct InlineScope {
+        uint32_t callee = 0;
+        Span call;
+        uint32_t parent = 0;
+    };
+    std::vector<InlineScope> inlineScopes;
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
@@ -446,6 +460,36 @@ struct Module {
         std::string key;
     };
     std::vector<ShapeCell> shapeCells;
+    // THE OBJECT LITERALS `object.literal <lit>` makes: entry `lit` is the
+    // literal's keys (indices into `keyConstants`, distinct named keys, in
+    // source order) and the inline-slot capacity its objects are made with
+    // (0: the runtime's default; lower_object.cpp literalInlineSlots). The
+    // backend gives each a per-thread word holding the shape the runtime
+    // built for it the first time (il2mir il_literal_lowering.cpp).
+    struct ObjectLiteral {
+        std::vector<uint32_t> keys;
+        uint32_t inlineSlots = 0;
+    };
+    std::vector<ObjectLiteral> objectLiterals;
+    // THE TRANSITION CELLS `proto.cell <c>` tests: each speaks for one
+    // property ADD, of key `keyIndex` to an object whose shape is the one
+    // shape cell `fromCell` holds, giving the shape shape cell `toCell` holds
+    // with the key at inline slot `slot`. The runtime stamps a cell with the
+    // prototype epoch when asked (`proto.publish`), after checking that the
+    // add is a plain data property add the fast path can make: `from` a
+    // plain shape no object is a prototype through, `to` its child for the
+    // key, boxed, writable, enumerable, configurable, inline at `slot`, and
+    // no setter, read-only property or proxy for the key on the chain above
+    // (runtime/transition_cells.cpp). A bump of the epoch retires every
+    // stamp at once.
+    struct ProtoCell {
+        uint32_t fromCell = 0;
+        uint32_t keyIndex = 0;
+        uint32_t toCell = 0;
+        int32_t slot = 0;
+        bool operator==(const ProtoCell&) const = default;
+    };
+    std::vector<ProtoCell> protoCells;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

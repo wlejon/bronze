@@ -601,7 +601,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // can address is declared here (the entry is always built).
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
-                                 "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells"}) {
+                                 "__bronze_ic_table", "__bronze_module_slot", "__bronze_shape_cells",
+                                 "__bronze_literal_shapes", "__bronze_proto_cells"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }
@@ -688,6 +689,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     il_types_built_ = false;
     current_module_delta_ = nullptr;
     analyze_function(fn_ast);
+    record_inline_scopes(fn_ast, *fn->parent());
 
     // The argv block a call stages its arguments in (il_lowering_calls.h).
     // A speculated function's is also the one its leaves and resume.calls

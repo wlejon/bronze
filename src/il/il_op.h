@@ -655,10 +655,65 @@ enum class Op : uint8_t {
     // numbers: f64 operands and result, except `imul` (i32, i32 -> i32).
     // Exactly the Math function on Numbers. Pure.
     MathFn,
+
+    // ---- literals: an object or array made with its final layout ---------
+    // `a = object.literal <lit>, %v0, ..., %v(n-1)`: 13.2.5.5 for a literal of
+    // n spelled data properties with distinct named keys and nothing else (no
+    // accessor, spread, computed key, `__proto__:` or index key): a fresh
+    // ordinary object whose own properties are Module::objectLiterals[lit]'s
+    // keys in order, key i holding %vi, each an enumerable, writable,
+    // configurable data property (CreateDataPropertyOrThrow on a fresh
+    // object, which never consults the prototype chain). `immI32` = lit. The
+    // values are evaluated before it (lower_object.cpp). An allocation.
+    ObjectLiteral,
+    // `a = array.literal %v0, ..., %v(n-1)`: 13.2.4.1 for an array literal
+    // with no elision and no spread: a fresh Array of length n, element i
+    // %vi (defined, never [[Set]]). An allocation.
+    ArrayLiteral,
+
+    // ---- speculation: construction, transitions, prototype facts --------
+    // a: bool = fn.constructs %f. Whether `new` may make %f's instance
+    // inline: %f is a function object (a `fn.code_is` true edge licenses the
+    // read) whose plain construction path the runtime has taken once (the
+    // construct-vetted byte, bronze_abi.h), so it has an instance shape and
+    // its instances are ordinary objects. The byte never clears. Reads
+    // `FnFields`. Unchecked as `fn.env` is.
+    FnConstructs,
+    // a: ptr = fn.instance_shape %f. The shape `new %f` gives its instance:
+    // the root over %f.prototype (rt_object.cpp rtEnsureFunctionPrototype;
+    // replaced when `prototype` is). Unchecked: `fn.constructs` true edge.
+    // Reads `FnFields`.
+    FnInstanceShape,
+    // a = create.this %f, %s. A fresh ordinary object of shape %s (which
+    // must be `fn.instance_shape %f`), every slot undefined: the instance
+    // OrdinaryCreateFromConstructor makes for `new %f` (bronze_construct's
+    // plain path). Unchecked as `fn.instance_shape` is. An allocation.
+    CreateThis,
+    // shape.store %obj, %s. Writes %s as %obj's shape word: the second half
+    // of a property ADD whose slot store came first (prop_write.cpp). Writes
+    // `Shapes`. Unchecked: %obj is a plain object whose shape is the add's
+    // from-shape, and %s is that shape's child for the key, whose slot the
+    // store filled.
+    ShapeStore,
+    // a: bool = proto.cell <c>. Whether transition cell c
+    // (Module::protoCells) is stamped with this thread's prototype epoch:
+    // the add it speaks for is, until the next bump, a slot store and a
+    // shape store. `immI32` = c. Reads `Protos`.
+    ProtoCell,
+    // proto.publish <c>. Asks the runtime to check cell c's add and stamp
+    // the cell with the current epoch (or leave it as it is when the chain
+    // or the shapes answer anything else). Runs no user code and allocates
+    // nothing on the JS heap. Writes `Protos`. Only in an exit block, before
+    // its leave.
+    ProtoPublish,
+    // a = construct.result %r, %this: %r when it is an object, else %this —
+    // the value of `new` given what a base constructor returned (10.2.2
+    // [[Construct]] steps 10-12). Pure.
+    ConstructResult,
 };
 
 // The last op, for the serializer's range check.
-inline constexpr Op kLastOp = Op::MathFn;
+inline constexpr Op kLastOp = Op::ConstructResult;
 
 // The intrinsics `fn.native_is` and `math.*` name (immI32): Math functions
 // whose native's code pointer the runtime exports, so a test can compare a

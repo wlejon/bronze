@@ -54,6 +54,9 @@ std::string hex8(uint32_t v) {
     return buf;
 }
 
+std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string& key, BlockId block,
+                                    uint32_t index);
+
 }  // namespace
 
 // The feedback sites of one function, found by the instruction they observe,
@@ -161,6 +164,7 @@ std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {
     }
     if (out.sites.empty()) return std::nullopt;
     shareConstBounds(fn, out);
+    demoteUnsourcedInts(fn, out);
     return out;
 }
 
@@ -208,6 +212,7 @@ std::optional<SitePlan> Evidence::planSite(uint32_t fnIndex, BlockId block, uint
             break;
         case il::Op::MethodCall: plan = planMethod(fnIndex, inst, refs, block, index); break;
         case il::Op::DynamicCall: plan = planCall(fnIndex, inst, refs, block, index); break;
+        case il::Op::Construct: plan = planConstruct(inst, refs, block, index); break;
         case il::Op::ElemGet:
         case il::Op::ElemSet: plan = planElem(inst, refs, block, index); break;
         default:
@@ -285,10 +290,11 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
 
     std::string name;
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
-        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.size() != 1 ||
-            h->ways.front().form != "store") {
+        if (h->method || h->full || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.size() != 1) {
             return std::nullopt;
         }
+        if (h->ways.front().form == "own") return planPropAdd(h->ways.front().receiver, key, block, index);
+        if (h->ways.front().form != "store") return std::nullopt;
         name = h->ways.front().receiver;
     } else {
         const auto shapeSites = refs.at(block, index, il::FeedbackKind::Shape);
@@ -333,15 +339,27 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     if (const spec::HarvestSite* h = harvested(inst.icIndex)) {
         if (!h->method || h->mega || h->uncached > kMaxUncachedReceivers || h->ways.empty()) return std::nullopt;
         if (std::optional<SitePlan> math = planIntrinsic(*h, argc, block, index)) return math;
-        std::string callee;
+        std::vector<std::string> callees;
         bool anySlot = false;
         for (const spec::HarvestWay& way : h->ways) {
             if (way.form != "direct" && way.form != "slot") return std::nullopt;
-            if (way.callee == "*other*" || (!callee.empty() && way.callee != callee)) return std::nullopt;
-            callee = way.callee;
+            if (way.callee == "*other*") return std::nullopt;
+            if (std::find(callees.begin(), callees.end(), way.callee) == callees.end()) callees.push_back(way.callee);
             anySlot = anySlot || way.form == "slot";
         }
-        plan.callee = calleeByHarvestName(callee);
+        if (callees.size() > kMaxChainShapes) return std::nullopt;
+        if (callees.size() > 1) {
+            // Several callees: the method is fetched as G fetches it and its
+            // identity picks the arm (method_call.cpp).
+            for (const std::string& name : callees) {
+                const uint32_t f = calleeByHarvestName(name);
+                if (f == kNoFunction || !directCallFits(module_.functions[f], argc)) return std::nullopt;
+                plan.callees.push_back(f);
+            }
+            plan.kind = SiteKind::MethodProto;
+            return plan;
+        }
+        plan.callee = calleeByHarvestName(callees.front());
         if (anySlot && h->ways.size() == 1) ownShape = h->ways.front().receiver;
     } else {
         const auto methodSites = refs.at(block, index, il::FeedbackKind::Method);
@@ -397,6 +415,80 @@ std::optional<SitePlan> Evidence::planIntrinsic(const spec::HarvestSite& h, size
     return std::nullopt;
 }
 
+// An assignment that added the key: a harvest's single `own` way for a write
+// site names the shape the receiver went TO (runtime/ic_harvest.cpp), whose
+// last key is the one added; the shape it came from is the same name without
+// it. Only a key that lands inline: an add past the inline slots has to
+// allocate the overflow block.
+namespace {
+
+std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string& key, BlockId block,
+                                    uint32_t index) {
+    const std::optional<ShapeName> to = parseShapeName(toName);
+    if (!to || to->keys.empty() || to->keys.back() != key) return std::nullopt;
+    const std::optional<int32_t> slot = ownSlot(*to, key);
+    if (!slot || *slot >= static_cast<int32_t>(to->inlineSlots) || *slot >= BRONZE_ABI_OBJ_OVERFLOW_SLOT) {
+        return std::nullopt;
+    }
+    std::string fromName = to->prototype;
+    if (to->inlineSlots != BRONZE_ABI_OBJ_INLINE_SLOTS) fromName += "#" + std::to_string(to->inlineSlots);
+    fromName += "{";
+    for (size_t k = 0; k + 1 < to->keys.size(); ++k) fromName += (k ? "," : "") + to->keys[k];
+    fromName += "}";
+    SitePlan plan;
+    plan.kind = SiteKind::PropAdd;
+    plan.block = block;
+    plan.index = index;
+    plan.shapes.push_back(ShapeSlot{fromName, *slot});
+    plan.shapes.push_back(ShapeSlot{toName, *slot});
+    return plan;
+}
+
+}  // namespace
+
+// The callee a harvested call or `new` entered (il/feedback_site.h
+// kLastShapeArm): its code entered one callee directly, once it first
+// changed from none, and its helper never ran.
+//
+// A `new` also takes its helper whenever the allocation window has no room
+// for the instance, and before the first construction of a constructor vets
+// it (bronze_construct), so for one the helper's count says nothing; the
+// turns alone name the callee.
+uint32_t Evidence::harvestedCallee(const il::Instruction& inst) const {
+    if (harvest_ == nullptr || inst.slowSite == il::Instruction::kNoSlowSite ||
+        !slowArmed(inst.slowSite + il::kShapeTurnArm)) {
+        return kNoFunction;
+    }
+    const auto turns = harvest_->slow.find(inst.slowSite + il::kShapeTurnArm);
+    const auto last = harvest_->callees.find(inst.slowSite + il::kLastShapeArm);
+    if ((inst.op != il::Op::Construct && slowRan(inst.slowSite)) || turns == harvest_->slow.end() ||
+        turns->second != 1 || last == harvest_->callees.end()) {
+        return kNoFunction;
+    }
+    return calleeByHarvestName(last->second);
+}
+
+// A `new` whose callee was always one function, entered inline (G's
+// construct fast path, il_call_entry.cpp: vetted, its instance made from its
+// instance shape), whose convention a direct call with `this` fits.
+std::optional<SitePlan> Evidence::planConstruct(const il::Instruction& inst, const SiteRefs& refs, BlockId block,
+                                                uint32_t index) const {
+    if (inst.operands.empty()) return std::nullopt;
+    for (ValueId v : inst.operands) {
+        if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
+    }
+    const uint32_t callee = harvestedCallee(inst);
+    if (callee == kNoFunction || !constructFits(module_.functions[callee], inst.operands.size() - 1)) {
+        return std::nullopt;
+    }
+    SitePlan plan;
+    plan.kind = SiteKind::Construct;
+    plan.block = block;
+    plan.index = index;
+    plan.callee = callee;
+    return plan;
+}
+
 // A plain call whose callee was always one function: a recorded Target
 // site's, or a harvest's callee turns (il/feedback_site.h kLastShapeArm) —
 // the site's code entered one callee directly, once it first changed from
@@ -416,14 +508,8 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
             return std::nullopt;
         }
         callee = calleeByRecordedName(site->soleTarget());
-    } else if (inst.slowSite != il::Instruction::kNoSlowSite && slowArmed(inst.slowSite + il::kShapeTurnArm)) {
-        const auto turns = harvest_->slow.find(inst.slowSite + il::kShapeTurnArm);
-        const auto last = harvest_->callees.find(inst.slowSite + il::kLastShapeArm);
-        if (slowRan(inst.slowSite) || turns == harvest_->slow.end() || turns->second != 1 ||
-            last == harvest_->callees.end()) {
-            return std::nullopt;
-        }
-        callee = calleeByHarvestName(last->second);
+    } else {
+        callee = harvestedCallee(inst);
     }
     if (callee == kNoFunction || !directCallFits(module_.functions[callee], inst.operands.size() - 2)) {
         return std::nullopt;

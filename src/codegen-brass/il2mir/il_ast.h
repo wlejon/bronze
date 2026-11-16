@@ -204,6 +204,17 @@ enum class BronzeOp {
     TypedStore,
     FnNativeIs,
     MathFn,
+    // il_op.h's literal and construction forms: ObjectLiteral the literal in
+    // `imm_i64`, ProtoCell / ProtoPublish the cell in `imm_i64`.
+    ObjectLiteral,
+    ArrayLiteral,
+    FnConstructs,
+    FnInstanceShape,
+    CreateThis,
+    ShapeStore,
+    ProtoCell,
+    ProtoPublish,
+    ConstructResult,
     Unknown
 };
 
@@ -242,6 +253,9 @@ struct BronzeInstruction {
     // il.h `slowSite`: the instruction's slow-site counter, or kNoSlowSite.
     static constexpr uint32_t kNoSlowSite = UINT32_MAX;
     uint32_t slow_site = kNoSlowSite;
+    // The inlined call the instruction's code came from: 1-based into its
+    // function's `inline_scopes`, 0 for the function's own code.
+    uint32_t inline_scope = 0;
 
     BronzeBlockTarget target;
     BronzeBlockTarget else_target;
@@ -275,6 +289,16 @@ struct BronzeFunction {
     bool is_coroutine_body() const { return coro_kind >= 0; }
     // The program's top level (`main` and its segments): run once.
     bool is_toplevel = false;
+    // il.h Function::inlineScopes: the callee's function name, the call's
+    // position, and the scope the call is in (0: the function's own code).
+    struct InlineScope {
+        std::string callee;
+        uint32_t line = 0;
+        uint32_t column = 0;
+        uint32_t file = 0;
+        uint32_t parent = 0;
+    };
+    std::vector<InlineScope> inline_scopes;
     std::vector<BronzeBlock> blocks;
 };
 

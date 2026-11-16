@@ -574,6 +574,7 @@ private:
 
     // --- lower_object.cpp: objects, property access, new, calls ---
     std::optional<Value> lowerObjectLit(const ast::ObjectLit* objLit, il::Function& ilFn);
+    std::optional<il::Module::ObjectLiteral> literalLayout(const ast::ObjectLit& objLit);
     std::optional<Value> lowerDelete(const ast::Unary& del, il::Function& ilFn);
     std::optional<Value> lowerDeleteReference(const ast::Unary& del, il::Function& ilFn);
     bool emitAccessorDef(Value target, const std::string& key, ast::AccessorKind kind,

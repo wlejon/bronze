@@ -34,6 +34,7 @@ struct InstructionMirror {
     bool envImmutable;
     uint32_t callEnvHops;
     uint32_t resumeAfter;
+    uint32_t inlineScope;
     Span span;
     BlockTarget target;
     BlockTarget elseTarget;
@@ -87,6 +88,7 @@ struct FunctionMirror {
     std::string displayName;
     uint32_t descFlags;
     uint32_t speculatedFrom;
+    std::vector<Function::InlineScope> inlineScopes;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };
@@ -114,6 +116,8 @@ struct ModuleMirror {
     std::string harvestOutPath;
     std::vector<Module::NativeImport> nativeImports;
     std::vector<Module::ShapeCell> shapeCells;
+    std::vector<Module::ObjectLiteral> objectLiterals;
+    std::vector<Module::ProtoCell> protoCells;
     std::deque<Function> functions;
     std::vector<std::string> sourceTexts;
     std::vector<std::string> sourceFiles;
@@ -124,6 +128,21 @@ struct ShapeCellMirror {
 };
 static_assert(sizeof(Module::ShapeCell) == sizeof(ShapeCellMirror),
               "il::Module::ShapeCell changed: update il/serialize.cpp and bump kFormatVersion");
+
+struct ObjectLiteralMirror {
+    std::vector<uint32_t> keys;
+    uint32_t inlineSlots;
+};
+static_assert(sizeof(Module::ObjectLiteral) == sizeof(ObjectLiteralMirror),
+              "il::Module::ObjectLiteral changed: update il/serialize.cpp and bump kFormatVersion");
+struct ProtoCellMirror {
+    uint32_t fromCell;
+    uint32_t keyIndex;
+    uint32_t toCell;
+    int32_t slot;
+};
+static_assert(sizeof(Module::ProtoCell) == sizeof(ProtoCellMirror),
+              "il::Module::ProtoCell changed: update il/serialize.cpp and bump kFormatVersion");
 
 static_assert(sizeof(Module) == sizeof(ModuleMirror),
               "il::Module changed: update il/serialize.cpp and bump kFormatVersion");
@@ -272,7 +291,8 @@ enum InstBits : uint64_t {
     kEnvImmutable = 1u << 15,
     kHasSlowSite = 1u << 16,
     kHasResumeAfter = 1u << 17,
-    kKnownBits = (1u << 18) - 1,
+    kHasInlineScope = 1u << 18,
+    kKnownBits = (1u << 19) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -307,6 +327,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
     if (inst.resumeAfter != Instruction::kNoResumeAfter) m |= kHasResumeAfter;
+    if (inst.inlineScope != 0) m |= kHasInlineScope;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
@@ -332,6 +353,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
     if (m & kHasResumeAfter) w.var(inst.resumeAfter);
+    if (m & kHasInlineScope) w.var(inst.inlineScope);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -365,6 +387,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
     if (m & kHasResumeAfter) inst.resumeAfter = r.u32();
+    if (m & kHasInlineScope) inst.inlineScope = r.u32();
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());
@@ -459,6 +482,14 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(fn.descFlags);
     w.var(static_cast<uint32_t>(fn.speculatedFrom + 1u));  // kNotSpeculated wraps to 0
     w.var(fn.valueCount);
+    w.var(fn.inlineScopes.size());
+    for (const auto& s : fn.inlineScopes) {
+        w.var(s.callee);
+        w.var(s.call.begin);
+        w.var(s.call.end);
+        w.var(s.call.file);
+        w.var(s.parent);
+    }
     w.var(fn.blocks.size());
     for (const auto& b : fn.blocks) writeBlock(w, b);
 }
@@ -503,6 +534,14 @@ void readFunction(Reader& r, Function& fn) {
     fn.descFlags = r.u32();
     fn.speculatedFrom = r.u32() - 1u;
     fn.valueCount = r.u32();
+    fn.inlineScopes.resize(r.count());
+    for (auto& s : fn.inlineScopes) {
+        s.callee = r.u32();
+        s.call.begin = r.u32();
+        s.call.end = r.u32();
+        s.call.file = static_cast<uint16_t>(r.u32());
+        s.parent = r.u32();
+    }
     fn.blocks.resize(r.count());
     for (auto& b : fn.blocks) {
         if (!r.ok()) return;
@@ -541,6 +580,19 @@ std::string serializeModule(const Module& module) {
     }
     w.var(module.shapeCells.size());
     for (const auto& c : module.shapeCells) w.str(c.key);
+    w.var(module.objectLiterals.size());
+    for (const auto& l : module.objectLiterals) {
+        w.var(l.keys.size());
+        for (uint32_t k : l.keys) w.var(k);
+        w.var(l.inlineSlots);
+    }
+    w.var(module.protoCells.size());
+    for (const auto& c : module.protoCells) {
+        w.var(c.fromCell);
+        w.var(c.keyIndex);
+        w.var(c.toCell);
+        w.var(static_cast<uint32_t>(c.slot));
+    }
     w.var(module.sourceFiles.size());
     for (const auto& f : module.sourceFiles) w.str(f);
     w.var(module.functions.size());
@@ -582,6 +634,19 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     }
     out.shapeCells.resize(r.count());
     for (auto& c : out.shapeCells) c.key = r.str();
+    out.objectLiterals.resize(r.count());
+    for (auto& l : out.objectLiterals) {
+        l.keys.resize(r.count());
+        for (uint32_t& k : l.keys) k = r.u32();
+        l.inlineSlots = r.u32();
+    }
+    out.protoCells.resize(r.count());
+    for (auto& c : out.protoCells) {
+        c.fromCell = r.u32();
+        c.keyIndex = r.u32();
+        c.toCell = r.u32();
+        c.slot = static_cast<int32_t>(r.u32());
+    }
     out.sourceFiles.resize(r.count());
     for (auto& f : out.sourceFiles) f = r.str();
     const size_t fnCount = r.count();

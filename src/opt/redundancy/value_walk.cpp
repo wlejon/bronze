@@ -154,6 +154,11 @@ void ValueWalk::visitInstruction(BlockId b, size_t i) {
         return;
     }
 
+    if (const ValueId answer = knownConstructResult(inst, facts_, values_); answer != kNoValue) {
+        replace(b, i, answer);
+        ++ctx_.stats.identitiesFolded;
+        return;
+    }
     const FoldOutcome folded = foldInstruction(inst, values_);
     if (folded.kind == FoldOutcome::Kind::Identity) {
         replace(b, i, folded.value);
@@ -236,6 +241,10 @@ void ValueWalk::forwardStore(const il::Instruction& inst, const Access& write) {
             return;
         case Op::ModuleEnvSet:
             exprs_.add(loadKey(Op::ModuleEnvGet, t, write.where), v, read, true);
+            return;
+        case Op::ShapeStore:
+        case Op::CreateThis:
+            exprs_.add(loadKey(Op::LoadShape, il::Type::Ptr, write.where), v, read, true);
             return;
         default:
             return;

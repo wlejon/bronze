@@ -1,7 +1,7 @@
 // Job 5: DEAD STORE ELIMINATION, block-local.
 //
 // A keyed store (`slot.store`, `elem.store`, `env.set`, `env.init.tdz`,
-// `module.env.set`) is dead when a later store in the same block writes the
+// `module.env.set`, `shape.store`) is dead when a later store in the same block writes the
 // same place (location.h sameLocation: same base VALUE, same slot / index /
 // depth) and nothing between the two can observe the first:
 //   - no instruction whose read may overlap the place (mayOverlap, which
@@ -10,6 +10,7 @@
 //   - no instruction that can throw: the handler, or the caller the throw
 //     reaches, may read the heap the first store left;
 //   - no barrier (a resume point reads everything anyway);
+//   - for a shape word, no collection point: the collector reads it;
 //   - and the second store is in the same block, so no terminator lies
 //     between them — a `leave`, a `ret` or a branch to an exit block is a way
 //     out that would read everything (G resumes and reads the heap).
@@ -37,6 +38,8 @@ bool overwrittenBeforeRead(const std::vector<il::Instruction>& insts, size_t i, 
         if (il::isTerminator(next.op)) return false;
         const il::Effects e = il::effectsOf(next);
         if (e.throws || e.barrier || e.callsUnknown) return false;
+        // The collector reads an object's shape word to find its slots.
+        if (e.collects && store.where.place == Place::Shape) return false;
         if (mayOverlap(store, readOf(next, e), alias)) return false;
         const Access write = writeOf(next, e);
         if (write.where.place != Place::None && sameLocation(write.where, store.where, alias)) return true;
@@ -59,7 +62,7 @@ bool runDeadStores(JobContext& ctx) {
             const il::Effects e = il::effectsOf(insts[i]);
             // Only a store whose ONLY effect is its keyed write: one that also
             // throws, calls or orders against output is kept whatever follows.
-            if (e.throws || e.callsUnknown || e.observableOrder || e.barrier) continue;
+            if (e.throws || e.callsUnknown || e.observableOrder || e.barrier || e.allocates) continue;
             const Access store = writeOf(insts[i], e);
             // The place covers the whole write only when it is the write's one
             // location class; a store touching more is not this job's.

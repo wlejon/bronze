@@ -27,6 +27,10 @@ namespace bronze::opt::redundancy {
 
 // The value of test `inst` (operands resolved) if it is known here, else
 // nullopt. Does not modify anything.
+// The operand `construct.result` answers with when the facts say whether
+// the constructor's value is an object; kNoValue when they do not.
+ValueId knownConstructResult(const il::Instruction& inst, const FactEnv& facts, const ValueView& values);
+
 std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& facts,
                                     const ExprTable& exprs, const ValueView& values);
 

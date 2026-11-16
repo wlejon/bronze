@@ -21,6 +21,8 @@ namespace bronze::opt::speculate {
 // elem.cpp. Each rewrites the instruction at (plan.block, plan.index) of S.
 void rewritePropRead(RewriteContext& ctx, const SitePlan& plan);
 void rewritePropWrite(RewriteContext& ctx, const SitePlan& plan);
+void rewritePropAdd(RewriteContext& ctx, const SitePlan& plan);    // prop_write.cpp
+void rewriteConstruct(RewriteContext& ctx, const SitePlan& plan);  // construct.cpp
 void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan);
 void rewritePlainCall(RewriteContext& ctx, const SitePlan& plan);
 void rewriteArith(RewriteContext& ctx, const SitePlan& plan);
@@ -38,6 +40,11 @@ bool numericArms(const il::Instruction& inst);
 std::optional<ArithForm> chooseArithForm(const il::Instruction& inst, const std::vector<uint8_t>& operandTags,
                                          bool resultDouble);
 
+// int_sources.cpp: turns the Int-form arithmetic plans of `fn` whose Dynamic
+// operands are not produced by int-form operations of the function into
+// Double-form ones (the file says why).
+void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan);
+
 // prop_shape.cpp: the shape test every own-slot rewrite starts with.
 // Guards that `object` (Dynamic) is a heap object and returns its shape word.
 ValueId emitShapeOf(GuardBuilder& b, ValueId object);
@@ -54,6 +61,9 @@ void guardShape(GuardBuilder& b, ValueId object, const std::string& key);
 // callee's return type needs.
 void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
                     const std::vector<ValueId>& args);
+// The same call, its value (Dynamic) returned rather than made the site's.
+ValueId emitDirectCallValue(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
+                            const std::vector<ValueId>& args);
 // `fn.code_is callee, @entry(f)`.
 ValueId emitCodeIs(GuardBuilder& b, ValueId calleeValue, uint32_t callee);
 

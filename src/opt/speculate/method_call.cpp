@@ -43,13 +43,25 @@
 // is what licenses the direct call. The read gets an inline-cache site of its
 // own (context.h newIcSite): a method site's words mean something else and
 // may not be shared with a property read (il.h `methodIcSites`).
+//
+// A site whose harvest named 2..kMaxChainShapes callees (a polymorphic call
+// over classes, each with its own method) tests the fetched method against
+// each in turn, and each passing test enters its callee directly:
+//
+//     m = prop.get %recv, <key>, <a fresh IC>
+//     br (fn.code_is m, @entry(f1)), arm1, next1
+//   arm1:  r1 = call @entry(f1)(...) ; jump join(r1)
+//   next1: br (fn.code_is m, @entry(f2)), arm2, exit
+//   ...
+// The same reasoning holds per arm; only the last test's failure exits.
 
 #include "opt/speculate/sites.h"
 
 namespace bronze::opt::speculate {
 
 void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan) {
-    assert((plan.kind == SiteKind::MethodSlot || plan.kind == SiteKind::MethodProto) && plan.callee != kNoFunction);
+    assert((plan.kind == SiteKind::MethodSlot || plan.kind == SiteKind::MethodProto) &&
+           (plan.callee != kNoFunction || plan.callees.size() > 1));
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction& site = b.site();
     assert(site.op == il::Op::MethodCall && !site.operands.empty() && site.type == il::Type::Dynamic);
@@ -87,8 +99,30 @@ void rewriteMethodCall(RewriteContext& ctx, const SitePlan& plan) {
     work.push_back(std::move(rest));
     const BlockId exit = b.exitAfter(std::move(work), restResult);
 
-    b.guardTo(emitCodeIs(b, method, plan.callee), true, exit);
-    emitDirectCall(b, plan.callee, method, receiver, args);
+    if (plan.callees.empty()) {
+        b.guardTo(emitCodeIs(b, method, plan.callee), true, exit);
+        emitDirectCall(b, plan.callee, method, receiver, args);
+        b.finish();
+        ++ctx.stats.methodCalls;
+        return;
+    }
+
+    // Several callees: one identity test per arm, in the harvest's order,
+    // the last one's failure leaving; each arm a direct call into the join.
+    const BlockId join = b.newBlock();
+    if (site.result != il::kNoValue) b.resultParam(join);
+    for (size_t k = 0; k < plan.callees.size(); ++k) {
+        const BlockId arm = b.newBlock();
+        const bool last = k + 1 == plan.callees.size();
+        const BlockId next = last ? exit : b.newBlock();
+        b.branch(emitCodeIs(b, method, plan.callees[k]), arm, {}, next, {});
+        ++ctx.stats.guards;
+        b.moveTo(arm);
+        const ValueId r = emitDirectCallValue(b, plan.callees[k], method, receiver, args);
+        b.jump(join, site.result != il::kNoValue ? std::vector<ValueId>{r} : std::vector<ValueId>{});
+        if (!last) b.moveTo(next);
+    }
+    b.moveTo(join);
     b.finish();
     ++ctx.stats.methodCalls;
 }

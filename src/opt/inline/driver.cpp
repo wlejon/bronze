@@ -12,7 +12,8 @@
 // (block, index) for determinism, and taken greedily:
 //   - a SMALL callee (at most kSmallCallee) whenever the caller stays within
 //     kMaxCallerSize: a body that small costs about what the call costs;
-//   - a MEDIUM callee (at most kMediumCallee) only in a loop, and only within
+//   - a MEDIUM callee (at most kMediumCallee) only in a loop (or as the
+//     constructor of a speculated `new`), and only within
 //     the caller's growth budget: kGrowthFactor times its size before the
 //     pass, at least kMinGrowth more, never past kMaxCallerSize;
 //   - nothing bigger.
@@ -135,7 +136,14 @@ std::vector<Candidate> candidatesOf(const il::Module& module, uint32_t c, const 
                 ++stats.refusedSite;
                 continue;
             }
-            out.push_back(Candidate{b, i, call.calleeIndex, bodySize(callee), loops.depth(b), after});
+            // A speculated `new` (opt/speculate construct.cpp) calls its
+            // constructor on the instance made just before: inlined, the
+            // constructor's adds fold against the instance's known shape, so
+            // it is taken as a call in a loop would be.
+            const bool construct = i > 0 && insts[i - 1].op == il::Op::CreateThis && callee.needsThis &&
+                                   call.operands[callee.needsEnv ? 1 : 0] == insts[i - 1].result;
+            const uint32_t depth = construct ? std::max<uint32_t>(loops.depth(b), 1) : loops.depth(b);
+            out.push_back(Candidate{b, i, call.calleeIndex, bodySize(callee), depth, after});
         }
     }
     return out;

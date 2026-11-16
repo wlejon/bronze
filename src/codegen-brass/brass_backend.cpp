@@ -370,6 +370,14 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.lazy_bodies = lazyBodies_ && !optimize;
     options.in_process = inProcess_;
     options.shape_cell_count = static_cast<uint32_t>(module.shapeCells.size());
+    options.object_literals.reserve(module.objectLiterals.size());
+    for (const il::Module::ObjectLiteral& lit : module.objectLiterals) {
+        options.object_literals.push_back({lit.keys, lit.inlineSlots});
+    }
+    options.proto_cells.reserve(module.protoCells.size());
+    for (const il::Module::ProtoCell& c : module.protoCells) {
+        options.proto_cells.push_back({c.fromCell, c.keyIndex, c.toCell, c.slot});
+    }
     options.slow_site_count = module.slowSiteCount;
     // An image whose caches a harvest may read counts its slow arms too: one
     // built on no harvest, in an object (an in-process tier has no harvest).

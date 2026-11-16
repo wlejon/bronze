@@ -124,7 +124,20 @@ static const SpecSignature* specSignature(Op op) {
     static const SpecSignature kArrayLength{1, {Type::Dynamic}, Type::I32, false};
     static const SpecSignature kElemLoad{2, {Type::Dynamic, Type::I32}, Type::Dynamic, false};
     static const SpecSignature kElemStore{3, {Type::Dynamic, Type::I32, Type::Dynamic}, Type::Void, false};
+    static const SpecSignature kInstanceShape{1, {Type::Dynamic}, Type::Ptr, false};
+    static const SpecSignature kCreateThis{2, {Type::Dynamic, Type::Ptr}, Type::Dynamic, false};
+    static const SpecSignature kShapeStore{2, {Type::Dynamic, Type::Ptr}, Type::Void, false};
+    static const SpecSignature kProtoCell{0, {}, Type::Bool, false};
+    static const SpecSignature kProtoPublish{0, {}, Type::Void, false};
+    static const SpecSignature kConstructResult{2, {Type::Dynamic, Type::Dynamic}, Type::Dynamic, false};
     switch (op) {
+        case Op::FnConstructs: return &kDynTest;
+        case Op::FnInstanceShape: return &kInstanceShape;
+        case Op::CreateThis: return &kCreateThis;
+        case Op::ShapeStore: return &kShapeStore;
+        case Op::ProtoCell: return &kProtoCell;
+        case Op::ProtoPublish: return &kProtoPublish;
+        case Op::ConstructResult: return &kConstructResult;
         case Op::LoadShape: return &kLoadShape;
         case Op::ShapeCell: return &kShapeCell;
         case Op::PtrEq: return &kPtrEq;
@@ -922,6 +935,21 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                     diags.error(Span{}, "Function " + fn.name + ": shape.cell " +
                                             std::to_string(inst.immI32) + " is past the module's " +
                                             std::to_string(module.shapeCells.size()) + " cells");
+                    return false;
+                }
+                if ((inst.op == Op::ProtoCell || inst.op == Op::ProtoPublish) &&
+                    static_cast<uint32_t>(inst.immI32) >= module.protoCells.size()) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " " +
+                                            std::to_string(inst.immI32) + " is past the module's " +
+                                            std::to_string(module.protoCells.size()) + " prototype cells");
+                    return false;
+                }
+                if (inst.op == Op::ObjectLiteral &&
+                    (inst.immI32 < 0 || static_cast<uint32_t>(inst.immI32) >= module.objectLiterals.size() ||
+                     module.objectLiterals[inst.immI32].keys.size() != inst.operands.size())) {
+                    diags.error(Span{}, "Function " + fn.name + ": object.literal " + std::to_string(inst.immI32) +
+                                            " names no literal of the module, or not with " +
+                                            std::to_string(inst.operands.size()) + " values");
                     return false;
                 }
                 if (inst.op == Op::FnCodeIs && inst.calleeIndex >= module.functions.size()) {

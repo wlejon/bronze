@@ -57,6 +57,8 @@ struct SpeculateStats {
     uint32_t propReads = 0;
     uint32_t propReadChains = 0;       // of those, polymorphic
     uint32_t propWrites = 0;
+    uint32_t propAdds = 0;
+    uint32_t constructs = 0;
     uint32_t methodCalls = 0;
     uint32_t plainCalls = 0;
     uint32_t arithmetic = 0;

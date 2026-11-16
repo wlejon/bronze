@@ -107,7 +107,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
         out += "speculate: " + n(s.functionsSpeculated) + "/" + n(s.functionsConsidered) + " functions";
         if (s.harvestIgnored) out += " (harvest of another build ignored)";
         out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), prop.set " +
-               n(s.propWrites) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", arith " +
+               n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", math " + n(s.mathCalls) +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +
                n(s.loopEntryPoints) + "), shape cells " + n(s.shapeCells) + ", redirected " + n(s.redirected) +
@@ -115,6 +115,11 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     } else {
         out += "speculate: no profile\n";
     }
+    const inliner::InlineStats& in = r.inlined;
+    out += "inline: " + n(in.inlined) + "/" + n(in.sitesConsidered) + " calls (speculated " +
+           n(in.inlinedSpeculated) + "); refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
+           ", size " + n(in.refusedSize) + ", budget " + n(in.refusedBudget) + "; leaves rewritten " +
+           n(in.leavesRewritten) + "\n";
     auto redundancyLine = [&](const char* name, const RedundancyStats& d) {
         out += std::string(name) + ": rounds " + n(d.rounds) + "; numbered " + n(d.valuesNumbered) +
                ", folded " + n(d.constantsFolded) + "+" + n(d.identitiesFolded) + ", tests " +

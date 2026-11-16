@@ -54,7 +54,41 @@ uint32_t literalInlineSlots(const ast::ObjectLit& objLit) {
     return n > BRONZE_ABI_OBJ_OVERFLOW_SLOT ? BRONZE_ABI_OBJ_OVERFLOW_SLOT : n;
 }
 
+// The longest array literal made by one `array.literal`; a longer one is
+// built element by element.
+constexpr size_t kArrayLiteralMax = 64;
+
+// Whether `k` names a property and not an array index (a canonical numeric
+// string below 2^32 - 1), whose definition goes to an object's elements.
+bool namedKey(const std::string& k) {
+    if (k.empty() || k.size() > 10 || (k.size() > 1 && k[0] == '0')) return true;
+    uint64_t v = 0;
+    for (char c : k) {
+        if (c < '0' || c > '9') return true;
+        v = v * 10 + static_cast<uint64_t>(c - '0');
+    }
+    return v >= 4294967295ull;
+}
+
 }  // namespace
+
+// The layout `object.literal` makes a literal of spelled data properties
+// with: its keys when they are distinct named keys (no index key, which an
+// object keeps among its elements, and no `__proto__`, whose own property a
+// shape lookup treats like any other but a reader may not expect), each one
+// inline. Nullopt sends the literal to `create.object` and its defines.
+std::optional<il::Module::ObjectLiteral> Lowerer::literalLayout(const ast::ObjectLit& objLit) {
+    il::Module::ObjectLiteral lit;
+    for (const auto& prop : objLit.props) {
+        if (!namedKey(prop.key) || prop.key == "__proto__") return std::nullopt;
+        const uint32_t k = getKeyConstantIndex(prop.key);
+        if (std::find(lit.keys.begin(), lit.keys.end(), k) != lit.keys.end()) return std::nullopt;
+        lit.keys.push_back(k);
+    }
+    if (lit.keys.size() > BRONZE_ABI_OBJ_OVERFLOW_SLOT) return std::nullopt;
+    lit.inlineSlots = literalInlineSlots(objLit);
+    return lit;
+}
 
 std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objLit,
                                                       il::Function& ilFn) {
@@ -99,6 +133,19 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
             values.push_back(boxValueIfNeeded(*valOpt, ilFn).id);
         }
         const il::ValueId obj = ilFn.valueCount++;
+        // Distinct named keys that all fit inline: one `object.literal`,
+        // which makes the object with its final shape (il_op.h).
+        if (std::optional<il::Module::ObjectLiteral> lit = literalLayout(*objLit)) {
+            il::Instruction make;
+            make.op = il::Op::ObjectLiteral;
+            make.type = il::Type::Dynamic;
+            make.result = obj;
+            make.operands = values;
+            make.immI32 = static_cast<int32_t>(ilModule_.objectLiterals.size());
+            ilModule_.objectLiterals.push_back(std::move(*lit));
+            emitInst(ilFn, make);
+            return Value{obj, il::Type::Dynamic};
+        }
         il::Instruction make;
         make.op = il::Op::CreateObject;
         make.type = il::Type::Dynamic;
@@ -443,6 +490,27 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
     // A spread makes the length a runtime fact, so the literal is built by
     // appending rather than by writing indices it cannot name.
     if (listHasSpread(arrLit->elements)) return lowerListToArray(arrLit->elements, ilFn);
+
+    // No elision, and short: the elements first, in order, then one
+    // `array.literal` that makes the array with them (il_op.h). Nothing can
+    // tell the order apart: the array has no name until it is made.
+    if (arrLit->elements.size() <= kArrayLiteralMax &&
+        std::all_of(arrLit->elements.begin(), arrLit->elements.end(), [](const auto& e) { return e != nullptr; })) {
+        std::vector<il::ValueId> values;
+        values.reserve(arrLit->elements.size());
+        for (const auto& element : arrLit->elements) {
+            auto elemOpt = lowerExpr(*element, ilFn);
+            if (!elemOpt) return std::nullopt;
+            values.push_back(boxValueIfNeeded(*elemOpt, ilFn).id);
+        }
+        il::Instruction make;
+        make.op = il::Op::ArrayLiteral;
+        make.type = il::Type::Dynamic;
+        make.result = ilFn.valueCount++;
+        make.operands = std::move(values);
+        emitInst(ilFn, make);
+        return Value{make.result, il::Type::Dynamic};
+    }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;

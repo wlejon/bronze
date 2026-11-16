@@ -86,6 +86,9 @@ ExprKey loadKey(il::Op loadOp, il::Type type, const Location& where) {
         case Place::Elem:
             inst.operands = {where.base, where.index};
             break;
+        case Place::Shape:
+            inst.operands = {where.base};
+            break;
         case Place::Env:
             inst.operands = {where.base};
             inst.envDepth = static_cast<uint32_t>(where.a);

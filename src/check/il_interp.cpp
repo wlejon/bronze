@@ -169,6 +169,23 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     vals[inst.result] = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));
                     break;
                 }
+                case Op::ObjectLiteral: case Op::ArrayLiteral: {
+                    uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
+                    CVal obj = CVal::makeObj(oid, static_cast<int64_t>(0x00B1000000000000ULL + oid));
+                    const bool array = inst.op == Op::ArrayLiteral;
+                    if (array) heap[oid].props["length"] = CVal::makeI64(static_cast<int64_t>(inst.operands.size()));
+                    for (size_t k = 0; k < inst.operands.size(); ++k) {
+                        if (array) {
+                            setProp(obj, std::to_string(k), opV(k));
+                        } else if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < mod.objectLiterals.size() &&
+                                   k < mod.objectLiterals[inst.immI32].keys.size() &&
+                                   mod.objectLiterals[inst.immI32].keys[k] < mod.keyConstants.size()) {
+                            setProp(obj, mod.keyConstants[mod.objectLiterals[inst.immI32].keys[k]], opV(k));
+                        }
+                    }
+                    vals[inst.result] = obj;
+                    break;
+                }
                 case Op::ArrayAppend: {
                     CVal arr = opV(0), elem = opV(1);
                     if (arr.objId > 0 && arr.objId < heap.size()) {

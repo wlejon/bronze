@@ -25,6 +25,8 @@ class IlLowering;
 // Whether `op` is one of the speculated function's low-level forms
 // (il_lowering_spec.cpp).
 bool is_spec_il_op(BronzeOp op);
+// Whether `op` is a literal or construction form (il_lowering_literal.cpp).
+bool is_literal_il_op(BronzeOp op);
 
 class IlLowering {
 public:
@@ -132,6 +134,8 @@ private:
     bool build_resume_twins(Module& mod);
     // Reports `what` at `inst` and fails the lowering (false).
     bool inst_error(const BronzeInstruction& inst, const std::string& what);
+    bool lower_literal_instruction(const BronzeInstruction& inst, Builder& b,
+                                   std::unordered_map<uint32_t, Value*>& val_map, Value*& res_val);
     // The speculated function's low-level forms (il_lowering_spec.cpp).
     bool lower_spec_instruction(const BronzeInstruction& inst, Builder& b,
                                 std::unordered_map<uint32_t, Value*>& val_map, Value*& res_val);
@@ -224,6 +228,11 @@ private:
     uint32_t current_file_id_ = 0;
     // The debug-context file id of each BronzeModuleAST::source_files entry.
     std::vector<uint32_t> source_file_ids_;
+    // The function's inline scopes (BronzeFunction::inline_scopes) as the
+    // module's debug context numbers them: what an instruction's debug
+    // location carries as its inlined-at id (il_lowering_loc.cpp).
+    std::vector<uint32_t> inline_scope_ids_;
+    void record_inline_scopes(const BronzeFunction& fn_ast, Module& mod);
     // Sets `b`'s location to the instruction's: its own line in its own file.
     void apply_inst_loc(Builder& b, const BronzeInstruction& inst);
     bool has_error_ = false;

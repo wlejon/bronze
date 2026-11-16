@@ -213,6 +213,8 @@ Effects rawEffects(const Instruction& inst) {
         // Allocation. A failure to allocate is fatal rather than catchable.
         case Op::CreateObject:
         case Op::CreateArray:
+        case Op::ObjectLiteral:
+        case Op::ArrayLiteral:
         case Op::CreateFunction:
         case Op::EnvCreate:
         case Op::PrivateNew:
@@ -341,6 +343,31 @@ Effects rawEffects(const Instruction& inst) {
             return guardedOp(Loc::Elements, LocSet::none());
         case Op::ElemStore:
             return guardedOp(LocSet::none(), Loc::Elements);
+        // Construction: the vetted byte and the instance shape live on the
+        // function object; the instance is a fresh allocation.
+        case Op::FnConstructs:
+        case Op::FnInstanceShape:
+            return guardedOp(Loc::FnFields, LocSet::none());
+        // The new object's shape word is written as it is made, which is what
+        // lets a later `load.shape` of it be the operand.
+        case Op::CreateThis: {
+            Effects e = allocation();
+            e.writes = Loc::Shapes;
+            return e;
+        }
+        case Op::ShapeStore:
+            return guardedOp(LocSet::none(), Loc::Shapes);
+        case Op::ConstructResult:
+            return Effects{};
+        // A module cell the runtime empties at every epoch bump.
+        case Op::ProtoCell:
+            return reading(Loc::Protos);
+        case Op::ProtoPublish: {
+            Effects e;
+            e.reads = Loc::Protos;
+            e.writes = Loc::Protos;
+            return e;
+        }
         // Runs the rest of a generic function: any user code at all. Listed
         // rather than left to the default so that nobody tightens it by
         // accident.

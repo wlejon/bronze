@@ -18,6 +18,7 @@ bool nonCapturingUse(const il::Instruction& inst, size_t slot) {
         case Op::SlotLoad:
         case Op::SlotStore:     // operand 1 is the stored value: that captures
         case Op::LoadShape:
+        case Op::ShapeStore:    // operand 1 is a shape, not a value
         case Op::ElemLoad:
         case Op::ElemStore:     // operand 2 is the stored value
         case Op::ArrayLength:
@@ -51,6 +52,7 @@ il::Loc naturalLoc(Place place) {
         case Place::Elem: return il::Loc::Elements;
         case Place::Env: return il::Loc::EnvSlots;
         case Place::ModuleEnv: return il::Loc::ModuleEnv;
+        case Place::Shape: return il::Loc::Shapes;
         case Place::None: break;
     }
     return il::Loc::Heap;
@@ -89,6 +91,17 @@ Location placeOf(const il::Instruction& inst) {
         case Op::ModuleEnvSet:
             at.place = Place::ModuleEnv;
             return at;
+        case Op::LoadShape:
+        case Op::ShapeStore:
+            if (inst.operands.empty()) return at;
+            at.place = Place::Shape;
+            at.base = inst.operands[0];
+            return at;
+        // The new object's shape word, written as it is made.
+        case Op::CreateThis:
+            at.place = Place::Shape;
+            at.base = inst.result;
+            return at;
         default:
             return at;
     }
@@ -125,6 +138,8 @@ bool placesMayMeet(const Location& x, const Location& y, const AliasInfo& alias)
             return !(x.base == y.base && x.a != y.a);
         case Place::ModuleEnv:
             return true;
+        case Place::Shape:
+            return alias.mayAlias(x.base, y.base);
         case Place::None:
             break;
     }
@@ -141,7 +156,10 @@ AliasInfo::AliasInfo(const il::Function& fn) {
     for (const il::Block& block : fn.blocks) {
         for (const il::Instruction& inst : block.instructions) {
             if (inst.result == kNoValue || inst.result >= n) continue;
-            if (inst.op == Op::CreateObject || inst.op == Op::CreateArray) fresh_[inst.result] = 1;
+            if (inst.op == Op::CreateObject || inst.op == Op::CreateArray || inst.op == Op::ObjectLiteral ||
+                inst.op == Op::ArrayLiteral || inst.op == Op::CreateThis) {
+                fresh_[inst.result] = 1;
+            }
             if (inst.op == Op::ConstI32 && inst.type == il::Type::I32) {
                 isConst_[inst.result] = 1;
                 constValue_[inst.result] = inst.immI32;
@@ -211,6 +229,8 @@ bool sameLocation(const Location& x, const Location& y, const AliasInfo& alias) 
             return x.base == y.base && x.a == y.a && x.b == y.b;
         case Place::ModuleEnv:
             return true;
+        case Place::Shape:
+            return x.base == y.base;
         case Place::None:
             break;
     }
@@ -226,6 +246,9 @@ ValueId storedValue(const il::Instruction& inst) {
             return inst.operands.size() == 3 ? inst.operands[2] : kNoValue;
         case Op::ModuleEnvSet:
             return inst.operands.size() == 1 ? inst.operands[0] : kNoValue;
+        case Op::ShapeStore:
+        case Op::CreateThis:
+            return inst.operands.size() == 2 ? inst.operands[1] : kNoValue;
         default:
             return kNoValue;
     }

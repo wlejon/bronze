@@ -578,6 +578,26 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
                      cellsOffset, cellsBytes, SymbolBinding::Local);
     }
 
+    // The literal shapes (il2mir::kLiteralShapesSymbol): zero, per thread.
+    if (!module.objectLiterals.empty()) {
+        dataSec.align_to(8);
+        const size_t litOffset = dataSec.data.size();
+        const size_t litBytes = module.objectLiterals.size() * 2 * sizeof(uint64_t);
+        dataSec.data.resize(litOffset + litBytes, 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kLiteralShapesSymbol)), dataIdx,
+                     litOffset, litBytes, SymbolBinding::Local);
+    }
+
+    // The transition cells (il2mir::kProtoCellsSymbol): zero, per thread.
+    if (!module.protoCells.empty()) {
+        dataSec.align_to(8);
+        const size_t cellOffset = dataSec.data.size();
+        const size_t cellBytes = module.protoCells.size() * sizeof(uint64_t);
+        dataSec.data.resize(cellOffset + cellBytes, 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kProtoCellsSymbol)), dataIdx,
+                     cellOffset, cellBytes, SymbolBinding::Local);
+    }
+
     // The slow sites' counters (il.h `slowSiteCount`), zero, ending where the
     // table starts (il2mir::ic_slow_count_offset): generated code bumps one
     // off the table's base, and the harvest finds them by their count, which

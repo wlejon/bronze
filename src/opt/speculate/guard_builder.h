@@ -70,6 +70,9 @@ public:
     void guardTo(ValueId cond, bool passWhen, BlockId exit);
     // The shared exit leaving in front of the site, made on first use.
     BlockId exitBefore();
+    // An exit that does `work` (instructions with no effect G could see:
+    // `proto.publish`) and leaves in front of the site.
+    BlockId exitBeforeWith(std::vector<il::Instruction> work);
     // An exit that does `work` (generic instructions finishing what the site
     // started, appended in order) and leaves for the point in front of the
     // instruction AFTER the site, with `replacement` standing for the site's
