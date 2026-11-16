@@ -43,7 +43,6 @@ namespace bronze {
 void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
     if (shape->slotIsDouble(index)) {
         if (BRONZE_LIKELY(slotReprAcceptsValue(val))) {
-            ++runtime::slotReprMutableCounters().double_stores;
             rawSetSlot(index, slotReprCanonicalize(val));
             return;
         }
@@ -305,7 +304,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (!HeapKind::shapeNamesPrototype(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
-        if (cur->shape && !cur->shape->readCacheable()) {
+        if (cur->shape && !cur->shape->protoLinkCacheable()) {
             crossedDictionary = true;
             return nullptr;
         }

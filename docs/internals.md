@@ -358,7 +358,12 @@ dictionary whose layout can never change again, so `Shape::readCacheable()`
 lets read caches, prototype-chain caches, enumeration caches and the statics
 box cache name it exactly as they name a transition-tree shape; and once the
 walk is done nothing on a frozen prototype can change, so nothing bumps a
-prototype epoch on its account again. The override mistake (assigning
+prototype epoch on its account again. A dictionary that is not frozen but is
+marked a prototype is cacheable as a chain LINK or HOLDER, though not as a
+receiver (`Shape::protoLinkCacheable`): every add, delete, redefinition and
+prototype swap on such an object bumps the epoch a chain entry is checked
+against, so a constructor's prototype filled past the dictionary threshold
+(a WebGL context's enums) is read through a cache like any other. The override mistake (assigning
 `MyError.prototype.name` or `obj.toString` where the inherited property is
 frozen) is fixed in the engine rather than by SES's accessor conversion:
 lockdown marks each object it freezes `hardened`, and an inherited read-only

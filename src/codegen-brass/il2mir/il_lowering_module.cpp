@@ -403,6 +403,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         const Type cell_params[] = {Type::i64(), Type::i64(), Type::i64()};
         build_elem_cell_stub(
             mod->create_function(module_sym(kElemCellStub), Type::i64(), Span<const Type>(cell_params, 3)));
+        build_elem_get_stub(
+            mod->create_function(module_sym(kElemGetStub), Type::i64(), Span<const Type>(cell_params, 2)));
         const Type method_params[] = {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()};
         build_method_call_stub(
             mod->create_function(module_sym(kMethodCallStub), Type::i64(), Span<const Type>(method_params, 5)));

@@ -636,7 +636,7 @@ enum class Op : uint8_t {
     // elem.store %arr, %i, %v. Stores %v (dynamic, never the hole) into the
     // element block at %i (i32), write barrier included. Unchecked as
     // `elem.load` is; it never grows the array, so it writes `Elements` and
-    // not `ArrayLen`.
+    // not `ArrayLen`, and `ElemKinds` unless immI32 has kStoreNumber.
     ElemStore,
     // a: bool = in.bounds %i, %len. Both i32; the UNSIGNED compare
     // `(uint32)i < (uint32)len`, so a negative index is out. Pure.
@@ -786,7 +786,7 @@ enum class Op : uint8_t {
     // array keeps every other array's facts (opt/redundancy/location.cpp).
     // Grows the element block (allocates); throws the RangeError of a length
     // past 2^32 - 1. Speculation's form of a `push` on an array the function
-    // made (speculate/array_push.cpp).
+    // made (speculate/array_push.cpp). immI32 kStoreNumber as `elem.store`'s.
     ArrayPush,
 };
 
@@ -852,6 +852,11 @@ inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;
 inline constexpr int32_t kDenseNumbers = 1 << 30;
 inline constexpr int32_t kDenseIndexMask = kDenseNumbers - 1;
 inline constexpr int32_t kElemLoadNumber = 1;
+// `elem.store`'s and `array.push`'s immI32: the stored value is known to be a
+// Number (the redundancy pass sets it from the value's definition or facts),
+// so the store keeps the array's NUMBERS bit and does not write `ElemKinds`
+// (effects.h).
+inline constexpr int32_t kStoreNumber = 1;
 // `shape.has_own`'s immI32: (slot << kHasOwnSlotShift) | mode bits.
 inline constexpr int32_t kHasOwnWrite = 1;
 inline constexpr int32_t kHasOwnNumber = 2;

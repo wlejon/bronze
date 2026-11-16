@@ -28,9 +28,11 @@
 // Edits during the walk are in place only (dom_walk.h says why); deletions
 // and the branch rewrites wait for `apply`.
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
+#include "abi/bronze_abi_layout.h"
 #include "il/effects.h"
 #include "opt/core/cfg_edit.h"
 #include "opt/core/fact_env.h"
@@ -89,6 +91,8 @@ private:
     bool lookupAndRecord(BlockId b, size_t i, const il::Effects& e);
     void recordWrite(const il::Instruction& inst, const il::Effects& e);
     void forwardStore(const il::Instruction& inst, const Access& write);
+    // A fresh literal's values answer the reads of its slots and elements.
+    void forwardLiteral(const il::Instruction& inst);
     // Marks `start`, and what only it reaches, dead once every edge into it is.
     void markDead(BlockId start);
 
@@ -217,12 +221,24 @@ void ValueWalk::visitInstruction(BlockId b, size_t i) {
         changed_ = true;
     }
 
+    // A store of a known Number keeps the array's NUMBERS bit: marked, its
+    // effect no longer writes `ElemKinds`, so NUMBERS tests survive it.
+    if ((inst.op == Op::ElemStore || inst.op == Op::ArrayPush) && (inst.immI32 & il::kStoreNumber) == 0) {
+        const ValueId stored = inst.operands.size() == (inst.op == Op::ElemStore ? 3u : 2u) ? inst.operands.back()
+                                                                                          : kNoValue;
+        if (stored != kNoValue && knownNumber(facts_, values_, stored)) {
+            inst.immI32 |= il::kStoreNumber;
+            changed_ = true;
+        }
+    }
+
     // Folding may have changed the op, so the effects are read afresh.
     const il::Effects e = il::effectsOf(inst);
     if (reusable(inst, e)) {
         if (lookupAndRecord(b, i, e)) return;
     } else {
         recordWrite(inst, e);
+        forwardLiteral(inst);
     }
     facts_.stepOver(inst);
 }
@@ -303,6 +319,65 @@ void ValueWalk::forwardStore(const il::Instruction& inst, const Access& write) {
             return;
         default:
             return;
+    }
+}
+
+// `object.literal` and `array.literal` make a fresh object whose layout the
+// op fixes (il_op.h): key i of an object literal sits at the slot the runtime
+// places the i-th add of a width-1 property at, from the root the literal's
+// inline capacity picks (runtime/shape.h placeSlot; il2mir
+// il_lowering_literal.cpp picks the same root), and element i of an array
+// literal is %vi. So each value answers the read of its place exactly as a
+// store there would (forwardStore), until a write kills it. A slot read is
+// only ever behind a guard naming a shape off the literal's root (a
+// dictionary object never passes one), so the slot numbering is the one
+// those shapes have. An element read is keyed by its index VALUE, so only
+// the indices an available i32 constant already names are registered.
+void ValueWalk::forwardLiteral(const il::Instruction& inst) {
+    if (inst.result == kNoValue) return;
+    if (inst.op == Op::ObjectLiteral) {
+        if (inst.immI32 < 0 || static_cast<size_t>(inst.immI32) >= ctx_.module.objectLiterals.size()) return;
+        const il::Module::ObjectLiteral& lit = ctx_.module.objectLiterals[static_cast<size_t>(inst.immI32)];
+        if (lit.keys.size() != inst.operands.size()) return;
+        const uint32_t cap = lit.inlineSlots <= BRONZE_ABI_OBJ_INLINE_SLOTS
+                                 ? BRONZE_ABI_OBJ_INLINE_SLOTS
+                                 : std::min<uint32_t>(lit.inlineSlots, BRONZE_ABI_OBJ_OVERFLOW_SLOT);
+        for (uint32_t i = 0; i < inst.operands.size(); ++i) {
+            Location where;
+            where.place = Place::Slot;
+            where.base = inst.result;
+            where.a = i < cap ? i : BRONZE_ABI_OBJ_OVERFLOW_SLOT + (i - cap);
+            Access read;
+            read.locs = il::Loc::Slots;
+            read.where = where;
+            const ValueId v = inst.operands[i];
+            exprs_.add(loadKey(Op::SlotLoad, defs_.type(v), where), v, read, true);
+            ExprKey number = loadKey(Op::SlotLoad, defs_.type(v), where);
+            number.boxType = il::Type::F64;
+            exprs_.add(std::move(number), v, read, true);
+        }
+        return;
+    }
+    if (inst.op != Op::ArrayLiteral) return;
+    for (uint32_t i = 0; i < inst.operands.size(); ++i) {
+        il::Instruction c;
+        c.op = Op::ConstI32;
+        c.type = il::Type::I32;
+        c.immI32 = static_cast<int32_t>(i);
+        const ValueId index = exprs_.lookup(exprKeyOf(c)).value;
+        if (index == kNoValue) continue;
+        Location where;
+        where.place = Place::Elem;
+        where.base = inst.result;
+        where.index = index;
+        Access read;
+        read.locs = il::Loc::Elements;
+        read.where = where;
+        const ValueId v = inst.operands[i];
+        exprs_.add(loadKey(Op::ElemLoad, defs_.type(v), where), v, read, true);
+        ExprKey number = loadKey(Op::ElemLoad, defs_.type(v), where);
+        number.immI32 = il::kElemLoadNumber;
+        exprs_.add(std::move(number), v, read, true);
     }
 }
 

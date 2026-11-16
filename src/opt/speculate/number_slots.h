@@ -8,8 +8,12 @@
 // holding one in every object of that shape (`doubles` rows), and every key
 // anything else was found under (`mixed`). The build reads two things off it:
 //
-//   - the ELIGIBLE keys: a key at some `doubles` position that is not mixed
-//     and that this module names (a key constant). The module registers them
+//   - the ELIGIBLE keys: a key at some `doubles` position that is not mixed,
+//     that this module names (a key constant), and that no `o.k = v` of the
+//     module stores a visible non-Number into (`null`, `undefined`, a boolean,
+//     a fresh object or array: a store the harvest's heap walk misses unless
+//     it was the last one, and that would leave each object meeting it on the
+//     boxed sibling of the shape its sites speculate on). The module registers them
 //     at init (Module::numberSlotKeys, bronze_register_slot_repr), so the
 //     runtime gives a slot added under one of them a double node when the
 //     add stores a Number (runtime/object.cpp desiredSlotRepr);

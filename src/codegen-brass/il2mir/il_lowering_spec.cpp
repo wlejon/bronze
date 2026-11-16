@@ -380,7 +380,8 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             Value* at = b.build_add(b.build_zext_i64(i32(1)), e.head);
             Value* v = bits(2);
             const bool primitive = is_primitive_value(inst.operands[2]) || prop_lowering_.is_known_non_ref(v);
-            const bool always_number = opd[2]->type() == Type::f64() || boxed_f64_source(v) != nullptr;
+            const bool always_number = opd[2]->type() == Type::f64() || boxed_f64_source(v) != nullptr ||
+                                       (inst.imm_i64 & kStoreNumber) != 0;
             const auto forget_numbers = [ptr](Builder& bb) {
                 Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
                 array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,

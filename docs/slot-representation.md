@@ -67,7 +67,12 @@ run with it eligible would have generalized; a position born something else
 just gets a boxed node there).
 
 `opt/speculate/number_slots.h` reads both: the ELIGIBLE keys are the ones at a
-`doubles` position, not mixed and named by the module (`Module::numberSlotKeys`,
+`doubles` position, not mixed, named by the module and never assigned a
+value the module can see is no Number (`o.k = null`, `undefined`, a boolean,
+a fresh object or array: three.js's render list nulls `id` on the items a
+frame left unused, which the harvest's heap walk does not see once the items
+are reused, and an item meeting it would move to the boxed sibling of the
+shape every sort comparison is speculated on) (`Module::numberSlotKeys`,
 registered at init by `bronze_register_slot_repr`, before any object is made),
 and every receiver name the speculation reads off the harvest is respelled with
 those keys' positions as `%k`, the name the run's shape will carry
@@ -193,7 +198,6 @@ object is a named fatal, not a fault somewhere else.
   shape nodes     : 10 double, 0 object, 328 boxed
   refused         : 20 (number store, name not eligible)
   generalizations : 0 stores over 0 nodes
-  helper stores   : 40 into a double slot
 ```
 
 Ten double slots: `Vector3.x/y/z`, `Quaternion._x/_y/_z/_w`, `Euler._x/_y/_z`.
@@ -201,9 +205,9 @@ Zero generalizations — the manifest's promises hold, which is what the entries
 in `bench/pins/threejs-math.pins` claim and what a census run checks rather than
 assumes.
 
-`helper stores` counts what reached `setSlot` with a double slot as the target,
-so it reads near zero exactly when the set sites have latched onto the double
-arm. What says the slots are being made is `shape nodes`.
+What says the slots are being made is `shape nodes`. (Stores into a double
+slot are not counted: `setSlot` answers them inline, and a counter there cost
+runtime copies such as object spread a call and an increment per store.)
 
 ## The census
 

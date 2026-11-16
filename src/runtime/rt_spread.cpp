@@ -437,6 +437,9 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), cap))};
     ArrayHeader* arr = out.get().asObject<ArrayHeader>();
     for (uint32_t i = 0; i < count; ++i) arr->setElem(rtHeap(), i, args[first + i]);
+    // Born with its NUMBERS / NO_CLAIM bit: `xs[i]` in the callee would
+    // otherwise call the claim on every call's fresh array.
+    arr->settleNumbers();
     return out.get().rawBits();
 }
 

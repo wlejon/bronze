@@ -52,6 +52,9 @@ Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
     auto* arr = pair.get().asObject<ArrayHeader>();
     arr->elementsData()[0] = a.get();
     arr->elementsData()[1] = b.get();
+    // Born with the NUMBERS / NO_CLAIM bit a claim would give it, so a
+    // reader's claim (il_elem_lowering.cpp) is never called for a pair.
+    pair.get().asObject<ArrayHeader>()->settleNumbers(a.get().isNumber() && b.get().isNumber());
     return pair.get();
 }
 

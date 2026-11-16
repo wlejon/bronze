@@ -87,13 +87,14 @@ struct ElemCacheEntry {
     // no second interning happens per read.
     StringHeader* key = nullptr;
     ElemKeyKind kind = ElemKeyKind::Empty;
-    // How many reads the module's stub has answered from this entry while it
+    // How many reads the module's computed-read stub
+    // (il2mir/il_prop_stubs.cpp build_elem_get_stub) has answered from this entry while it
     // sat beside its bucket (the second way). At BRONZE_ABI_ELEM_BESIDE_PROMOTE
     // the stub leaves the read to the runtime, whose probe exchanges the two
     // ways: a pair read that often belongs in its bucket, where the site's
     // own arm answers it, rather than behind a pair that came once.
     uint32_t beside_hits = 0;
-    // The IDENTITY latch the inline string arm guards on: the raw Value bits
+    // The IDENTITY latch the computed-read stub's string arm guards on: the raw Value bits
     // of the last LIVE string key `equals` proved content-equal to `key`, or
     // 0. Generated code compares its key bits against this ONE word and, on
     // equality, trusts the entry — sound under two invariants the runtime
@@ -148,9 +149,9 @@ ElemProbe elemCacheProbe(Value objVal, Value key);
 void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCacheSite& site);
 
 // Publish this thread's table into `bronze_tls_block::elem_cache_tbl`, so that
-// generated code can probe it without a call (codegen-llvm/llvm_elem_cache.cpp
-// emits the committed hit for a NUMBER or BOOLEAN key by witness, and for a
-// STRING key by the `key_ident` identity latch). Called from Heap's
+// generated code can probe it (il2mir/il_prop_stubs.cpp build_elem_get_stub
+// answers a NUMBER or BOOLEAN key by witness, and a STRING key by the
+// `key_ident` identity latch). Called from Heap's
 // constructor, which is the per-thread first touch.
 void elemCachePublish() noexcept;
 
@@ -167,7 +168,7 @@ void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept;
 // The cache a COMPUTED WRITE consults — `o[k] = v`.
 //
 // Why a SECOND table and not the one above. The read table's entries are what
-// the inline read arm in codegen-llvm consumes, and a write fills an entry by
+// the computed-read stub consumes, and a write fills an entry by
 // different rules: `setProp` records the shape AFTER a transition add, and an
 // inherited setter at depth > 0. `InlineCache::describesOwn` already says in
 // so many words that "set sites and get sites never share a table entry" —

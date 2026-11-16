@@ -17,7 +17,8 @@ static_assert(il2mir::kSlowSiteArms == bronze::il::kSlowSiteArms, "one slow site
 static_assert(il2mir::kHasOwnWrite == bronze::il::kHasOwnWrite && il2mir::kHasOwnNumber == bronze::il::kHasOwnNumber &&
                   il2mir::kHasOwnSlotShift == bronze::il::kHasOwnSlotShift,
               "shape.has_own's immediate is read alike on both sides");
-static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kElemLoadNumber == bronze::il::kElemLoadNumber,
+static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kElemLoadNumber == bronze::il::kElemLoadNumber &&
+                  il2mir::kStoreNumber == bronze::il::kStoreNumber,
               "the NUMBERS forms of is.dense_array and elem.load, named twice");
 static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
                   il2mir::kLastShapeArm == bronze::il::kLastShapeArm,
@@ -535,7 +536,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::ElemLoad;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ElemStore: out.op = il2mir::BronzeOp::ElemStore; break;
+        case il::Op::ElemStore:
+            out.op = il2mir::BronzeOp::ElemStore;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::InBounds:
             out.op = il2mir::BronzeOp::InBounds;
             out.imm_i64 = inst.immI32;
@@ -593,7 +597,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::ConstructResult: out.op = il2mir::BronzeOp::ConstructResult; break;
         case il::Op::ConcatN: out.op = il2mir::BronzeOp::ConcatN; break;
-        case il::Op::ArrayPush: out.op = il2mir::BronzeOp::ArrayPush; break;
+        case il::Op::ArrayPush:
+            out.op = il2mir::BronzeOp::ArrayPush;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::TypeOfIs:
             // il_lowering_ops.cpp lower_typeof_is numbers the kinds the same way.
             static_assert(il::kTypeOfUndefined == 0 && il::kTypeOfObject == 1 && il::kTypeOfBoolean == 2 &&

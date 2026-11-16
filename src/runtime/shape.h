@@ -374,6 +374,20 @@ public:
         return dict == nullptr || dict->level == IntegrityLevel::Frozen;
     }
 
+    // May a read's chain entry walk through, or take its holder at, an object
+    // at this shape reached as a PROTOTYPE (ObjectHeader::cachedProtoHolder)?
+    // Everything readCacheable allows, and also a dictionary marked as a
+    // prototype: every change to one that could change what a read finds
+    // through it bumps the prototype epoch the entry is checked against — an
+    // add, a delete, a redefinition to other storage (dictionary.cpp) and a
+    // prototype swap (ObjectHeader::setPrototype) — while a read of a key it
+    // keeps reads the slot as it is now. A constructor's prototype made a map
+    // of constants (`for (k of keys) P[k] = GL[k]` past the dictionary
+    // threshold: a WebGL context's six hundred enums) is read through this.
+    bool protoLinkCacheable() const noexcept {
+        return readCacheable() || used_as_prototype;
+    }
+
     // How many slots this node's own property occupies.
     uint32_t slotWidth() const noexcept { return accessor ? 2u : 1u; }
     // One past the last slot an object at this shape uses: what its storage
@@ -540,7 +554,8 @@ public:
 };
 
 // Part of the generated-code ABI: the depth > 0 proto-hit read walks
-// shape -> root -> prototype and refuses a dictionary inline, and the
+// shape -> root -> prototype and refuses a dictionary not marked a prototype
+// inline (protoLinkCacheable), and the
 // shape-transition write hit reads parent, slot_index, the attribute bytes
 // and the prototype mark. Pinned HERE, beside the type that owns the layout,
 // so a reorder breaks the build instead of miscompiling every cached access.

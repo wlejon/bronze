@@ -624,6 +624,12 @@ struct ObjectHeader {
     // usually already touched and one not-taken branch.
     inline void setSlot(uint32_t index, Value val) {
         if (BRONZE_UNLIKELY(shape != nullptr && (shape->double_slots | shape->object_slots) != 0)) {
+            // A Number into a double slot, inline: the runtime's copies
+            // (object spread, Object.assign) store field after field here.
+            if (shape->slotIsDouble(index) && slotReprAcceptsValue(val)) {
+                rawSetSlot(index, slotReprCanonicalize(val));
+                return;
+            }
             setSlotWithRepr(index, val);
             return;
         }

@@ -78,7 +78,8 @@ void mega_probe(Builder& b, Value* site, int last_way, Value* shape, Value* key,
 
 // The holder `links` (1..kMaxWalk) prototype links above an object at
 // `shape`, walked as ObjectHeader::cachedProtoHolder walks (shape -> root ->
-// prototype), each link a plain object whose shape is no dictionary, else
+// prototype), each link a plain object whose shape is no dictionary or a
+// dictionary marked a prototype (Shape::protoLinkCacheable), else
 // `miss`. One straight copy per link: a loop's back edge would carry an
 // interrupt poll. Branches to `found` with the holder's payload.
 void walk_to_holder(Builder& b, Value* shape, Value* links, BasicBlock* found, BasicBlock* miss) {
@@ -102,7 +103,11 @@ void walk_to_holder(Builder& b, Value* shape, Value* links, BasicBlock* found, B
                       miss);
         b.position_at_end(is_plain);
         Value* hshape = b.build_load(Type::i64(), pptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-        Value* not_dict = b.build_eq(b.build_load(Type::i64(), hshape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0));
+        // Shape::protoLinkCacheable: no dictionary, or one marked a prototype
+        // (every change to it that a read could see bumps the epoch).
+        Value* not_dict = b.build_or(
+            b.build_eq(b.build_load(Type::i64(), hshape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0)),
+            b.build_ne(b.build_zext_i64(b.build_load(Type::i8(), hshape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET)), imm(b, 0)));
         if (link == kMaxWalk) {
             b.build_br_if(not_dict, found, {pptr}, miss, {});
             return;
@@ -120,8 +125,11 @@ void walk_to_holder(Builder& b, Value* shape, Value* links, BasicBlock* found, B
 
 }  // namespace
 
-// The read stub: (obj, key, site) -> value.
-//   ways 0..3, then the megamorphic table: a way naming the receiver's shape
+namespace {
+
+// What a cache entry's words say about a plain receiver `ptr` (`obj` boxed)
+// at `shape`, from the current block, which holds the entry's slot `word` and
+// `epoch`: returns the read's value, or branches to `helper`.
 //   own data (word < 2^32)          the slot
 //   own accessor                    its getter called
 //   chain entry, epoch current:
@@ -130,6 +138,65 @@ void walk_to_holder(Builder& b, Value* shape, Value* links, BasicBlock* found, B
 //     accessor                      the holder's getter called
 // The getter is entered as bronze_prop_get's hit enters it (rtEnterJs with no
 // arguments), when the function says compiled code may enter it.
+void answer_entry(Builder& b, Value* obj, Value* ptr, Value* shape, Value* word, Value* epoch, BasicBlock* helper,
+                  const std::string& p) {
+    BasicBlock* hit = b.current_block();
+    BasicBlock* own = b.append_block(p + "_own");
+    BasicBlock* flagged = b.append_block(p + "_flagged");
+    BasicBlock* chain = b.append_block(p + "_chain");
+    BasicBlock* epoch_ok = b.append_block(p + "_epoch_ok");
+    BasicBlock* absent = b.append_block(p + "_absent");
+    BasicBlock* not_absent = b.append_block(p + "_present");
+    BasicBlock* walk = b.append_block(p + "_walk");
+    BasicBlock* holder_bb = b.append_block(p + "_holder");
+    Value* holder = b.add_block_param(holder_bb, Type::i64());
+    BasicBlock* getter_bb = b.append_block(p + "_getter");
+    Value* getter = b.add_block_param(getter_bb, Type::i64());
+
+    b.position_at_end(hit);
+    Value* depth = b.build_lshr(word, imm(b, 32));
+    b.build_br_if(b.build_eq(depth, imm(b, 0)), own, flagged);
+
+    b.position_at_end(own);
+    b.build_ret(PropertyLoweringHelper::load_slot_at(b, ptr, word));
+
+    // An own accessor (no links) needs no epoch: the receiver's shape says
+    // the pair is there. Everything with links, and the absent answer, holds
+    // only while the chain is the one the fill walked.
+    b.position_at_end(flagged);
+    Value* links = b.build_and(depth, imm(b, ~kAccessorFlag & 0xFFFFFFFFLL));
+    b.build_br_if(b.build_eq(links, imm(b, 0)), holder_bb, {ptr}, chain, {});
+    b.position_at_end(chain);
+    b.build_br_if(b.build_eq(epoch, b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF)), epoch_ok, helper);
+    b.position_at_end(epoch_ok);
+    b.build_br_if(b.build_eq(depth, imm(b, kAbsentFlag)), absent, not_absent);
+    b.position_at_end(absent);
+    b.build_ret(imm(b, static_cast<int64_t>(kUndefinedTag)));
+    // Links 1..kMaxWalk with nothing but, at most, the accessor flag: any
+    // other flag (statics) makes the count no small number.
+    b.position_at_end(not_absent);
+    b.build_br_if(b.build_ult(b.build_sub(links, imm(b, 1)), imm(b, kMaxWalk)), walk, helper);
+    b.position_at_end(walk);
+    walk_to_holder(b, shape, links, holder_bb, helper);
+
+    b.position_at_end(holder_bb);
+    Value* value = PropertyLoweringHelper::load_slot_at(b, holder, b.build_and(word, imm(b, 0xFFFFFFFFLL)));
+    BasicBlock* value_bb = b.current_block();
+    BasicBlock* data = b.append_block(p + "_data");
+    b.position_at_end(value_bb);
+    b.build_br_if(b.build_ne(b.build_and(depth, imm(b, kAccessorFlag)), imm(b, 0)), getter_bb, {value}, data, {});
+    b.position_at_end(data);
+    b.build_ret(value);
+
+    b.position_at_end(getter_bb);
+    Value* gfn = direct_callee(b, getter, b.build_iconst_i32(0), helper);
+    b.build_ret(call_function_code(b, gfn, obj, b.build_iconst_i32(0), imm(b, 0)));
+}
+
+}  // namespace
+
+// The read stub: (obj, key, site) -> value. Ways 0..3, then the megamorphic
+// table; a way naming the receiver's shape is answered by answer_entry.
 void build_prop_get_stub(Function* fn) {
     Builder b(*fn->parent());
     b.set_function(fn);
@@ -141,15 +208,6 @@ void build_prop_get_stub(Function* fn) {
     BasicBlock* hit = b.append_block("pg_hit");
     Value* word = b.add_block_param(hit, Type::i64());
     Value* epoch = b.add_block_param(hit, Type::i64());
-    BasicBlock* own = b.append_block("pg_own");
-    BasicBlock* flagged = b.append_block("pg_flagged");
-    BasicBlock* chain = b.append_block("pg_chain");
-    BasicBlock* not_absent = b.append_block("pg_present");
-    BasicBlock* walk = b.append_block("pg_walk");
-    BasicBlock* holder_bb = b.append_block("pg_holder");
-    Value* holder = b.add_block_param(holder_bb, Type::i64());
-    BasicBlock* getter_bb = b.append_block("pg_getter");
-    Value* getter = b.add_block_param(getter_bb, Type::i64());
     BasicBlock* helper = b.append_block("pg_helper");
 
     b.position_at_end(entry);
@@ -170,50 +228,116 @@ void build_prop_get_stub(Function* fn) {
     mega_probe(b, site, BRONZE_ABI_IC_WAYS - 1, shape, b.build_zext_i64(key), hit, helper);
 
     b.position_at_end(hit);
-    Value* depth = b.build_lshr(word, imm(b, 32));
-    b.build_br_if(b.build_eq(depth, imm(b, 0)), own, flagged);
-
-    b.position_at_end(own);
-    b.build_ret(PropertyLoweringHelper::load_slot_at(b, ptr, word));
-
-    // An own accessor (no links) needs no epoch: the receiver's shape says
-    // the pair is there. Everything with links, and the absent answer, holds
-    // only while the chain is the one the fill walked.
-    b.position_at_end(flagged);
-    Value* links = b.build_and(depth, imm(b, ~kAccessorFlag & 0xFFFFFFFFLL));
-    b.build_br_if(b.build_eq(links, imm(b, 0)), holder_bb, {ptr}, chain, {});
-    b.position_at_end(chain);
-    BasicBlock* epoch_ok = b.append_block("pg_epoch_ok");
-    b.position_at_end(chain);
-    b.build_br_if(b.build_eq(epoch, b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF)), epoch_ok, helper);
-    b.position_at_end(epoch_ok);
-    BasicBlock* absent = b.append_block("pg_absent");
-    b.position_at_end(epoch_ok);
-    b.build_br_if(b.build_eq(depth, imm(b, kAbsentFlag)), absent, not_absent);
-    b.position_at_end(absent);
-    b.build_ret(imm(b, static_cast<int64_t>(kUndefinedTag)));
-    // Links 1..kMaxWalk with nothing but, at most, the accessor flag: any
-    // other flag (statics) makes the count no small number.
-    b.position_at_end(not_absent);
-    b.build_br_if(b.build_ult(b.build_sub(links, imm(b, 1)), imm(b, kMaxWalk)), walk, helper);
-    b.position_at_end(walk);
-    walk_to_holder(b, shape, links, holder_bb, helper);
-
-    b.position_at_end(holder_bb);
-    Value* value = PropertyLoweringHelper::load_slot_at(b, holder, b.build_and(word, imm(b, 0xFFFFFFFFLL)));
-    BasicBlock* value_bb = b.current_block();
-    BasicBlock* data = b.append_block("pg_data");
-    b.position_at_end(value_bb);
-    b.build_br_if(b.build_ne(b.build_and(depth, imm(b, kAccessorFlag)), imm(b, 0)), getter_bb, {value}, data, {});
-    b.position_at_end(data);
-    b.build_ret(value);
-
-    b.position_at_end(getter_bb);
-    Value* gfn = direct_callee(b, getter, b.build_iconst_i32(0), helper);
-    b.build_ret(call_function_code(b, gfn, obj, b.build_iconst_i32(0), imm(b, 0)));
+    answer_entry(b, obj, ptr, shape, word, epoch, helper, "pg");
 
     b.position_at_end(helper);
     b.build_ret(b.build_call("bronze_prop_get", Type::i64(), {obj, key, site}));
+    fn->rebuild_cfg_predecessors();
+}
+
+// The computed-read stub: (obj, key) -> value, what a computed read takes when
+// its site has no cell or its cell has stopped taking fills: the thread's
+// computed-read table (runtime/elem_ic.h), probed as elemCacheProbe probes it,
+// for a plain receiver that is no dictionary and a Number, boolean or hashed
+// string key. A string key is the entry's only by its identity latch
+// (`key_ident`, which the runtime sets after proving the live key equal to
+// the entry's and clears in every collection for a movable string), so no
+// content compare is made here. The entry's words are answered as a
+// property site's (answer_entry); everything else is bronze_elem_get.
+void build_elem_get_stub(Function* fn) {
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* entry = b.append_block("entry");
+    Value* obj = b.add_block_param(entry, Type::i64());
+    Value* key = b.add_block_param(entry, Type::i64());
+    BasicBlock* object = b.append_block("eg_object");
+    BasicBlock* plain = b.append_block("eg_plain");
+    BasicBlock* not_number = b.append_block("eg_not_number");
+    BasicBlock* not_bool = b.append_block("eg_not_bool");
+    BasicBlock* str = b.append_block("eg_string");
+    BasicBlock* probe = b.append_block("eg_probe");
+    Value* witness = b.add_block_param(probe, Type::i64());
+    Value* kind = b.add_block_param(probe, Type::i64());
+    BasicBlock* table = b.append_block("eg_table");
+    BasicBlock* beside = b.append_block("eg_beside");
+    BasicBlock* beside_hit = b.append_block("eg_beside_hit");
+    BasicBlock* hit = b.append_block("eg_hit");
+    Value* at = b.add_block_param(hit, Type::i64());
+    BasicBlock* helper = b.append_block("eg_helper");
+
+    b.position_at_end(entry);
+    Value* ptr = b.build_xor(obj, imm(b, static_cast<int64_t>(kObjectTagBits)));
+    b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, helper);
+    b.position_at_end(object);
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), plain, helper);
+    b.position_at_end(plain);
+    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    BasicBlock* shaped = b.append_block("eg_shaped");
+    b.position_at_end(plain);
+    // A dictionary's properties are not in its shape (Shape::readCacheable;
+    // a frozen one is rare enough to leave to the runtime).
+    b.build_br_if(b.build_eq(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0)), shaped, helper);
+    b.position_at_end(shaped);
+    b.build_br_if(b.build_ule(key, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), probe,
+                  {key, imm(b, BRONZE_ABI_ELEM_KIND_NUMBER)}, not_number, {});
+    b.position_at_end(not_number);
+    Value* bool_bit = b.build_xor(key, imm(b, static_cast<int64_t>(BRONZE_ABI_FALSE_BITS)));
+    b.build_br_if(b.build_ult(bool_bit, imm(b, 2)), probe, {bool_bit, imm(b, BRONZE_ABI_ELEM_KIND_BOOL)}, not_bool, {});
+    b.position_at_end(not_bool);
+    Value* sptr = b.build_xor(key, imm(b, static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_STRING} << 48)));
+    b.build_br_if(b.build_ult(sptr, imm(b, kPayloadLimit)), str, helper);
+    b.position_at_end(str);
+    Value* flags = b.build_zext_i64(b.build_load(Type::i32(), sptr, BRONZE_ABI_STRING_FLAGS_OFFSET));
+    b.build_br_if(b.build_ne(b.build_and(flags, imm(b, BRONZE_ABI_STRING_HASHED_BIT)), imm(b, 0)), probe,
+                  {b.build_and(flags, imm(b, BRONZE_ABI_STRING_HASH_MASK)), imm(b, BRONZE_ABI_ELEM_KIND_STRING)},
+                  helper, {});
+
+    // runtime/elem_ic.cpp bucketOf, and its two ways: the bucket, then the
+    // entry beside it.
+    b.position_at_end(probe);
+    Value* tbl = b.build_load(Type::i64(), tls(b), BRONZE_TLS_ELEM_CACHE_TBL_OFF);
+    b.build_br_if(b.build_ne(tbl, imm(b, 0)), table, helper);
+    b.position_at_end(table);
+    Value* h = b.build_add(b.build_mul(shape, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_SHAPE))),
+                           b.build_mul(witness, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_WITNESS))));
+    Value* bucket = b.build_lshr(h, imm(b, BRONZE_ABI_ELEM_BUCKET_SHIFT));
+    const auto entry_at = [&](Value* index) {
+        return b.build_add(tbl, b.build_mul(index, imm(b, BRONZE_ABI_ELEM_ENTRY_SIZE)));
+    };
+    const auto matches = [&](Value* e) {
+        Value* m = b.build_and(
+            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), shape),
+            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_WITNESS_OFFSET), witness));
+        m = b.build_and(m, b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), e, BRONZE_ABI_ELEM_KIND_OFFSET)), kind));
+        // A string's entry by the latch: a number's or boolean's witness is
+        // its whole identity.
+        Value* latched = b.build_or(b.build_ne(kind, imm(b, BRONZE_ABI_ELEM_KIND_STRING)),
+                                    b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IDENT_OFFSET), key));
+        return b.build_and(m, latched);
+    };
+    Value* first = entry_at(bucket);
+    b.build_br_if(matches(first), hit, {first}, beside, {});
+    b.position_at_end(beside);
+    Value* second = entry_at(b.build_xor(bucket, imm(b, 1)));
+    b.build_br_if(matches(second), beside_hit, helper);
+    // Counted, so that a pair read this often from beside its bucket is moved
+    // into it by the runtime's probe (BRONZE_ABI_ELEM_BESIDE_PROMOTE).
+    b.position_at_end(beside_hit);
+    Value* hits = b.build_load(Type::i32(), second, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET);
+    Value* bumped = b.build_add(hits, b.build_iconst_i32(1));
+    b.build_store(Type::i32(), second, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET, bumped);
+    BasicBlock* promote = b.append_block("eg_promote");
+    b.position_at_end(beside_hit);
+    b.build_br_if(b.build_uge(bumped, b.build_iconst_i32(BRONZE_ABI_ELEM_BESIDE_PROMOTE)), promote, {}, hit, {second});
+    b.position_at_end(promote);
+    b.build_br(helper);
+
+    b.position_at_end(hit);
+    answer_entry(b, obj, ptr, shape, b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET),
+                 b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET), helper, "eg");
+
+    b.position_at_end(helper);
+    b.build_ret(b.build_call("bronze_elem_get", Type::i64(), {obj, key}));
     fn->rebuild_cfg_predecessors();
 }
 

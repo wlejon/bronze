@@ -38,6 +38,12 @@ void build_method_call_stub(Function* fn);
 constexpr const char* kElemCellStub = "__bronze_elem_cell_stub";
 void build_elem_cell_stub(Function* fn);
 
+// (i64 obj, i64 key) -> i64: a computed read no cell answers (no cell, or one
+// that has stopped taking fills): the thread's computed-read table
+// (runtime/elem_ic.h), then bronze_elem_get.
+constexpr const char* kElemGetStub = "__bronze_elem_get_stub";
+void build_elem_get_stub(Function* fn);
+
 // A typed array's element (il_view_stubs.cpp), behind the helpers:
 // (i64 obj, i32 index, i64 key) -> i64 and
 // (i64 obj, i32 index, i64 key, i64 val, i32 strict) -> void.

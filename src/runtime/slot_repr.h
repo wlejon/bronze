@@ -170,13 +170,6 @@ struct SlotReprCounters {
     uint64_t refused_ineligible = 0;  // a number store whose key was not eligible
     uint64_t generalizations = 0;   // double or object slots taken back by a store
     uint64_t generalized_nodes = 0;  // distinct double or object nodes marked sticky-boxed
-    // Stores that landed in a double slot THROUGH `setSlot` — the runtime's
-    // paths and generated code's misses. Generated code's inline arms test the
-    // value and store it themselves, so they are not counted here and a hot
-    // pinned field's count is near zero once its sites have latched. That is
-    // the number reading small, not the mechanism being idle: `double_nodes`
-    // is what says the slots exist.
-    uint64_t double_stores = 0;
 };
 const SlotReprCounters& slotReprCounters() noexcept;
 SlotReprCounters& slotReprMutableCounters() noexcept;

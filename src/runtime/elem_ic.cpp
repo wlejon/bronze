@@ -67,7 +67,7 @@ static_assert(static_cast<uint8_t>(ElemKeyKind::Boolean) == BRONZE_ABI_ELEM_KIND
 // shape pointer has the milder version of the same problem at the other end
 // (arena alignment zeros at the bottom). A product's high bits depend on every
 // bit at or below them, which covers both. The two products are independent,
-// so generated code (il_elem_stub.cpp) computes the bucket in one multiply's
+// so generated code (il2mir/il_prop_stubs.cpp build_elem_get_stub) computes the bucket in one multiply's
 // latency rather than the two dependent finalizer rounds this used to be.
 uint32_t bucketOf(const Shape* shape, uint64_t witness, uint32_t entries) noexcept {
     const uint64_t h = reinterpret_cast<uintptr_t>(shape) * BRONZE_ABI_ELEM_HASH_MUL_SHAPE +

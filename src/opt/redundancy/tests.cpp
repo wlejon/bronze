@@ -323,4 +323,11 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
     }
 }
 
+bool knownNumber(const FactEnv& facts, const ValueView& values, ValueId x) {
+    const DefTag def = tagByDefinition(values, x);
+    if (def == DefTag::Number || def == DefTag::Int32) return true;
+    const ValueTag tag = facts.tagOf(x);
+    return tag == ValueTag::Number || tag == ValueTag::I32;
+}
+
 }  // namespace bronze::opt::redundancy

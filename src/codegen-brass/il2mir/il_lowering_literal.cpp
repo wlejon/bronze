@@ -182,9 +182,12 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                         Value* is_num = b.build_ult(opd[i], b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits + 1)));
                         all = all == nullptr ? is_num : b.build_and(all, is_num);
                     }
-                    Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+                    // The fresh array's bits word is 0 on both of
+                    // lower_create_array's paths (n > 0), so the word is
+                    // stored, not read back and or-ed: a 32-bit reload of
+                    // the 64-bit word the allocation just stored stalled.
                     Value* numbers = b.build_select(all, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS), b.build_iconst_i32(0));
-                    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, b.build_or(bits, numbers));
+                    b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, numbers);
                 }
             }
             res_val = arr;

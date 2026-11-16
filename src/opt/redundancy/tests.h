@@ -43,4 +43,8 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
 std::optional<bool> knownHasOwnResult(const il::Instruction& inst, const FactEnv& facts, const ExprTable& exprs,
                                       const ValueView& values, const il::Module& module);
 
+// Whether `x` is certainly a Number here: its definition boxes one (or reads
+// a Number form), or a dominating test proved it.
+bool knownNumber(const FactEnv& facts, const ValueView& values, ValueId x);
+
 }  // namespace bronze::opt::redundancy

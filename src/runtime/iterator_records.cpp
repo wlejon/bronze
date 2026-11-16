@@ -509,6 +509,8 @@ bool bronze_iter_step(uint64_t recBits) {
         auto* arr = pair.get().asObject<ArrayHeader>();
         arr->elementsData()[0] = k.get();
         arr->elementsData()[1] = v.get();
+        // Born with the bit a claim would give it (builtin_map_iterator.cpp).
+        arr->settleNumbers(k.get().isNumber() && v.get().isNumber());
         recRoot.get().asObject<IterRecordHeader>()->current = pair.get();
         return true;
     }
@@ -627,6 +629,8 @@ uint64_t bronze_iter_rest(uint64_t recBits) {
         const uint32_t at = out.get().asObject<ArrayHeader>()->length;
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, elem);
     }
+    // Born with its NUMBERS / NO_CLAIM bit (bronze_rest_args).
+    out.get().asObject<ArrayHeader>()->settleNumbers();
     return out.get().rawBits();
 }
 

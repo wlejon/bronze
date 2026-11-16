@@ -98,6 +98,26 @@ struct ArrayHeader {
     // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH are not scanned. Returns the bit.
     bool claimNumbers() noexcept;
 
+    // For a bare array the runtime has just made and filled (its `length`
+    // elements written, none a hole): NUMBERS when every element is a Number,
+    // else NO_CLAIM, so no reader's claim (il_elem_lowering.cpp) ever calls
+    // out to scan it. claimNumbers' answer without its call and tests.
+    void settleNumbers() noexcept {
+        const Value* cur = std::as_const(*this).elementsData();
+        for (uint32_t i = 0; i < length; ++i) {
+            if (!cur[i].isNumber()) {
+                reserved |= kNumbersRefused;
+                return;
+            }
+        }
+        reserved |= kElementsAreNumbers;
+    }
+    // The same for a maker that already knows the answer (a pair of values
+    // in hand): no scan.
+    void settleNumbers(bool allNumbers) noexcept {
+        reserved |= allNumbers ? kElementsAreNumbers : kNumbersRefused;
+    }
+
     // An ordinary array, at runtime::rtArrayShape().
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
 

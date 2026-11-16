@@ -53,6 +53,11 @@ enum class Loc : uint16_t {
     // instruction that can add to, delete from or swap a prototype writes
     // everything anyway.
     Protos = 1u << 12,
+    // An Array's NUMBERS bit (runtime/array.h): what a store of a value that
+    // may be no Number clears. A store of a known Number (`elem.store` /
+    // `array.push` with kStoreNumber) writes `Elements` but not this, so a
+    // NUMBERS dense test stays answered across the loop that fills the array.
+    ElemKinds = 1u << 13,
 };
 
 class LocSet {
@@ -77,7 +82,7 @@ public:
     constexpr bool operator==(const LocSet&) const = default;
 
 private:
-    static constexpr uint16_t kAllBits = (1u << 13) - 1;
+    static constexpr uint16_t kAllBits = (1u << 14) - 1;
     explicit constexpr LocSet(uint16_t bits) : bits_(bits) {}
     uint16_t bits_ = 0;
 };

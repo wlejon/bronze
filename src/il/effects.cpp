@@ -154,9 +154,13 @@ Effects rawEffects(const Instruction& inst) {
         // that grows writes `ArrayLen`) or under code that writes everything;
         // the block's CONTENTS (`Elements`, what `elem.store` writes) are not
         // read.
-        // The NUMBERS form also reads the bits word an element store clears.
+        // The NUMBERS form also reads the bit a store of anything but a
+        // Number clears (`ElemKinds`). Its cold claim scans the contents when
+        // the bit is clear, so a Number stored over a non-Number can turn a
+        // "no" into a "yes" without writing `ElemKinds`: a stale "no" only
+        // sends S out where G would have carried on, never the reverse.
         case Op::IsDenseArray:
-            return (inst.immI32 & kDenseNumbers) != 0 ? reading(Loc::Shapes | Loc::ArrayLen | Loc::Elements)
+            return (inst.immI32 & kDenseNumbers) != 0 ? reading(Loc::Shapes | Loc::ArrayLen | Loc::ElemKinds)
                                                       : reading(Loc::Shapes | Loc::ArrayLen);
         // The array's shape word (bare or not) is what the
         // test reads; a write that changes it is a transition.
@@ -166,7 +170,8 @@ Effects rawEffects(const Instruction& inst) {
         // allocates), behind a dominating is.plain_array; the length limit's
         // RangeError (il_op.h).
         case Op::ArrayPush: {
-            Effects e = throwing(Loc::Shapes | Loc::ArrayLen | Loc::Elements, Loc::ArrayLen | Loc::Elements);
+            const LocSet kinds = (inst.immI32 & kStoreNumber) != 0 ? LocSet::none() : LocSet(Loc::ElemKinds);
+            Effects e = throwing(Loc::Shapes | Loc::ArrayLen | Loc::Elements, Loc::ArrayLen | Loc::Elements | kinds);
             e.allocates = true;
             e.guarded = true;
             return e;
@@ -372,7 +377,8 @@ Effects rawEffects(const Instruction& inst) {
         case Op::ElemLoad:
             return guardedOp(Loc::Elements, LocSet::none());
         case Op::ElemStore:
-            return guardedOp(LocSet::none(), Loc::Elements);
+            return guardedOp(LocSet::none(), (inst.immI32 & kStoreNumber) != 0 ? LocSet(Loc::Elements)
+                                                                              : Loc::Elements | Loc::ElemKinds);
         // Construction: the vetted byte and the instance shape live on the
         // function object; the instance is a fresh allocation.
         case Op::FnConstructs:

@@ -206,6 +206,8 @@ inline constexpr int64_t kDenseNumbers = int64_t{1} << 30;
 inline constexpr int64_t kDenseIndexMask = kDenseNumbers - 1;
 // `elem.load`'s immI32 under such a test (il/il_op.h kElemLoadNumber).
 inline constexpr int64_t kElemLoadNumber = 1;
+// `elem.store`'s / `array.push`'s immI32: the value is a Number (il/il_op.h kStoreNumber).
+inline constexpr int64_t kStoreNumber = 1;
 // `shape.has_own`'s mode bits and slot shift (il/il_op.h kHasOwnWrite).
 inline constexpr int64_t kHasOwnWrite = 1;
 inline constexpr int64_t kHasOwnNumber = 2;

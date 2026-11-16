@@ -280,7 +280,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         b.build_br_if(b.build_ult(b.build_load(Type::i64(), cell, 24), iconst(b, BRONZE_ABI_ELEM_CELL_LIMIT)), bb_stub,
                       bb_generic);
         b.position_at_end(bb_generic);
-        b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, key})});
+        b.build_br(bb_merge, {b.build_call(stub_sym(kElemGetStub), Type::i64(), {obj, key})});
         b.position_at_end(bb_cell_hit);
         Value* slot_word = b.build_load(Type::i64(), cell, 16);
         b.build_br_if(b.build_ult(slot_word, iconst(b, uint64_t{1} << 32)), bb_own, bb_stub);
@@ -291,7 +291,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         b.position_at_end(bb_merge);
         return result;
     }
-    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, key})});
+    b.build_br(bb_merge, {b.build_call(stub_sym(kElemGetStub), Type::i64(), {obj, key})});
 
     b.position_at_end(bb_merge);
     return result;
@@ -419,7 +419,8 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 // length, 23.1.3.23's one Set lands in the block: the value at the length,
 // the length one more, NUMBERS cleared by a value that is no Number, and the
 // barrier. The result is the new length. Anything else goes to `miss`.
-Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss) {
+Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss,
+                                                bool known_number) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "apush_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* room_test = b.append_block(prefix + "_room");
@@ -446,7 +447,11 @@ Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* v
         array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                            bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
     };
-    store_value(b, at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
+    if (known_number) {
+        store_value(b, at, val, kBoxedElementAliasClass, /*need_barrier=*/false);
+    } else {
+        store_value(b, at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
+    }
     return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(new_len));
 }
 

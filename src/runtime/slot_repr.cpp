@@ -217,8 +217,7 @@ void slotReprReport() {
                  "  eligible names  : %u\n"
                  "  shape nodes     : %llu double, %llu object, %llu boxed\n"
                  "  refused         : %llu (number store, name not eligible)\n"
-                 "  generalizations : %llu store%s over %llu node%s\n"
-                 "  helper stores   : %llu into a double slot\n",
+                 "  generalizations : %llu store%s over %llu node%s\n",
                  slotReprEligibleCount(),
                  static_cast<unsigned long long>(c.double_nodes),
                  static_cast<unsigned long long>(c.object_nodes),
@@ -227,8 +226,7 @@ void slotReprReport() {
                  static_cast<unsigned long long>(c.generalizations),
                  c.generalizations == 1 ? "" : "s",
                  static_cast<unsigned long long>(c.generalized_nodes),
-                 c.generalized_nodes == 1 ? "" : "s",
-                 static_cast<unsigned long long>(c.double_stores));
+                 c.generalized_nodes == 1 ? "" : "s");
 
     if (!config().census) {
         std::fprintf(stderr,

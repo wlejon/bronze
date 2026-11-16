@@ -32,10 +32,50 @@ bool plainKey(const std::string& spelled) {
            spelled != "@@symbol";
 }
 
+// The keys some `o.k = v` of the module stores a value it can see is no
+// Number into: `null`, `undefined`, a boolean, a fresh object or array. The
+// harvest cannot see such a store unless it was the last one before the heap
+// walk (three.js's render list sets `renderItem.id = null` on the items a
+// frame left unused, and reuses them the next frame), and an object that
+// meets one moves to the boxed sibling of its shape for good: a speculated
+// site of the `%k` name then meets two shapes, and leaves at every object of
+// the other one.
+std::unordered_set<uint32_t> keysStoredNonNumbers(const il::Module& module) {
+    std::unordered_set<uint32_t> out;
+    std::vector<const il::Instruction*> defs;
+    for (const il::Function& fn : module.functions) {
+        defs.clear();
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.result == il::kNoValue) continue;
+                if (inst.result >= defs.size()) defs.resize(inst.result + 1, nullptr);
+                defs[inst.result] = &inst;
+            }
+        }
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::PropSet || inst.operands.size() < 2) continue;
+                const il::ValueId v = inst.operands[1];
+                const il::Instruction* def = v < defs.size() ? defs[v] : nullptr;
+                if (def == nullptr) continue;
+                const bool nonNumber = def->op == il::Op::ConstNull || def->op == il::Op::ConstUndefined ||
+                                       def->op == il::Op::ObjectLiteral || def->op == il::Op::ArrayLiteral ||
+                                       (def->op == il::Op::Box && def->boxType == il::Type::Bool);
+                if (nonNumber) out.insert(inst.keyIndex);
+            }
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 std::set<std::string> numberSlotKeys(const spec::Harvest& harvest, const il::Module& module) {
     const std::unordered_set<std::string> named(module.keyConstants.begin(), module.keyConstants.end());
+    std::unordered_set<std::string> storedOther;
+    for (uint32_t k : keysStoredNonNumbers(module)) {
+        if (k < module.keyConstants.size()) storedOther.insert(module.keyConstants[k]);
+    }
     std::set<std::string> keys;
     for (const auto& [name, positions] : harvest.doubles) {
         size_t open = 0;
@@ -44,6 +84,7 @@ std::set<std::string> numberSlotKeys(const spec::Harvest& harvest, const il::Mod
         for (uint32_t p : positions) {
             if (p >= list.size() || !plainKey(list[p])) continue;
             if (harvest.mixed.count(list[p]) != 0 || named.count(list[p]) == 0) continue;
+            if (storedOther.count(list[p]) != 0) continue;
             keys.insert(list[p]);
         }
     }

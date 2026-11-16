@@ -163,8 +163,9 @@ public:
     void lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict);
     // `a.push(v)` / `a.pop()` on an Array at the bare array shape with room
     // (il_elem_lowering.cpp); anything else branches to `miss`. The result
-    // is the call's.
-    Value* lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss);
+    // is the call's. `known_number`: `val` is a Number (array.push with
+    // kStoreNumber), so neither the NUMBERS bit nor the barrier is touched.
+    Value* lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss, bool known_number = false);
     Value* lower_array_pop(Builder& b, Value* ptr, BasicBlock* miss);
     // An array literal's element `k` (key constant `key_index`) defined on
     // the fresh array, bronze_prop_define behind it (`site` or null).
