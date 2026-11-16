@@ -1,0 +1,22 @@
+bound TypeError
+bound-named TypeError
+arrow TypeError
+method TypeError
+async TypeError
+generator TypeError
+object TypeError
+number TypeError
+string TypeError
+undefined TypeError
+builtin-method TypeError
+primitive-proto TypeError
+undefined-proto TypeError
+null-proto defined function
+true
+proxy defined function
+prototype reads 1
+null defined function
+true true
+null construct TypeError
+true true
+42 7 true true hello 42

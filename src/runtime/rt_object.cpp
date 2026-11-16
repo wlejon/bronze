@@ -297,6 +297,63 @@ void rtForgetShapeKeyLists() noexcept {
     t_shapeKeyLists = nullptr;
 }
 
+namespace {
+
+// 13.3.7.2 GetSuperConstructor: the ACTIVE FUNCTION's [[Prototype]]. That is
+// the heritage `class.extend` linked (fn->parent), or whatever a program put
+// there since with `Object.setPrototypeOf` — never the heritage expression
+// evaluated again. A function that was never linked has %Function.prototype%,
+// which is no constructor: `class extends null` constructs through here.
+Value superConstructorOf(uint64_t activeBits) {
+    const Value active(activeBits);
+    if (!active.isObject() || active.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        fatal("internal: super() whose active function is not a function");
+    }
+    const Value parent = active.asObject<FunctionHeader>()->parent;
+    return parent.isUndefined() ? rtFunctionPrototypeObject() : parent;
+}
+
+uint64_t throwSuperNotConstructor(Value base) {
+    return rtThrowTypeError("Super constructor " +
+                            std::string(base.isNull() ? "null" : valueKindName(base)) +
+                            " is not a constructor")
+        .rawBits();
+}
+
+// 13.3.7.1 step 6, Construct(base, args, NewTarget), on the receiver this
+// constructor already allocated: a proxy's `construct` trap (whose object
+// replaces the receiver), a bound function's target with the bound arguments
+// first (10.4.1.2; [[BoundThis]] is ignored), or the base function run on the
+// receiver. The value is the receiver from here on (step 7, BindThisValue):
+// the OBJECT the base returned when it returned one — a base constructor may
+// hand back something other than the instance it was given, and
+// `customElements.define` upgrading an element obtained earlier is exactly
+// that — and the receiver it was given otherwise. `argv` is the caller's
+// rooted block (or an array's elements, read before anything allocates).
+uint64_t superConstruct(Rooted<Value>& base, Rooted<Value>& self, uint32_t argc, const uint64_t* argv) {
+    // A bound function's constructibility is its target's (10.4.1.2), so it
+    // is unwrapped before the test.
+    if (Value target, boundThis, boundArgs; rtBoundFunctionState(base.get(), target, boundThis, boundArgs)) {
+        (void)boundThis;
+        Rooted<Value> targetRoot{target};
+        Rooted<Value> argsRoot{boundArgs};
+        const uint32_t bound = argsRoot.get().asObject<ArrayHeader>()->length;
+        RootedBlock block(bound + argc);
+        for (uint32_t i = 0; i < bound; ++i) block.set(i, argsRoot.get().asObject<ArrayHeader>()->getElem(i));
+        for (uint32_t i = 0; i < argc; ++i) block.set(bound + i, Value(argv[i]));
+        return superConstruct(targetRoot, self, bound + argc, block.data());
+    }
+    if (!rtIsConstructorValue(base.get())) return throwSuperNotConstructor(base.get());
+    if (base.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtProxyConstruct(base.get(), argc, argv, NewTargetScope::current());
+    }
+    auto* fn = base.get().asObject<FunctionHeader>();
+    const Value result = fn->call(self.get(), argc, const_cast<Value*>(reinterpret_cast<const Value*>(argv)));
+    return result.isObject() ? result.rawBits() : self.get().rawBits();
+}
+
+}  // namespace
+
 extern "C" {
 
 uint64_t bronze_create_object() {
@@ -373,20 +430,42 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     }
     Rooted<Value> derived{derivedVal};
     Rooted<Value> base{baseVal};
+    // 15.7.14 step 8.b: `extends null`. The instances' chain ends at the
+    // derived prototype, and the constructor keeps %Function.prototype% as its
+    // [[Prototype]] (fn->parent stays empty), which is no constructor: a
+    // `super()` in it throws, and a constructor that returns an object of its
+    // own is the way to build one.
+    if (baseVal.isNull()) {
+        ObjectHeader* proto = ObjectHeader::create(
+            rtHeap(), rtArena(),
+            rtNewRootShape(Value::fromNull(), rtPrototypeInlineSlots(derived.get().asObject<FunctionHeader>())));
+        proto->header.flags = HeapKind::Plain;
+        Rooted<Value> protoRoot{Value::fromObject(proto)};
+        FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
+        fn->prototype = protoRoot.get();
+        fn->instance_shape = rtNewRootShape(protoRoot.get(), rtInstanceInlineSlots(fn));
+        rtInstallPrototypeConstructor(derived);
+        return;
+    }
+    // Step 8.e: anything else must be a constructor — an arrow, a method, an
+    // async function, a non-constructor builtin and every primitive are
+    // refused here, at the definition.
+    if (!rtIsConstructorValue(baseVal)) {
+        rtThrowTypeError("Class extends value " +
+                         std::string(baseVal.isUndefined() ? "undefined" : valueKindName(baseVal)) +
+                         " is not a constructor or null");
+        return;
+    }
     if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         // 15.7.14 ClassDefinitionEvaluation over a PROXY superclass: step 8.e
-        // requires IsConstructor (a proxy has [[Construct]] exactly when its
-        // target has, 10.5.13), and step 8.g reads `Get(superclass,
+        // (IsConstructor, above: a proxy has [[Construct]] exactly when its
+        // target has, 10.5.13) holds, and step 8.g reads `Get(superclass,
         // "prototype")` — through the proxy's [[Get]], so a `get` trap sees
         // it — which must be an object or null (8.h). The statics chain links
         // to the proxy ITSELF (step 6: it is the derived constructor's
         // [[Prototype]]), so an inherited static resolves through its traps;
         // none of the function-specific realization below applies, because
         // the proxy has no prototype slot or statics of its own.
-        if (!base.get().asObject<ProxyHeader>()->constructible.asBool()) {
-            rtThrowTypeError("a class can only extend another class or a constructor function");
-            return;
-        }
         Rooted<Value> key{rtMakeString("prototype")};
         Rooted<Value> protoParent{rtProxyGet(base.get(), key.get(), base.get())};
         if (!protoParent.get().isObject() && !protoParent.get().isNull()) {
@@ -407,9 +486,16 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         rtInstallPrototypeConstructor(derived);
         return;
     }
-    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        rtThrowTypeError("Superclass expression is not a constructor");
-        return;
+    // Step 8.g-8.h: Get(superclass, "prototype"), an object or null. A bound
+    // function is a constructor with no `prototype` of its own, and its
+    // undefined is refused here like a primitive is.
+    {
+        Rooted<Value> key{rtMakeString("prototype")};
+        const Value protoParent = rtGetWithReceiver(base, key, base);
+        if (!protoParent.isObject() && !protoParent.isNull()) {
+            rtThrowTypeError("Class extends value does not have valid prototype property");
+            return;
+        }
     }
     // A native base whose instances bronze cannot allocate from NewTarget is
     // refused BY NAME here, before a single link is made — the alternative is a
@@ -826,70 +912,44 @@ uint64_t bronze_get_new_target() {
     return NewTargetScope::current().rawBits();
 }
 
-// The value of `super(...)` is the receiver the derived constructor continues
-// with (13.3.7.1 step 7, BindThisValue): the OBJECT the base returned when it
-// returned one — a base constructor may hand back something other than the
-// instance it was given, and `customElements.define` upgrading an element
-// obtained earlier is exactly that — and the receiver it was given otherwise.
-// Lowering stores this result into the derived constructor's `this` binding,
-// so what leaves here is the whole of the rebinding.
-uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc,
+// `super(...)`. Lowering stores the result into the derived constructor's
+// `this` binding, so what leaves here is the whole of the rebinding.
+uint64_t bronze_super_call(uint64_t activeBits, uint64_t thisBits, uint32_t argc,
                            const uint64_t* argvBits) {
     recordHelperCall("bronze_super_call");
-    Value baseVal(baseBits);
-    if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        // 13.3.7.1 step 6: `Construct(func, argList, newTarget)` on a proxy
-        // base — its `construct` trap, or the forwarded construction — with
-        // the new.target of the `new` that reached this `super()`. The object
-        // it returns IS the receiver from here on (step 7), so the instance
-        // the derived constructor allocated ahead of time is simply dropped.
-        return rtProxyConstruct(baseVal, argc, argvBits, NewTargetScope::current());
-    }
-    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
-    }
-    auto* fn = baseVal.asObject<FunctionHeader>();
+    Rooted<Value> base{superConstructorOf(activeBits)};
     // Rooted, because it is handed back AFTER the call — which allocates —
     // and the caller's own copy is the one the collector forwarded, not this.
     Rooted<Value> self{Value(thisBits)};
-    const Value result =
-        fn->call(self.get(), argc, const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
-    return result.isObject() ? result.rawBits() : self.get().rawBits();
+    return superConstruct(base, self, argc, argvBits);
 }
 
-uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t argsBits) {
+uint64_t bronze_super_call_spread(uint64_t activeBits, uint64_t thisBits, uint64_t argsBits) {
     recordHelperCall("bronze_super_call_spread");
-    Value baseVal(baseBits);
-    Value argsVal(argsBits);
-    if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        // The proxy arm of `bronze_super_call`, with the spread list copied
-        // into a rooted block first: the construction allocates before it
-        // reads its arguments, and the array's storage is not a root.
-        Rooted<Value> argsRoot{argsVal};
-        const uint32_t count =
-            argsVal.isObject() && argsVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array
-                ? argsVal.asObject<ArrayHeader>()->length
-                : 0;
-        RootedBlock block(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            block.set(i, argsRoot.get().asObject<ArrayHeader>()->getElem(i));
-        }
-        return rtProxyConstruct(baseVal, count, block.data(), NewTargetScope::current());
-    }
-    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
-    }
-    auto* fn = baseVal.asObject<FunctionHeader>();
+    Rooted<Value> base{superConstructorOf(activeBits)};
     Rooted<Value> self{Value(thisBits)};
-    Value result;
+    const Value argsVal(argsBits);
     if (!argsVal.isObject() || argsVal.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
-        result = fn->call(self.get(), 0, nullptr);
-    } else {
-        auto* arr = argsVal.asObject<ArrayHeader>();
-        result = fn->call(self.get(), arr->length, const_cast<Value*>(HeapValue::values(arr->elementsData())));
+        return superConstruct(base, self, 0, nullptr);
     }
-    // The same receiver rule as `bronze_super_call`, rooted for the same reason.
-    return result.isObject() ? result.rawBits() : self.get().rawBits();
+    auto* arr = argsVal.asObject<ArrayHeader>();
+    if (base.get().isObject() && base.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        Value target, boundThis, boundArgs;
+        if (!rtBoundFunctionState(base.get(), target, boundThis, boundArgs)) {
+            // The common case, an implicit constructor forwarding its rest
+            // array: the elements are handed over in place, read by the callee's
+            // prologue before it can allocate.
+            return superConstruct(base, self, arr->length,
+                                  reinterpret_cast<const uint64_t*>(HeapValue::values(arr->elementsData())));
+        }
+    }
+    // A proxy or a bound base allocates before it reads its arguments, and the
+    // array's storage is not a root: copied into a rooted block first.
+    Rooted<Value> argsRoot{argsVal};
+    const uint32_t count = arr->length;
+    RootedBlock block(count);
+    for (uint32_t i = 0; i < count; ++i) block.set(i, argsRoot.get().asObject<ArrayHeader>()->getElem(i));
+    return superConstruct(base, self, count, block.data());
 }
 
 // 9.1.1.3.4 GetThisBinding on a derived constructor's environment before
@@ -909,9 +969,9 @@ uint64_t bronze_this_unbound() {
 // only BindThisValue (step 7) throws. The instance this constructor already
 // has is never handed to the base a second time. The new.target comes from
 // the lowering, because a `super()` in an arrow runs under the arrow call's.
-uint64_t bronze_super_rebind(uint64_t baseBits, uint64_t argsBits, uint64_t newTargetBits) {
+uint64_t bronze_super_rebind(uint64_t activeBits, uint64_t argsBits, uint64_t newTargetBits) {
     recordHelperCall("bronze_super_rebind");
-    Rooted<Value> base{Value(baseBits)};
+    Rooted<Value> base{superConstructorOf(activeBits)};
     Rooted<Value> args{Value(argsBits)};
     Rooted<Value> newTarget{Value(newTargetBits)};
     if (!base.get().isObject() ||
@@ -936,11 +996,11 @@ uint64_t bronze_super_rebind(uint64_t baseBits, uint64_t argsBits, uint64_t newT
 // base is called on the receiver exactly as `bronze_super_call_spread` calls
 // it, with the constructor's new.target current again for the call: the
 // arrow was entered as an ordinary call, which made it undefined.
-uint64_t bronze_super_call_lexical(uint64_t baseBits, uint64_t thisBits, uint64_t argsBits,
+uint64_t bronze_super_call_lexical(uint64_t activeBits, uint64_t thisBits, uint64_t argsBits,
                                    uint64_t newTargetBits) {
     recordHelperCall("bronze_super_call_lexical");
     NewTargetScope scope{Value(newTargetBits)};
-    return bronze_super_call_spread(baseBits, thisBits, argsBits);
+    return bronze_super_call_spread(activeBits, thisBits, argsBits);
 }
 
 // 10.2.2 [[Construct]] step 10.c: a derived constructor's `return` of a value

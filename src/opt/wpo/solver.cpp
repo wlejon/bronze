@@ -599,6 +599,8 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         }
         case Op::SuperCall: case Op::SuperCallSpread: {
+            for (ObjId o : op(inst, 0).objs) depend(o, kKeyProto);
+            const AVal base = prototypesOf(op(inst, 0));
             CallArgs a;
             AVal spread;
             if (inst.op == Op::SuperCall) {
@@ -610,7 +612,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             AVal foreign;
             // The result is the receiver from here on, which keeps its
             // escaped objects as the `this` parameter does.
-            setResult(inst, superCall(op(inst, 0), op(inst, 1), a, foreign), true);
+            setResult(inst, superCall(base, op(inst, 1), a, foreign), true);
             if (inst.operands[1] == thisParam(curFn_) && fns_[curFn_].superForeign[inst.result].join(foreign)) {
                 enqueueUsers(curFn_, inst.result);
             }

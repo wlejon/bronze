@@ -1,0 +1,15 @@
+evals after definition 1
+A0 1 D>A.who D>A.sw
+A1 1 D>A.who D>A.sw
+A2 1 D>A.who D>A.sw
+evals after constructions 1
+A7 A8 evals 2
+Af true
+B5 true true D>A.who D>B.sw
+B9
+D>B.who
+Ag Ah evals 3
+Bg Bh
+A.sw A.sw evals 4
+B0B0,A1A1,B2B2 evals 7
+N true

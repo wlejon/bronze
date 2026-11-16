@@ -490,7 +490,10 @@ ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, 
                     }
                     case il::Op::SuperCall: {
                         uint32_t g = 0;
-                        if (isAlias(a0) || otherOperandsAlias(2) || !single(solver_.value(fnIdx, a0), g)) break;
+                        if (isAlias(a0) || otherOperandsAlias(2) ||
+                            !single(solver_.prototypesOf(solver_.value(fnIdx, a0)), g)) {
+                            break;
+                        }
                         std::vector<il::ValueId> cs;
                         if (!dynamicSeeds(g, inst.operands[1], 2, cs)) break;
                         handled = true;

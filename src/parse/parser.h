@@ -74,6 +74,9 @@ private:
     };
     SuperBindingKind superBindingKind_ = SuperBindingKind::None;
     std::string currentClassSuper_;
+    // The home-binding suffix of the derived class whose body is being
+    // parsed (ast.h ClassDecl::homeSuffix).
+    std::string currentClassHome_;
     const ast::Expr* currentClassSuperExpr_ = nullptr;
     bool inClassMethod_ = false;
     // For object literal methods: the name of the synthetic closure slot
@@ -267,7 +270,8 @@ private:
     ast::ExprPtr parseClassExpr();
     bool parseClassBodyCommon(const std::string& name, const ast::Expr* superClass,
                               const std::string& superName,
-                              std::vector<ast::ClassMethod>& methods, Span span);
+                              std::vector<ast::ClassMethod>& methods, Span span,
+                              std::string& homeSuffix);
     // One class body's private names. ECMA-262 15.7.1 states BOTH private-name
     // early errors over the whole ClassBody rather than over one element: a
     // duplicate is a duplicate wherever the two spellings are, and a reference

@@ -511,6 +511,26 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     for (const auto& name : ast::getScopeDeclarations(topLevelStmts)) addSlot(name);
     for (const auto& name : ast::getHoistedVarDeclarations(topLevelStmts)) addSlot(name);
     addSlot("this");
+    // The home bindings (ast.h kClassCtorBinding) of every derived class the
+    // top level defines itself, outside any block or loop: such a definition
+    // runs once per record, so the record can hold its pair, and a method
+    // reading them reads the module record like any module function
+    // (lower_class.cpp).
+    auto addHome = [&](const std::string& suffix) {
+        if (suffix.empty()) return;
+        moduleHomeSuffixes_.insert(suffix);
+        for (const char* prefix : {ast::kClassCtorBinding, ast::kClassProtoBinding}) {
+            std::string name = prefix + suffix;
+            if (slotted.insert(name).second) moduleEnvSlots_.push_back(std::move(name));
+        }
+    };
+    for (const ast::Stmt* stmt : topLevelStmts) {
+        if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(stmt)) {
+            addHome(cd->homeSuffix);
+        } else if (const auto* vd = dynamic_cast<const ast::VarDecl*>(stmt)) {
+            if (const auto* ce = dynamic_cast<const ast::ClassExpr*>(vd->init.get())) addHome(ce->homeSuffix);
+        }
+    }
     if (moduleEnvSlots_.empty()) return;
 
     EnvScopeInfo info;

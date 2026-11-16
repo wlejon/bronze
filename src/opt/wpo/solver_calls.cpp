@@ -225,6 +225,16 @@ AVal Solver::construct(const AVal& callee, const CallArgs& args, int depth) {
     return out;
 }
 
+AVal Solver::prototypesOf(const AVal& active) const {
+    AVal out;
+    if (active.topObj) out.join(AVal::top());
+    for (ObjId o : active.objs) {
+        if (objs_[o].escaped && !opts_.predict) out.join(AVal::top());
+        out.join(objs_[o].proto);
+    }
+    return out;
+}
+
 AVal Solver::superCall(const AVal& base, const AVal& self, const CallArgs& args, AVal& foreign) {
     // 13.3.7.1 step 7: the receiver from here on is the object the base
     // constructor returned when it returned one, and `self` otherwise.
@@ -268,6 +278,12 @@ il::ValueId Solver::thisParam(uint32_t fn) const {
 AVal Solver::directCall(const il::Instruction& inst) {
     const uint32_t g = inst.calleeIndex;
     const il::Function& fn = mod_.functions[g];
+    if (fn.isExternal && fn.name == "bronze_get_prototype_of" && inst.operands.size() == 1) {
+        // A `super` member's lookup start: the home object's [[Prototype]].
+        const AVal& home = op(inst, 0);
+        for (ObjId o : home.objs) depend(o, kKeyProto);
+        return prototypesOf(home);
+    }
     if (fn.isExternal) {
         const uint32_t why = internReason("passed to runtime helper " + fn.name);
         for (size_t i = 0; i < inst.operands.size(); ++i) escape(op(inst, i), why);

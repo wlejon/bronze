@@ -423,6 +423,7 @@ bool canonicalizeBundledClassAliases(ModuleFile& file, DiagnosticSink& diags) {
         cd->span = vd1->span;
         cd->name = innerName;
         cd->superName = ce->superName;
+        cd->homeSuffix = ce->homeSuffix;
         cd->superClass = std::move(ce->superClass);
         cd->methods = std::move(ce->methods);
         if (ce->name.empty()) {

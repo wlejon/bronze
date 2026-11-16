@@ -162,7 +162,7 @@ enum class Op : uint8_t {
     // getter would otherwise run with the prototype as its receiver. No inline
     // cache: the receiver and the holder are different objects, and an entry
     // describes one shape.
-    SuperGet,   // a = super.get proto, <key_const_index>, thisArg
+    SuperGet,   // a = super.get lookupStart, <key_const_index>, thisArg
     // `immI32` is the strict flag, on the same rule prop.set below carries one:
     // `super.k = v` is an ordinary Reference, so a refused Set raises out of it
     // in strict code and is discarded in sloppy code.
@@ -383,8 +383,10 @@ enum class Op : uint8_t {
     DynamicCallSpread,  // a = call.dynamic.spread callee, thisArg, args
     MethodCall,         // a = method.call thisArg, <key_const_index>, <ic_site_index>, args...
     MethodCallSpread,   // a = method.call.spread thisArg, <key_const_index>, <ic_site_index>, argsArr
-    SuperCall,          // a = call.super base, thisArg, args...
-    SuperCallSpread,    // a = call.super.spread base, thisArg, args
+    // `super(...)`: `activeFn` is the derived constructor; the base is its
+    // [[Prototype]] when the call runs (13.3.7.2 GetSuperConstructor).
+    SuperCall,          // a = call.super activeFn, thisArg, args...
+    SuperCallSpread,    // a = call.super.spread activeFn, thisArg, args
     // 13.2.8.4 GetTemplateObject. The pair is a CACHE, not one instruction
     // split in two: the specification keeps a template object per SITE, so
     // `f()===f()` holds for a tag called twice from one `` t`x` ``, and the

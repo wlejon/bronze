@@ -202,7 +202,6 @@ public:
             return s;
         }
         if (const auto* sc = dynamic_cast<const ast::SuperCall*>(&e)) {
-            if (sc->baseExpr) s = expr(*sc->baseExpr, s, depth);
             s = exprs(sc->args, s, depth);
             recordSuperCall(sc, s);
             return Bind::Bound;

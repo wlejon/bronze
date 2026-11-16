@@ -88,9 +88,14 @@ std::vector<Lowerer::PrivateElement> Lowerer::collectPrivateElements(
     return elements;
 }
 
-bool Lowerer::openClassScope(const std::string& className,
+bool Lowerer::openClassScope(const std::string& className, const std::string& homeSuffix,
                             const std::vector<PrivateElement>& elements, il::Function& ilFn) {
     std::vector<std::string> slots;
+    const bool derived = !homeSuffix.empty();
+    if (derived) {
+        slots.push_back(ast::kClassCtorBinding + homeSuffix);
+        slots.push_back(ast::kClassProtoBinding + homeSuffix);
+    }
     if (!className.empty()) slots.push_back(className);
     for (const auto& el : elements) {
         slots.push_back(privateTableSlot(el.name));
@@ -103,6 +108,7 @@ bool Lowerer::openClassScope(const std::string& className,
         }
     }
     pushSyntheticEnv(slots, ilFn);
+    envScopes_.back().homeOnly = derived && className.empty() && elements.empty();
     privateScopes_.push_back(elements);
 
     // The tables themselves, minted HERE — once per evaluation of this class,

@@ -478,13 +478,16 @@ public:
         Walker::visit(n);
     }
 
-    void visit(const ast::ClassDecl& n) override {
-        superClass(n.superClass.get(), !n.name.empty());
-        for (const auto& m : n.methods) walkMember(m);
-    }
-    void visit(const ast::ClassExpr& n) override {
-        superClass(n.superClass.get(), !n.name.empty());
-        for (const auto& m : n.methods) walkMember(m);
+    void visit(const ast::ClassDecl& n) override { walkClass(n.name, n.superName, n.superClass.get(), n.methods); }
+    void visit(const ast::ClassExpr& n) override { walkClass(n.name, n.superName, n.superClass.get(), n.methods); }
+
+    void walkClass(const std::string& name, const std::string& superName, const ast::Expr* superExpr,
+                   const std::vector<ast::ClassMethod>& methods) {
+        superClass(superExpr, !name.empty());
+        const auto* id = classIdent(superExpr);
+        heritage_.push_back(id != nullptr ? id->name : superName);
+        for (const auto& m : methods) walkMember(m);
+        heritage_.pop_back();
     }
 
     // `super(...)` names the base in order to CONSTRUCT it — the very site this
@@ -500,10 +503,9 @@ public:
         if (n.propertyExpr) {
             n.propertyExpr->accept(*this);
         }
-        if (revealsConstructor(n.property)) {
-            const auto* id = classIdent(n.baseExpr.get());
-            poison(id != nullptr ? id->name : n.baseName,
-                   "a property that can yield the constructor is read off the class");
+        if (revealsConstructor(n.property) && !n.fromObjectLiteral && !heritage_.empty() &&
+            !heritage_.back().empty()) {
+            poison(heritage_.back(), "a property that can yield the constructor is read off the class");
         }
         if (putsConstructorInCirculation(n.property)) {
             setValueEscape("a constructor is read off a value (`super." + n.property + "`)");
@@ -517,6 +519,10 @@ public:
     }
 
 private:
+    // The heritage binding of each class being walked, innermost last: what a
+    // `super.constructor` of its methods can yield.
+    std::vector<std::string> heritage_;
+
     const ast::Ident* classIdent(const ast::Expr* e) const {
         const auto* id = dynamic_cast<const ast::Ident*>(e);
         return id != nullptr && table_.isClassName(id->name) ? id : nullptr;

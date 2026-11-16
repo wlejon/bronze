@@ -218,8 +218,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         auto res = std::make_unique<SuperCall>();
         res->span = sc->span;
         res->parenthesized = sc->parenthesized;
-        res->baseName = sc->baseName;
-        if (sc->baseExpr) res->baseExpr = cloneExpr(*sc->baseExpr, origins);
+        res->homeBinding = sc->homeBinding;
         for (const auto& a : sc->args) res->args.push_back(cloneExpr(*a, origins));
         return res;
     }
@@ -227,8 +226,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         auto res = std::make_unique<SuperMember>();
         res->span = sm->span;
         res->parenthesized = sm->parenthesized;
-        res->baseName = sm->baseName;
-        if (sm->baseExpr) res->baseExpr = cloneExpr(*sm->baseExpr, origins);
+        res->homeBinding = sm->homeBinding;
         res->property = sm->property;
         if (sm->propertyExpr) res->propertyExpr = cloneExpr(*sm->propertyExpr, origins);
         res->fromStatic = sm->fromStatic;
@@ -308,6 +306,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         res->parenthesized = ce->parenthesized;
         res->name = ce->name;
         res->superName = ce->superName;
+        res->homeSuffix = ce->homeSuffix;
         if (ce->superClass) res->superClass = cloneExpr(*ce->superClass, origins);
         for (const auto& m : ce->methods) res->methods.push_back(cloneClassMethod(m, origins));
         return res;
@@ -462,6 +461,7 @@ StmtPtr cloneStmtNode(const Stmt& stmt, CloneOrigins* origins) {
         res->span = cd->span;
         res->name = cd->name;
         res->superName = cd->superName;
+        res->homeSuffix = cd->homeSuffix;
         if (cd->superClass) res->superClass = cloneExpr(*cd->superClass, origins);
         for (const auto& m : cd->methods) res->methods.push_back(cloneClassMethod(m, origins));
         return res;

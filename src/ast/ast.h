@@ -347,34 +347,44 @@ struct ImportMetaExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// The hidden bindings of a derived class (lower_class.cpp), named so no source
+// can spell them: the constructor, which is the active function of every
+// `super(...)` and the home object of a static element, and its `prototype`,
+// the home object of an instance element. Each class's pair is its own: the
+// prefix plus the class's `homeSuffix` (ClassDecl, ClassExpr), so a class at
+// a module's top level can keep them in the module record (lower.cpp
+// planModuleEnv) and every other in its class scope.
+inline constexpr const char* kClassCtorBinding = "%class.ctor";
+inline constexpr const char* kClassProtoBinding = "%class.proto";
+
 // `super(...)` — the parent constructor run on the current receiver, and
-// `super.m` — a lookup that starts at the parent prototype but is called with
-// the current receiver. Both carry the parent class's NAME, resolved by the
-// parser from the enclosing class: the home object is a compile-time constant
-// per method, not a runtime lookup. Carrying the name is also what makes the
-// parent visible to capture analysis, which otherwise sees a method body that
-// mentions no such variable.
+// `super.m` — a lookup that starts at the home object's [[Prototype]] but is
+// called with the current receiver. Neither names the heritage: 15.7.14
+// evaluates it once, at class definition, and 13.3.7.1 finds the parent at
+// run time — GetSuperConstructor is the active function's [[Prototype]], and a
+// member lookup starts at HomeObject.[[GetPrototypeOf]](). What both carry is
+// `homeBinding`, the binding that holds that function or home object, which is
+// also what makes it visible to capture analysis: a method body mentions no
+// such variable itself.
 struct SuperCall final : Expr {
-    std::string baseName;
-    ExprPtr baseExpr;
+    // Always kClassCtorBinding + the class's homeSuffix.
+    std::string homeBinding;
     std::vector<ExprPtr> args;
     void accept(Visitor& v) const override;
 };
 
 struct SuperMember final : Expr {
-    std::string baseName;
-    ExprPtr baseExpr;
+    // kClassProtoBinding for an instance element of a class, kClassCtorBinding
+    // for a static one (each + the class's homeSuffix), the literal's own home binding in an object-literal
+    // method.
+    std::string homeBinding;
     std::string property;
     ExprPtr propertyExpr;
     // Written in a STATIC element — a static method, accessor, field
-    // initializer or block. The lookup then starts at the heritage itself,
-    // the constructor's [[Prototype]], where an instance element's starts at
-    // its `prototype` (13.3.7.1: HomeObject.[[GetPrototypeOf]](), and the
-    // home object of a static element is the constructor).
+    // initializer or block, whose home object is the constructor.
     bool fromStatic = false;
-    // Written inside an object-literal method. The lookup starts at the
-    // runtime prototype of the literal itself (dynamic HomeObject.[[GetPrototypeOf]]()),
-    // and baseName is the closure-environment slot holding the home object.
+    // Written inside an object-literal method, whose home object is the
+    // literal itself.
     bool fromObjectLiteral = false;
     void accept(Visitor& v) const override;
 };
@@ -788,6 +798,9 @@ struct ClassDecl final : Stmt {
     std::string name;
     std::string superName;  // empty when the class has no `extends`
     ExprPtr superClass;
+    // A derived class's own suffix to its home bindings (kClassCtorBinding);
+    // empty when there is no `extends`.
+    std::string homeSuffix;
     std::vector<ClassMethod> methods;
     void accept(Visitor& v) const override;
 };
@@ -796,6 +809,9 @@ struct ClassExpr final : Expr {
     std::string name;       // empty when anonymous
     std::string superName;  // empty when no extends
     ExprPtr superClass;
+    // A derived class's own suffix to its home bindings (kClassCtorBinding);
+    // empty when there is no `extends`.
+    std::string homeSuffix;
     std::vector<ClassMethod> methods;
     void accept(Visitor& v) const override;
 };

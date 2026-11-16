@@ -393,7 +393,7 @@ ExprPtr Parser::parseSuper() {
             if (!member) return nullptr;
             auto mem = std::make_unique<SuperMember>();
             mem->span = {kw.span.begin, member->span.end};
-            mem->baseName = currentHomeObjectName_;
+            mem->homeBinding = currentHomeObjectName_;
             mem->property = std::string(member->text);
             mem->fromObjectLiteral = true;
             return mem;
@@ -405,7 +405,7 @@ ExprPtr Parser::parseSuper() {
             }
             auto mem = std::make_unique<SuperMember>();
             mem->span = {kw.span.begin, previous().span.end};
-            mem->baseName = currentHomeObjectName_;
+            mem->homeBinding = currentHomeObjectName_;
             mem->propertyExpr = std::move(keyExpr);
             mem->fromObjectLiteral = true;
             return mem;
@@ -423,8 +423,7 @@ ExprPtr Parser::parseSuper() {
         advance();
         auto call = std::make_unique<SuperCall>();
         call->span.begin = kw.span.begin;
-        call->baseName = currentClassSuper_;
-        if (currentClassSuperExpr_) call->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
+        call->homeBinding = ast::kClassCtorBinding + currentClassHome_;
         if (!parseArgumentList(call->args)) return nullptr;
         call->span.end = peek().span.begin;
         return call;
@@ -434,8 +433,7 @@ ExprPtr Parser::parseSuper() {
         if (!member) return nullptr;
         auto mem = std::make_unique<SuperMember>();
         mem->span = {kw.span.begin, member->span.end};
-        mem->baseName = currentClassSuper_;
-        if (currentClassSuperExpr_) mem->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
+        mem->homeBinding = (inStaticElement_ ? ast::kClassCtorBinding : ast::kClassProtoBinding) + currentClassHome_;
         mem->property = std::string(member->text);
         mem->fromStatic = inStaticElement_;
         return mem;
@@ -447,8 +445,7 @@ ExprPtr Parser::parseSuper() {
         }
         auto mem = std::make_unique<SuperMember>();
         mem->span = {kw.span.begin, previous().span.end};
-        mem->baseName = currentClassSuper_;
-        if (currentClassSuperExpr_) mem->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
+        mem->homeBinding = (inStaticElement_ ? ast::kClassCtorBinding : ast::kClassProtoBinding) + currentClassHome_;
         mem->propertyExpr = std::move(keyExpr);
         mem->fromStatic = inStaticElement_;
         return mem;

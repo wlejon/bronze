@@ -261,7 +261,6 @@ public:
         }
 
         if (const auto* sup = dynamic_cast<const ast::SuperMember*>(n.callee.get())) {
-            if (sup->baseExpr) consume(*sup->baseExpr);
             if (sup->propertyExpr) consume(*sup->propertyExpr);
             return;
         }
@@ -364,11 +363,10 @@ public:
 
     void visit(const ast::SuperMember& n) override {
         if (!consumed_) {
-            if (table_.isMethodName(n.property) && !isBuiltinObject(n.baseExpr.get())) {
+            if (table_.isMethodName(n.property)) {
                 out_.addDeclarations(table_, n.property, "read as a value rather than called");
             }
         }
-        if (n.baseExpr) consume(*n.baseExpr);
         if (n.propertyExpr) consume(*n.propertyExpr);
     }
 

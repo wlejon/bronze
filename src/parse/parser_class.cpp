@@ -16,6 +16,7 @@
 // token pre-scan below: it is not an optimisation, it is the only order in
 // which the rule can be checked in one pass.
 
+#include <atomic>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -190,7 +191,8 @@ static std::string superExpressionName(const Expr* expr) {
 // diagnosed by name here rather than mis-parsed as a method.
 bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* superClass,
                                   const std::string& superName,
-                                  std::vector<ast::ClassMethod>& methods, Span span) {
+                                  std::vector<ast::ClassMethod>& methods, Span span,
+                                  std::string& homeSuffix) {
     // Before the brace is consumed: the scan indexes tokens, and the body's
     // own `{` is where it starts.
     // The scope is popped however the body is left. Every failure path below
@@ -210,11 +212,18 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     // the only place that knows which class that is.
     const SuperBindingKind savedSuperKind = superBindingKind_;
     const std::string savedSuper = currentClassSuper_;
+    const std::string savedHome = currentClassHome_;
     const ast::Expr* savedSuperExpr = currentClassSuperExpr_;
     const bool savedInMethod = inClassMethod_;
     const bool savedInStatic = inStaticElement_;
     currentClassSuper_ = superName;
     currentClassSuperExpr_ = superClass;
+    // Process-wide, so no two classes of one compile share a name even when
+    // their modules' top levels are lowered together.
+    static std::atomic<uint32_t> classHomes{0};
+    homeSuffix.clear();
+    if (!superName.empty() || superClass != nullptr) homeSuffix = "#" + std::to_string(classHomes.fetch_add(1) + 1);
+    currentClassHome_ = homeSuffix;
     inClassMethod_ = true;
     superBindingKind_ = SuperBindingKind::Class;
 
@@ -655,6 +664,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     }
 
     currentClassSuper_ = savedSuper;
+    currentClassHome_ = savedHome;
     currentClassSuperExpr_ = savedSuperExpr;
     inClassMethod_ = savedInMethod;
     inStaticElement_ = savedInStatic;
@@ -698,8 +708,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
 
             auto call = std::make_unique<SuperCall>();
             call->span = span;
-            call->baseName = superName;
-            if (superClass) call->baseExpr = ast::cloneExpr(*superClass);
+            call->homeBinding = ast::kClassCtorBinding + homeSuffix;
             call->args.push_back(std::move(spread));
 
             auto stmt = std::make_unique<ExprStmt>();
@@ -787,7 +796,8 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         }
     }
 
-    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;
+    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span,
+                              cls->homeSuffix)) return nullptr;
     cls->span.end = previous().span.end;
     return cls;
 }
@@ -827,7 +837,8 @@ ast::ExprPtr Parser::parseClassExpr() {
         }
     }
 
-    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;
+    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span,
+                              cls->homeSuffix)) return nullptr;
     cls->span.end = previous().span.end;
     return cls;
 }

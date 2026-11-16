@@ -109,12 +109,27 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // direct calls and IC latching.
     const size_t nonModuleScopeThreshold =
         (moduleEnvScope_ != std::numeric_limits<size_t>::max()) ? 1 : 0;
-    bool needsEnv = true;
-    if (!isGenerator && !isAsync && nfeEnv == il::kNoValue &&
-        (!isArrow || (!ast::usesThis(params, body) && !ast::usesArguments(params, body))) &&
-        outerEnvDepth <= nonModuleScopeThreshold) {
-        needsEnv = false;
+    const bool envFreeKind =
+        !isGenerator && !isAsync && nfeEnv == il::kNoValue &&
+        (!isArrow || (!ast::usesThis(params, body) && !ast::usesArguments(params, body)));
+    // A derived class's home-only scope (EnvScopeInfo::homeOnly) is left out
+    // of a function that mentions neither of its bindings, when that is what
+    // stands between the function and the module function's convention: the
+    // body is lowered against the scopes outside the class, and the scope is
+    // put back below. A constructor (`super()`) or a method with a `super`
+    // member mentions one and keeps the record.
+    std::optional<EnvScopeInfo> skippedHomeScope;
+    if (envFreeKind && !envScopes_.empty() && envScopes_.back().homeOnly &&
+        outerEnvDepth - 1 <= nonModuleScopeThreshold) {
+        auto referenced = ast::getReferencedNames(body);
+        for (auto& name : ast::getParamReferencedNames(params)) referenced.insert(std::move(name));
+        const std::vector<std::string>& home = envScopes_.back().slotNames;  // its two slots
+        if (!referenced.contains(home[0]) && !referenced.contains(home[1])) {
+            skippedHomeScope = std::move(envScopes_.back());
+            envScopes_.pop_back();
+        }
     }
+    const bool needsEnv = !(envFreeKind && envScopes_.size() <= nonModuleScopeThreshold);
 
     newFn.needsEnv = needsEnv;
     if (needsEnv) {
@@ -255,6 +270,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // expression — so it leaves the stack the moment the body is lowered, and
     // before the balance check below counts what is left.
     if (nfeEnv != il::kNoValue) envScopes_.pop_back();
+    if (skippedHomeScope) envScopes_.push_back(std::move(*skippedHomeScope));
 
     strictCode_ = outerStrict;
     varBindings_ = std::move(outerVarBindings);

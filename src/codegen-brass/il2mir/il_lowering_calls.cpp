@@ -123,11 +123,11 @@ bool lower_call_instruction(
         }
 
         case BronzeOp::SuperCall: {
-            Value* base_ctor = ensure_type(get_opd(0), Type::i64());
+            Value* active_fn = ensure_type(get_opd(0), Type::i64());
             Value* this_val = ensure_type(get_opd(1), Type::i64());
             uint32_t argc = inst_ast.param_count;
             if (argc <= 16) {
-                std::vector<Value*> super_args = {base_ctor, this_val};
+                std::vector<Value*> super_args = {active_fn, this_val};
                 for (size_t a = 0; a < argc; ++a) {
                     super_args.push_back(ensure_type(get_opd(2 + a), Type::i64()));
                 }
@@ -138,16 +138,16 @@ bool lower_call_instruction(
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(2 + a));
                 Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                res_val = b.build_call("bronze_super_call_n", Type::i64(), {base_ctor, this_val, argc_val, argv});
+                res_val = b.build_call("bronze_super_call_n", Type::i64(), {active_fn, this_val, argc_val, argv});
             }
             break;
         }
 
         case BronzeOp::SuperCallSpread: {
-            Value* base_ctor = ensure_type(get_opd(0), Type::i64());
+            Value* active_fn = ensure_type(get_opd(0), Type::i64());
             Value* this_val = ensure_type(get_opd(1), Type::i64());
             Value* args = ensure_type(get_opd(2), Type::i64());
-            res_val = b.build_call("bronze_super_call_spread", Type::i64(), {base_ctor, this_val, args});
+            res_val = b.build_call("bronze_super_call_spread", Type::i64(), {active_fn, this_val, args});
             break;
         }
 

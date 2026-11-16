@@ -104,11 +104,9 @@ public:
         }
     }
     void visit(const ast::SuperCall& n) override {
-        if (n.baseExpr) n.baseExpr->accept(*this);
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::SuperMember& n) override {
-        if (n.baseExpr) n.baseExpr->accept(*this);
         if (n.propertyExpr) n.propertyExpr->accept(*this);
     }
     void visit(const ast::SpreadElement& n) override { n.argument->accept(*this); }

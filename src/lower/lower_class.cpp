@@ -76,6 +76,7 @@ Lowerer::Value Lowerer::emitPrototypeOf(Value ctorVal, il::Function& ilFn) {
 std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                                                   const ast::Expr* superClass,
                                                   const std::string& superName,
+                                                  const std::string& homeSuffix,
                                                   const std::vector<ast::ClassMethod>& methods,
                                                   Span span, il::Function& ilFn,
                                                   bool bindsOwnName,
@@ -128,10 +129,21 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // binding a declaration makes (`lowerClassDecl`) is not written until the
     // definition has been evaluated. `class C { static inst = new C(); }` read
     // `C` in its dead zone without it.
+    //
+    // A DERIVED class needs it for the bindings every `super` reads (ast.h
+    // kClassCtorBinding, kClassProtoBinding): the heritage is evaluated once,
+    // below, and never again. Unless the class is one the top level defines
+    // exactly once, whose pair the module record holds (planModuleEnv): a
+    // method reading the module record is still a function of no environment
+    // of its own, which is what lets a member call reach it directly.
     const bool hasPrivate = !privateElements.empty() || hasStaticBlock;
-    const bool hasScope =
-        hasPrivate || (!name.empty() && (bindsOwnName || hasStaticInitializer));
-    if (hasScope && !openClassScope(name, privateElements, ilFn)) return std::nullopt;
+    const bool bindsName = !name.empty() && (hasPrivate || bindsOwnName || hasStaticInitializer);
+    const bool homeInScope = hasSuper && !moduleHomeSuffixes_.contains(homeSuffix);
+    const bool hasScope = hasPrivate || homeInScope || bindsName;
+    if (hasScope && !openClassScope(bindsName ? name : std::string(), homeInScope ? homeSuffix : std::string(),
+                                    privateElements, ilFn)) {
+        return std::nullopt;
+    }
     // Everything from here on may leave through a `return std::nullopt`, and
     // the record must come off both stacks when it does.
     struct PrivateScopeGuard {
@@ -238,7 +250,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     }
 
     // `extends` REPLACES the prototype object (the prototype lives on the
-    // shape), so it has to be linked before a single method is stored.
+    // shape), so it has to be linked before a single method is stored. It is
+    // also where the heritage is checked (15.7.14 step 8: null, or a
+    // constructor whose `prototype` is an object or null).
     if (baseBoxed) {
         il::Instruction inst;
         inst.op = il::Op::ClassExtend;
@@ -246,6 +260,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         inst.result = il::kNoValue;
         inst.operands = {ctorVal->id, baseBoxed->id};
         emitInst(ilFn, inst);
+        // The home bindings, before any element can run. The prototype is
+        // the one ClassExtend made, and a class's `prototype` is neither
+        // writable nor configurable, so the binding never goes stale.
+        if (!writeHomeBinding(ast::kClassCtorBinding + homeSuffix, *ctorVal, span, ilFn) ||
+            !writeHomeBinding(ast::kClassProtoBinding + homeSuffix, emitPrototypeOf(*ctorVal, ilFn), span, ilFn)) {
+            return std::nullopt;
+        }
     }
 
     // A PRIVATE method is not stored on the prototype and a static block is
@@ -370,7 +391,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // 15.7.14 step 28: the class binding is initialized once every method is
     // defined and before any static element is evaluated, which is what makes
     // `static { C.#x = 1 }` reach the class by name.
-    if (hasScope && !name.empty() && !initClassNameBinding(name, *ctorVal, span, ilFn)) {
+    if (bindsName && !initClassNameBinding(name, *ctorVal, span, ilFn)) {
         return std::nullopt;
     }
 
@@ -447,7 +468,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
 }
 
 bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
-    auto ctorVal = lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span, ilFn);
+    auto ctorVal = lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->homeSuffix, cls->methods, cls->span, ilFn);
     if (!ctorVal) return false;
     if (!declareVariable(cls->name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
                          /*isVar=*/false, /*isInitialized=*/true, ctorVal->id, cls->span)) {
@@ -462,7 +483,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
 
 std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn,
                                                       const std::string& inferredName) {
-    return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span,
+    return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->homeSuffix, cls->methods, cls->span,
                       ilFn, /*bindsOwnName=*/true, inferredName);
 }
 
@@ -563,50 +584,50 @@ bool Lowerer::emitDerivedCtorReturn(Value val, const ast::ReturnStmt* site, il::
     return true;
 }
 
-// `super.m` — the lookup starts at the PARENT prototype, which is why it cannot
-// be written as `this.m`: inside an override, `this.m` would find the override
-// again and recurse forever. The parent is named at the site, so this is two
-// ordinary property reads.
+// The value of one of the bindings a `super` reads (ast.h `homeBinding`): a
+// home object, or the constructor that is the active function of `super()`.
+std::optional<Lowerer::Value> Lowerer::readHomeBinding(const std::string& binding, Span span,
+                                                       il::Function& ilFn) {
+    uint32_t depth = 0;
+    uint32_t index = 0;
+    if (!findEnclosingEnvVar(binding, depth, index)) {
+        diags_.error(span, "internal: no environment slot for '" + binding + "'");
+        return std::nullopt;
+    }
+    return emitEnvGet(depth, index, ilFn);
+}
+
+bool Lowerer::writeHomeBinding(const std::string& binding, Value val, Span span, il::Function& ilFn) {
+    uint32_t depth = 0;
+    uint32_t index = 0;
+    if (!findEnclosingEnvVar(binding, depth, index)) {
+        diags_.error(span, "internal: no environment slot for '" + binding + "'");
+        return false;
+    }
+    emitEnvSet(depth, index, val, ilFn);
+    return true;
+}
+
+// `super.m` — the lookup starts at the home object's [[Prototype]] (13.3.7.1
+// GetSuperBase), which is why it cannot be written as `this.m`: inside an
+// override, `this.m` would find the override again and recurse forever. Read
+// at the access and not at the class definition, so a program that moves the
+// home object's chain (`Object.setPrototypeOf(D.prototype, P)`) moves it too.
 std::optional<Lowerer::Value> Lowerer::lowerSuperLookupStart(const ast::SuperMember& sm,
                                                              il::Function& ilFn) {
-    if (sm.fromObjectLiteral) {
-        uint32_t depth = 0;
-        uint32_t index = 0;
-        if (!findEnclosingEnvVar(sm.baseName, depth, index)) {
-            diags_.error(sm.span, "internal: no environment slot for home object '" + sm.baseName + "'");
-            return std::nullopt;
-        }
-        auto homeVal = emitEnvGet(depth, index, ilFn);
-        const uint32_t protoFnIdx = registerExternalFunction(
-            "bronze_get_prototype_of", il::Type::Dynamic, {il::Type::Dynamic});
-        il::ValueId protoRes = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::Call;
-        inst.type = il::Type::Dynamic;
-        inst.result = protoRes;
-        inst.operands = {homeVal.id};
-        inst.calleeIndex = protoFnIdx;
-        emitInst(ilFn, inst);
-        return Value{protoRes, il::Type::Dynamic};
-    }
-    std::optional<Value> baseVal;
-    if (sm.baseExpr) {
-        baseVal = lowerExpr(*sm.baseExpr, ilFn);
-    } else {
-        ast::Ident baseIdent;
-        baseIdent.name = sm.baseName;
-        baseIdent.span = sm.span;
-        baseVal = lowerExpr(baseIdent, ilFn);
-    }
-    if (!baseVal) return std::nullopt;
-    // 13.3.7.1 starts at the home object's [[Prototype]]. For a static
-    // element the home object is the constructor, whose [[Prototype]] is the
-    // heritage itself — `static m() { return super.m(); }` reads `Base.m`,
-    // and read `Base.prototype.m` (undefined, or an instance method) before
-    // the element's kind was carried here.
-    auto baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
-    if (sm.fromStatic) return baseBoxed;
-    return emitPrototypeOf(baseBoxed, ilFn);
+    auto homeVal = readHomeBinding(sm.homeBinding, sm.span, ilFn);
+    if (!homeVal) return std::nullopt;
+    const uint32_t protoFnIdx = registerExternalFunction(
+        "bronze_get_prototype_of", il::Type::Dynamic, {il::Type::Dynamic});
+    il::ValueId protoRes = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::Call;
+    inst.type = il::Type::Dynamic;
+    inst.result = protoRes;
+    inst.operands = {homeVal->id};
+    inst.calleeIndex = protoFnIdx;
+    emitInst(ilFn, inst);
+    return Value{protoRes, il::Type::Dynamic};
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
@@ -662,21 +683,17 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     auto thisVal = lowerThisValue(sc->span, ilFn);
     if (!thisVal) return std::nullopt;
 
-    std::optional<Value> baseVal;
-    if (sc->baseExpr) {
-        baseVal = lowerExpr(*sc->baseExpr, ilFn);
-    } else {
-        ast::Ident baseIdent;
-        baseIdent.name = sc->baseName;
-        baseIdent.span = sc->span;
-        baseVal = lowerExpr(baseIdent, ilFn);
-    }
-    if (!baseVal) return std::nullopt;
+    // The active function; the runtime asks it for its [[Prototype]]
+    // (13.3.7.2 GetSuperConstructor), so the base is whatever that is when the
+    // call runs and the heritage expression is never evaluated again.
+    auto activeFn = readHomeBinding(sc->homeBinding, sc->span, ilFn);
+    if (!activeFn) return std::nullopt;
+    const Value baseVal = *activeFn;
 
     il::ValueId res = il::kNoValue;
     if (derivedPlan_ != nullptr && derivedPlan_->isChecked(sc)) {
         // A call the plan could not prove the first (lower_derived_ctor.cpp).
-        auto called = lowerCheckedSuperCall(*sc, boxValueIfNeeded(*baseVal, ilFn),
+        auto called = lowerCheckedSuperCall(*sc, baseVal,
                                             boxValueIfNeeded(*thisVal, ilFn), ilFn);
         if (!called) return std::nullopt;
         res = called->id;
@@ -685,7 +702,7 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
         // so this path is not an edge case: it is the default one.
         const bool spreadArgs = argsTakeArrayPath(sc->args);
         std::vector<il::ValueId> operands;
-        operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);
+        operands.push_back(baseVal.id);
         operands.push_back(boxValueIfNeeded(*thisVal, ilFn).id);
         if (spreadArgs) {
             auto argsArr = lowerListToArray(sc->args, ilFn);

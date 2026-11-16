@@ -254,18 +254,8 @@ void ScopedWalk::expr(Expr& e) {
         slot(nw->callee);
         for (auto& arg : nw->args) slot(arg);
     } else if (auto* sc = dynamic_cast<SuperCall*>(&e)) {
-        if (sc->baseExpr) {
-            slot(sc->baseExpr);
-            const std::string renamed = heritageName(sc->baseExpr.get());
-            if (!renamed.empty()) sc->baseName = renamed;
-        }
         for (auto& arg : sc->args) slot(arg);
     } else if (auto* sm = dynamic_cast<SuperMember*>(&e)) {
-        if (sm->baseExpr) {
-            slot(sm->baseExpr);
-            const std::string renamed = heritageName(sm->baseExpr.get());
-            if (!renamed.empty() && !sm->fromObjectLiteral) sm->baseName = renamed;
-        }
         if (sm->propertyExpr) slot(sm->propertyExpr);
     } else if (auto* spr = dynamic_cast<SpreadElement*>(&e)) {
         slot(spr->argument);

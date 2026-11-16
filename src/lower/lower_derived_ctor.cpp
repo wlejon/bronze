@@ -128,7 +128,7 @@ bool Lowerer::emitThisUnboundTest(Span span, il::Function& ilFn) {
 // list, and the state decides which construction it is — the ordinary one
 // on the instance `new` allocated, or a fresh one the helper makes and throws
 // after (step 7's BindThisValue on a bound receiver).
-std::optional<Lowerer::Value> Lowerer::lowerCheckedSuperCall(const ast::SuperCall& sc, Value base,
+std::optional<Lowerer::Value> Lowerer::lowerCheckedSuperCall(const ast::SuperCall& sc, Value activeFn,
                                                              Value receiver, il::Function& ilFn) {
     auto argsArr = lowerListToArray(sc.args, ilFn);
     if (!argsArr) return std::nullopt;
@@ -140,7 +140,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCheckedSuperCall(const ast::SuperCal
     emitBranchTo(*unbound, bFirst, bAgain, ilFn);
 
     setCurrentBlock(bAgain);
-    emitRaisingHelper("bronze_super_rebind", {base.id, argsArr->id, newTarget.id}, sc.span, ilFn);
+    emitRaisingHelper("bronze_super_rebind", {activeFn.id, argsArr->id, newTarget.id}, sc.span, ilFn);
 
     setCurrentBlock(bFirst);
     const il::ValueId res = ilFn.valueCount++;
@@ -156,10 +156,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCheckedSuperCall(const ast::SuperCal
         inst.calleeIndex = registerExternalFunction(
             "bronze_super_call_lexical", il::Type::Dynamic,
             {il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic});
-        inst.operands = {base.id, receiver.id, argsArr->id, newTarget.id};
+        inst.operands = {activeFn.id, receiver.id, argsArr->id, newTarget.id};
     } else {
         inst.op = il::Op::SuperCallSpread;
-        inst.operands = {base.id, receiver.id, argsArr->id};
+        inst.operands = {activeFn.id, receiver.id, argsArr->id};
     }
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};

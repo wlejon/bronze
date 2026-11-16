@@ -175,6 +175,9 @@ private:
     size_t functionEnvBase_ = 0;
     size_t functionEnvScope_ = SIZE_MAX;
     std::vector<std::string> moduleEnvSlots_;
+    // The home suffixes (ast.h ClassDecl::homeSuffix) of the derived classes
+    // whose home bindings live in the module record (planModuleEnv).
+    std::unordered_set<std::string> moduleHomeSuffixes_;
     size_t moduleEnvScope_ = SIZE_MAX;
     bool segmentTopLevel_ = false;
 
@@ -390,13 +393,15 @@ private:
     std::optional<Value> lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn,
                                         const std::string& inferredName = {});
     std::optional<Value> lowerClass(const std::string& name, const ast::Expr* superClass,
-                                    const std::string& superName,
+                                    const std::string& superName, const std::string& homeSuffix,
                                     const std::vector<ast::ClassMethod>& methods, Span span,
                                     il::Function& ilFn, bool bindsOwnName = false,
                                     const std::string& inferredName = {});
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
     // The inline capacity predicted for `name`'s instances (lower_class.cpp).
     uint32_t classInstanceInlineSlots(const std::string& name) const;
+    std::optional<Value> readHomeBinding(const std::string& binding, Span span, il::Function& ilFn);
+    bool writeHomeBinding(const std::string& binding, Value val, Span span, il::Function& ilFn);
     std::optional<Value> lowerSuperLookupStart(const ast::SuperMember& sm, il::Function& ilFn);
     bool emitDerivedCtorReturn(Value val, const ast::ReturnStmt* site, il::Function& ilFn);
 
@@ -423,7 +428,7 @@ private:
                           il::Function& ilFn);
     static std::vector<PrivateElement> collectPrivateElements(
         const std::vector<ast::ClassMethod>& methods);
-    bool openClassScope(const std::string& className,
+    bool openClassScope(const std::string& className, const std::string& homeSuffix,
                         const std::vector<PrivateElement>& elements, il::Function& ilFn);
     bool initClassNameBinding(const std::string& className, Value ctorVal, Span span,
                               il::Function& ilFn);
@@ -448,7 +453,7 @@ private:
                       il::Function& ilFn);
     bool emitThisBindingCheck(const void* site, Span span, il::Function& ilFn);
     bool emitThisUnboundTest(Span span, il::Function& ilFn);
-    std::optional<Value> lowerCheckedSuperCall(const ast::SuperCall& sc, Value base, Value receiver,
+    std::optional<Value> lowerCheckedSuperCall(const ast::SuperCall& sc, Value activeFn, Value receiver,
                                                il::Function& ilFn);
     bool markSuperCalled(Value bound, Span span, il::Function& ilFn);
     Value lowerNewTargetValue(il::Function& ilFn);

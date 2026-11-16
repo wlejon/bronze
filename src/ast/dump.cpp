@@ -184,7 +184,7 @@ public:
         emit(")");
     }
     void visit(const SuperCall& n) override {
-        emit("(super-call " + n.baseName);
+        emit("(super-call " + n.homeBinding);
         indented([&] {
             for (const auto& a : n.args) a->accept(*this);
         });
@@ -192,11 +192,11 @@ public:
     }
     void visit(const SuperMember& n) override {
         if (n.propertyExpr) {
-            emit("(super-member-computed " + n.baseName);
+            emit("(super-member-computed " + n.homeBinding);
             indented([&] { n.propertyExpr->accept(*this); });
             emit(")");
         } else {
-            emit("(super-member " + n.baseName + "." + n.property + ")");
+            emit("(super-member " + n.homeBinding + "." + n.property + ")");
         }
     }
     void visit(const ClassDecl& n) override {

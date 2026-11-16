@@ -121,6 +121,10 @@ public:
     const SolverOptions& options() const { return opts_; }
     const AVal& value(uint32_t fn, il::ValueId v) const { return fns_[fn].values[v]; }
     const AVal& returned(uint32_t fn) const { return fns_[fn].ret; }
+    // The [[Prototype]] of each object of `v`: what a `super(...)` whose
+    // active function is `v` constructs (13.3.7.2 GetSuperConstructor), and
+    // where a `super` member lookup from home object `v` starts.
+    AVal prototypesOf(const AVal& active) const;
     bool calledWithUnknown(uint32_t fn) const { return fns_[fn].calledTop; }
     const SolverStats& stats() const { return stats_; }
     const std::string& reason(uint32_t index) const { return reasons_[index]; }

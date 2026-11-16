@@ -426,12 +426,10 @@ private:
             slot(nw->callee);
             for (auto& arg : nw->args) slot(arg);
         } else if (auto* sc = dynamic_cast<ast::SuperCall*>(&e)) {
-            if (sc->baseExpr) slot(sc->baseExpr);
-            else rewrite(sc->baseName);
+            rewrite(sc->homeBinding);
             for (auto& arg : sc->args) slot(arg);
         } else if (auto* sm = dynamic_cast<ast::SuperMember*>(&e)) {
-            if (sm->baseExpr) slot(sm->baseExpr);
-            else rewrite(sm->baseName);
+            rewrite(sm->homeBinding);
             if (sm->propertyExpr) slot(sm->propertyExpr);
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
             slot(spr->argument);

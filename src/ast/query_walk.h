@@ -105,13 +105,11 @@ public:
         for (const auto& e : t.templateLit->exprs) e->accept(*this);
     }
     void visit(const SuperCall& c) override {
-        if (c.baseExpr) c.baseExpr->accept(*this);
-        else if (!c.baseName.empty()) mention(c.baseName);
+        mention(c.homeBinding);
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember& m) override {
-        if (m.baseExpr) m.baseExpr->accept(*this);
-        else if (!m.baseName.empty()) mention(m.baseName);
+        mention(m.homeBinding);
         if (m.propertyExpr) m.propertyExpr->accept(*this);
     }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
@@ -327,11 +325,9 @@ public:
         for (const auto& e : t.templateLit->exprs) e->accept(*this);
     }
     void visit(const SuperCall& c) override {
-        if (c.baseExpr) c.baseExpr->accept(*this);
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember& m) override {
-        if (m.baseExpr) m.baseExpr->accept(*this);
         if (m.propertyExpr) m.propertyExpr->accept(*this);
     }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }

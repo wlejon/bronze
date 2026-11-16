@@ -339,7 +339,25 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 }  // namespace bronze::runtime
 
+// The lookup start of every `super` member (lowering's home object): a class
+// prototype, a class constructor or an object literal. The two kinds a class
+// has are answered from the header, without the argument block and the kind
+// ladder of the builtin.
 extern "C" uint64_t bronze_get_prototype_of(uint64_t objBits) {
+    using namespace bronze;
+    const Value obj(objBits);
+    if (obj.isObject()) {
+        const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
+        if (kind == HeapKind::Plain) {
+            if (const Shape* shape = obj.asObject<ObjectHeader>()->shape) {
+                const Value proto = shape->prototypeValue();
+                if (proto.isObject() || proto.isNull()) return proto.rawBits();
+            }
+        } else if (kind == HeapKind::Function) {
+            const Value parent = obj.asObject<FunctionHeader>()->parent;
+            if (parent.isObject()) return parent.rawBits();
+        }
+    }
     uint64_t argv[1] = {objBits};
     return bronze::runtime::objectGetPrototypeOf(0, 0, 1, argv);
 }

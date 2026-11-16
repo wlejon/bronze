@@ -136,6 +136,12 @@ struct EnvScopeInfo {
     // hoist is licensed.
     std::unordered_set<std::string> deeplyAssigned;
     bool rebindsKnown = false;
+    // A derived class's scope holding only the bindings `super` reads (ast.h
+    // kClassCtorBinding, kClassProtoBinding). A function made in it that
+    // mentions neither is lowered as if the scope were not there
+    // (lower_closure.cpp), so a method without `super` keeps the calling
+    // convention of a module function.
+    bool homeOnly = false;
     il::ValueId envValue = il::kNoValue;
 };
 
