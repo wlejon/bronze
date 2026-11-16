@@ -60,6 +60,19 @@ ValueId directCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueI
     call.calleeIndex = ctx.entries.entryOf(callee);
     call.type = f.returnType;
     call.resumeAfter = b.resumeAfterSite();
+    // The generic call's count (il/feedback_site.h kCallCountArm) goes with
+    // it, for the inliner; a getter's or setter's call stands for a read or a
+    // write, whose site's words are not counts of calls.
+    switch (b.site().op) {
+        case il::Op::Call:
+        case il::Op::DynamicCall:
+        case il::Op::MethodCall:
+        case il::Op::Construct:
+            call.slowSite = b.site().slowSite;
+            break;
+        default:
+            break;
+    }
     if (f.needsEnv) {
         // Legal on the `fn.code_is` edge the caller established.
         call.operands.push_back(b.emit(il::Op::FnEnv, il::Type::Dynamic, {calleeValue}));

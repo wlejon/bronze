@@ -74,6 +74,11 @@ public:
     void arm_count(Builder& b, uint32_t arm) {
         if (arm_mark_fn_ && slow_sites_.size() == 1) arm_mark_fn_(b, slow_sites_[0] + arm, true);
     }
+    // One more in the word of slow-site index `index` (a function's entry
+    // count), in a build made to be harvested only.
+    void count_index(Builder& b, uint32_t index) {
+        if (arm_mark_fn_ && shape_turn_fn_) arm_mark_fn_(b, index, true);
+    }
     // Whether arm_begin marks here: a build that may be harvested, at an
     // instruction with a site of its own.
     [[nodiscard]] bool arms_marked() const noexcept { return arm_mark_fn_ && slow_sites_.size() == 1; }

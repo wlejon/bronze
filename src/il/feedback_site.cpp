@@ -367,13 +367,15 @@ uint64_t icLayoutDigest(const Module& module) {
 void numberSlowSites(Module& module) {
     uint32_t next = 0;
     for (Function& fn : module.functions) {
+        // The ENTRY COUNT (feedback_site.h): one index, no arms.
+        if (!fn.isExternal && !fn.blocks.empty()) fn.entrySlowSite = next++;
         for (Block& block : fn.blocks) {
             for (Instruction& inst : block.instructions) {
                 switch (inst.op) {
                     case Op::ElemGet: case Op::ElemSet: case Op::PropGet: case Op::PropSet:
                     case Op::StrictEq: case Op::Unbox:
                     case Op::Add: case Op::Sub: case Op::Mul: case Op::Div:
-                    case Op::Branch: case Op::DynamicCall: case Op::Construct:
+                    case Op::Branch: case Op::DynamicCall: case Op::Construct: case Op::Call: case Op::MethodCall:
                     case Op::RelLt: case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::LooseEq:
                     case Op::ToNumeric: case Op::NumericStep: case Op::BitNot:
                         inst.slowSite = next;

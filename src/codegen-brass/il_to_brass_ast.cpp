@@ -23,6 +23,7 @@ static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kEle
 static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
                   il2mir::kLastShapeArm == bronze::il::kLastShapeArm,
               "the shape turns' indices, named twice");
+static_assert(il2mir::kCallCountArm == bronze::il::kCallCountArm, "a call's count, named twice");
 
 static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWriteLiteralElement),
               "the array literal element write mode is one number on both sides");
@@ -717,6 +718,7 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
             bfn.inline_scopes.push_back(std::move(out));
         }
         bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+        bfn.entry_slow_site = fn.entrySlowSite;
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

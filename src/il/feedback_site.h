@@ -109,7 +109,8 @@ uint64_t icLayoutDigest(const Module& module);
 // read or write, a named or indexed read or write and the runs of them, a
 // strict compare, a checked unbox, a dynamic numeric op — `+ - * / %`, unary
 // `-`, `~`, the bitwise and shift ops, `< <= > >=`, `==`, `++`/`--`,
-// ToNumeric — whose form computes Numbers inline) the next index in
+// ToNumeric — whose form computes Numbers inline), and every call (`call`,
+// `call.dynamic`, `method.call`, construct: kCallCountArm) the next index in
 // `slowSiteCount`, in function, block and instruction order. Run first thing
 // in the final passes, on the module every build of the program starts them
 // from, so a harvest's counts name the same instructions in the build that
@@ -131,9 +132,19 @@ inline constexpr uint32_t kSlowSiteArms = 8;
 // A call.dynamic or a construct keeps its CALLEE TURNS the same way: the last
 // callee its code entered directly (its code pointer, with bit 62 set as well
 // as bit 63) and the times that callee changed; a call the helper made (any
-// callee the inline test refused) is its slow arm's count instead.
+// callee the inline test refused) is its slow arm's count instead. A method
+// call keeps them too, for the callee it found in an own slot (the slot way).
 inline constexpr uint32_t kLastShapeArm = 6;
 inline constexpr uint32_t kShapeTurnArm = 7;
+// A call's CALL COUNT: every call, `call.dynamic`, `method.call` and
+// construct of a build made to be harvested adds one to this index's word
+// as it starts, so a harvest says how often each call ran; the inliner's
+// budget reads it (opt/inline driver.cpp). Instructions copied by inlining
+// share their original's count.
+inline constexpr uint32_t kCallCountArm = 1;
+// Each function with a body is handed one index of its own first, its ENTRY
+// COUNT (Function::entrySlowSite), which a build made to be harvested adds
+// one to at every entry.
 void numberSlowSites(Module& module);
 
 // What a function's descriptor carries as `name_hash` (bronze_abi.h), and

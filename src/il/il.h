@@ -370,6 +370,11 @@ struct Function {
     static constexpr uint32_t kNotSpeculated = UINT32_MAX;
     uint32_t speculatedFrom = kNotSpeculated;
     bool isSpeculated() const { return speculatedFrom != kNotSpeculated; }
+    // The slow-site index of the function's ENTRY COUNT (il/feedback_site.h
+    // numberSlowSites): a build made to be harvested adds one to its word at
+    // every entry. A speculated copy keeps its G's. Instruction::kNoSlowSite
+    // for a function given none (an external one, a body with no blocks).
+    uint32_t entrySlowSite = UINT32_MAX;
     // The calls the inliner replaced by their callee's body: scope k + 1 is
     // the body of module function `callee` (whose frame a stack trace shows)
     // called at `call`, in scope `parent` (0: this function's own code).

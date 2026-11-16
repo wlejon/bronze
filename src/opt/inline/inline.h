@@ -62,9 +62,13 @@
 // POLICY (driver.cpp): a callee of at most kSmallCallee instructions is
 // inlined wherever the caller stays under kMaxCallerSize; one of at most
 // kLargeCallee only within the caller's growth budget (kGrowthFactor times its
-// size before the pass, at least kMinGrowth more). Sizes count instructions
-// outside exit blocks (blocks ending in `leave`) of the callee once cleaned up
-// (InlineOptions::cleanup).
+// size before the pass, at least kMinGrowth more). With a harvest's call
+// counts (InlineOptions::harvestCount), a HOT call (a large enough share of
+// all the calls counted) takes a callee of up to kHotCallee within a larger
+// budget, and a call the harvested run never made takes only a small one.
+// Sizes count instructions outside exit blocks (blocks ending in `leave`) of
+// the callee once cleaned up (InlineOptions::cleanup). BRONZE_INLINE_TRACE=
+// <file> appends one line per candidate and what was decided (a diagnostic).
 //
 // When done, the pass clears `resumeAfter` on every instruction of the module:
 // it means nothing to anything after it, and the redundancy pass deletes the
@@ -72,6 +76,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "il/il.h"
 
@@ -86,6 +91,11 @@ struct InlineOptions {
     // cleaned up after the splice: a speculated body as made is mostly
     // guards the cleanup folds. Unset: the size as it stands.
     std::function<void(il::Function&)> cleanup;
+    // The harvested run's count in slow-site word `index` (il/feedback_site.h:
+    // a call's kCallCountArm word, a function's entry count), or nullopt when
+    // the harvest has none for it (no harvest, a stale one, a word the
+    // harvested build did not count). Unset: no counts at all.
+    std::function<std::optional<uint64_t>(uint32_t index)> harvestCount;
 };
 
 struct InlineStats {
@@ -93,6 +103,7 @@ struct InlineStats {
     uint32_t sitesConsidered = 0;     // direct calls in them
     uint32_t inlined = 0;             // calls replaced by a body
     uint32_t inlinedSpeculated = 0;   // of those, of a speculated callee
+    uint32_t inlinedHot = 0;          // of those, taken as hot calls (above)
     uint32_t refusedCallee = 0;       // the callee can never be inlined
     uint32_t refusedSite = 0;         // this call cannot take it (env hops, no resume-after, types)
     uint32_t refusedSize = 0;         // too big for where the call is

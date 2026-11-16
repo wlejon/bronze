@@ -306,6 +306,8 @@ struct BronzeFunction {
     bool is_coroutine_body() const { return coro_kind >= 0; }
     // The program's top level (`main` and its segments): run once.
     bool is_toplevel = false;
+    // il.h Function::entrySlowSite: the entry count's index (UINT32_MAX: none).
+    uint32_t entry_slow_site = UINT32_MAX;
     // il.h Function::inlineScopes: the callee's function name, the call's
     // position, and the scope the call is in (0: the function's own code).
     struct InlineScope {

@@ -556,10 +556,10 @@ the site is claimed by one range test (consumer A's family form). A list related
 
 - **Value sites**, so no number hints (C) and no profile-guided regions (D).
   The table below measures this cost.
-- **Entry and execution counts.** A site that ran once looks as hot as one
-  that ran a million times, so the plan may spend code size on cold sites.
-  (The samples, below, say which functions the time went to; only function
-  placement reads them.)
+- **Execution counts of property sites.** A property site that ran once looks
+  as hot as one that ran a million times, so the plan may spend code size on
+  cold sites. Calls and function entries are counted (CALL COUNTS, below);
+  the samples say which functions the time went to.
 - **`call.dynamic` callees.** There is no call cache, so there is no closure
   split.
 - **Sites that never fill a cache.** These are sites already answered by a
@@ -568,6 +568,19 @@ the site is claimed by one range test (consumer A's family form). A list related
 - **Own-slot callees.** These appear as `*other*`.
 - **Callees without source.** The callee is named `*other*` in a build that
   registers no function source.
+
+**Call counts.** Every `call`, `call.dynamic`, `method.call` and construct
+has a slow site (`il::numberSlowSites`), and a build made to be harvested adds
+one to its `kCallCountArm` word (`il/feedback_site.h`) as the call starts: a
+load, an add and a store (three_skinned's harvest run: +0.8% instructions).
+Each function with a body also has one index of its own, its ENTRY COUNT
+(`Function::entrySlowSite`), bumped in its prologue. Both come back as `slow`
+rows like any other counter. A direct call the speculation step makes from a
+generic call keeps that call's slow site (`opt/speculate/direct_call.cpp`), so
+the inliner (`opt/inline/driver.cpp`) knows how often each call it may take
+ran, and shares a polymorphic site's count over its arms by their callees'
+entry counts. A method call's slot way (a function an own slot held) records
+its callee turns too, as a `call.dynamic` does.
 
 **Samples** (`runtime/harvest_sampler.{h,cpp}`). While a harvest is armed, a
 sampler thread arms the JS thread's interrupt every 250 us, and the next

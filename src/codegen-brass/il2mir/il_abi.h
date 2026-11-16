@@ -233,6 +233,8 @@ inline constexpr uint32_t kLengthArmArray = 1;
 inline constexpr uint32_t kLengthArmString = 2;
 inline constexpr uint32_t kLengthArmView = 3;
 inline constexpr uint32_t kShapeTurnArm = 7;
+// A call's count of runs in a build made to be harvested (il/feedback_site.h).
+inline constexpr uint32_t kCallCountArm = 1;
 // The bit a call site's kLastShapeArm word carries beside bit 63 when it holds
 // a callee's code pointer rather than a shape (il/feedback_site.h).
 inline constexpr uint32_t kLastCalleeBit = 62;

@@ -427,6 +427,12 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_fn_sources", Type::void_type(), {text_addr, text_len, entries_addr, entries_count});
             }
         }
+        // The entry count of a build made to be harvested (il/feedback_site.h
+        // Function::entrySlowSite); a coroutine body's entry block runs again
+        // at every resume, so it has none.
+        if (fn_ast.entry_slow_site != UINT32_MAX && !fn_ast.is_coroutine_body()) {
+            prop_lowering_.count_index(b, fn_ast.entry_slow_site);
+        }
     }
 
     // 3. Set up non-entry block parameters

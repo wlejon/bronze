@@ -60,7 +60,8 @@ namespace bronze::il {
 // 47: concat.n, to.string keepnum, typeof.is and array.push (il_op.h).
 // 48: Module::numberSlotKeys; shape.has_own's mode bits; slot.load number.
 // 49: shape.lacks (il_op.h).
-inline constexpr uint32_t kFormatVersion = 49;
+// 50: Function::entrySlowSite.
+inline constexpr uint32_t kFormatVersion = 50;
 
 std::string serializeModule(const Module& module);
 

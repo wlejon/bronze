@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "il/feedback_site.h"
 #include "il/print.h"
 #include "il/verifier.h"
 
@@ -81,6 +82,17 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     sizing.hoistLoops = false;
     inliner::InlineOptions inlining = options.inlining;
     inlining.cleanup = [&module, sizing](il::Function& fn) { runRedundancy(module, fn, sizing); };
+    if (const spec::Harvest* h = profile != nullptr ? profile->harvest() : nullptr;
+        h != nullptr && anySpeculated && result.speculate.harvestIgnored == 0 && h->slowSites == module.slowSiteCount) {
+        inlining.harvestCount = [h](uint32_t index) -> std::optional<uint64_t> {
+            if (index >= h->slowSites) return std::nullopt;
+            if (index / 64 >= h->slowArmed.size() || ((h->slowArmed[index / 64] >> (index % 64)) & 1u) == 0) {
+                return std::nullopt;
+            }
+            const auto it = h->slow.find(index);
+            return it != h->slow.end() ? it->second : 0;
+        };
+    }
     result.inlined = inliner::inlineModule(module, inlining);
     if (!verified(module, options, "after inlining")) {
         result.ok = false;
@@ -124,7 +136,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     }
     const inliner::InlineStats& in = r.inlined;
     out += "inline: " + n(in.inlined) + "/" + n(in.sitesConsidered) + " calls (speculated " +
-           n(in.inlinedSpeculated) + "); refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
+           n(in.inlinedSpeculated) + ", hot " + n(in.inlinedHot) + "); refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
            ", size " + n(in.refusedSize) + ", budget " + n(in.refusedBudget) + "; leaves rewritten " +
            n(in.leavesRewritten) + "\n";
     auto redundancyLine = [&](const char* name, const RedundancyStats& d) {

@@ -102,6 +102,13 @@ bool IlLowering::lower_instruction(
     Value* res_val = nullptr;
     set_slow_site_of(inst_ast);
     in_protected_block_ = handler_exception(handler_id) != nullptr;
+    // A call's count in a build made to be harvested (il/feedback_site.h
+    // kCallCountArm): one load, add and store on its way in.
+    if ((inst_ast.op == BronzeOp::Call || inst_ast.op == BronzeOp::CallDynamic ||
+         inst_ast.op == BronzeOp::MethodCall || inst_ast.op == BronzeOp::Construct) &&
+        prop_lowering_.evidence_marked()) {
+        prop_lowering_.arm_count(b, kCallCountArm);
+    }
 
     auto get_val_by_id = [&](uint32_t id) -> Value* {
         return this->get_val_by_id(id, b, val_map);
