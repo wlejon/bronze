@@ -565,7 +565,36 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::Box: {
             if (inst_ast.box_type == BronzeType::Str && inst_ast.operands.empty()) {
-                res_val = b.build_call("bronze_box_str_key", Type::i64(), {get_key_id(b, inst_ast.index)});
+                // A string literal is the thread's interned key header
+                // (bronze_abi_tls.h key_header_tbl), tagged as a String: an
+                // id inside the table with a header there is two loads; the
+                // helper interns the rest.
+                Value* key_id = b.build_zext_i64(get_key_id(b, inst_ast.index));
+                Module* mod = b.current_block()->parent()->parent();
+                Value* tls = (mod && mod->pinned_tls_register())
+                                 ? b.build_pinned_tls_read()
+                                 : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+                BasicBlock* cur = b.current_block();
+                const std::string prefix = "boxkey_" + std::to_string(cur->parent()->next_block_id());
+                BasicBlock* have = b.append_block(prefix + "_have");
+                BasicBlock* tag = b.append_block(prefix + "_tag");
+                BasicBlock* slow = b.append_block(prefix + "_slow");
+                slow->set_cold();
+                BasicBlock* merge = b.append_block(prefix + "_merge");
+                res_val = b.add_block_param(merge, Type::i64());
+                b.position_at_end(cur);
+                Value* count = b.build_load(Type::i64(), tls, BRONZE_TLS_KEY_HEADER_COUNT_OFF);
+                b.build_br_if(b.build_ult(key_id, count), have, {}, slow, {});
+                b.position_at_end(have);
+                Value* tbl = b.build_load(Type::i64(), tls, BRONZE_TLS_KEY_HEADER_TBL_OFF);
+                Value* hdr = b.build_load_indexed(Type::i64(), tbl, key_id, 8, 0);
+                b.build_br_if(b.build_eq(hdr, b.build_iconst_i64(0)), slow, {}, tag, {});
+                b.position_at_end(tag);
+                b.build_br(merge, {b.build_or(hdr, b.build_iconst_i64(static_cast<int64_t>(
+                                                       uint64_t{BRONZE_ABI_TAG_STRING} << BRONZE_ABI_VALUE_TAG_SHIFT)))});
+                b.position_at_end(slow);
+                b.build_br(merge, {b.build_call("bronze_box_str_key", Type::i64(), {b.build_trunc_i32(key_id)})});
+                b.position_at_end(merge);
                 break;
             }
             Value* op0 = get_opd(0);

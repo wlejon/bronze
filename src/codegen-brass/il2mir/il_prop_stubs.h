@@ -32,6 +32,12 @@ void build_setter_call_stub(Function* fn);
 constexpr const char* kMethodCallStub = "__bronze_method_call_stub";
 void build_method_call_stub(Function* fn);
 
+// (i64 obj, i64 key, i64 cell) -> i64: a computed read whose site cell
+// (elem_cells.h) did not answer it inline: the cell's prototype and
+// dictionary forms, then bronze_elem_get_cell.
+constexpr const char* kElemCellStub = "__bronze_elem_cell_stub";
+void build_elem_cell_stub(Function* fn);
+
 // A typed array's element (il_view_stubs.cpp), behind the helpers:
 // (i64 obj, i32 index, i64 key) -> i64 and
 // (i64 obj, i32 index, i64 key, i64 val, i32 strict) -> void.

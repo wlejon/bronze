@@ -8,6 +8,7 @@
 #include "runtime/dictionary.h"
 
 #include <algorithm>
+#include <cstddef>
 
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
@@ -52,6 +53,20 @@ uint32_t capacityFor(uint32_t live) noexcept {
 }
 
 }  // namespace
+
+// Not a standard-layout class (its index is private), so offsetof is only
+// conditionally supported; GCC and Clang both answer it for this layout.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static_assert(offsetof(Dictionary, generation) == BRONZE_ABI_DICT_GENERATION_OFFSET,
+              "generated code reads a dictionary's generation at this offset");
+#pragma GCC diagnostic pop
+
+uint64_t Dictionary::nextGeneration() noexcept {
+    // Per thread, as the tables are; never 0, which an unfilled cell holds.
+    static thread_local uint64_t t_next = 0;
+    return ++t_next;
+}
 
 const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
     if (!name.valid() || index_.empty()) return nullptr;
@@ -128,6 +143,7 @@ bool Dictionary::remove(PropertyKey name) noexcept {
     // is renumbered.
     e->key = PropertyKey();
     --live_;
+    retireAnswers();
     // Once the dead have caught up with the living, the vector is half
     // tombstones and every enumeration walks twice what it needs.
     if (entries.size() > 32 && live_ * 2 <= entries.size()) compact();
@@ -339,6 +355,7 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         if (!existing->accessor) d.freeSlots.push_back(existing->slot);
         existing->accessor = accessor;
         existing->slot = d.allocateSlots(accessor ? 2u : 1u);
+        d.retireAnswers();
         out_slot = existing->slot;
         bumpProtoMutationEpoch();
     } else {

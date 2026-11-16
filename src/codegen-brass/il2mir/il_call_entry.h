@@ -28,8 +28,9 @@ Value* lower_call_dynamic_inline(IlLowering* lowering, Builder& b, Value* callee
                                  const std::vector<Value*>& args);
 
 // `recv.key(...args)` through method site `site` (its words at
-// site.base + site.off), the helper bronze_call_method behind it.
-Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
+// site.base + site.off), the helper bronze_call_method behind it. `key_index`
+// is the key's index into the module's key constants.
+Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t key_index,
                                 const std::vector<Value*>& args, uint32_t ic_index);
 
 // A callee compiled code may call without the runtime (the call form of the

@@ -1,0 +1,59 @@
+ana|97|4|6
+ al|32|3|5
+ab|97|2|3
+yz|121|1|3
+ff:255.00 0:0.00
+ana|97|4|6
+ al|32|3|5
+ab|97|2|3
+yz|121|1|3
+100:256.00 3.243f3e0370cdc:3.14
+ana|97|4|6
+ al|32|3|5
+ab|97|2|3
+yz|121|1|3
+101:257.00 6.487e7c06e19b8:6.28
+2,2,true
+2,2,true
+1,2,true
+-1,2,false
+1,2,true
+2,2,true
+2,2,true
+1,2,true
+-1,2,false
+1,2,true
+2,2,true
+2,2,true
+1,2,true
+-1,2,false
+1,2,true
+1+2 3+4 5 x+y
+0
+own indexOf
+my 2
+1
+frozen splice true
+true null
+true null
+true null
+10a21000
+true
+6a2
+10a21000
+own call a
+object
+object
+threw TypeError
+threw TypeError
+10a21000
+true
+6a2
+10a21000
+own call a
+object
+object
+threw TypeError
+threw TypeError
+1103 6 NaN undef number
+9 1,2,3

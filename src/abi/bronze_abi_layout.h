@@ -521,12 +521,27 @@
  * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
 #define BRONZE_ABI_ELEM_ENTRY_SIZE      56 /* sizeof(ElemCacheEntry) */
 #define BRONZE_ABI_ELEM_IC_OFFSET        0 /* ElemCacheEntry::ic (InlineCache) */
-/* A computed read site's pair cell (runtime/elem_ic.cpp bronze_elem_cell_fill):
- * the site asks for fills while the cell's fourth word is below the limit; a
- * fill adds BRONZE_ABI_ELEM_CELL_FILL to it (eight fills), a call that filled
+/* A computed read site's cell (codegen-brass/elem_cells.h, runtime/elem_ic.cpp
+ * bronze_elem_get_cell): five words, the receiver's shape, the key's bits,
+ * the slot word, the fill count and the validity word. The slot word's high
+ * half says where the slot is:
+ *   0                              an own slot of the shape;
+ *   1 .. BRONZE_ABI_ELEM_CELL_MAX_DEPTH
+ *                                  that many prototype links up, while the
+ *                                  validity word is the prototype epoch;
+ *   BRONZE_ABI_ELEM_CELL_DICT      an own slot of a dictionary-mode object,
+ *                                  while the validity word is its table's
+ *                                  generation (BRONZE_ABI_DICT_GENERATION_OFFSET).
+ * The site asks for fills while the fourth word is below the limit; a fill
+ * adds BRONZE_ABI_ELEM_CELL_FILL to it (eight fills), a call that filled
  * nothing adds 1. */
+#define BRONZE_ABI_ELEM_CELL_WORDS       5
 #define BRONZE_ABI_ELEM_CELL_LIMIT       (8 << 17)
 #define BRONZE_ABI_ELEM_CELL_FILL        (1 << 17)
+#define BRONZE_ABI_ELEM_CELL_MAX_DEPTH   4
+#define BRONZE_ABI_ELEM_CELL_DICT        0xFFFFu
+/* Dictionary (runtime/dictionary.h): its generation word, the first. */
+#define BRONZE_ABI_DICT_GENERATION_OFFSET 0
 #define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */
 #define BRONZE_ABI_ELEM_KEY_OFFSET      32 /* ElemCacheEntry::key (StringHeader*) */
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */

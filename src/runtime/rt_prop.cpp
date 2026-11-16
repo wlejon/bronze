@@ -822,10 +822,9 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         }
     }
 
-    // A map keyed by ids (rtIdKeyedOwnEntry): an own data entry is the answer.
-    if (const DictEntry* own = rtIdKeyedOwnEntry(objVal, Value(idxBits))) {
-        return objVal.asObject<ObjectHeader>()->getSlot(own->slot).rawBits();
-    }
+    // A map keyed by ids or computed strings (rtIdKeyedRead): its entry, or
+    // its chain's answer for a key it lacks.
+    if (Value v; rtIdKeyedRead(objVal, Value(idxBits), v)) return v.rawBits();
 
     if (Value(idxBits).isSymbol()) {
         // Reading a property of null or undefined is the TypeError of 7.3.2

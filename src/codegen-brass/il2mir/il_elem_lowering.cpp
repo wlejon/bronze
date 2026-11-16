@@ -229,19 +229,17 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.position_at_end(bb_slow);
     slow_arm(b);
     if (Value* cell = elem_cell(b)) {
-        // The site's pair cell: a plain receiver at the cell's shape and the
-        // cell's key bits read the cell's own data slot. Anything else asks
-        // the runtime to fill the cell from the computed-read table (while
-        // the cell still takes fills) and reads through the helper.
+        // The site's cell (elem_cells.h): a plain receiver at the cell's
+        // shape and the cell's key bits, whose slot word names an own slot,
+        // reads it here; the module's cell stub answers the cell's other
+        // forms and takes everything else to the runtime.
         // append_block moves the cursor, so every block is made first.
         bb_slow->set_cold(false);
         BasicBlock* bb_cell_hit = b.append_block(prefix + "_cellhit");
-        BasicBlock* bb_fill = b.append_block(prefix + "_fill");
-        BasicBlock* bb_fill_call = b.append_block(prefix + "_fillcall");
-        BasicBlock* bb_helper = b.append_block(prefix + "_helper");
-        bb_fill->set_cold();
-        bb_fill_call->set_cold();
-        bb_helper->set_cold();
+        BasicBlock* bb_own = b.append_block(prefix + "_cellown");
+        BasicBlock* bb_other = b.append_block(prefix + "_cellother");
+        BasicBlock* bb_stub = b.append_block(prefix + "_cellstub");
+        BasicBlock* bb_generic = b.append_block(prefix + "_cellgeneric");
         b.position_at_end(bb_slow);
         Value* is_object = nullptr;
         Value* cptr = nullptr;
@@ -249,16 +247,24 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
         receiver_shape(b, obj, is_object, cptr, shape);
         Value* same_shape = b.build_eq(shape, b.build_load(Type::i64(), cell, 0));
         Value* same_key = b.build_eq(key, b.build_load(Type::i64(), cell, 8));
-        b.build_br_if(b.build_and(is_object, b.build_and(same_shape, same_key)), bb_cell_hit, bb_fill);
+        b.build_br_if(b.build_and(is_object, b.build_and(same_shape, same_key)), bb_cell_hit, bb_other);
+        // Another pair: the stub while the site still takes fills, else the
+        // generic read straight away (a site that reads several keys in turn
+        // misses its cell at most reads for good).
+        b.position_at_end(bb_other);
+        b.build_br_if(b.build_ult(b.build_load(Type::i64(), cell, 24), iconst(b, BRONZE_ABI_ELEM_CELL_LIMIT)), bb_stub,
+                      bb_generic);
+        b.position_at_end(bb_generic);
+        b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, key})});
         b.position_at_end(bb_cell_hit);
-        b.build_br(bb_merge, {load_slot_at(b, cptr, b.build_load(Type::i64(), cell, 16))});
-        b.position_at_end(bb_fill);
-        b.build_br_if(b.build_ult(b.build_load(Type::i64(), cell, 24), iconst(b, BRONZE_ABI_ELEM_CELL_LIMIT)),
-                      bb_fill_call, bb_helper);
-        b.position_at_end(bb_fill_call);
-        b.build_call("bronze_elem_cell_fill", Type::void_type(), {obj, key, cell});
-        b.build_br(bb_helper);
-        b.position_at_end(bb_helper);
+        Value* slot_word = b.build_load(Type::i64(), cell, 16);
+        b.build_br_if(b.build_ult(slot_word, iconst(b, uint64_t{1} << 32)), bb_own, bb_stub);
+        b.position_at_end(bb_own);
+        b.build_br(bb_merge, {load_slot_at(b, cptr, slot_word)});
+        b.position_at_end(bb_stub);
+        b.build_br(bb_merge, {b.build_call(stub_sym(kElemCellStub), Type::i64(), {obj, key, cell})});
+        b.position_at_end(bb_merge);
+        return result;
     }
     b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, key})});
 
@@ -380,6 +386,82 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_done);
 
     b.position_at_end(bb_done);
+}
+
+// `a.push(v)`, one argument, on an Array (`ptr`, its header already tested)
+// at the bare array shape: no own property, so `push` is %Array.prototype%'s,
+// which lockdown froze. With an elements block, no index hazard (the elements
+// tag mask, as the element store's append arm reads it) and room past the
+// length, 23.1.3.23's one Set lands in the block: the value at the length,
+// the length one more, NUMBERS cleared by a value that is no Number, and the
+// barrier. The result is the new length. Anything else goes to `miss`.
+Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "apush_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* room_test = b.append_block(prefix + "_room");
+    BasicBlock* store = b.append_block(prefix + "_store");
+    b.position_at_end(cur);
+    Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                             tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF));
+    Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
+                                  iconst(b, kObjectTagBits));
+    b.build_br_if(b.build_and(bare, has_elems), room_test, miss);
+    b.position_at_end(room_test);
+    Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+    const ArrayElements e = array_elements(b, ptr);
+    Value* end = b.build_add(e.head, b.build_zext_i64(len));
+    b.build_br_if(b.build_ult(end, b.build_zext_i64(cap)), store, miss);
+    b.position_at_end(store);
+    Value* at = b.build_add(b.build_add(e.block, b.build_shl(end, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
+    Value* new_len = b.build_add(len, b.build_iconst_i32(1));
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, new_len);
+    const auto forget_numbers = [ptr](Builder& bb) {
+        Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+        array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
+                           bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+    };
+    store_value(b, at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
+    return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(new_len));
+}
+
+// `a.pop()` on an Array at the bare array shape whose last element is
+// present: 23.1.3.22's Get, DeletePropertyOrThrow and length Set, which on
+// such an array read the element, leave a hole and shorten the length (an
+// empty array also takes its head back to 0, as the runtime's pop does). A
+// hole, an empty array or any other array goes to `miss`.
+Value* PropertyLoweringHelper::lower_array_pop(Builder& b, Value* ptr, BasicBlock* miss) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "apop_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* nonempty = b.append_block(prefix + "_nonempty");
+    BasicBlock* present = b.append_block(prefix + "_present");
+    BasicBlock* empty = b.append_block(prefix + "_empty");
+    BasicBlock* done = b.append_block(prefix + "_done");
+    b.position_at_end(cur);
+    Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                             tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF));
+    Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
+                                  iconst(b, kObjectTagBits));
+    Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    b.build_br_if(b.build_and(b.build_and(bare, has_elems), b.build_ne(len, b.build_iconst_i32(0))), nonempty, miss);
+    b.position_at_end(nonempty);
+    Value* new_len = b.build_sub(len, b.build_iconst_i32(1));
+    const ArrayElements e = array_elements(b, ptr);
+    Value* at = b.build_add(b.build_add(e.block, b.build_shl(b.build_add(e.head, b.build_zext_i64(new_len)), iconst(b, 3))),
+                            iconst(b, kBronzeHdrBytes));
+    Value* last = with_alias_class(b.build_load(Type::i64(), at, 0), kBoxedElementAliasClass);
+    b.build_br_if(b.build_eq(last, iconst(b, BRONZE_ABI_HOLE_BITS)), miss, {}, present, {});
+    b.position_at_end(present);
+    with_alias_class(b.build_store(Type::i64(), at, 0, iconst(b, BRONZE_ABI_HOLE_BITS)), kBoxedElementAliasClass);
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, new_len);
+    b.build_br_if(b.build_eq(new_len, b.build_iconst_i32(0)), empty, done);
+    b.position_at_end(empty);
+    array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET, b.build_iconst_i32(0));
+    b.build_br(done);
+    b.position_at_end(done);
+    return last;
 }
 
 // An array literal's element `[.., v, ..]` (il_ast.h kLiteralElementWriteMode,

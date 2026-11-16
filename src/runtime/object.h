@@ -202,11 +202,7 @@ struct InlineCache {
     }
 
     void fill(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
-        cached_shape = receiverShape;
-        cached_slot = slot;
-        cached_depth = depth;
-        cached_epoch = protoMutationEpoch();
-        rtIcHotNoteWrite(this);
+        assign(receiverShape, slot, depth, protoMutationEpoch());
     }
 
     // Same fill for a scratch `InlineCache` not residing in any module's IC
@@ -225,11 +221,7 @@ struct InlineCache {
     // here rather than passed in, so no set-site entry can name a claimed slot
     // without saying so.
     void fillForSet(Shape* receiverShape, uint32_t slot) noexcept {
-        cached_shape = receiverShape;
-        cached_slot = slot;
-        cached_depth = receiverShape->setEntryFlags(slot);
-        cached_epoch = protoMutationEpoch();
-        rtIcHotNoteWrite(this);
+        assign(receiverShape, slot, receiverShape->setEntryFlags(slot), protoMutationEpoch());
     }
 
     // A SET site's fill by a store to a property the receiver already had.
@@ -240,38 +232,37 @@ struct InlineCache {
     // site stored to the key rather than added it.
     static constexpr uint64_t kStoreFilledEpoch = ~uint64_t{0};
     void fillForStore(Shape* receiverShape, uint32_t slot) noexcept {
-        cached_shape = receiverShape;
-        cached_slot = slot;
-        cached_depth = receiverShape->setEntryFlags(slot);
-        cached_epoch = kStoreFilledEpoch;
-        rtIcHotNoteWrite(this);
+        assign(receiverShape, slot, receiverShape->setEntryFlags(slot), kStoreFilledEpoch);
     }
     bool isStoreFilled() const noexcept {
         return isRealShape() && !isAccessor() && !isAbsent() && realDepth() == 0 && cached_epoch == kStoreFilledEpoch;
     }
 
     void fillAccessor(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
-        cached_shape = receiverShape;
-        cached_slot = slot;
-        cached_depth = depth | BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
-        cached_epoch = protoMutationEpoch();
-        rtIcHotNoteWrite(this);
+        assign(receiverShape, slot, depth | BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG, protoMutationEpoch());
     }
 
     void fillAbsent(Shape* receiverShape) noexcept {
-        cached_shape = receiverShape;
-        cached_slot = 0;
-        cached_depth = BRONZE_ABI_IC_DEPTH_ABSENT_FLAG;
-        cached_epoch = protoMutationEpoch();
-        rtIcHotNoteWrite(this);
+        assign(receiverShape, 0, BRONZE_ABI_IC_DEPTH_ABSENT_FLAG, protoMutationEpoch());
     }
 
     void fillArrayMethod(uint32_t methodId) noexcept {
-        cached_shape = reinterpret_cast<Shape*>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD);
-        cached_slot = methodId;
-        cached_depth = 0;
-        cached_epoch = 0;
-        rtIcHotNoteWrite(this);
+        assign(reinterpret_cast<Shape*>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD), methodId, 0, 0);
+    }
+
+private:
+    // Every fill of a table entry: the four words, and the packed way-0 row
+    // told only when one of the two words it copies changed. A slow path that
+    // runs on every call of a site (a store that grows the object, a setter)
+    // refills the entry it hit with what it already held, and that refill
+    // costs four compares.
+    void assign(Shape* receiverShape, uint32_t slot, uint32_t depth, uint64_t epoch) noexcept {
+        const bool rowSame = cached_shape == receiverShape && cached_slot == slot && cached_depth == depth;
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = depth;
+        cached_epoch = epoch;
+        if (!rowSame) rtIcHotNoteWrite(this);
     }
 };
 

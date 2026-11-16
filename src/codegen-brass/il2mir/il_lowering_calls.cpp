@@ -101,7 +101,7 @@ bool lower_call_instruction(
             for (size_t a = 0; a < inst_ast.param_count; ++a) args.push_back(get_opd(1 + a));
             Value* key_id = lowering->get_key_id(b, inst_ast.index);
             if (lowering->prop_lowering().ic_site_ref(b, inst_ast.ic_index)) {
-                res_val = lower_method_call_inline(lowering, b, recv, key_id, args, inst_ast.ic_index);
+                res_val = lower_method_call_inline(lowering, b, recv, key_id, inst_ast.index, args, inst_ast.ic_index);
             } else {
                 Value* method = b.build_call("bronze_prop_get", Type::i64(), {recv, key_id, b.build_iconst_i64(0)});
                 res_val = lower_call_dynamic_inline(lowering, b, method, ensure_type(get_opd(0), Type::i64()), args);

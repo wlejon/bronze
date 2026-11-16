@@ -121,6 +121,7 @@ bronze_add_module(runtime
         rt_numeric.cpp
         rt_key.cpp
         elem_ic.cpp
+        elem_cell.cpp
         ic_hot.cpp
         deopt_stats.cpp
         ic_harvest.cpp

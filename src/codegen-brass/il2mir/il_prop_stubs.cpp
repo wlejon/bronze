@@ -390,7 +390,28 @@ void build_prop_set_stub(Function* fn, const std::string& setter_call_sym) {
                            b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF)));
         Value* new_slot = b.build_zext_i64(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET));
         require(b.build_eq(b.build_and(way_word(b, site, 0, BRONZE_ABI_IC_SLOT_OFFSET), imm(b, 0xFFFFFFFFLL)), new_slot));
-        require(b.build_ult(new_slot, imm(b, kBronzeObjOverflowSlot)));
+        // An inline slot, or an overflow slot the object's block already has
+        // room for (ObjectHeader::ensureOverflow sizes the block; growing it
+        // allocates, the helper's job).
+        {
+            BasicBlock* cur = b.current_block();
+            BasicBlock* out = b.append_block("ps_add_overflow");
+            BasicBlock* room = b.append_block("ps_add_room");
+            BasicBlock* ok = b.append_block("ps_add_slot_ok");
+            b.position_at_end(cur);
+            b.build_br_if(b.build_ult(new_slot, imm(b, kBronzeObjOverflowSlot)), ok, out);
+            b.position_at_end(out);
+            Value* block = b.build_xor(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
+                                       imm(b, static_cast<int64_t>(kObjectTagBits)));
+            b.build_br_if(b.build_ult(block, imm(b, kPayloadLimit)), room, helper);
+            b.position_at_end(room);
+            // Slot 62 + i is Value i of the block, whose header (8 bytes)
+            // counts its own size: Value i fits when 8 * (i + 2) <= size.
+            Value* size = b.build_zext_i64(b.build_load(Type::i32(), block, BRONZE_ABI_HDR_SIZE_OFFSET));
+            Value* need = b.build_shl(b.build_sub(new_slot, imm(b, kBronzeObjOverflowSlot - 2)), imm(b, 3));
+            b.build_br_if(b.build_ule(need, size), ok, helper);
+            b.position_at_end(ok);
+        }
         BasicBlock* tested = b.current_block();
         BasicBlock* commit = b.append_block("ps_add_commit");
         BasicBlock* not_boxed = b.append_block("ps_add_repr");
@@ -413,7 +434,7 @@ void build_prop_set_stub(Function* fn, const std::string& setter_call_sym) {
 
         b.position_at_end(commit);
         b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, cached);
-        Value* at = b.build_add(b.build_add(ptr, b.build_shl(new_slot, imm(b, 3))), imm(b, kBronzeObjSlotsOffset));
+        Value* at = PropertyLoweringHelper::slot_address(b, ptr, new_slot);
         b.build_store(Type::i64(), at, 0, val);
         b.build_br_if(b.build_ugt(val, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), barrier, {at}, done, {});
     }
@@ -441,6 +462,68 @@ void build_prop_set_stub(Function* fn, const std::string& setter_call_sym) {
                       b.build_select(b.build_ne(mode, b.build_iconst_i32(0)), b.build_iconst_i32(1), b.build_iconst_i32(0))});
         b.build_ret_void();
     }
+    fn->rebuild_cfg_predecessors();
+}
+
+// The cell stub: (obj, key, cell) -> value, what a computed read's inline
+// cell test misses to (il_elem_lowering.cpp lower_elem_get). A plain
+// receiver at the cell's shape with the cell's key bits whose slot word names
+//   a dictionary's own slot: read while the receiver's table is at the
+//     cell's generation;
+//   a slot 1..BRONZE_ABI_ELEM_CELL_MAX_DEPTH links up: read off the holder
+//     while the prototype epoch is the cell's, every link a plain object
+//     that is no dictionary;
+// everything else is bronze_elem_get_cell, which answers the read and fills
+// the cell.
+void build_elem_cell_stub(Function* fn) {
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* entry = b.append_block("entry");
+    Value* obj = b.add_block_param(entry, Type::i64());
+    Value* key = b.add_block_param(entry, Type::i64());
+    Value* cell = b.add_block_param(entry, Type::i64());
+    BasicBlock* object = b.append_block("ec_object");
+    BasicBlock* hit = b.append_block("ec_hit");
+    BasicBlock* dict = b.append_block("ec_dict");
+    BasicBlock* dict_read = b.append_block("ec_dict_read");
+    BasicBlock* proto = b.append_block("ec_proto");
+    BasicBlock* walk = b.append_block("ec_walk");
+    BasicBlock* holder_bb = b.append_block("ec_holder");
+    Value* holder = b.add_block_param(holder_bb, Type::i64());
+    BasicBlock* helper = b.append_block("ec_helper");
+    auto word_at = [&](int32_t w) { return b.build_load(Type::i64(), cell, w * 8); };
+
+    b.position_at_end(entry);
+    Value* ptr = b.build_xor(obj, imm(b, static_cast<int64_t>(kObjectTagBits)));
+    b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, helper);
+    b.position_at_end(object);
+    Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    b.build_br_if(b.build_and(b.build_eq(shape, word_at(0)), b.build_eq(key, word_at(1))), hit, helper);
+
+    b.position_at_end(hit);
+    Value* slot_word = word_at(2);
+    Value* where = b.build_lshr(slot_word, imm(b, 32));
+    Value* slot = b.build_and(slot_word, imm(b, 0xFFFFFFFFLL));
+    b.build_br_if(b.build_eq(where, imm(b, BRONZE_ABI_ELEM_CELL_DICT)), dict, proto);
+
+    b.position_at_end(dict);
+    Value* table = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET);
+    b.build_br_if(b.build_eq(b.build_load(Type::i64(), table, BRONZE_ABI_DICT_GENERATION_OFFSET), word_at(4)), dict_read,
+                  helper);
+    b.position_at_end(dict_read);
+    b.build_ret(PropertyLoweringHelper::load_slot_at(b, ptr, slot));
+
+    b.position_at_end(proto);
+    Value* linked = b.build_ult(b.build_sub(where, imm(b, 1)), imm(b, BRONZE_ABI_ELEM_CELL_MAX_DEPTH));
+    Value* current = b.build_eq(word_at(4), b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF));
+    b.build_br_if(b.build_and(linked, current), walk, helper);
+    b.position_at_end(walk);
+    walk_to_holder(b, shape, where, holder_bb, helper);
+    b.position_at_end(holder_bb);
+    b.build_ret(PropertyLoweringHelper::load_slot_at(b, holder, slot));
+
+    b.position_at_end(helper);
+    b.build_ret(b.build_call("bronze_elem_get_cell", Type::i64(), {obj, key, cell}));
     fn->rebuild_cfg_predecessors();
 }
 
@@ -503,11 +586,78 @@ void build_method_call_stub(Function* fn) {
     BasicBlock* helper = b.append_block("mc_helper");
     auto word_at = [&](int32_t w) { return b.build_load(Type::i64(), site, w * 8); };
 
+    BasicBlock* prim = b.append_block("mc_prim");
+    BasicBlock* exotic = b.append_block("mc_exotic");
     b.position_at_end(entry);
+    // Way 0's EXOTIC and PRIMITIVE forms (bronze_abi_layout.h, the method
+    // site contract): word 0 odd, its kind field the receiver's heap kind or
+    // value tag.
+    Value* w0 = word_at(0);
+    Value* w0_kind = b.build_and(b.build_lshr(w0, imm(b, BRONZE_ABI_METHOD_IC_KIND_SHIFT)),
+                                 imm(b, 0xFFFFFFFFLL >> BRONZE_ABI_METHOD_IC_KIND_SHIFT));
+    Value* w0_exotic = b.build_ne(b.build_and(w0, imm(b, static_cast<int64_t>(BRONZE_ABI_METHOD_IC_EXOTIC_BIT))), imm(b, 0));
     Value* ptr = b.build_xor(recv, imm(b, static_cast<int64_t>(kObjectTagBits)));
-    b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, helper);
+    b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, prim);
     b.position_at_end(object);
-    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), plain, helper);
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), plain, exotic);
+
+    // A string or number receiver: the SLOT form against the intrinsic in
+    // the env word, whose shape the aux word pins; the slot's current
+    // function is called (the `call` block's entry test).
+    b.position_at_end(prim);
+    {
+        BasicBlock* holder_ok = b.append_block("mc_prim_holder");
+        BasicBlock* holder_plain = b.append_block("mc_prim_plain");
+        BasicBlock* read = b.append_block("mc_prim_read");
+        b.position_at_end(prim);
+        Value* is_number = b.build_ule(recv, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits)));
+        Value* kind = b.build_select(is_number, imm(b, BRONZE_ABI_METHOD_IC_KIND_NUMBER), b.build_lshr(recv, imm(b, 48)));
+        Value* slot_plus_one = b.build_lshr(word_at(BRONZE_ABI_METHOD_IC_ARITY_WORD), imm(b, BRONZE_ABI_METHOD_IC_SLOT_SHIFT));
+        Value* ok = b.build_and(b.build_and(w0_exotic, b.build_eq(w0_kind, kind)), b.build_ne(slot_plus_one, imm(b, 0)));
+        b.build_br_if(ok, holder_ok, helper);
+        b.position_at_end(holder_ok);
+        Value* hptr = b.build_xor(word_at(BRONZE_ABI_METHOD_IC_ENV_WORD), imm(b, static_cast<int64_t>(kObjectTagBits)));
+        b.build_br_if(b.build_ult(hptr, imm(b, kPayloadLimit)), holder_plain, helper);
+        b.position_at_end(holder_plain);
+        Value* plain_holder = b.build_eq(b.build_load(Type::i32(), hptr, 0), b.build_iconst_i32(kPlainHeaderLow));
+        Value* same_shape = b.build_eq(b.build_load(Type::i64(), hptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                       word_at(BRONZE_ABI_METHOD_IC_AUX_WORD));
+        b.build_br_if(b.build_and(plain_holder, same_shape), read, helper);
+        b.position_at_end(read);
+        b.build_br(call, {PropertyLoweringHelper::load_slot_at(b, hptr, b.build_sub(slot_plus_one, imm(b, 1)))});
+    }
+
+    // An Array, a typed array or a RegExp: the kind against the receiver's
+    // flags, the u64 at the carried offset against the aux word, the epoch
+    // for every kind but an Array (whose bare shape and frozen prototype
+    // need none), then the DIRECT words: a native or compiled builtin the
+    // arguments cover. A function receiver's forms are the helper's.
+    b.position_at_end(exotic);
+    {
+        BasicBlock* aux_test = b.append_block("mc_exotic_aux");
+        BasicBlock* epoch_test = b.append_block("mc_exotic_epoch");
+        BasicBlock* enter = b.append_block("mc_exotic_enter");
+        b.position_at_end(exotic);
+        static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the flags are the header word's bits 16..31");
+        Value* flags = b.build_lshr(b.build_zext_i64(b.build_load(Type::i32(), ptr, 0)), imm(b, 16));
+        Value* not_fn = b.build_ne(flags, imm(b, BRONZE_ABI_OBJ_FLAGS_FUNCTION));
+        b.build_br_if(b.build_and(b.build_and(w0_exotic, b.build_eq(w0_kind, flags)), not_fn), aux_test, helper);
+        b.position_at_end(aux_test);
+        Value* aux = b.build_load(Type::i64(), b.build_add(ptr, b.build_lshr(w0, imm(b, BRONZE_ABI_METHOD_IC_BOX_SHIFT))), 0);
+        Value* arity_word = word_at(BRONZE_ABI_METHOD_IC_ARITY_WORD);
+        Value* entry_ok = b.build_ule(b.build_xor(arity_word, imm(b, static_cast<int64_t>(BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT))),
+                                      b.build_zext_i64(argc));
+        b.build_br_if(b.build_and(b.build_eq(aux, word_at(BRONZE_ABI_METHOD_IC_AUX_WORD)), entry_ok), epoch_test, helper);
+        b.position_at_end(epoch_test);
+        Value* epoch_ok = b.build_eq(word_at(BRONZE_ABI_METHOD_IC_EPOCH_WORD),
+                                     b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF));
+        Value* array = b.build_eq(flags, imm(b, BRONZE_ABI_OBJ_FLAGS_ARRAY));
+        b.build_br_if(b.build_or(array, epoch_ok), enter, helper);
+        b.position_at_end(enter);
+        b.build_ret(b.build_call_indirect(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * 8), Type::i64(),
+                                          {word_at(BRONZE_ABI_METHOD_IC_ENV_WORD), recv, argc, argv}));
+    }
+
     b.position_at_end(plain);
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     b.build_br_if(b.build_eq(shape, word_at(BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD)), way1, gate);

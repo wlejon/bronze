@@ -29,6 +29,7 @@ constexpr int32_t kWord = 8;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kFunctionHeaderLow = (BRONZE_ABI_OBJ_FLAGS_FUNCTION << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr uint64_t kRealmMask = ~uint64_t{0} << BRONZE_ABI_FN_REALM_SHIFT;
 // A call: direct-call bit set, class-constructor bit clear, and either a
@@ -181,7 +182,35 @@ Value* lower_call_dynamic_inline(IlLowering* lowering, Builder& b, Value* callee
 // Everything else — way 1, the thread's megamorphic table, the EXOTIC and
 // PRIMITIVE forms, a function receiver, an unfilled site — is the module's
 // method stub (il_prop_stubs.cpp), with bronze_call_method behind it.
-Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
+namespace {
+
+enum class ArrayMethod { None, Push, Pop, Call };
+
+// A method call the inline path answers for a receiver that is no plain
+// object, by the key's name: `push` with one argument and `pop` with none on
+// an Array (at the bare array shape the name can only be %Array.prototype%'s
+// builtin), and `call` with a `this` argument on a function (at the bare
+// function shape it can only be %Function.prototype.call%). Both prototypes
+// are frozen by lockdown.
+ArrayMethod array_method_of(IlLowering* lowering, uint32_t key_index, uint32_t argc) {
+    const std::vector<std::string>& keys = lowering->options().key_constants;
+    if (key_index >= keys.size()) return ArrayMethod::None;
+    if (argc == 1 && keys[key_index] == "push") return ArrayMethod::Push;
+    if (argc == 0 && keys[key_index] == "pop") return ArrayMethod::Pop;
+    if (argc >= 1 && keys[key_index] == "call") return ArrayMethod::Call;
+    return ArrayMethod::None;
+}
+
+// The method site's way 0 as the runtime latches `f.call` on a function at
+// the bare function shape (rt_method_call.cpp, the EXOTIC form with a shape
+// guard): the shape offset, the function kind, the exotic bit.
+constexpr uint64_t kFunctionShapeLatch = (uint64_t{BRONZE_ABI_OBJ_SHAPE_OFFSET} << BRONZE_ABI_METHOD_IC_BOX_SHIFT) |
+                                         (uint64_t{BRONZE_ABI_OBJ_FLAGS_FUNCTION} << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
+                                         BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+
+}  // namespace
+
+Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t key_index,
                                 const std::vector<Value*>& args, uint32_t ic_index) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     const IcSite site = pl.ic_site_ref(b, ic_index);
@@ -205,7 +234,48 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
 
     b.position_at_end(object);
     Value* ptr = b.build_lshr(b.build_shl(recv, imm(b, 16)), imm(b, 16));
-    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), way0, helper);
+    Value* header = b.build_load(Type::i32(), ptr, 0);
+    const ArrayMethod array_method = array_method_of(lowering, key_index, argc);
+    if (array_method == ArrayMethod::None) {
+        b.build_br_if(b.build_eq(header, b.build_iconst_i32(kPlainHeaderLow)), way0, helper);
+    } else if (array_method == ArrayMethod::Call) {
+        // `f.call(t, ...args)`: a function at the shape the site latched
+        // for %Function.prototype.call% is called itself, with `t` as this
+        // and the rest as its arguments; every other receiver, and a callee
+        // compiled code may not enter, takes the method stub.
+        BasicBlock* not_plain = b.append_block(p + "_notplain");
+        BasicBlock* fn_test = b.append_block(p + "_fncall");
+        b.position_at_end(object);
+        b.build_br_if(b.build_eq(header, b.build_iconst_i32(kPlainHeaderLow)), way0, not_plain);
+        b.position_at_end(not_plain);
+        Value* latched = b.build_and(b.build_eq(word(0), imm(b, static_cast<int64_t>(kFunctionShapeLatch))),
+                                     b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                                word(BRONZE_ABI_METHOD_IC_AUX_WORD)));
+        b.build_br_if(b.build_and(b.build_eq(header, b.build_iconst_i32(kFunctionHeaderLow)), latched), fn_test, helper);
+        b.position_at_end(fn_test);
+        Value* fn = function_entry_test(b, recv, kCallMask, kCallBits, helper,
+                                        b.build_iconst_i32(static_cast<int32_t>(argc - 1)));
+        for (uint32_t i = 1; i < argc; ++i) {
+            b.build_store(Type::i64(), argv, static_cast<int32_t>((i - 1) * kWord),
+                          lowering->ensure_type(args[i], Type::i64(), b));
+        }
+        Value* this_arg = lowering->ensure_type(args[0], Type::i64(), b);
+        b.build_br(merge, {enter_function(lowering, b, fn, this_arg, argc - 1, argv)});
+    } else {
+        // `push(v)` / `pop()` on an Array: inline at the bare array shape
+        // (il_elem_lowering.cpp), the method stub otherwise.
+        BasicBlock* not_plain = b.append_block(p + "_notplain");
+        BasicBlock* array = b.append_block(p + "_array");
+        b.position_at_end(object);
+        b.build_br_if(b.build_eq(header, b.build_iconst_i32(kPlainHeaderLow)), way0, not_plain);
+        b.position_at_end(not_plain);
+        b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayHeaderLow)), array, helper);
+        b.position_at_end(array);
+        Value* r = array_method == ArrayMethod::Push
+                       ? pl.lower_array_push(b, ptr, lowering->ensure_type(args[0], Type::i64(), b), helper)
+                       : pl.lower_array_pop(b, ptr, helper);
+        b.build_br(merge, {r});
+    }
 
     b.position_at_end(way0);
     b.build_br_if(b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), word(0)), direct, helper);

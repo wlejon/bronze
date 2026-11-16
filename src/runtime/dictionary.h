@@ -85,6 +85,18 @@ enum class IntegrityLevel : uint8_t {
 // a hundred million compares to fill.
 class Dictionary {
 public:
+    Dictionary() noexcept : generation(nextGeneration()) {}
+
+    // Names what `find` answers for each key this table holds: a new value,
+    // unique on the thread, whenever an entry's key stops naming the slot it
+    // named (a removal, a redefinition that moves a property to other
+    // storage) and for every new table. An add changes no answer and keeps
+    // it. A computed read's cell remembers (shape, key, slot, generation)
+    // and reads the slot while the generation it saw is the table's
+    // (codegen-brass/elem_cells.h, BRONZE_ABI_DICT_GENERATION_OFFSET). The
+    // first member, at offset 0.
+    uint64_t generation;
+
     // Insertion order, which is enumeration order for the string half of
     // own-enumerable order — with the difference only a delete can make
     // visible: a key re-added after a delete is a NEW insertion and goes to the
@@ -157,6 +169,14 @@ public:
 
     // Releases all vector memory when the owning object is collected by GC.
     void releaseMemory() noexcept;
+
+    // A fresh generation (above), for a key that stops naming its slot.
+    void retireAnswers() noexcept { generation = nextGeneration(); }
+
+private:
+    static uint64_t nextGeneration() noexcept;
+
+public:
 
 private:
     // Drops the tombstones and reindexes. Called from `remove` once the dead

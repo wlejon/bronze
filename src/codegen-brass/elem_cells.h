@@ -1,9 +1,10 @@
 #pragma once
 
-// THE ELEMENT CELLS of a module: one pair cell per computed read
-// (`elem.get`) in the module's per-thread data (`__bronze_elem_cells`, four
-// u64 per cell: shape, key bits, slot word, fill count; runtime/elem_ic.cpp
-// bronze_elem_cell_fill). A read's cell is named by its slow site
+// THE ELEMENT CELLS of a module: one cell per computed read (`elem.get`) in
+// the module's per-thread data (`__bronze_elem_cells`, five u64 per cell:
+// shape, key bits, slot word, fill count, validity; bronze_abi_layout.h
+// BRONZE_ABI_ELEM_CELL_WORDS, runtime/elem_ic.cpp bronze_elem_get_cell). A
+// read's cell is named by its slow site
 // (il.h Instruction::slowSite), which every copy of the read shares, so G's
 // read and S's copy of it use one cell; a read with no slow site has none.
 

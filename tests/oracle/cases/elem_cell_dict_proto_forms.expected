@@ -1,0 +1,36 @@
+v0,v1,v2,v3,v10,v39,
+v0,v1,v2,v3,v10,v39,
+v0,v1,v2,v3,v10,v39,
+v0,v1,v2,v3,v10,v39,
+v0,v1,undefined,v3,v10,v39,
+v0,v1,back,v3,v10,v39, new
+undefined,undefined,undefined,undefined,undefined,undefined, 500
+undefined,getter,undefined,undefined,undefined,undefined,
+undefined,data again,undefined,undefined,undefined,undefined,
+1,undefined,3,undefined,
+1,undefined,3,undefined,
+1,undefined,3,undefined,
+1,b2,3,d,
+undefined,b2,3,d,
+7:undefined 107:undefined 207:undefined 307:undefined 407:undefined 507:undefined 607:undefined undefined:undefined 807:undefined 907:undefined 1007:undefined 1107:undefined 1207:undefined 1307:undefined 1407:undefined 1507:undefined 1607:undefined 1707:undefined 1807:undefined 1907:undefined 2007:undefined 2107:undefined 2207:undefined 2307:undefined 2407:undefined 2507:undefined 2607:undefined 2707:undefined 2807:undefined 2907:undefined 
+function,string,function,undefined base hello
+function,string,function,undefined base hello
+function,string,function,undefined base hello
+replaced
+mid
+own now mid
+swapped
+p1 plain len
+a1 2
+t 3
+p1 plain len
+a1 2
+undefined 2
+p1 plain len
+true
+undefined,1,undefined,undefined,undefined,undefined,undefined,undefined
+undefined,undefined,data,num on proto,fn,undefined,1,2
+undefined,undefined,getter on proto,undefined,fn,undefined,undefined,2
+trap k0,trap k1,trap fromProto,trap 77,trap toString,trap nope,trap 1,2
+undefined,1,undefined,undefined,undefined,undefined,undefined,undefined
+undefined,undefined,data,num on proto,fn,undefined,1,2

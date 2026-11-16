@@ -72,7 +72,10 @@ inline const Shape* ctorStaticsKey(const FunctionHeader* fn, bool& ok) noexcept 
     return sh;
 }
 
-constexpr uint32_t kInstanceofCacheBits = 6;
+// Direct-mapped, so two hot (object shape, constructor) pairs on one entry
+// evict each other at every test: at 64 entries pixi_text's 2000 tests a
+// frame missed on 38% and took the rooted walk; at 256 they hit.
+constexpr uint32_t kInstanceofCacheBits = 8;
 constexpr uint32_t kInstanceofCacheEntries = 1u << kInstanceofCacheBits;
 thread_local InstanceofCacheEntry t_instanceofCache[kInstanceofCacheEntries];
 

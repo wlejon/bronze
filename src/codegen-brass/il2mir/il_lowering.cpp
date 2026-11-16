@@ -558,6 +558,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         const Type view_set_params[] = {Type::i64(), Type::i32(), Type::i64(), Type::i64(), Type::i32()};
         build_view_set_stub(
             mod->create_function(module_sym(kViewSetStub), Type::void_type(), Span<const Type>(view_set_params, 5)));
+        const Type cell_params[] = {Type::i64(), Type::i64(), Type::i64()};
+        build_elem_cell_stub(
+            mod->create_function(module_sym(kElemCellStub), Type::i64(), Span<const Type>(cell_params, 3)));
         const Type method_params[] = {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()};
         build_method_call_stub(
             mod->create_function(module_sym(kMethodCallStub), Type::i64(), Span<const Type>(method_params, 5)));

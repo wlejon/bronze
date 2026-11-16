@@ -89,6 +89,12 @@ bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 // may hold a raw receiver across it; the slot is read or written by the
 // caller, who also owns the questions a write asks (`writable`).
 const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key);
+// `map[k]` read on the same receivers and keys: the own data entry's value,
+// or, for a key the map lacks, the prototype chain's answer while every link
+// is a bare plain object holding the name as data or not at all (`undefined`
+// at the chain's end: `if (!cache[key])`). False for anything else, which is
+// then the generic read's. Allocates nothing on the GC heap.
+bool rtIdKeyedRead(Value objVal, Value key, Value& out);
 
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
