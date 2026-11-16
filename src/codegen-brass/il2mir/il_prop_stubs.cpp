@@ -31,7 +31,6 @@ namespace {
 
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
-constexpr int64_t kPayloadMask = 0x0000FFFFFFFFFFFFLL;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int64_t kAccessorFlag = BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
 constexpr int64_t kAbsentFlag = BRONZE_ABI_IC_DEPTH_ABSENT_FLAG;
