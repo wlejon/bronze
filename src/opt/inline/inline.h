@@ -50,6 +50,16 @@
 // again in this pass, which is also what bounds recursion (a self-call is
 // inlined at most once: its copy's self-call stays a call).
 //
+// LOOPS OF AN INLINED BODY. The redundancy pass hoists a loop-invariant guard
+// to the loop's preheader only where it has a resume point for entering the
+// loop (opt/speculate loops.cpp). A copied loop's header has fresh ids, which
+// name no block of G_c, so the splice records for it (il.h
+// Function::inlinedLoopEntries) the exit a leave from its preheader takes:
+// `leave @G_f, h, state...` for G_f's loop-entry point h, finished by the same
+// rule as every copied leave — `resume.call @G_f, h, ...` then
+// `leave @G_c, a, callerState(r)` — and a callee's own entries (from its own
+// inlining) are carried the same way, renamed, one more level each.
+//
 // WHAT IS NOT INLINED (callee.cpp has the rules and why): a callee that is a
 // declaration, the entry or a top-level function, a coroutine or starts one,
 // reads new.target or calls super(), has an

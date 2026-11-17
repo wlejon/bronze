@@ -257,7 +257,7 @@ const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key) {
     return e != nullptr && !e->accessor ? e : nullptr;
 }
 
-bool rtIdKeyedRead(Value objVal, Value key, Value& out) {
+bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot, StringHeader** ownName) {
     if (!objVal.isObject() || !(key.isNumber() || key.isString())) return false;
     const auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain) return false;
@@ -283,6 +283,8 @@ bool rtIdKeyedRead(Value objVal, Value key, Value& out) {
     if (const DictEntry* e = sh->dict->find(pk)) {
         if (e->accessor) return false;
         out = obj->getSlot(e->slot);
+        if (ownSlot != nullptr) *ownSlot = e->slot;
+        if (ownName != nullptr) *ownName = name;
         return true;
     }
     // Absent from the map: the chain's answer, while every link is a bare

@@ -102,6 +102,10 @@ ElemKeyKind witnessFor(Value key, uint64_t& out) noexcept {
     return ElemKeyKind::Empty;
 }
 
+// Writes an entry (elemCacheFill, elemCacheFillDict): `filled` under the
+// probe's key, at the probe's entry.
+void install(const ElemProbe& probe, StringHeader* liveKey, const InlineCache& filled);
+
 // Does this entry speak for this key? The shape half is asked separately, by
 // `InlineCache::describes`, because that is the question the property path
 // already owns.
@@ -245,6 +249,9 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
     const uint32_t bucket = bucketOf(shape, witness, kElemCacheEntries);
     ElemCacheEntry* found = nullptr;
     for (ElemCacheEntry* way : {&g_elemCache[bucket], &g_elemCache[bucket ^ 1]}) {
+        // A dictionary-form entry (elemCacheFillDict) of a table frozen since
+        // answers only in the stub, by its generation.
+        if (way->ic.cached_depth == BRONZE_ABI_ELEM_CELL_DICT) continue;
         if (way->ic.cached_shape == shape && keyMatches(*way, kind, witness, key)) {
             found = way;
             break;
@@ -355,6 +362,32 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     // somewhere, an absent one need exist nowhere. `elemCacheInternKey`
     // deduplicates and spends a fixed budget, so a stable absent pair costs one
     // copy and a rotating one costs nothing after the budget.
+    install(probe, liveKey, filled);
+}
+
+void elemCacheFillDict(Value objVal, Value key, StringHeader* name, uint32_t slot) {
+    if (name == nullptr || censusFillsSuppressed()) return;
+    Shape* shape = objVal.asObject<ObjectHeader>()->shape;
+    if (shape->dict == nullptr || shape->readCacheable()) return;
+    // A heap string's entry would answer only that string object (the stub's
+    // latch), and a key built for the read (`text + ':' + style`) is a fresh
+    // one every time: the fill would intern a copy that never hits.
+    if (key.isString() && !key.asString<StringHeader>()->isArena()) return;
+    ElemProbe probe;
+    probe.kind = witnessFor(key, probe.witness);
+    if (probe.kind != ElemKeyKind::Number && probe.kind != ElemKeyKind::String) return;
+    probe.entry = &g_elemCache[bucketOf(shape, probe.witness, kElemCacheEntries)];
+    InlineCache filled;
+    filled.cached_shape = shape;
+    filled.cached_slot = slot;
+    filled.cached_depth = BRONZE_ABI_ELEM_CELL_DICT;
+    filled.cached_epoch = shape->dict->generation;
+    install(probe, name, filled);
+}
+
+namespace {
+
+void install(const ElemProbe& probe, StringHeader* liveKey, const InlineCache& filled) {
     StringHeader* internedKey = elemCacheInternKey(liveKey);
     if (!internedKey) {
         recordElemIcMiss("key_budget_spent", 0, 0);
@@ -395,6 +428,8 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
             ? Value::fromString(liveKey).rawBits()
             : 0;
 }
+
+}  // namespace
 
 ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
     // PLAIN receivers only, and for the read table's reason rather than a

@@ -950,6 +950,52 @@ unsound too, gave 23.49-23.59M and 32.21M against 32.30M: the guards the
 census found repeated behind a call are repeated at the machine level, in
 the inline paths whose fallback rejoins, not in the IL.
 
+**Guards hoisted out of inlined loops.** The redundancy pass moves a
+loop-invariant guard to the preheader only where a leave from there has a
+resume point for entering the loop (opt/speculate loops.cpp). A loop the
+inliner copied into a caller has fresh value ids, which name no block of the
+caller's G, so its guards stayed in the loop: removeListener's loop in
+pixi's `getTexture$opt` tested two per iteration. The splice now records,
+per copied loop whose callee G has a point at the header's top, the exit a
+leave from its preheader takes (il.h `Function::inlinedLoopEntries`): the
+leave to the callee's loop-entry point finished by the rule every inlined
+leave is, `resume.call @G_f, h, entry state` then `leave @G_c, a,
+callerState(r)`; an entry the callee carries from its own inlining is
+renamed and finished once more, so any depth works (opt/inline splice.cpp).
+`loopEntryResume` answers such a loop from it, with the header's entry
+parameters replaced by the preheader jump's arguments and every value held
+to the own-loop tests (available at the preheader's end, of the type the
+named G's point gives it, the point still there); the exit block gets the
+`resume.call`s and conversions with fresh ids. Exact for the reason an
+inlined leave is: the hoisted guard runs where S has done what G_f would
+have done up to entering its loop, G_f's twin finishes the call from the
+loop's first iteration, and G_c continues after the call. Hoisted guards
+(static, before -> after): three_meshes 90 -> 277, three_skinned 172 -> 496,
+three_instanced 168 -> 320, three_lights 82 -> 225, pixi_sprites 69 -> 109,
+pixi_graphics 140 -> 280, pixi_text 86 -> 148. On one harvest each,
+instructions a frame: three_meshes 51.52M to 51.29M, three_skinned 32.16M to
+31.66M, three_lights 2.766M to 2.757M,
+pixi_text 23.58M to 23.42M, three_instanced and pixi_sprites unchanged;
+pixi_graphics, on fresh harvests, 307.85M to 302.34M.
+pixi_text leaves 1249 times against 1231 (selfhost `findIndex`'s callback
+test, hoisted, fails on entry 9 times).
+
+**Keyed reads of dictionaries.** What remains of getTexture is keyed reads
+and writes of dictionary-mode objects, and the keys are built for each read:
+`text.styleKey` is a getter returning a template of three parts, so
+`_activeTextures[textKey]` hashes a new string and probes the table every
+time (with the template, about 12% of pixi_text's cycles under its JS:
+`Dictionary::find`, `StringHeader::hash`, the computed-read stubs). Nothing
+the harvest could record makes that cheaper: the string is new, and node
+pays the same hash. Letting facts survive the generic read was measured
+before (above): 0.1-0.3%. A Number or constant-string key of a dictionary
+(`_gpuData[uid]`) is answered by the computed-read table's dictionary form
+(runtime/elem_ic.h `elemCacheFillDict`), which the module's stub reads while
+the table's generation holds: pixi_text 23.62M to 23.52M instructions a
+frame on one build, the others unchanged; a heap string's key is never
+kept (its entry would answer only that string object, and interning one per
+fresh key cost pixi_text 0.4%).
+
 Every fallback that can leave must count in the harvested build, or an exit
 the harvest never saw runs often and gives the function up for its generic
 entry (il_speculation.h, "FAILURE POLICY"): a constant-index read on a typed

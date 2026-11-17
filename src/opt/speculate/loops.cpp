@@ -56,6 +56,137 @@ uint32_t placeLoopEntries(RewriteContext& ctx, const std::vector<SitePlan>& plan
     return placed;
 }
 
+namespace {
+
+// Where each value of S is defined, to test it is available at the end of the
+// preheader: a function parameter always, else a definition in the preheader
+// itself (every one precedes its terminator) or in a block that dominates it.
+class Availability {
+public:
+    Availability(const il::Function& s, BlockId preheader)
+        : defBlock_(s.valueCount, il::kNoBlock), cfg_(s), dom_(cfg_), preheader_(preheader) {
+        for (size_t p = 0; p < s.params.size() && p < defBlock_.size(); ++p) defBlock_[p] = kFunctionParam;
+        for (const il::Block& block : s.blocks) {
+            for (const il::BlockParam& p : block.params) {
+                if (p.id < defBlock_.size()) defBlock_[p.id] = block.id;
+            }
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.result != il::kNoValue && inst.result < defBlock_.size()) defBlock_[inst.result] = block.id;
+            }
+        }
+    }
+    bool atPreheaderEnd(ValueId v) const {
+        if (v >= defBlock_.size() || defBlock_[v] == il::kNoBlock) return false;
+        const BlockId def = defBlock_[v];
+        return def == kFunctionParam || def == preheader_ || dom_.dominates(def, preheader_);
+    }
+
+private:
+    static constexpr BlockId kFunctionParam = il::kNoBlock - 1;
+    std::vector<BlockId> defBlock_;
+    Cfg cfg_;
+    DomTree dom_;
+    BlockId preheader_;
+};
+
+// The preheader's jump into `header`, when that is how the preheader ends.
+const il::Instruction* entryJump(const il::Function& s, BlockId header, BlockId preheader) {
+    const auto& preInsts = s.blocks[preheader].instructions;
+    if (preInsts.empty()) return nullptr;
+    const il::Instruction& entry = preInsts.back();
+    if (entry.op != il::Op::Jump || entry.target.block != header ||
+        entry.target.args.size() != s.blocks[header].params.size()) {
+        return nullptr;
+    }
+    return &entry;
+}
+
+// G's resume point `id` of kind `kind`, or nullptr (the redundancy pass on G
+// deletes the points nothing named, and representation selection asks after).
+const il::Instruction* findPoint(const il::Function& g, uint32_t id, uint32_t kind) {
+    for (const il::Block& block : g.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            if (inst.op == il::Op::ResumePoint && inst.immI32 >= 0 && static_cast<uint32_t>(inst.immI32) == id) {
+                return inst.keyIndex == kind ? &inst : nullptr;
+            }
+        }
+    }
+    return nullptr;
+}
+
+// A loop of an inlined callee (speculate.h): answered from S's
+// inlinedLoopEntries.
+std::optional<LoopEntryResume> inlinedLoopEntry(const il::Module& module, const il::Function& s, BlockId header,
+                                                BlockId preheader, const std::function<ValueId(ValueId)>& current,
+                                                bool optimistic) {
+    const il::Block& sHeader = s.blocks[header];
+    const il::Function::InlinedLoopEntry* found = nullptr;
+    for (const il::Function::InlinedLoopEntry& e : s.inlinedLoopEntries) {
+        const bool all = std::all_of(sHeader.params.begin(), sHeader.params.end(), [&](const il::BlockParam& p) {
+            return std::find(e.headerParams.begin(), e.headerParams.end(), p.id) != e.headerParams.end();
+        });
+        if (!all) continue;
+        const il::Instruction& leave = e.exit.back();
+        if (leave.op != il::Op::Leave || leave.calleeIndex != s.speculatedFrom) continue;
+        if (leave.keyIndex != (optimistic ? il::kResumeOptimistic : 0u)) continue;
+        found = &e;
+        break;
+    }
+    if (found == nullptr) return std::nullopt;
+    const il::Instruction* entry = entryJump(s, header, preheader);
+    if (entry == nullptr) return std::nullopt;
+
+    const Availability avail(s, preheader);
+    const std::vector<il::Type> sTypes = valueTypes(s);
+    std::vector<ValueId> own;
+    LoopEntryResume out;
+    for (const il::Instruction& code : found->exit) {
+        il::Instruction inst = code;
+        // The types the operands must have: a point's state as its G has
+        // them; the conversions take what finishGenerically gave them.
+        const il::Instruction* point = nullptr;
+        std::vector<il::Type> gTypes;
+        if (inst.op == il::Op::ResumeCall || inst.op == il::Op::Leave) {
+            if (inst.calleeIndex >= module.functions.size() || inst.immI32 < 0) return std::nullopt;
+            const il::Function& g = module.functions[inst.calleeIndex];
+            point = findPoint(g, static_cast<uint32_t>(inst.immI32), inst.keyIndex);
+            if (point == nullptr || point->operands.size() != inst.operands.size()) return std::nullopt;
+            gTypes = valueTypes(g);
+        } else if (inst.op != il::Op::Box && inst.op != il::Op::ConstUndefined && inst.op != il::Op::ConstructResult) {
+            return std::nullopt;
+        }
+        for (size_t i = 0; i < inst.operands.size(); ++i) {
+            ValueId& v = inst.operands[i];
+            if (std::find(own.begin(), own.end(), v) != own.end()) continue;
+            ValueId mine = current(v);
+            auto it = std::find_if(sHeader.params.begin(), sHeader.params.end(),
+                                   [&](const il::BlockParam& p) { return p.id == v; });
+            if (it != sHeader.params.end()) mine = entry->target.args[static_cast<size_t>(it - sHeader.params.begin())];
+            if (!avail.atPreheaderEnd(mine) || mine >= sTypes.size()) return std::nullopt;
+            il::Type want = il::Type::Dynamic;
+            if (point != nullptr) {
+                const ValueId gv = point->operands[i];
+                if (gv >= gTypes.size()) return std::nullopt;
+                want = gTypes[gv];
+            } else if (inst.op == il::Op::Box) {
+                want = inst.boxType;
+            }
+            if (sTypes[mine] != want) return std::nullopt;
+            v = mine;
+        }
+        if (inst.result != il::kNoValue) own.push_back(inst.result);
+        if (inst.op == il::Op::Leave) {
+            out.resumeId = static_cast<uint32_t>(inst.immI32);
+            out.stateInS = std::move(inst.operands);
+        } else {
+            out.exitCode.push_back(std::move(inst));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& s, BlockId header,
                                                BlockId preheader, const std::function<ValueId(ValueId)>& current,
                                                bool optimistic) {
@@ -65,7 +196,8 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
     const il::Block& sHeader = s.blocks[header];
     if (sHeader.params.empty()) return std::nullopt;
 
-    // G's header: the one block whose parameters S's header still has.
+    // G's header: the one block whose parameters S's header still has. None:
+    // the loop may be an inlined callee's.
     std::vector<BlockId> paramOwner(g.valueCount, il::kNoBlock);
     for (const il::Block& block : g.blocks) {
         for (const il::BlockParam& p : block.params) {
@@ -74,7 +206,9 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
     }
     BlockId gHeader = il::kNoBlock;
     for (const il::BlockParam& p : sHeader.params) {
-        if (p.id >= paramOwner.size() || paramOwner[p.id] == il::kNoBlock) return std::nullopt;
+        if (p.id >= paramOwner.size() || paramOwner[p.id] == il::kNoBlock) {
+            return inlinedLoopEntry(module, s, header, preheader, current, optimistic);
+        }
         if (gHeader == il::kNoBlock) gHeader = paramOwner[p.id];
         if (paramOwner[p.id] != gHeader) return std::nullopt;
     }
@@ -86,32 +220,10 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
         return std::nullopt;
     }
     const il::Instruction& point = gInsts[at];
+    const il::Instruction* entry = entryJump(s, header, preheader);
+    if (entry == nullptr) return std::nullopt;
 
-    const auto& preInsts = s.blocks[preheader].instructions;
-    if (preInsts.empty()) return std::nullopt;
-    const il::Instruction& entry = preInsts.back();
-    if (entry.op != il::Op::Jump || entry.target.block != header ||
-        entry.target.args.size() != sHeader.params.size()) {
-        return std::nullopt;
-    }
-
-    // Where each value of S is defined, to test it is available at the end
-    // of the preheader: a function parameter always, else a definition in
-    // the preheader itself (every one precedes its terminator) or in a block
-    // that dominates it.
-    std::vector<BlockId> defBlock(s.valueCount, il::kNoBlock);
-    constexpr BlockId kFunctionParam = il::kNoBlock - 1;
-    for (size_t p = 0; p < s.params.size() && p < defBlock.size(); ++p) defBlock[p] = kFunctionParam;
-    for (const il::Block& block : s.blocks) {
-        for (const il::BlockParam& p : block.params) {
-            if (p.id < defBlock.size()) defBlock[p.id] = block.id;
-        }
-        for (const il::Instruction& inst : block.instructions) {
-            if (inst.result != il::kNoValue && inst.result < defBlock.size()) defBlock[inst.result] = block.id;
-        }
-    }
-    const Cfg sCfg(s);
-    const DomTree sDom(sCfg);
+    const Availability avail(s, preheader);
     const std::vector<il::Type> sTypes = valueTypes(s);
     const std::vector<il::Type> gTypes = valueTypes(g);
 
@@ -126,11 +238,9 @@ std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const i
         if (v < paramOwner.size() && paramOwner[v] == gHeader) {
             auto it = std::find_if(sHeader.params.begin(), sHeader.params.end(),
                                    [&](const il::BlockParam& p) { return p.id == v; });
-            if (it != sHeader.params.end()) mine = entry.target.args[static_cast<size_t>(it - sHeader.params.begin())];
+            if (it != sHeader.params.end()) mine = entry->target.args[static_cast<size_t>(it - sHeader.params.begin())];
         }
-        if (mine >= defBlock.size() || defBlock[mine] == il::kNoBlock) return std::nullopt;
-        const BlockId def = defBlock[mine];
-        if (def != kFunctionParam && def != preheader && !sDom.dominates(def, preheader)) return std::nullopt;
+        if (!avail.atPreheaderEnd(mine)) return std::nullopt;
         if (mine >= sTypes.size() || v >= gTypes.size() || sTypes[mine] != gTypes[v]) return std::nullopt;
         out.stateInS.push_back(mine);
     }

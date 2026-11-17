@@ -823,8 +823,14 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
     }
 
     // A map keyed by ids or computed strings (rtIdKeyedRead): its entry, or
-    // its chain's answer for a key it lacks.
-    if (Value v; rtIdKeyedRead(objVal, Value(idxBits), v)) return v.rawBits();
+    // its chain's answer for a key it lacks; an own data entry is kept in the
+    // computed-read table for the module's stub (elemCacheFillDict).
+    uint32_t ownSlot = UINT32_MAX;
+    StringHeader* ownName = nullptr;
+    if (Value v; rtIdKeyedRead(objVal, Value(idxBits), v, &ownSlot, &ownName)) {
+        if (ownSlot != UINT32_MAX) elemCacheFillDict(objVal, Value(idxBits), ownName, ownSlot);
+        return v.rawBits();
+    }
 
     if (Value(idxBits).isSymbol()) {
         // Reading a property of null or undefined is the TypeError of 7.3.2

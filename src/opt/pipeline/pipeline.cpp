@@ -14,6 +14,7 @@
 #include "il/feedback_site.h"
 #include "il/print.h"
 #include "il/verifier.h"
+#include "opt/core/uses.h"
 #include "support/timings.h"
 
 namespace bronze::opt {
@@ -51,8 +52,29 @@ PreheaderResumeFn loopEntryResumes(const il::Module& module) {
         LeaveTarget target;
         target.resumeId = entry->resumeId;
         target.kind = optimistic ? il::kResumeOptimistic : 0;
-        target.buildState = [state = std::move(entry->stateInS)](il::Function&, il::BlockId) {
-            return state;
+        // An inlined callee's loop: its exit code goes into each exit block
+        // with its own results renamed to fresh values of fn.
+        target.buildState = [state = std::move(entry->stateInS), code = std::move(entry->exitCode)](
+                                il::Function& fn, il::BlockId exit) {
+            std::vector<std::pair<il::ValueId, il::ValueId>> renamed;
+            auto rename = [&renamed](il::ValueId v) {
+                for (const auto& [from, to] : renamed) {
+                    if (from == v) return to;
+                }
+                return v;
+            };
+            for (il::Instruction inst : code) {
+                for (il::ValueId& v : inst.operands) v = rename(v);
+                if (inst.result != il::kNoValue) {
+                    const il::ValueId fresh = newValue(fn);
+                    renamed.emplace_back(inst.result, fresh);
+                    inst.result = fresh;
+                }
+                fn.blocks[exit].instructions.push_back(std::move(inst));
+            }
+            std::vector<il::ValueId> out = state;
+            for (il::ValueId& v : out) v = rename(v);
+            return out;
         };
         return target;
     };
@@ -190,6 +212,9 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
 
     if (anySpeculated) result.repr = selectRepresentationsModule(module, redundancy);
     timer.mark("repr");
+    // The inlined loops' entries served the two redundancy runs; nothing after
+    // asks for them.
+    for (il::Function& fn : module.functions) fn.inlinedLoopEntries = {};
 
     if (!verified(module, options, "after representation selection")) result.ok = false;
     timer.mark("verify");

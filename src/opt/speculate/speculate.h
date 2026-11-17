@@ -138,9 +138,23 @@ bool mayPlaceResumePoint(const il::Function& fn, BlockId block);
 // `optimistic` asks for the header's OPTIMISTIC point instead (the one right
 // after the ordinary one, il_op.h kResumeOptimistic), which the step places
 // for an optimistic copy's loops (optimistic.h); nullopt where there is none.
+//
+// A loop that came in through inlining (its header's parameters are fresh ids
+// of the caller, naming no block of G) is answered from the caller's
+// `inlinedLoopEntries` (il.h): the point is the caller's G's point after the
+// call the outermost inlined frame stands for, and `exitCode` is the code the
+// exit block runs first, the `resume.call`s that finish each inlined frame
+// from its G's loop-entry point (opt/inline inline.h, the one rule for a
+// leave of an inlined body). Its operands are values of S held to the same
+// tests (an entry parameter of the header -> the preheader jump's argument,
+// else `current`, available at the end of the preheader, of the type the
+// named G's point gives it), and its results are ids of its own, to be
+// renamed to fresh values of S in each exit block it is put in; `stateInS`
+// may name them.
 struct LoopEntryResume {
     uint32_t resumeId = 0;
     std::vector<ValueId> stateInS;
+    std::vector<il::Instruction> exitCode;
 };
 std::optional<LoopEntryResume> loopEntryResume(const il::Module& module, const il::Function& S,
                                                BlockId header, BlockId preheader,

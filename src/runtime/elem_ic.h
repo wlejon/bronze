@@ -148,6 +148,29 @@ ElemProbe elemCacheProbe(Value objVal, Value key);
 // copy this table keys on is made here, so no caller has to know the budget.
 void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCacheSite& site);
 
+// THE DICTIONARY FORM of an entry: `o[k]` answered from an own data entry of
+// a dictionary-mode plain object (rt_key.cpp rtIdKeyedRead), whose
+// properties are in no shape. A dictionary's shape belongs to its one
+// object, so a site that reads `_gpuData[uid]` of a thousand objects misses
+// its cell (elem_cells.h) for good, and every read paid a hash and a probe
+// of the object's table; the table's entry for the pair answers it in the
+// module's stub instead. The entry is (the dictionary's shape, the key,
+// `ic.cached_slot`, `ic.cached_depth` = BRONZE_ABI_ELEM_CELL_DICT,
+// `ic.cached_epoch` = the table's generation when the entry was found), and
+// it holds while the receiver's shape is that shape and its table is at that
+// generation: what the slot answers changes only by a removal or a
+// redefinition to other storage, which move the generation (dictionary.h),
+// and generations are unique on the thread, so a table that took a dead
+// object's shape address is never mistaken for it — the entry's shape is
+// compared, never followed. Only a Number key or an ARENA string's (a
+// program's constant, a shape key) is kept: a heap string's entry would
+// answer only that string object, and a key built for the read is a new one
+// each time. `name` is the key the entry is under (the key string, or a
+// Number's rtSmallIntString). A frozen dictionary
+// (Shape::readCacheable) takes the shape path's entries and none of these;
+// elemCacheProbe passes over this form. Allocates nothing on the GC heap.
+void elemCacheFillDict(Value objVal, Value key, StringHeader* name, uint32_t slot);
+
 // Publish this thread's table into `bronze_tls_block::elem_cache_tbl`, so that
 // generated code can probe it (il2mir/il_prop_stubs.cpp build_elem_get_stub
 // answers a NUMBER or BOOLEAN key by witness, and a STRING key by the

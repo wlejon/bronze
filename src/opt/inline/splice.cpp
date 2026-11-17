@@ -96,10 +96,9 @@ uint32_t optimisticSibling(il::Function& g, uint32_t id) {
 // of its value to the generic call's result type when that result is in the
 // state, and the caller's own leave after the call. `leave` is the copied
 // leave, already removed from `blockId`.
-uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blockId, const il::Instruction& leave,
-                           const AfterCall& after, ValueId instance) {
+uint32_t finishGenerically(il::Module& module, il::Function& caller, std::vector<il::Instruction>& insts,
+                           const il::Instruction& leave, const AfterCall& after, ValueId instance) {
     const il::Function& calleeGeneric = module.functions[leave.calleeIndex];
-    std::vector<il::Instruction>& insts = caller.blocks[blockId].instructions;
     uint32_t added = 0;
 
     il::Instruction rc;
@@ -176,6 +175,94 @@ uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blo
     out.span = leave.span;
     insts.push_back(std::move(out));
     return added;
+}
+
+// The callee's loop entries in its own ids (il.h Function::inlinedLoopEntries):
+// those it carries from its own inlining, and one per loop of its own whose G
+// has a point at the header's top (opt/speculate loops.cpp), as a `leave` to
+// that point. S keeps G's ids, so the header's parameters in S are G's, and so
+// are the point's operands; one S no longer defines makes no entry here, and a
+// type S changed is refused when the entry is asked for.
+std::vector<il::Function::InlinedLoopEntry> calleeLoopEntries(const il::Module& module, const il::Function& callee) {
+    std::vector<il::Function::InlinedLoopEntry> out = callee.inlinedLoopEntries;
+    const il::Function& g = module.functions[callee.speculatedFrom];
+    std::vector<uint8_t> isParam(callee.valueCount, 0);
+    for (const il::Block& block : callee.blocks) {
+        for (const il::BlockParam& p : block.params) {
+            if (p.id < isParam.size()) isParam[p.id] = 1;
+        }
+    }
+    for (const il::Block& block : g.blocks) {
+        if (block.params.empty()) continue;
+        il::Function::InlinedLoopEntry base;
+        for (const il::BlockParam& p : block.params) {
+            if (p.id < isParam.size() && isParam[p.id]) base.headerParams.push_back(p.id);
+        }
+        if (base.headerParams.empty()) continue;
+        // The ordinary point, then the optimistic one (resume_points.h); an
+        // optimistic exit exists only in an optimistic copy.
+        for (size_t at = 0; at < (callee.isOptimistic() ? 2u : 1u) && at < block.instructions.size(); ++at) {
+            const il::Instruction& point = block.instructions[at];
+            const uint32_t kind = at == 0 ? 0u : il::kResumeOptimistic;
+            if (point.op != il::Op::ResumePoint || point.keyIndex != kind) break;
+            il::Function::InlinedLoopEntry entry = base;
+            il::Instruction leave;
+            leave.op = il::Op::Leave;
+            leave.type = il::Type::Void;
+            leave.calleeIndex = callee.speculatedFrom;
+            leave.immI32 = point.immI32;
+            leave.keyIndex = kind;
+            leave.operands = point.operands;
+            leave.span = point.span;
+            entry.exit.push_back(std::move(leave));
+            out.push_back(std::move(entry));
+        }
+    }
+    return out;
+}
+
+// The callee's loop entries carried into the caller: renamed by the splice's
+// map (their own results renamed afresh) and their final `leave @G_f`
+// finished by the rule every copied leave is (finishGenerically). An entry
+// naming a value the copy does not have is dropped: its loop keeps its guards.
+void carryLoopEntries(il::Module& module, il::Function& caller, const il::Function& callee, const CloneMap& map,
+                      const il::Instruction& call, const AfterCall& after, ValueId instance, uint32_t scopeBase) {
+    const uint32_t ownScope = scopeBase + 1;
+    for (const il::Function::InlinedLoopEntry& entry : calleeLoopEntries(module, callee)) {
+        il::Function::InlinedLoopEntry copy;
+        for (const ValueId p : entry.headerParams) {
+            if (const ValueId q = map.value(p); q != kNoValue) copy.headerParams.push_back(q);
+        }
+        if (copy.headerParams.empty()) continue;
+        std::map<ValueId, ValueId> own;
+        bool whole = true;
+        for (size_t k = 0; k < entry.exit.size() && whole; ++k) {
+            il::Instruction inst = entry.exit[k];
+            for (ValueId& v : inst.operands) {
+                const auto it = own.find(v);
+                v = it != own.end() ? it->second : map.value(v);
+                if (v == kNoValue) whole = false;
+            }
+            inst.inlineScope = inst.inlineScope == 0 ? ownScope : scopeBase + 1 + inst.inlineScope;
+            if (inst.result != kNoValue) {
+                const ValueId fresh = newValue(caller);
+                own[inst.result] = fresh;
+                inst.result = fresh;
+            }
+            if (k + 1 < entry.exit.size()) {
+                copy.exit.push_back(std::move(inst));
+                continue;
+            }
+            assert(inst.op == il::Op::Leave && inst.calleeIndex == callee.speculatedFrom);
+            const size_t kept = copy.exit.size();
+            finishGenerically(module, caller, copy.exit, inst, after, instance);
+            for (size_t i = kept + 1; i < copy.exit.size(); ++i) {
+                copy.exit[i].inlineScope = call.inlineScope;
+                copy.exit[i].span = call.span;
+            }
+        }
+        if (whole) caller.inlinedLoopEntries.push_back(std::move(copy));
+    }
 }
 
 }  // namespace
@@ -275,7 +362,8 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
         const ValueId instance =
             callee.needsThis ? call.operands[callee.needsEnv ? 1 : 0] : kNoValue;
         const size_t kept = caller.blocks[id].instructions.size();
-        result.instructionsAdded += finishGenerically(module, caller, id, leave, *after, instance);
+        result.instructionsAdded +=
+            finishGenerically(module, caller, caller.blocks[id].instructions, leave, *after, instance);
         // What follows the resume.call is the caller's, after the call: its
         // leave, from the call's position.
         for (size_t k = kept + 1; k < caller.blocks[id].instructions.size(); ++k) {
@@ -283,6 +371,10 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
             caller.blocks[id].instructions[k].span = call.span;
         }
         ++result.leavesRewritten;
+    }
+    if (after != nullptr && callee.isSpeculated()) {
+        const ValueId instance = callee.needsThis ? call.operands[callee.needsEnv ? 1 : 0] : kNoValue;
+        carryLoopEntries(module, caller, callee, map, call, *after, instance, scopeBase);
     }
     return result;
 }

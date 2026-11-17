@@ -415,6 +415,20 @@ struct Function {
         uint32_t parent = 0;
     };
     std::vector<InlineScope> inlineScopes;
+    // The loops of inlined callees a guard may be hoisted out of, set by the
+    // inliner (opt/inline splice.cpp) and read by the redundancy pass through
+    // speculate::loopEntryResume: entering the copied loop whose header's
+    // parameters are among `headerParams` is resumed by `exit`, the code an
+    // exit block runs there — `resume.call`s finishing each inlined frame from
+    // its G's loop-entry point and the conversions between them, in this
+    // function's value ids, ending in `leave @G` of this function's own G.
+    // The results its instructions define are its own (no block defines
+    // them); every other operand is a value of this function.
+    struct InlinedLoopEntry {
+        std::vector<ValueId> headerParams;
+        std::vector<Instruction> exit;
+    };
+    std::vector<InlinedLoopEntry> inlinedLoopEntries;
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };

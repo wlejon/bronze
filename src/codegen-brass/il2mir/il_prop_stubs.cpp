@@ -263,6 +263,9 @@ void build_elem_get_stub(Function* fn) {
     BasicBlock* beside_hit = b.append_block("eg_beside_hit");
     BasicBlock* hit = b.append_block("eg_hit");
     Value* at = b.add_block_param(hit, Type::i64());
+    BasicBlock* hit_shaped = b.append_block("eg_hit_shaped");
+    BasicBlock* hit_dict = b.append_block("eg_hit_dict");
+    BasicBlock* dict_read = b.append_block("eg_dict_read");
     BasicBlock* helper = b.append_block("eg_helper");
 
     b.position_at_end(entry);
@@ -272,12 +275,10 @@ void build_elem_get_stub(Function* fn) {
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), plain, helper);
     b.position_at_end(plain);
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    BasicBlock* shaped = b.append_block("eg_shaped");
-    b.position_at_end(plain);
-    // A dictionary's properties are not in its shape (Shape::readCacheable;
-    // a frozen one is rare enough to leave to the runtime).
-    b.build_br_if(b.build_eq(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0)), shaped, helper);
-    b.position_at_end(shaped);
+    // A dictionary's properties are not in its shape: its entries are the
+    // dictionary form (runtime/elem_ic.h elemCacheFillDict), answered at the
+    // hit below.
+    Value* dict = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET);
     b.build_br_if(b.build_ule(key, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), probe,
                   {key, imm(b, BRONZE_ABI_ELEM_KIND_NUMBER)}, not_number, {});
     b.position_at_end(not_number);
@@ -333,8 +334,20 @@ void build_elem_get_stub(Function* fn) {
     b.build_br(helper);
 
     b.position_at_end(hit);
-    answer_entry(b, obj, ptr, shape, b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET),
-                 b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET), helper, "eg");
+    Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET);
+    Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET);
+    b.build_br_if(b.build_eq(dict, imm(b, 0)), hit_shaped, hit_dict);
+    b.position_at_end(hit_shaped);
+    answer_entry(b, obj, ptr, shape, word, epoch, helper, "eg");
+    // A dictionary's own data slot, while its table is at the entry's
+    // generation (a frozen dictionary's shape-path entries go to the runtime,
+    // as before).
+    b.position_at_end(hit_dict);
+    Value* dict_form = b.build_eq(b.build_lshr(word, imm(b, 32)), imm(b, BRONZE_ABI_ELEM_CELL_DICT));
+    Value* current = b.build_eq(epoch, b.build_load(Type::i64(), dict, BRONZE_ABI_DICT_GENERATION_OFFSET));
+    b.build_br_if(b.build_and(dict_form, current), dict_read, helper);
+    b.position_at_end(dict_read);
+    b.build_ret(PropertyLoweringHelper::load_slot_at(b, ptr, b.build_and(word, imm(b, 0xFFFFFFFFLL))));
 
     b.position_at_end(helper);
     b.build_ret(b.build_call("bronze_elem_get", Type::i64(), {obj, key}));

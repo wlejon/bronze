@@ -93,6 +93,9 @@ struct FunctionMirror {
     Function::Heat heat;
     uint64_t harvestEntries;
     std::vector<Function::InlineScope> inlineScopes;
+    // Not written: the optimizer's alone, empty before and after it
+    // (opt/pipeline pipeline.cpp).
+    std::vector<Function::InlinedLoopEntry> inlinedLoopEntries;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };

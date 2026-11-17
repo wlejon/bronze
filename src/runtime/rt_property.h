@@ -93,8 +93,12 @@ const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key);
 // or, for a key the map lacks, the prototype chain's answer while every link
 // is a bare plain object holding the name as data or not at all (`undefined`
 // at the chain's end: `if (!cache[key])`). False for anything else, which is
-// then the generic read's. Allocates nothing on the GC heap.
-bool rtIdKeyedRead(Value objVal, Value key, Value& out);
+// then the generic read's. Allocates nothing on the GC heap. An answer that
+// is the receiver's own data entry also sets `ownSlot` (when given) to its
+// slot and `ownName` to the name it is under: what the computed-read table
+// keeps of it (elem_ic.h elemCacheFillDict).
+bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot = nullptr,
+                   StringHeader** ownName = nullptr);
 
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
