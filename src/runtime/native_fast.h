@@ -50,6 +50,16 @@ uint64_t bronze_fast_array_join(uint64_t thisBits, uint64_t sepBits);
 // Number.prototype.toString (builtin_number_proto.cpp).
 uint64_t bronze_fast_number_to_string(uint64_t thisBits, uint64_t radixBits);
 
+// RegExp.prototype.exec / test (builtin_regexp_exec.cpp), for a receiver at
+// the intrinsic instance shape (`is.collection` BRONZE_ABI_COLLECTION_REGEXP:
+// no own key, the frozen RegExp.prototype).
+uint64_t bronze_fast_regexp_exec(uint64_t thisBits, uint64_t strBits);
+uint64_t bronze_fast_regexp_test(uint64_t thisBits, uint64_t strBits);
+
+// A regular expression literal's evaluation (lower_expr.cpp): a fresh RegExp
+// of the two constant strings. Not a fast entry; declared beside them.
+uint64_t bronze_regexp_literal(uint64_t sourceBits, uint64_t flagsBits);
+
 // String.prototype members: split and trim (builtin_string.cpp), the rest
 // (builtin_string_search.cpp) beside their builtins, declared below.
 uint64_t bronze_fast_string_char_code_at(uint64_t thisBits, uint64_t posBits);

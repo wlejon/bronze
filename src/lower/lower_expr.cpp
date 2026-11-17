@@ -108,13 +108,14 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
 
-    // A regular expression literal is `new RegExp(pattern, flags)`, spelled
-    // out. It is a CONSTRUCTION and not a constant because 22.2.4.1 evaluates
-    // the literal to a fresh object every time it is reached — two evaluations
-    // of the same literal in a loop must not share a `lastIndex` — and it goes
-    // through the provided-global path rather than through a `new` in the
-    // source so that a program's own binding named `RegExp` cannot change what
-    // a literal means (22.2.4.1 reads the intrinsic, not the binding).
+    // A regular expression literal evaluates to a FRESH RegExp every time it
+    // is reached (13.2.7.3: RegExpCreate of the literal's two strings), so two
+    // evaluations in a loop never share a `lastIndex`, and it is the intrinsic
+    // constructor's object whatever a program has bound to the name `RegExp`.
+    // It is one call of the runtime's literal entry with the two strings
+    // (builtin_regexp_exec.cpp bronze_regexp_literal), which keeps the pattern
+    // compiled for the source string and allocates the object: no global
+    // read, no [[Construct]] protocol.
     if (const auto* re = dynamic_cast<const ast::RegExpLit*>(&expr)) {
         auto emitStr = [&](const std::string& text) {
             il::ValueId res = ilFn.valueCount++;
@@ -127,23 +128,17 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             emitInst(ilFn, inst);
             return res;
         };
-        il::ValueId ctor = ilFn.valueCount++;
-        il::Instruction ctorInst;
-        ctorInst.op = il::Op::GlobalGet;
-        ctorInst.type = il::Type::Dynamic;
-        ctorInst.result = ctor;
-        ctorInst.keyIndex = getKeyConstantIndex("RegExp");
-        emitInst(ilFn, ctorInst);
-
         const il::ValueId patternId = emitStr(re->pattern);
         const il::ValueId flagsId = emitStr(re->flags);
-
+        const uint32_t fnIdx = registerExternalFunction("bronze_regexp_literal", il::Type::Dynamic,
+                                                        {il::Type::Dynamic, il::Type::Dynamic});
         il::ValueId res = ilFn.valueCount++;
         il::Instruction inst;
-        inst.op = il::Op::Construct;
+        inst.op = il::Op::Call;
         inst.type = il::Type::Dynamic;
         inst.result = res;
-        inst.operands = {ctor, patternId, flagsId};
+        inst.calleeIndex = fnIdx;
+        inst.operands = {patternId, flagsId};
         emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }

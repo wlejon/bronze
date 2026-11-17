@@ -125,6 +125,8 @@ std::pair<il::Op, int32_t> receiverGuard(FastReceiver r) {
             return {il::Op::TypeOfIs, il::kTypeOfString};
         case FastReceiver::Number:
             return {il::Op::TypeOfIs, il::kTypeOfNumber};
+        case FastReceiver::RegExp:
+            return {il::Op::IsCollection, BRONZE_ABI_COLLECTION_REGEXP};
     }
     return {il::Op::IsPlainArray, 0};
 }

@@ -154,6 +154,9 @@ public:
     // only for a data property: an accessor's two slots are adjacent and the
     // free list cannot promise adjacency to the next accessor that asks.
     bool remove(PropertyKey name) noexcept;
+    // The same for an entry `find` answered, so a caller that has read its
+    // attributes probes the table once.
+    void removeEntry(DictEntry* e) noexcept;
 
     // `width` is 1 for a data property and 2 for an accessor pair. A pair
     // always takes fresh slots, for the adjacency reason above.

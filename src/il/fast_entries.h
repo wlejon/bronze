@@ -17,7 +17,10 @@ namespace bronze::il {
 // (`is.plain_array`), a string or a number primitive (`typeof.is`). On each
 // the method's [[Get]] reaches a frozen intrinsic prototype (runtime/lockdown.h)
 // with nothing in between, so it answers the builtin.
-enum class FastReceiver { PlainArray, String, Number };
+// A RegExp at the intrinsic instance shape (`is.collection` of
+// BRONZE_ABI_COLLECTION_REGEXP): no own key, so its members are the frozen
+// RegExp.prototype's.
+enum class FastReceiver { PlainArray, String, Number, RegExp };
 
 struct FastEntry {
     const char* method;
@@ -47,6 +50,8 @@ inline constexpr FastEntry kFastEntries[] = {
     {"split", "bronze_fast_string_split", FastReceiver::String, 2, "String.prototype.split"},
     {"trim", "bronze_fast_string_trim", FastReceiver::String, 0, "String.prototype.trim"},
     {"toString", "bronze_fast_number_to_string", FastReceiver::Number, 1, "Number.prototype.toString"},
+    {"exec", "bronze_fast_regexp_exec", FastReceiver::RegExp, 1, "RegExp.prototype.exec"},
+    {"test", "bronze_fast_regexp_test", FastReceiver::RegExp, 1, "RegExp.prototype.test"},
 };
 
 // The row of the entry named `symbol`, or null.

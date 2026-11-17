@@ -830,10 +830,11 @@ enum class Op : uint8_t {
     // method cache, a method site like `method.call`'s. Calls anything.
     ApplyArgs,
     // a: bool = is.collection v, <class>. Whether `v` is an object at the
-    // instance shape `new Map()` (`Set`, `WeakMap`, `WeakSet`: immI32 a
-    // BRONZE_ABI_COLLECTION_ class) makes its instances at: no own property
-    // and the class's prototype, which lockdown froze, so `v.get` / `v.has`
-    // read that prototype's natives. NOT a fact about the value (a property
+    // instance shape `new Map()` (`Set`, `WeakMap`, `WeakSet`, and a RegExp
+    // literal or `new RegExp`: immI32 a BRONZE_ABI_COLLECTION_ class) makes
+    // its instances at: no own property and the class's prototype, which
+    // lockdown froze, so `v.get` / `v.has` / `v.exec` read that prototype's
+    // natives. NOT a fact about the value (a property
     // added moves it off the shape), like is.plain_array. Header loads only.
     IsCollection,
     // a: dynamic = collection.op recv, key, <op>. `recv.get(key)` /

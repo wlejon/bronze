@@ -38,6 +38,11 @@ void build_method_call_stub(Function* fn);
 constexpr const char* kElemCellStub = "__bronze_elem_cell_stub";
 void build_elem_cell_stub(Function* fn);
 
+// (i64 obj, i64 ctor, i64 cell) -> i32: an `instanceof` with a site cell
+// (elem_cells.h): the cell's answer, else bronze_instanceof_cell.
+constexpr const char* kInstanceofStub = "__bronze_instanceof_stub";
+void build_instanceof_stub(Function* fn);
+
 // (i64 obj, i64 key) -> i64: a computed read no cell answers (no cell, or one
 // that has stopped taking fills): the thread's computed-read table
 // (runtime/elem_ic.h), then bronze_elem_get.

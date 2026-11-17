@@ -134,6 +134,11 @@ DictEntry& Dictionary::add(PropertyKey stored, uint32_t slot, bool enumerable, b
 bool Dictionary::remove(PropertyKey name) noexcept {
     DictEntry* e = find(name);
     if (e == nullptr) return false;
+    removeEntry(e);
+    return true;
+}
+
+void Dictionary::removeEntry(DictEntry* e) noexcept {
     // Only a single slot goes back on the free list. An accessor owns two
     // ADJACENT slots, and a free list of individual slots cannot promise
     // the next accessor two adjacent ones; leaking the pair keeps the
@@ -148,7 +153,6 @@ bool Dictionary::remove(PropertyKey name) noexcept {
     // Once the dead have caught up with the living, the vector is half
     // tombstones and every enumeration walks twice what it needs.
     if (entries.size() > 32 && live_ * 2 <= entries.size()) compact();
-    return true;
 }
 
 uint32_t Dictionary::allocateSlots(uint32_t width) {
@@ -271,6 +275,21 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
 bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     if (!shape) return true;
     if (runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, name);
+    if (shape->isDictionary()) {
+        // A dictionary-mode object (a program's map) answers the lookup and
+        // the removal from one probe of its table; the steps are the ones
+        // below.
+        DictEntry* e = shape->dict->find(name);
+        if (e == nullptr) return true;
+        if (!e->configurable) return false;
+        if (shape->used_as_prototype) bumpProtoMutationEpoch();
+        const uint32_t slot = e->slot;
+        const bool accessor = e->accessor;
+        shape->dict->removeEntry(e);
+        setSlot(slot, Value::fromUndefined());
+        if (accessor) setSlot(slot + 1, Value::fromUndefined());
+        return true;
+    }
     PropertyInfo info;
     // Absent, or present only on a prototype: already in the state delete
     // wants, and answering true without touching the object is what keeps

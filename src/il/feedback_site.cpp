@@ -378,7 +378,7 @@ void numberSlowSites(Module& module) {
                     case Op::Branch: case Op::DynamicCall: case Op::Construct: case Op::Call: case Op::MethodCall:
                     case Op::RelLt: case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::LooseEq:
                     case Op::ToNumeric: case Op::NumericStep: case Op::BitNot:
-                    case Op::ObjectLiteral:
+                    case Op::ObjectLiteral: case Op::InstanceOf:
                         inst.slowSite = next;
                         next += kSlowSiteArms;
                         break;

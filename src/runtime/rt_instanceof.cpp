@@ -119,6 +119,12 @@ bool objectChainCacheable(Value obj, Value targetProto) noexcept {
 }  // namespace
 
 bool rtOrdinaryHasInstance(Value ctor, Value obj) {
+    // Step 2, before step 3 looks at the receiver: a bound function answers
+    // as its target, through the whole InstanceofOperator (the target's own
+    // `Symbol.hasInstance` included).
+    if (Value target, boundThis, boundArgs; rtBoundFunctionState(ctor, target, boundThis, boundArgs)) {
+        return bronze_instanceof(obj.rawBits(), target.rawBits());
+    }
     if (!obj.isObject()) return false;
 
     Rooted<Value> objRoot{obj};
@@ -210,8 +216,21 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     fatal("prototype chain too deep (a cycle?)");
 }
 
-extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
-    recordHelperCall("bronze_instanceof");
+namespace {
+
+// An `instanceof` site's cell (bronze_instanceof_cell below): the
+// constructor it certifies.
+void fillCell(uint64_t* cell, const Shape* inst, const Shape* statics, uint64_t epoch) {
+    cell[BRONZE_ABI_INSTANCEOF_CELL_INSTANCE] = reinterpret_cast<uint64_t>(inst);
+    cell[BRONZE_ABI_INSTANCEOF_CELL_STATICS] = reinterpret_cast<uint64_t>(statics);
+    cell[BRONZE_ABI_INSTANCEOF_CELL_EPOCH] = epoch;
+    // The stub's remembered receiver answered for the certificate it
+    // replaces.
+    cell[BRONZE_ABI_INSTANCEOF_CELL_SHAPE] = 0;
+}
+
+// `bronze_instanceof`, and with `cell` a site's cell (below) to fill too.
+bool instanceofImpl(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
     const Value ctorVal(ctorBits);
     const Value objVal(objBits);
 
@@ -247,6 +266,9 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                     if (e.ctorInstShape == ctorInst && e.objShape == objShape &&
                         e.ctorPropsShape == ctorProps && e.protoEpoch == epoch &&
                         e.realmSlot == realm) {
+                        // The entry was filled for this constructor, so it
+                        // certifies the constructor as the cell does.
+                        if (cell != nullptr) fillCell(cell, ctorInst, ctorProps, epoch);
                         return e.result;
                     }
                 }
@@ -267,6 +289,9 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     // (whose `[Symbol.hasInstance]` is non-writable and non-configurable).
     if (ctorRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         const FunctionHeader* cur = ctorRoot.get().asObject<FunctionHeader>();
+        // Read before anything below can run user code (a proxy's trap on
+        // the receiver's chain): a cell is filled only when nothing moved it.
+        const uint64_t epochBefore = rtTls()->proto_epoch;
         const PropertyKey hasInstProp = PropertyKey::forSymbol(rtSymbolHasInstance());
         bool ancestorsMarked = true;
         for (uint32_t depth = 0; cur != nullptr && depth < 16; ++depth) {
@@ -282,13 +307,17 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
                 const bool answer = rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
                 const auto* liveCtor = ctorRoot.get().asObject<FunctionHeader>();
                 const Shape* fillInst = liveCtor->instance_shape;
-                if (ancestorsMarked && !liveCtor->isNativeCode() && fillInst != nullptr &&
-                    !fillInst->isDictionary() && liveCtor->prototype.isObject() &&
-                    fillInst->prototypeValue().rawBits() == liveCtor->prototype.rawBits() &&
-                    objectChainCacheable(objRoot.get(), liveCtor->prototype)) {
-                    bool fillPropsOk = false;
-                    const Shape* fillProps = ctorStaticsKey(liveCtor, fillPropsOk);
-                    if (fillPropsOk) {
+                bool fillPropsOk = false;
+                const Shape* fillProps = ctorStaticsKey(liveCtor, fillPropsOk);
+                const bool ctorCacheable = fillPropsOk && ancestorsMarked && !liveCtor->isNativeCode() &&
+                                           fillInst != nullptr && !fillInst->isDictionary() &&
+                                           liveCtor->prototype.isObject() &&
+                                           fillInst->prototypeValue().rawBits() == liveCtor->prototype.rawBits();
+                if (cell != nullptr && ctorCacheable && rtTls()->proto_epoch == epochBefore) {
+                    fillCell(cell, fillInst, fillProps, epochBefore);
+                }
+                if (ctorCacheable && objectChainCacheable(objRoot.get(), liveCtor->prototype)) {
+                    {
                         const Shape* fillObjShape = nullptr;
                         if (objRoot.get().isObject()) {
                             const auto* hdr = objRoot.get().asObject<HeapObjectHeader>();
@@ -344,6 +373,30 @@ extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         return false;
     }
     return rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
+}
+
+}  // namespace
+
+extern "C" bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
+    recordHelperCall("bronze_instanceof");
+    return instanceofImpl(objBits, ctorBits, nullptr);
+}
+
+// An `instanceof` site's CELL (one of the module's element cells,
+// codegen-brass/elem_cells.h; bronze_abi_layout.h
+// BRONZE_ABI_INSTANCEOF_CELL_*) certifies one constructor: a non-native
+// function at the cell's instance and statics shapes, while the prototype
+// epoch is the cell's, has no `Symbol.hasInstance` of its own or on any
+// function it inherits from (an own one changes its statics shape; the
+// ancestors are marked prototypes, so one added there bumps the epoch), and
+// its `prototype` is the object it held when the cell was filled (a
+// reassignment swaps the instance shape). For such a constructor 13.10.2
+// InstanceofOperator is OrdinaryHasInstance, the walk of the receiver's
+// chain the module's stub (il_prop_stubs.cpp build_instanceof_stub) makes
+// itself, through plain objects, without a call.
+extern "C" bool bronze_instanceof_cell(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
+    recordHelperCall("bronze_instanceof");
+    return instanceofImpl(objBits, ctorBits, cell);
 }
 
 }  // namespace bronze::runtime

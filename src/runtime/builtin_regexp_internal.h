@@ -37,6 +37,7 @@ bool rtRegExpExecTest(Rooted<Value>& re, Rooted<Value>& inputStr);
 
 // The native bodies builtin_regexp.cpp installs and the other files own.
 uint64_t rtRegExpExecBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtRegExpTestBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t rtRegExpEscapeBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 // 22.2.6.8, .9, .11, .12, .14 as own data properties of `RegExp.prototype`,
 // in the clause's order.

@@ -595,17 +595,6 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
             self.get(), argc, const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
         return result.isObject() ? result.rawBits() : self.get().rawBits();
     }
-    // A regular expression literal: the intrinsic constructor on two
-    // constant strings. What the construction protocol below would build is
-    // rtRegExpLiteral's object, and a literal in a loop is this once a turn.
-    if (argc == 2 && rtIsRegExpIntrinsicConstructor(fnVal)) {
-        const Value source(argvBits[0]);
-        const Value flags(argvBits[1]);
-        if (source.isString() && flags.isString() && source.asString<StringHeader>()->isArena() &&
-            flags.asString<StringHeader>()->isArena()) {
-            return rtRegExpLiteral(source, flags).rawBits();
-        }
-    }
     // `new Array()` and `new Array(n)` on the intrinsic itself: the instance
     // the protocol below would allocate (NewTarget's own, so the same
     // allocation) and the length write arrayConstructor would make on it,

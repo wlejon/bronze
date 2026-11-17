@@ -540,6 +540,18 @@
 #define BRONZE_ABI_ELEM_CELL_FILL        (1 << 17)
 #define BRONZE_ABI_ELEM_CELL_MAX_DEPTH   4
 #define BRONZE_ABI_ELEM_CELL_DICT        0xFFFFu
+/* An `instanceof` site's cell (runtime/rt_instanceof.cpp
+ * bronze_instanceof_cell; one of the element cells, the same five words):
+ * the constructor's instance shape, its statics shape, and the prototype
+ * epoch they were certified under (written by the helper), then the last
+ * plain receiver shape the module's stub walked and its answer (written by
+ * the stub, cleared by the helper's fill). Zero until the helper fills it,
+ * which no function's instance shape and no receiver's shape equals. */
+#define BRONZE_ABI_INSTANCEOF_CELL_INSTANCE 0
+#define BRONZE_ABI_INSTANCEOF_CELL_STATICS  1
+#define BRONZE_ABI_INSTANCEOF_CELL_EPOCH    2
+#define BRONZE_ABI_INSTANCEOF_CELL_SHAPE    3
+#define BRONZE_ABI_INSTANCEOF_CELL_ANSWER   4
 /* Dictionary (runtime/dictionary.h): its generation word, the first. */
 #define BRONZE_ABI_DICT_GENERATION_OFFSET 0
 #define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */

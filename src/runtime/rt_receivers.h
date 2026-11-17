@@ -208,12 +208,10 @@ bool rtIsCanonicalNumericString(const std::string& key);
 bool rtIsRegExp(Value v);
 // `RegExp`, for the provided-global path; `undefined` for any other name.
 Value rtRegExpConstructor(const std::string& name);
-// Is `fn` the intrinsic `RegExp` constructor itself (not a subclass)?
-bool rtIsRegExpIntrinsicConstructor(Value fn);
-// `new RegExp(source, flags)` with the intrinsic constructor and two ARENA
-// strings, which is what a regular expression literal evaluates as: the same
-// object the constructor builds, without the construction protocol around
-// it, and three stored words when this literal has been evaluated before.
+// A regular expression literal's evaluation (bronze_regexp_literal) from its
+// two constant ARENA strings: the object `new RegExp(source, flags)` with the
+// intrinsic constructor builds, without the construction protocol around it,
+// and three stored words when this literal has been evaluated before.
 // Throws the SyntaxError (and answers `undefined`) as the constructor does.
 Value rtRegExpLiteral(Value sourceStr, Value flagsStr);
 // Drops what the literal memo remembers by arena address, when the arena goes.

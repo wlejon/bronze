@@ -33,6 +33,7 @@
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -46,10 +47,14 @@ namespace bronze::runtime {
 
 namespace {
 
-// Bounded LRU cache for compiled regex patterns (capped at 512 entries).
-// When capacity is exceeded, the least recently used pattern is evicted and deleted.
-// If an older RegExp whose pattern was evicted is executed, programOf detects the
-// eviction via the encoded slot/generation ID and re-compiles the pattern transparently.
+// Bounded cache for compiled regex patterns (512 entries), evicting by the
+// CLOCK approximation of least-recently-used: a use sets the entry's
+// reference bit, and the hand sweeping for a victim clears bits until it finds
+// one unset. A use is one byte store, so the hit path of every match (a
+// RegExp's slot and generation checked against the entry) writes nothing else.
+// If an older RegExp whose pattern was evicted is executed, programOf detects
+// the eviction via the encoded slot/generation ID and re-compiles the pattern
+// transparently.
 class RegExpCache {
 public:
     static constexpr size_t kCapacity = 512;
@@ -58,9 +63,8 @@ public:
     struct Entry {
         std::string key;
         std::shared_ptr<const regex::Pattern> pattern;
-        uint32_t prev{kInvalid};
-        uint32_t next{kInvalid};
         uint64_t id{0};
+        bool referenced{false};
     };
 
     RegExpCache() : entries_(kCapacity) {}
@@ -87,10 +91,13 @@ public:
         if (size_ < kCapacity) {
             slot = static_cast<uint32_t>(size_++);
         } else {
-            // Evict least-recently used (tail)
-            slot = tail_;
+            while (entries_[hand_].referenced) {
+                entries_[hand_].referenced = false;
+                hand_ = (hand_ + 1) % kCapacity;
+            }
+            slot = hand_;
+            hand_ = (hand_ + 1) % kCapacity;
             keyToSlot_.erase(entries_[slot].key);
-            unlink(slot);
             entries_[slot].pattern.reset();
         }
 
@@ -98,7 +105,7 @@ public:
         entries_[slot].pattern = std::move(pattern);
         entries_[slot].id = makeId(slot);
         keyToSlot_[key] = slot;
-        pushFront(slot);
+        touch(slot);
         return slot;
     }
 
@@ -109,11 +116,7 @@ public:
     const Entry& entry(uint32_t slot) const { return entries_[slot]; }
     uint64_t entryId(uint32_t slot) const { return entries_[slot].id; }
 
-    void touch(uint32_t slot) {
-        if (head_ == slot) return;
-        unlink(slot);
-        pushFront(slot);
-    }
+    void touch(uint32_t slot) { entries_[slot].referenced = true; }
 
     size_t size() const { return size_; }
 
@@ -123,39 +126,9 @@ private:
         return (generation_ << 16) | (static_cast<uint64_t>(slot) & 0xFFFFULL);
     }
 
-    void unlink(uint32_t slot) {
-        Entry& e = entries_[slot];
-        if (e.prev != kInvalid) {
-            entries_[e.prev].next = e.next;
-        } else if (head_ == slot) {
-            head_ = e.next;
-        }
-        if (e.next != kInvalid) {
-            entries_[e.next].prev = e.prev;
-        } else if (tail_ == slot) {
-            tail_ = e.prev;
-        }
-        e.prev = kInvalid;
-        e.next = kInvalid;
-    }
-
-    void pushFront(uint32_t slot) {
-        Entry& e = entries_[slot];
-        e.prev = kInvalid;
-        e.next = head_;
-        if (head_ != kInvalid) {
-            entries_[head_].prev = slot;
-        }
-        head_ = slot;
-        if (tail_ == kInvalid) {
-            tail_ = slot;
-        }
-    }
-
     std::vector<Entry> entries_;
     std::map<std::string, uint32_t> keyToSlot_;
-    uint32_t head_{kInvalid};
-    uint32_t tail_{kInvalid};
+    uint32_t hand_{0};
     size_t size_{0};
     uint64_t generation_{0};
 };
@@ -523,9 +496,10 @@ bool storeLastIndex(Rooted<Value>& re, double value) {
 // copies three slots instead of re-deriving them. The source is keyed by
 // address, which an arena string keeps for as long as the thread lives; both
 // answers are arena strings too, so the memo holds nothing the collector
-// moves or frees. The program is still the cache's: its slot and id are
-// checked as programSharedOf checks them, and an evicted program misses here
-// and is compiled again by the ordinary path.
+// moves or frees. The program is still the cache's: a RegExp made from the
+// memo holds its id, which programSlotOf checks on every use (compiling it
+// again if it was evicted since), and the constructor's initialisation
+// checks it before it takes the memo's answer.
 struct LiteralMemo {
     const StringHeader* written{nullptr};
     // The flags as the arena string a literal's evaluation passes, when one
@@ -627,20 +601,18 @@ Value rtRegExpLiteral(Value sourceStr, Value flagsStr) {
     const StringHeader* writtenFlags = flagsStr.asString<StringHeader>();
     LiteralMemo& memo = literalMemoFor(written);
     if (memo.written == written && memo.writtenFlags == writtenFlags) {
-        const auto slot = static_cast<uint32_t>(memo.programId & 0xFFFF);
-        auto& cache = regExpCache();
-        if (cache.isValid(slot, memo.programId)) {
-            cache.touch(slot);
-            // Nothing below is a pointer the allocation can move: the memo's
-            // strings are arena strings.
-            const Value re = rtAllocateRegExp(rtRegExpInstanceShape());
-            auto* header = re.asObject<RegExpHeader>();
-            header->source = memo.source;
-            header->flagsText = memo.canonicalFlags;
-            header->lastIndex = Value::fromDouble(0.0);
-            header->programIndex = Value::fromDouble(static_cast<double>(memo.programId));
-            return re;
-        }
+        // The program index is stored as the compile left it: one evicted
+        // since is compiled again by its first use (programSlotOf), as for
+        // any RegExp that outlived its cache entry. Nothing below is a
+        // pointer the allocation can move: the memo's strings are arena
+        // strings, and the memo exists only once the intrinsics do.
+        const Value re = rtAllocateRegExp(rtRegExpInstanceShape());
+        auto* header = re.asObject<RegExpHeader>();
+        header->source = memo.source;
+        header->flagsText = memo.canonicalFlags;
+        header->lastIndex = Value::fromDouble(0.0);
+        header->programIndex = Value::fromDouble(static_cast<double>(memo.programId));
+        return re;
     }
     Rooted<Value> source{sourceStr};
     const std::string flagsText = rtUtf8Chars(writtenFlags);
@@ -667,40 +639,58 @@ bool rtIsRegExp(Value v) {
     return isRegExp(v) && v.asObject<RegExpHeader>()->programIndex.isNumber();
 }
 
+namespace {
+
+// 22.2.7.2 steps 4-12 for an initialised RegExp: its program and where the
+// match starts. A pattern with neither `g` nor `y` ignores `lastIndex`
+// entirely (step 6), which is what makes `/a/.exec(s)` idempotent and
+// `/a/g.exec(s)` a cursor. A `lastIndex` holding a number converts without
+// running anything, so the program is read once; any other value goes
+// through ToLength, which can run user code (an object's `valueOf`) that may
+// compile patterns and evict this one, so the program is read again after it.
+// The answer is held by reference until the match is built: nothing after
+// this runs user code or compiles a pattern (the match, the result array, the
+// `lastIndex` store to an own data property).
+const regex::Pattern& patternAndStart(Rooted<Value>& re, size_t& from) {
+    const regex::Pattern& pattern = programOf(re.get());
+    from = 0;
+    const regex::Flags& f = regex::patternFlags(pattern);
+    if (!f.global && !f.sticky) return pattern;
+    if (re.get().asObject<RegExpHeader>()->lastIndex.isNumber()) {
+        bool ok = true;
+        from = lastIndexOf(re, ok);
+        return pattern;
+    }
+    bool ok = true;
+    from = lastIndexOf(re, ok);
+    return programOf(re.get());
+}
+
+// The match itself, on the input's UTF-16 units: a Latin-1 string is widened
+// into a stack buffer (ScopedRegexUnits).
+regex::ExecStatus runMatch(const regex::Pattern& pattern, Value inputStr, size_t from,
+                           regex::MatchResult& result, std::string& error, bool extractCaptures) {
+    ScopedRegexUnits input(inputStr.asString<StringHeader>());
+    if (from > input.size()) return regex::ExecStatus::NoMatch;
+    return regex::patternFlags(pattern).sticky
+               ? regex::matchAt(pattern, input.view(), from, result, error, extractCaptures)
+               : regex::search(pattern, input.view(), from, result, error, extractCaptures);
+}
+
+}  // namespace
+
 Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
     if (!isRegExp(re.get()) || !re.get().asObject<RegExpHeader>()->programIndex.isNumber()) {
         return rtThrowTypeError("RegExp.prototype.exec called on an incompatible receiver");
     }
-    // 22.2.7.2 step 6: a pattern with neither `g` nor `y` ignores `lastIndex`
-    // entirely, which is what makes `/a/.exec(s)` idempotent and `/a/g.exec(s)`
-    // a cursor. Read FIRST: it can run user code, and every raw pointer below
-    // is taken after it.
-    const bool tracksLastIndex = [&] {
-        const regex::Flags& f = regex::patternFlags(programOf(re.get()));
-        return f.global || f.sticky;
-    }();
     size_t from = 0;
-    if (tracksLastIndex) {
-        bool ok = true;
-        from = lastIndexOf(re, ok);
-        if (!ok) return Value::fromUndefined();
-    }
-    // Held by reference: from here to the end nothing runs user code or
-    // compiles a pattern (the match, the result array, the `lastIndex` store
-    // to an own data property), so nothing can evict it.
-    const regex::Pattern& pattern = programOf(re.get());
+    const regex::Pattern& pattern = patternAndStart(re, from);
     const regex::Flags& flags = regex::patternFlags(pattern);
+    const bool tracksLastIndex = flags.global || flags.sticky;
 
     ScratchMatchResult scratch;
     std::string error;
-    regex::ExecStatus status = regex::ExecStatus::NoMatch;
-    {
-        ScopedRegexUnits input(inputStr.get().asString<StringHeader>());
-        if (from <= input.size()) {
-            status = flags.sticky ? regex::matchAt(pattern, input.view(), from, scratch.result, error)
-                                  : regex::search(pattern, input.view(), from, scratch.result, error);
-        }
-    }
+    const regex::ExecStatus status = runMatch(pattern, inputStr.get(), from, scratch.result, error, true);
     if (status == regex::ExecStatus::Error) {
         return rtThrowRangeError(error);
     }
@@ -719,39 +709,20 @@ bool rtRegExpExecTest(Rooted<Value>& re, Rooted<Value>& inputStr) {
         rtThrowTypeError("RegExp.prototype.test called on an incompatible receiver");
         return false;
     }
-    const bool tracksLastIndex = [&] {
-        const regex::Flags& f = regex::patternFlags(programOf(re.get()));
-        return f.global || f.sticky;
-    }();
     size_t from = 0;
-    if (tracksLastIndex) {
-        bool ok = true;
-        from = lastIndexOf(re, ok);
-        if (!ok) return false;
-    }
-    // By reference, as rtRegExpExec holds it.
-    const regex::Pattern& pattern = programOf(re.get());
+    const regex::Pattern& pattern = patternAndStart(re, from);
     const regex::Flags& flags = regex::patternFlags(pattern);
+    const bool tracksLastIndex = flags.global || flags.sticky;
 
     ScratchMatchResult scratch;
     std::string error;
-    regex::ExecStatus status = regex::ExecStatus::NoMatch;
-    {
-        ScopedRegexUnits input(inputStr.get().asString<StringHeader>());
-        if (from <= input.size()) {
-            status = flags.sticky
-                         ? regex::matchAt(pattern, input.view(), from, scratch.result, error,
-                                          /*extractCaptures=*/false)
-                         : regex::search(pattern, input.view(), from, scratch.result, error,
-                                         /*extractCaptures=*/false);
-        }
-    }
+    const regex::ExecStatus status = runMatch(pattern, inputStr.get(), from, scratch.result, error, false);
     if (status == regex::ExecStatus::Error) {
         rtThrowRangeError(error);
         return false;
     }
     if (status != regex::ExecStatus::Match) {
-        if (tracksLastIndex && !storeLastIndex(re, 0.0)) return false;
+        if (tracksLastIndex) storeLastIndex(re, 0.0);
         return false;
     }
     if (tracksLastIndex && !storeLastIndex(re, static_cast<double>(scratch.result.end()))) {
@@ -799,6 +770,69 @@ uint64_t rtRegExpExecBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     }
     Rooted<Value> input{rtValueToString(args[0])};
     return rtRegExpExec(self, input).rawBits();
+}
+
+// 22.2.6.16 RegExp.prototype.test: RegExpExec (22.2.7.1) and whether it
+// matched. A RegExp whose chain is as built runs the matcher without a match
+// array; any other object has its `exec` read and, unless that is the
+// intrinsic, called, its answer an object or null.
+uint64_t rtRegExpTestBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!self.get().isObject()) {
+        return rtThrowTypeError("RegExp.prototype.test called on an incompatible receiver").rawBits();
+    }
+    Rooted<Value> input{rtValueToString(args[0])};
+    if (!isRegExp(self.get()) || !rtRegExpChainPristine(self.get().asObject<RegExpHeader>())) {
+        Rooted<Value> key{rtMakeString("exec")};
+        Rooted<Value> exec{Value(bronze_elem_get(self.get().rawBits(), key.get().rawBits()))};
+        if (rtIsCallableValue(exec.get()) &&
+            !(exec.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+              exec.get().asObject<FunctionHeader>()->code == rtRegExpExecBody)) {
+            uint64_t arg = input.get().rawBits();
+            const Value result(bronze_dynamic_call(exec.get().rawBits(), self.get().rawBits(), 1, &arg));
+            if (!result.isObject() && !result.isNull()) {
+                return rtThrowTypeError("RegExp exec method returned something other than an Object or null")
+                    .rawBits();
+            }
+            return Value::fromBool(!result.isNull()).rawBits();
+        }
+    }
+    return Value::fromBool(rtRegExpExecTest(self, input)).rawBits();
+}
+
+// The runtime entry a regular expression literal is lowered to
+// (lower_expr.cpp): its pattern and flags as the module's constant strings.
+extern "C" uint64_t bronze_regexp_literal(uint64_t sourceBits, uint64_t flagsBits) {
+    return rtRegExpLiteral(Value(sourceBits), Value(flagsBits)).rawBits();
+}
+
+// Fast entries (native_fast.h) of `exec` and `test`, for a site whose guard
+// found the receiver at the intrinsic instance shape (`is.collection`
+// BRONZE_ABI_COLLECTION_REGEXP): with a string argument the match runs here,
+// without the method cache, the argument array or a conversion; anything else
+// is the builtin's.
+extern "C" uint64_t bronze_fast_regexp_exec(uint64_t thisBits, uint64_t strBits) {
+    const Value self(thisBits);
+    if (Value(strBits).isString() && isRegExp(self) && self.asObject<RegExpHeader>()->programIndex.isNumber()) {
+        Rooted<Value> re{self};
+        Rooted<Value> input{Value(strBits)};
+        return rtRegExpExec(re, input).rawBits();
+    }
+    const uint64_t argv[1] = {strBits};
+    return rtRegExpExecBody(0, thisBits, 1, argv);
+}
+
+extern "C" uint64_t bronze_fast_regexp_test(uint64_t thisBits, uint64_t strBits) {
+    const Value self(thisBits);
+    if (Value(strBits).isString() && isRegExp(self) && self.asObject<RegExpHeader>()->programIndex.isNumber() &&
+        rtRegExpChainPristine(self.asObject<RegExpHeader>())) {
+        Rooted<Value> re{self};
+        Rooted<Value> input{Value(strBits)};
+        return Value::fromBool(rtRegExpExecTest(re, input)).rawBits();
+    }
+    const uint64_t argv[1] = {strBits};
+    return rtRegExpTestBody(0, thisBits, 1, argv);
 }
 
 size_t rtRegExpCacheSize() {

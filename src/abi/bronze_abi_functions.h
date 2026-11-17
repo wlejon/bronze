@@ -34,6 +34,7 @@
     X(bronze_typeof,              BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_to_string,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_instanceof,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_instanceof_cell,     BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     /* IsCallable (7.2.3) of a proxy, the case typeof.is does not answer inline. */ \
     X(bronze_is_callable,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_has_property,        BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -743,6 +744,9 @@
     X(bronze_fast_string_split,        BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_string_trim,         BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
     X(bronze_fast_number_to_string,    BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_regexp_exec,         BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_regexp_test,         BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_regexp_literal,           BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_math_round_f64,      BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_exp_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_log_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \

@@ -36,6 +36,7 @@
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -69,23 +70,6 @@ bool isRegExp(Value v) {
 // members refuse it as they refuse any other receiver without the slots.
 bool isInitializedRegExp(Value v) {
     return isRegExp(v) && v.asObject<RegExpHeader>()->programIndex.isNumber();
-}
-
-bool requireRegExp(Value self, const char* member) {
-    if (isInitializedRegExp(self)) return true;
-    rtThrowTypeError(std::string("RegExp.prototype.") + member +
-                     " called on an incompatible receiver");
-    return false;
-}
-
-// 22.2.6.16: `test` runs the exact `exec` `lastIndex` and match protocol
-// without materializing a match array.
-uint64_t regexpTest(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!requireRegExp(self.get(), "test")) return Value::fromUndefined().rawBits();
-    Rooted<Value> input{rtValueToString(args[0])};
-    return Value::fromBool(rtRegExpExecTest(self, input)).rawBits();
 }
 
 // 22.2.6.17: `/` + source + `/` + flags, both read as PROPERTIES so a
@@ -252,7 +236,7 @@ void defineGetter(Rooted<Value>& proto, const char* name, bronze_fn_code code,
 
 const NativeMethod kRegExpMethods[] = {
     {"exec", rtRegExpExecBody, 1, 1},
-    {"test", regexpTest, 1, 1},
+    {"test", rtRegExpTestBody, 1, 1},
     {"toString", regexpToString, 0, 0},
     {"compile", regexpCompileRefusal, 0, 2},
 };
@@ -310,6 +294,9 @@ void ensureRegExpIntrinsics() {
     fn->native_base = NativeBase::RegExp;
     fn->instance_shape = rtNewRootShape(proto.get());
     g_regexp.instanceShape = fn->instance_shape;
+    // What `is.collection` compares with (bronze_abi_tls.h collection_shapes).
+    bronze_tls_block_addr()->collection_shapes[BRONZE_ABI_COLLECTION_REGEXP] =
+        reinterpret_cast<uint64_t>(g_regexp.instanceShape);
 }
 
 }  // namespace
@@ -318,11 +305,6 @@ Value rtRegExpConstructor(const std::string& name) {
     if (name != "RegExp") return Value::fromUndefined();
     ensureRegExpIntrinsics();
     return g_regexp.ctor;
-}
-
-bool rtIsRegExpIntrinsicConstructor(Value fn) {
-    // Unbuilt intrinsics hold `undefined`, which no function's bits equal.
-    return fn.rawBits() == g_regexp.ctor.rawBits();
 }
 
 Value rtRegExpPrototypeObject() {

@@ -163,13 +163,15 @@ typedef struct bronze_tls_block {
      * object. Set when the thread binds to a heap, like gc_cell_header. */
     uint64_t gc_memento_header;
     /* The instance shape of each collection kind, by BRONZE_ABI_COLLECTION_
-     * class (Map, Set, WeakMap, WeakSet): the root over the kind's
-     * prototype that `new Map()` and the others make their instances at
-     * (runtime/builtin_map.cpp, builtin_weak_map.cpp), or 0 until the runtime
-     * has built the kind. What `is.collection` compares a receiver's shape
-     * word with (il_op.h): the prototypes are frozen by lockdown, so at that
-     * shape `get`, `has`, `set` can only be the kind's own natives. */
-    uint64_t collection_shapes[4];
+     * class (Map, Set, WeakMap, WeakSet, and RegExp beside them): the root
+     * over the kind's prototype that `new Map()` and the others make their
+     * instances at (runtime/builtin_map.cpp, builtin_weak_map.cpp,
+     * builtin_regexp.cpp), or 0 until the runtime has built the kind. What
+     * `is.collection` compares a receiver's shape word with (il_op.h): the
+     * prototypes are frozen by lockdown, so at that shape `get`, `has`,
+     * `set`, a RegExp's `exec` and `test`, can only be the kind's own
+     * natives. */
+    uint64_t collection_shapes[5];
 } bronze_tls_block;
 
 /* The collection classes `collection_shapes` is indexed by, and the
@@ -179,6 +181,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_ABI_COLLECTION_SET      1
 #define BRONZE_ABI_COLLECTION_WEAKMAP  2
 #define BRONZE_ABI_COLLECTION_WEAKSET  3
+#define BRONZE_ABI_COLLECTION_REGEXP   4
 #define BRONZE_ABI_COLLECTION_MAP_GET      0
 #define BRONZE_ABI_COLLECTION_MAP_HAS      1
 #define BRONZE_ABI_COLLECTION_SET_HAS      2

@@ -285,6 +285,19 @@ AVal Solver::directCall(const il::Instruction& inst) {
         for (ObjId o : home.objs) depend(o, kKeyProto);
         return prototypesOf(home);
     }
+    if (fn.isExternal && fn.name == "bronze_regexp_literal") {
+        // A regular expression literal (lower_expr.cpp): what `new RegExp`
+        // of the intrinsic makes, the two strings it reads escaping nowhere.
+        const ObjId ctor = builtinObj("RegExp");
+        const ObjId o = alloc(curSite_, kTagResult, ObjKind::Other);
+        if (ctor != kNoObj) objs_[o].builtin = objs_[ctor].builtin;
+        if (const ObjId p = builtinObj("RegExp.prototype"); p != kNoObj) {
+            objs_[o].proto.addObj(p);
+        } else {
+            objs_[o].proto.topObj = true;
+        }
+        return AVal::obj(o);
+    }
     if (const il::FastEntry* entry = fn.isExternal ? il::fastEntryNamed(fn.name) : nullptr) {
         // A builtin's fast entry, which a method site's split calls with the
         // receiver its guard established: the builtin itself, called with

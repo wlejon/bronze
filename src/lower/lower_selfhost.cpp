@@ -13,8 +13,7 @@
 //     an intrinsic.
 //   - no global is read. A builtin that looked up `Array` or `TypeError` would
 //     see what the program put there; the check runs over the finished IL, so
-//     a global the lowering itself reaches for (a RegExp literal's `RegExp`)
-//     is refused too.
+//     a global the lowering itself reaches for is refused too.
 //
 // A top-level `$Builtin(fn, "Array.prototype.map", "Array.map", "map", 1)`
 // names a function as a builtin: the runtime's registry key, the name its

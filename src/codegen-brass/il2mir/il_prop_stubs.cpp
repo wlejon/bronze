@@ -650,6 +650,128 @@ void build_elem_cell_stub(Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
+// An `instanceof` site's stub (bronze_abi_layout.h BRONZE_ABI_INSTANCEOF_CELL_*,
+// runtime/rt_instanceof.cpp bronze_instanceof_cell). While the right operand
+// is a non-native function at the cell's instance and statics shapes and the
+// prototype epoch is the cell's, the cell certifies that `instanceof` is
+// OrdinaryHasInstance, which the stub answers: false for a primitive, else
+// whether the function's `prototype` is on the receiver's chain: the answer
+// the cell remembers for the receiver's shape, else the chain walked through
+// plain objects (shape, root, prototype: each object's [[Prototype]]
+// whatever its shape's mode) for kMaxInstanceofWalk links. Anything else,
+// a longer chain, or a link that is no plain object, is the helper's, which
+// answers and fills the cell. One straight copy per link: a loop's back edge
+// would carry an interrupt poll.
+void build_instanceof_stub(Function* fn) {
+    constexpr int kMaxInstanceofWalk = 8;
+    constexpr int32_t kFunctionHeaderLow = (BRONZE_ABI_OBJ_FLAGS_FUNCTION << 16) | BRONZE_ABI_TAG_OBJECT;
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* entry = b.append_block("entry");
+    Value* obj = b.add_block_param(entry, Type::i64());
+    Value* ctor = b.add_block_param(entry, Type::i64());
+    Value* cell = b.add_block_param(entry, Type::i64());
+    BasicBlock* ctor_bb = b.append_block("io_ctor");
+    BasicBlock* fn_bb = b.append_block("io_fn");
+    BasicBlock* certified = b.append_block("io_certified");
+    BasicBlock* object = b.append_block("io_object");
+    BasicBlock* primitive = b.append_block("io_primitive");
+    BasicBlock* memo = b.append_block("io_memo");
+    BasicBlock* memo_hit = b.append_block("io_memo_hit");
+    BasicBlock* walk = b.append_block("io_walk");
+    BasicBlock* yes = b.append_block("io_yes");
+    BasicBlock* no = b.append_block("io_no");
+    BasicBlock* helper = b.append_block("io_helper");
+    auto word_at = [&](int32_t w) { return b.build_load(Type::i64(), cell, w * 8); };
+    auto plain_at = [&](Value* p) {
+        return b.build_eq(b.build_load(Type::i32(), p, 0), b.build_iconst_i32(kPlainHeaderLow));
+    };
+
+    b.position_at_end(entry);
+    Value* cptr = b.build_xor(ctor, imm(b, static_cast<int64_t>(kObjectTagBits)));
+    b.build_br_if(b.build_ult(cptr, imm(b, kPayloadLimit)), ctor_bb, helper);
+    b.position_at_end(ctor_bb);
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), cptr, 0), b.build_iconst_i32(kFunctionHeaderLow)), fn_bb,
+                  helper);
+    b.position_at_end(fn_bb);
+    Value* flags = b.build_load(Type::i64(), cptr, BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
+    Value* not_native = b.build_eq(b.build_and(flags, imm(b, BRONZE_ABI_FN_FLAG_NATIVE)), imm(b, 0));
+    Value* inst_ok = b.build_eq(b.build_load(Type::i64(), cptr, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET),
+                                word_at(BRONZE_ABI_INSTANCEOF_CELL_INSTANCE));
+    Value* statics_ok = b.build_eq(b.build_load(Type::i64(), cptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                   word_at(BRONZE_ABI_INSTANCEOF_CELL_STATICS));
+    Value* epoch_ok = b.build_eq(word_at(BRONZE_ABI_INSTANCEOF_CELL_EPOCH),
+                                 b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF));
+    b.build_br_if(b.build_and(b.build_and(not_native, inst_ok), b.build_and(statics_ok, epoch_ok)), certified,
+                  helper);
+
+    b.position_at_end(certified);
+    Value* ptr = b.build_xor(obj, imm(b, static_cast<int64_t>(kObjectTagBits)));
+    b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, primitive);
+    b.position_at_end(object);
+    b.build_br_if(plain_at(ptr), memo, helper);
+    b.position_at_end(memo);
+    Value* shape0 = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    b.build_br_if(b.build_eq(shape0, word_at(BRONZE_ABI_INSTANCEOF_CELL_SHAPE)), memo_hit, walk);
+    b.position_at_end(memo_hit);
+    b.build_ret(b.build_trunc_i32(word_at(BRONZE_ABI_INSTANCEOF_CELL_ANSWER)));
+    b.position_at_end(walk);
+    Value* target = b.build_load(Type::i64(), cptr, BRONZE_ABI_FN_PROTOTYPE_OFFSET);
+    Value* cur = ptr;
+    for (int link = 1; link <= kMaxInstanceofWalk; ++link) {
+        const bool last = link == kMaxInstanceofWalk;
+        const std::string at = "io_link" + std::to_string(link);
+        BasicBlock* here = b.current_block();
+        BasicBlock* plain = b.append_block(at + "_plain");
+        BasicBlock* rooted = b.append_block(at + "_root");
+        BasicBlock* other = b.append_block(at + "_other");
+        BasicBlock* not_obj = last ? nullptr : b.append_block(at + "_notobj");
+        BasicBlock* is_obj = last ? nullptr : b.append_block(at + "_obj");
+        b.position_at_end(here);
+        b.build_br_if(plain_at(cur), plain, helper);
+        b.position_at_end(plain);
+        Value* root = b.build_load(Type::i64(), b.build_load(Type::i64(), cur, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                   BRONZE_ABI_SHAPE_ROOT_OFFSET);
+        b.build_br_if(b.build_ne(root, imm(b, 0)), rooted, helper);
+        b.position_at_end(rooted);
+        Value* proto = b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET);
+        b.build_br_if(b.build_eq(proto, target), yes, other);
+        b.position_at_end(other);
+        Value* is_null = b.build_eq(proto, imm(b, static_cast<int64_t>(kNullTag)));
+        if (last) {
+            b.build_br_if(is_null, no, helper);
+            break;
+        }
+        Value* pptr = b.build_xor(proto, imm(b, static_cast<int64_t>(kObjectTagBits)));
+        b.build_br_if(b.build_ult(pptr, imm(b, kPayloadLimit)), is_obj, not_obj);
+        b.position_at_end(not_obj);
+        b.build_br_if(is_null, no, helper);
+        b.position_at_end(is_obj);
+        cur = pptr;
+    }
+
+    // A walk that answered went through plain objects only, every one past
+    // the receiver a marked prototype whose [[Prototype]] cannot change without
+    // a new epoch, so the answer holds for the receiver's shape while the
+    // cell's epoch does, unless that shape is a dictionary's (its own
+    // prototype may change in place): the shape and answer are remembered.
+    auto remember = [&](int64_t answer) {
+        Value* is_dict = b.build_ne(b.build_load(Type::i64(), shape0, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0));
+        b.build_store(Type::i64(), cell, BRONZE_ABI_INSTANCEOF_CELL_SHAPE * 8, b.build_select(is_dict, imm(b, 0), shape0));
+        b.build_store(Type::i64(), cell, BRONZE_ABI_INSTANCEOF_CELL_ANSWER * 8, imm(b, answer));
+        b.build_ret(b.build_iconst_i32(static_cast<int32_t>(answer)));
+    };
+    b.position_at_end(yes);
+    remember(1);
+    b.position_at_end(no);
+    remember(0);
+    b.position_at_end(primitive);
+    b.build_ret(b.build_iconst_i32(0));
+    b.position_at_end(helper);
+    b.build_ret(b.build_call("bronze_instanceof_cell", Type::i32(), {obj, ctor, cell}));
+    fn->rebuild_cfg_predecessors();
+}
+
 // The setter call the write stub makes, in a function of its own: the
 // argument block it roots would give the write stub a root frame to push and
 // pop on every add and store it answers.

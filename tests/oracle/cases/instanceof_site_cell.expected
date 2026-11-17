@@ -1,0 +1,26 @@
+A 111000000000111000000000111000000000
+B 011000000000011000000000011000000000
+C 001000000000001000000000001000000000
+D 000100000000000100000000000100000000
+Object 111110110000111110110000111110110000
+Function 000000010000000000010000000000010000
+Array 000000100000000000100000000000100000
+reassigned false true false
+own hasInstance false true
+inherited hasInstance false false
+static true false
+bound true false
+proxy true false
+proxy prototype true true false
+setPrototypeOf null false
+setPrototypeOf true
+proto of prototype true true
+deep true false true
+proxy chain false false
+TypeError
+TypeError
+TypeError
+bound hasInstance true false false
+remembered then relinked 5 true true
+dictionary receiver false true
+middle relinked false false

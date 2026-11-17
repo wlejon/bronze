@@ -642,7 +642,7 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             }
             if (inst.op == Op::IsCollection &&
                 (inst.operands.size() != 1 || inst.type != Type::Bool || inst.immI32 < 0 ||
-                 inst.immI32 > BRONZE_ABI_COLLECTION_WEAKSET)) {
+                 inst.immI32 > BRONZE_ABI_COLLECTION_REGEXP)) {
                 diags.error(Span{}, "Function " + fn.name + ": is.collection takes one operand and a class");
                 return false;
             }

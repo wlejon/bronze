@@ -2,6 +2,7 @@
 #include "il_lowering_dynamic.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include "il_prop_stubs.h"
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -689,7 +690,13 @@ bool lower_ops_instruction(
         case BronzeOp::InstanceOf: {
             Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
             Value* op1 = lowering->ensure_type(get_opd(1), Type::i64(), b);
-            res_val = b.build_call("bronze_instanceof", Type::i32(), {op0, op1});
+            // A site with a cell (elem_cells.h) asks the module's stub, which
+            // answers a plain receiver the cell has seen without a call.
+            if (Value* cell = lowering->prop_lowering().elem_cell(b)) {
+                res_val = b.build_call(lowering->prop_lowering().stub_sym(kInstanceofStub), Type::i32(), {op0, op1, cell});
+            } else {
+                res_val = b.build_call("bronze_instanceof", Type::i32(), {op0, op1});
+            }
             res_val = b.build_and(res_val, b.build_iconst_i32(1));
             return true;
         }
