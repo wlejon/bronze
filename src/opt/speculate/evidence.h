@@ -38,8 +38,17 @@ namespace bronze::opt::speculate {
 inline constexpr uint64_t kMinEntries = 64;
 // ...or a site of it ran this often (a function entered once that loops)...
 inline constexpr uint64_t kMinSiteRunsForHot = 4096;
-// ...or the harvest's sampler caught its code this many times.
+// ...or the harvest's sampler caught its code this many times; and, for a
+// function the harvested run counted fewer than kMinEntries entries of, at
+// least 1 / kLoopShareDen of all the run's samples: entered a few times, it
+// is hot only as a loop the run spent a share of its time in, itself or in
+// what it calls (a call site of it counted kMinSiteRunsForHot runs), not a
+// step of its start (three.js's WebGLProgram: 6 entries, 28 of 43,000
+// samples). A
+// function the run counted no entries of is never hot: samples are filed by
+// function name, and the ones it seems to have are a namesake's.
 inline constexpr uint64_t kMinSamples = 2;
+inline constexpr uint64_t kLoopShareDen = 100;
 // A recorded site must have run this often for its tags or names to count.
 inline constexpr uint64_t kMinSiteObservations = 16;
 // A property read with this many own-property shapes, at most, becomes a
@@ -261,6 +270,9 @@ public:
     // cold (il.h Block::cold), which also keeps the inliner out of them.
     std::vector<BlockId> unenteredBlocks(uint32_t fn) const;
 
+    // il.h Function::heat of function `fn`, with its harvested entry count.
+    il::Function::Heat heat(uint32_t fn, uint64_t& entries) const;
+
 private:
     struct SiteRefs;  // the feedback sites of one function, by instruction
 
@@ -337,6 +349,7 @@ private:
     std::vector<std::string> keys_;
     uint64_t minEntries_ = kMinEntries;
     uint64_t minSamples_ = kMinSamples;
+    uint64_t totalSamples_ = 0;  // the harvest's samples, all functions
     // Callee name -> function, built on first use (kNoFunction: ambiguous).
     mutable bool namesBuilt_ = false;
     mutable std::unordered_map<std::string, uint32_t> recordedNames_;

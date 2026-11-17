@@ -152,6 +152,11 @@ Value* lower_call_dynamic_inline(IlLowering* lowering, Builder& b, Value* callee
                                  const std::vector<Value*>& args) {
     const uint32_t argc = static_cast<uint32_t>(args.size());
     Value* argv = lowering->stage_argv(b, args);
+    if (lowering->prop_lowering().cold_code()) {
+        lowering->prop_lowering().slow_arm(b);
+        return b.build_call("bronze_call_dynamic_n", Type::i64(),
+                            {callee, this_val, b.build_iconst_i32(static_cast<int32_t>(argc)), argv});
+    }
     const std::string p = prefix_of(b, "call");
     BasicBlock* cur = b.current_block();
     BasicBlock* slow = b.append_block(p + "_slow");
@@ -216,6 +221,11 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
     const IcSite site = pl.ic_site_ref(b, ic_index);
     const uint32_t argc = static_cast<uint32_t>(args.size());
     Value* argv = lowering->stage_argv(b, args);
+    if (lowering->prop_lowering().cold_code()) {
+        pl.slow_arm(b);
+        return b.build_call(lowering->module_sym(kMethodCallStub), Type::i64(),
+                            {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, pl.site_ptr(b, site)});
+    }
     const std::string p = prefix_of(b, "mcall");
     BasicBlock* cur = b.current_block();
     BasicBlock* object = b.append_block(p + "_object");
@@ -330,6 +340,10 @@ Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, con
                               uint32_t slow_site) {
     const uint32_t argc = static_cast<uint32_t>(args.size());
     Value* argv = lowering->stage_argv(b, args);
+    if (lowering->prop_lowering().cold_code()) {
+        lowering->prop_lowering().slow_arm(b);
+        return b.build_call("bronze_construct", Type::i64(), {ctor, b.build_iconst_i32(static_cast<int32_t>(argc)), argv});
+    }
     const std::string p = prefix_of(b, "new");
     BasicBlock* cur = b.current_block();
     BasicBlock* fast = b.append_block(p + "_fast");

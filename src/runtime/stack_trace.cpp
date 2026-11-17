@@ -33,6 +33,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/code_stack_maps.h"
 #include "runtime/exception.h"
+#include "runtime/pc_table.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
 #include "runtime/interpreted_frames.h"
@@ -318,28 +319,22 @@ bool find_code_site(const void* pc, CodeSite& out) {
     out.col = cr->desc->def_col;
     out.file = cr->desc->file;
     out.inline_frame = 0;
-    if (cr->pc_table && cr->pc_count > 0) {
-        const uintptr_t pc_off =
-            reinterpret_cast<uintptr_t>(pc) - reinterpret_cast<uintptr_t>(cr->code_start);
-        auto it = std::upper_bound(
-            cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
-            [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
-        if (it != cr->pc_table) {
-            --it;
-            out.line = it->line;
-            out.col = it->col;
-            if (cr->files && it->file < cr->file_count && cr->files[it->file]) {
-                out.file = cr->files[it->file];
-            }
-            if (it->inline_frame != 0 && it->inline_frame <= cr->inline_frame_count && cr->inline_frames) {
-                const bronze_inline_frame& f = cr->inline_frames[it->inline_frame - 1];
-                if (f.desc) {
-                    out.desc = f.desc;
-                    out.inline_frame = it->inline_frame;
-                    // A position whose pc entry names no file is in the
-                    // callee's own file, not the range's.
-                    if (!(cr->files && it->file < cr->file_count && cr->files[it->file])) out.file = f.desc->file;
-                }
+    const uintptr_t pc_off = reinterpret_cast<uintptr_t>(pc) - reinterpret_cast<uintptr_t>(cr->code_start);
+    bronze_pc_entry at{};
+    if (cr->pc_table && cr->pc_count > 0 && pc_off <= UINT32_MAX &&
+        pctable::lookup(cr->pc_table, cr->pc_count, static_cast<uint32_t>(pc_off), at)) {
+        out.line = at.line;
+        out.col = at.col;
+        const bool ownFile = cr->files && at.file < cr->file_count && cr->files[at.file];
+        if (ownFile) out.file = cr->files[at.file];
+        if (at.inline_frame != 0 && at.inline_frame <= cr->inline_frame_count && cr->inline_frames) {
+            const bronze_inline_frame& f = cr->inline_frames[at.inline_frame - 1];
+            if (f.desc) {
+                out.desc = f.desc;
+                out.inline_frame = at.inline_frame;
+                // A position whose pc entry names no file is in the
+                // callee's own file, not the range's.
+                if (!ownFile) out.file = f.desc->file;
             }
         }
     }

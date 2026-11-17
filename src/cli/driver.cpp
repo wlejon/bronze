@@ -37,6 +37,7 @@
 #include "parse/parser.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
+#include "codegen-brass/size_report.h"
 #include "types/dump.h"
 #include "types/infer.h"
 
@@ -845,6 +846,8 @@ int runDriver(int argc, char** argv) {
                 retainFnSource = false;
             } else if (arg == "--timings") {
                 timings = true;
+            } else if (arg == "--size-report") {
+                codegen::setSizeReportEnabled(true);
             } else if (arg == "--opt-stats") {
                 optStats = true;
             } else if (arg == "--emit-obj") {

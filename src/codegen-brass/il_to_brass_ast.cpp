@@ -724,6 +724,13 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         }
         bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
         bfn.entry_slow_site = fn.entrySlowSite;
+        // What the spent harvest saw of the function: never entered, or
+        // entered too seldom and briefly to be hot (opt/speculate
+        // Evidence::heat). Its sites lower to the runtime helpers alone and
+        // brass compiles it for size (mir Function::is_cold): its time is
+        // negligible either way. Without a harvest every function is
+        // optimized.
+        bfn.cold = fn.heat == il::Function::Heat::Never || fn.heat == il::Function::Heat::Entered;
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

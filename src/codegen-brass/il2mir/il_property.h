@@ -156,6 +156,13 @@ public:
     // every write through the helper).
     void set_inline_sets(bool on) noexcept { inline_sets_ = on; }
     [[nodiscard]] bool inline_sets() const noexcept { return inline_sets_; }
+    // Whether the body being lowered is one the harvest found cold
+    // (BronzeFunction::cold): its property, element, call and `new` sites
+    // are the runtime helper alone, with no inline cache test in front, so
+    // code the program barely runs is a call per site rather than a
+    // hundred bytes. The helpers read and fill the same sites.
+    void set_cold_code(bool on) noexcept { cold_code_ = on; }
+    [[nodiscard]] bool cold_code() const noexcept { return cold_code_; }
     // Whether the module runs in this process (the tiered pipeline), so its
     // code may hold this process's addresses.
     void set_in_process(bool on) noexcept { in_process_ = on; }
@@ -244,6 +251,7 @@ private:
                               Value*& hit, Value*& slot_word, Value* number_store = nullptr);
 
     bool inline_sets_ = true;
+    bool cold_code_ = false;
     bool in_process_ = false;
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";

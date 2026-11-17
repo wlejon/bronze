@@ -91,9 +91,11 @@ bool lower_property_instruction(
                 return true;
             }
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
-            if (site && length_key(lowering, inst_ast.index)) {
+            // A cold body's read is the helper alone (cold_code).
+            const bool cold = prop_lowering.cold_code();
+            if (site && length_key(lowering, inst_ast.index) && !cold) {
                 res_val = prop_lowering.lower_length_get(b, obj_val, inst_ast.index, site);
-            } else if (site && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+            } else if (site && inst_ast.index != PropertyLoweringHelper::kNoKey && !cold) {
                 res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
             } else {
                 res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
@@ -125,7 +127,7 @@ bool lower_property_instruction(
                                                     site ? prop_lowering.site_ptr(b, site) : nullptr);
                 return true;
             }
-            if (site && prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+            if (site && prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey && !prop_lowering.cold_code()) {
                 prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site,
                                                   lowering->is_primitive_value(inst_ast.operands[1]));
             } else {

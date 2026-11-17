@@ -4,6 +4,7 @@
 #include "codegen-brass/brass_symbol_registration.h"
 #include "embed/embed.h"
 #include "embed/embed_profiler.h"
+#include "runtime/pc_table.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
 
@@ -296,9 +297,11 @@ void TieredProgramImage::onCodeInstalled(const brass::runtime::InstalledCode& co
     const brass::DebugContext& debug = code.debug_context ? *code.debug_context : module_->debug_context();
     std::lock_guard<std::mutex> lock(rangesMutex_);
     RangeRecord& r = ranges_.emplace_back();
+    uint32_t pcCount = 0;
     if (code.lines) {
         InstalledInlineFrames inlines(*this, debug, *desc);
-        r.pcs.reserve(code.lines->size());
+        std::vector<bronze_pc_entry> pcs;
+        pcs.reserve(code.lines->size());
         for (const brass::DebugLineEntry& le : *code.lines) {
             brass::DebugLoc loc = le.loc;
             const uint32_t frame = inlines.frameOf(loc);
@@ -308,13 +311,15 @@ void TieredProgramImage::onCodeInstalled(const brass::runtime::InstalledCode& co
             bronze_pc_entry e = translate(loc, in);
             e.pc_offset = le.code_offset;
             e.inline_frame = frame;
-            r.pcs.push_back(e);
+            pcs.push_back(e);
         }
+        pcCount = static_cast<uint32_t>(pcs.size());
+        r.pcs = pctable::encode(std::move(pcs));
         r.inlines = std::move(inlines.frames());
     }
     r.range.code_start = code.code;
     r.range.code_size = static_cast<uint32_t>(code.size);
-    r.range.pc_count = static_cast<uint32_t>(r.pcs.size());
+    r.range.pc_count = pcCount;
     r.range.desc = desc;
     r.range.pc_table = r.pcs.empty() ? nullptr : r.pcs.data();
     r.range.files = files_;

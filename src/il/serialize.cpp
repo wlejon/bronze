@@ -90,6 +90,8 @@ struct FunctionMirror {
     uint32_t speculatedFrom;
     uint32_t fallback;
     uint32_t entrySlowSite;
+    Function::Heat heat;
+    uint64_t harvestEntries;
     std::vector<Function::InlineScope> inlineScopes;
     std::vector<Block> blocks;
     uint32_t valueCount;
@@ -499,6 +501,8 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(static_cast<uint32_t>(fn.speculatedFrom + 1u));  // kNotSpeculated wraps to 0
     w.var(static_cast<uint32_t>(fn.fallback + 1u));        // kNoFallback wraps to 0
     w.var(static_cast<uint32_t>(fn.entrySlowSite + 1u));   // none wraps to 0
+    w.var(static_cast<uint32_t>(fn.heat));
+    w.var(fn.harvestEntries);
     w.var(fn.valueCount);
     w.var(fn.inlineScopes.size());
     for (const auto& s : fn.inlineScopes) {
@@ -553,6 +557,8 @@ void readFunction(Reader& r, Function& fn) {
     fn.speculatedFrom = r.u32() - 1u;
     fn.fallback = r.u32() - 1u;
     fn.entrySlowSite = r.u32() - 1u;
+    fn.heat = static_cast<Function::Heat>(r.u32());
+    fn.harvestEntries = r.var();
     fn.valueCount = r.u32();
     fn.inlineScopes.resize(r.count());
     for (auto& s : fn.inlineScopes) {

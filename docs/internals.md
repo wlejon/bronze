@@ -105,7 +105,13 @@ An object exports exactly four symbols — its entry, its ABI stamp, its
 host-globals manifest and its native import table, the last three named after
 the entry — plus its code-range table (`<entry>_code_ranges` and
 `<entry>_code_range_count`, `bronze_object_*` for the default entry), which a
-host registers for stack walks; everything else it defines is internal. That is
+host registers for stack walks; everything else it defines is internal. A code
+range's pc table is a byte stream (`runtime/pc_table.h`: per entry a varint pc
+delta with file and inline-frame change bits, a zigzag line delta, the column,
+and the new file or frame when the bits say so; about four bytes where the
+`bronze_pc_entry` structs took twenty), decoded from its start up to the pc a
+trace asks about, and its stack map is brass's delta-encoded version 3
+(brass `docs/gc_contract.md` §1.3). That is
 what lets a host link **more than one** compiled module into one image and
 enter them in turn. The runtime is shared, and what each module owns privately
 is its inline-cache table, its key remap, its global cache, its

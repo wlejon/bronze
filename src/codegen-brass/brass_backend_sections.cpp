@@ -2,6 +2,8 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-brass/deopt_sites.h"
+#include "codegen-brass/size_report.h"
+#include "runtime/pc_table.h"
 #include "codegen-brass/elem_cells.h"
 #include "codegen-brass/il2mir/il_abi.h"
 #include "il/feedback_site.h"
@@ -175,7 +177,7 @@ void emitNumberSlotKeys(ObjectFile& obj, Section& roSec, int32_t roIdx, const st
 // hands `bronze_register_ic_hot`, and exported for a host that loaded the
 // image (eval::LoadedModule).
 void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::string& entrySymbol,
-                    const il::Module& module) {
+                    const il::Module& module, bool counted) {
     roSec.align_to(8);
     const size_t at = roSec.data.size();
     roSec.emit32(BRONZE_ABI_IC_IDENTITY_VERSION);
@@ -187,8 +189,9 @@ void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::s
     // carries (ic_harvest.cpp).
     emitPointer(roSec, entrySymbol == "bronze_main" ? "bronze_object_code_ranges" : entrySymbol + "_code_ranges");
     roSec.emit32(static_cast<uint32_t>(obj.functions.size()));
-    // The slow sites' counters, right before the IC table.
-    roSec.emit32(module.slowSiteCount);
+    // The slow sites' counters, right before the IC table: none in an image
+    // whose code counts nothing (emitDataSection).
+    roSec.emit32(counted ? module.slowSiteCount : 0u);
     roSec.emit_bytes(reinterpret_cast<const uint8_t*>(module.harvestOutPath.data()), module.harvestOutPath.size());
     roSec.emit8(0);
     const size_t size = roSec.data.size() - at;
@@ -423,21 +426,20 @@ void emitPcTablesAndCodeRanges(
         if (itDt != debugTableMap.end() && !itDt->second->line_entries().empty()) {
             const auto& entries = itDt->second->line_entries();
             InlineFrameTable frames(obj.debug_context, fnToDesc);
-            roSec.align_to(4);
-            const size_t pcOff = roSec.data.size();
+            std::vector<bronze_pc_entry> pcs;
+            pcs.reserve(entries.size());
             for (const auto& le : entries) {
                 brass::DebugLoc loc = le.loc;
                 const uint32_t frame = frames.frameOf(loc);
-                roSec.emit32(le.code_offset);
-                roSec.emit32(loc.line);
-                roSec.emit32(loc.column);
-                roSec.emit32(fileIndex(loc.file_id));
-                roSec.emit32(frame);
+                pcs.push_back({static_cast<uint32_t>(le.code_offset), loc.line, loc.column, fileIndex(loc.file_id),
+                               frame});
             }
+            const std::vector<uint8_t> encoded = pctable::encode(std::move(pcs));
+            const size_t pcOff = roSec.data.size();
+            roSec.emit_bytes(encoded);
             std::string pcSym = moduleSymbolName(entrySymbol, "__bronze_pc_table_" + cfi.name);
             fnToPcTable[cfi.name] = pcSym;
-            defineSymbol(obj, std::move(pcSym), roIdx, pcOff,
-                         entries.size() * sizeof(bronze_pc_entry), SymbolBinding::Local);
+            defineSymbol(obj, std::move(pcSym), roIdx, pcOff, encoded.size(), SymbolBinding::Local);
             if (!frames.frames().empty()) {
                 roSec.align_to(8);
                 const size_t inlOff = roSec.data.size();
@@ -671,14 +673,16 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     // the identity record carries. Right before them the ARMED bitmap: bit i
     // of word i / 64 set when the code counts site i (`slowArmed`, from
     // lowering; all clear in a build that counts nothing), which the harvest
-    // writes beside the counts.
-    if (module.slowSiteCount != 0) {
+    // writes beside the counts. An image whose code counts nothing (built on
+    // a harvest, which is never harvested again, or in process: `slowArmed`
+    // null) has neither, and its identity record says so.
+    if (module.slowSiteCount != 0 && slowArmed != nullptr) {
         const size_t armedWords = (static_cast<size_t>(module.slowSiteCount) + 63) / 64;
         const size_t bytes = (armedWords + module.slowSiteCount) * sizeof(uint64_t);
         const size_t end = (dataSec.data.size() + bytes + 63) & ~size_t{63};
         dataSec.data.resize(end, 0);
         const size_t armedAt = end - bytes;
-        for (size_t w = 0; slowArmed != nullptr && w < armedWords && w < slowArmed->size(); ++w) {
+        for (size_t w = 0; w < armedWords && w < slowArmed->size(); ++w) {
             std::memcpy(dataSec.data.data() + armedAt + w * sizeof(uint64_t), &(*slowArmed)[w], sizeof(uint64_t));
         }
         defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_slow_counts"), dataIdx,
@@ -820,7 +824,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitKeyConstants(obj, roSec, roIdx, keySymbol, in.module.keyConstants);
     emitCensusData(obj, roSec, roIdx, entrySymbol, in.module);
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
-    emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module);
+    emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module, in.slowArmed != nullptr);
     emitShapeCellKeys(obj, roSec, roIdx, entrySymbol, in.module);
     emitNumberSlotKeys(obj, roSec, roIdx, entrySymbol, in.module);
     emitSourceTextsAndEntries(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
@@ -851,6 +855,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
         std::fprintf(stderr, "    functions %zu, symbols %zu, relocations %zu, line entries %zu\n",
                      obj.functions.size(), obj.symbols.size(), relocs, lineEntries);
     }
+    if (sizeReportEnabled()) printSizeReport(obj, in.module, in.uniqueNames, entrySymbol);
 }
 
 }  // namespace bronze::codegen

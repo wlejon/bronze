@@ -344,13 +344,18 @@ typedef struct bronze_code_range {
     uint32_t code_size;
     uint32_t pc_count;
     const bronze_fn_desc* desc;
-    const bronze_pc_entry* pc_table;
+    /* `pc_count` bronze_pc_entry positions, encoded: each relative to the one
+     * before it, a LEB128 head ((pc_offset delta << 2) | file changed |
+     * inline frame changed << 1), the line delta zigzagged, the column, then
+     * the file and the inline frame where the head says they changed
+     * (src/runtime/pc_table.h reads and writes them). */
+    const uint8_t* pc_table;
     const char* const* files;
     uint32_t file_count;
     /* The function's brass stack map, encoded (brass encode_stack_maps, one
-     * function whose code starts at `code_start`; format version 2, whose
-     * slot area a runtime reading only version 1 would drop the map for, so
-     * this text is part of the fingerprint): the frames of this code the
+     * function whose code starts at `code_start`; format version 3, compact,
+     * which a runtime reading only versions 1 and 2 refuses, so this text is
+     * part of the fingerprint): the frames of this code the
      * collector walks, and where each holds a Value. Emitted into every
      * compiled object; a loaded image's registration hands it to brass's code
      * registry (bronze_register_code_ranges) unless the code's maps are

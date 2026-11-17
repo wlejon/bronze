@@ -382,6 +382,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
         Function* fn = mod->create_function(fn_name, ret_type, Span<const Type>(param_types.data(), param_types.size()));
         fn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
+        fn->set_cold(fn_ast.cold);
 
         if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
             std::vector<Type> wrapper_param_types = {Type::i64(), Type::i64(), Type::i32(), Type::ptr()};

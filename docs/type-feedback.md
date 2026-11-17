@@ -615,6 +615,39 @@ module whose code-range table holds the function, by its descriptor's
 the probe's functions (`FeedbackPlan::samples`). A stale harvest gives no
 samples.
 
+**Which functions are hot** (`Evidence::isHot`, `opt/speculate/evidence.h`):
+a recorded profile's entry count of at least `kMinEntries` (64), a site that
+ran `kMinSiteRunsForHot` (4096) times, or at least `kMinSamples` (2)
+samples. Samples are filed by name, so for a function the harvested build
+counted (its entry count armed) the count decides first: one it never
+entered is not hot whatever samples its namesakes left, and one entered
+fewer than `kMinEntries` times is hot only if its samples are also at least
+1 / `kLoopShareDen` (1%) of the run's, a loop the run spent a share of its
+time in rather than a step of its start-up (three.js's `WebGLProgram`: 6
+entries, 28 of 43,000 samples, 1.4 MB of S, S+ and twin code, now none).
+
+**Heat** (`il::Function::heat`, set for every function by the speculation
+step from `Evidence::heat`, kept by every copy and serialized): `Never` for a
+counted function the harvested run never entered, `Entered` for one entered
+fewer than `kMinEntries` times and not hot, `Hot` for the rest (entered
+often or hot, speculated or not), `Unknown` without a harvest or for a
+function the harvested build did not count. A `Never` or `Entered` function is
+COLD: its property, element, method, call and `new` sites lower to their
+runtime helpers alone, with no inline-cache test in front
+(`PropertyLoweringHelper::cold_code`); the helpers read and fill the same
+sites, so a later hot caller's cache is warm all the same. brass is told
+too (`mir::Function::set_cold`): no MIR optimization passes, no inlining
+into it, and codegen without loop pipes, post-RA scheduling, software
+pipelining or trace layout. A plain build has no heat and compiles
+everything as before. A wrong profile costs speed, never an answer: three_meshes
+built on a harvest that says nothing ran (every function cold) runs 18 ms a
+frame against 2.9 and prints the same checksum.
+
+On three_meshes the cold tier takes the profiled build from 16.3 s to 9.3 s
+and its bench.so from 32.9 MB to 21.1 MB (cold functions' code 10.1 to 4.1
+MB, the rest is stack maps and pc tables), at equal instructions per frame
+on all seven scenes.
+
 The sampler wakes only while JS runs: after arming it sleeps with no timeout
 until a poll takes the sample, so an app that is idle, blocked or in the
 background causes no wakeups. It exits after 10,000 samples, when no harvest
@@ -734,7 +767,9 @@ starts (`__bronze_slow_counts`, the IC identity's `slowSites`, version 3),
 and every fallback bumps its instruction's counter first thing (alias class
 `kSlowCountAliasClass`, a load, an add and a store, all on the cold path).
 Lowering also notes each site it gave a counting fallback, and the backend
-lays that ARMED bitmap out right before the counters. A run's fallback bumps
+lays that ARMED bitmap out right before the counters. A profiled build, whose
+code counts nothing and which is never harvested, has neither, and its IC
+identity's `slowSites` is 0. A run's fallback bumps
 the counter of every numbered instruction in it: the build on the harvest
 need not form the runs the harvested build did. A constant-index run's
 fallback never leaves: its exit holds every element it loaded in its state,

@@ -134,6 +134,10 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
         }
         stats.numberSlotKeys = static_cast<uint32_t>(module.numberSlotKeys.size());
         for (uint32_t f = 0; f < lowered; ++f) {
+            il::Function& fn = module.functions[f];
+            fn.heat = evidence.heat(f, fn.harvestEntries);
+        }
+        for (uint32_t f = 0; f < lowered; ++f) {
             ++stats.functionsConsidered;
             std::optional<FunctionPlan> plan = evidence.plan(f);
             if (!plan) continue;

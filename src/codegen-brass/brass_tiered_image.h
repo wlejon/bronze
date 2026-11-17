@@ -91,7 +91,7 @@ private:
 
     struct RangeRecord {
         bronze_code_range range{};
-        std::vector<bronze_pc_entry> pcs;
+        std::vector<uint8_t> pcs;  // encoded (runtime/pc_table.h)
         std::vector<bronze_inline_frame> inlines;
     };
 

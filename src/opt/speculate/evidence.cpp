@@ -160,6 +160,9 @@ Evidence::Evidence(const il::Module& module, const spec::TypeProfile& profile, c
             stats.harvestIgnored = 1;
         }
     }
+    if (harvest_ != nullptr) {
+        for (const auto& [hash, count] : harvest_->samples) totalSamples_ += count;
+    }
     if (options.minEntries != 0) minEntries_ = options.minEntries;
     if (options.minSamples != 0) minSamples_ = options.minSamples;
 }
@@ -203,11 +206,49 @@ bool Evidence::isHot(uint32_t fn) const {
             }
         }
     }
-    if (harvest_ != nullptr) {
-        auto it = harvest_->samples.find(il::functionNameHash(module_.functions[fn].name));
-        if (it != harvest_->samples.end() && it->second >= minSamples_) return true;
+    if (harvest_ == nullptr) return false;
+    const il::Function& f = module_.functions[fn];
+    auto it = harvest_->samples.find(il::functionNameHash(f.name));
+    const uint64_t samples = it != harvest_->samples.end() ? it->second : 0;
+    if (f.entrySlowSite == il::Instruction::kNoSlowSite || !slowArmed(f.entrySlowSite)) {
+        return samples >= minSamples_;
     }
-    return false;
+    // Counted: samples are filed by name, so a function the run never
+    // entered has another one's; one entered a few times is a step of the
+    // run (start-up, a load), hot only as a loop that is a share of it.
+    const uint64_t entries = slowCount(f.entrySlowSite);
+    if (entries == 0) return false;
+    if (entries < minEntries_) {
+        if (samples >= minSamples_ && samples * kLoopShareDen >= totalSamples_) return true;
+        // ...or one whose callees take the samples: a call of it ran often.
+        for (const il::Block& block : f.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.slowSite == il::Instruction::kNoSlowSite) continue;
+                if (inst.op != il::Op::Call && inst.op != il::Op::DynamicCall && inst.op != il::Op::MethodCall &&
+                    inst.op != il::Op::Construct) {
+                    continue;
+                }
+                if (slowCount(inst.slowSite + il::kCallCountArm) >= kMinSiteRunsForHot) return true;
+            }
+        }
+        return false;
+    }
+    return samples >= minSamples_;
+}
+
+il::Function::Heat Evidence::heat(uint32_t fn, uint64_t& entries) const {
+    using Heat = il::Function::Heat;
+    entries = 0;
+    if (harvest_ == nullptr) return Heat::Unknown;
+    const il::Function& f = module_.functions[fn];
+    const bool counted = f.entrySlowSite != il::Instruction::kNoSlowSite && slowArmed(f.entrySlowSite);
+    if (counted) entries = slowCount(f.entrySlowSite);
+    if (isHot(fn)) return Heat::Hot;
+    if (!counted) return Heat::Unknown;
+    // Entered often is hot to codegen whether or not speculation chose it:
+    // a small function called every frame takes too few samples for that.
+    if (entries >= minEntries_) return Heat::Hot;
+    return entries == 0 ? Heat::Never : Heat::Entered;
 }
 
 std::optional<FunctionPlan> Evidence::plan(uint32_t fnIndex) const {

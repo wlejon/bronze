@@ -310,6 +310,10 @@ struct BronzeFunction {
     bool is_toplevel = false;
     // il.h Function::entrySlowSite: the entry count's index (UINT32_MAX: none).
     uint32_t entry_slow_site = UINT32_MAX;
+    // Compiled as brass's cold functions are (Function::is_cold): the
+    // harvest the build spent saw it run seldom or never (il.h
+    // Function::heat; il_to_brass_ast.cpp).
+    bool cold = false;
     // il.h Function::inlineScopes: the callee's function name, the call's
     // position, and the scope the call is in (0: the function's own code).
     struct InlineScope {

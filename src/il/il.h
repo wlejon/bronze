@@ -385,6 +385,17 @@ struct Function {
     // every entry. A speculated copy keeps its G's. Instruction::kNoSlowSite
     // for a function given none (an external one, a body with no blocks).
     uint32_t entrySlowSite = UINT32_MAX;
+    // What the harvest a build spent says of this function's run, set by the
+    // speculation step (opt/speculate driver.cpp, Evidence::heat) and kept by
+    // every copy made of it: Unknown without a harvest (or for a function the
+    // harvested build did not count), Never for one it never entered,
+    // Entered for one it entered fewer than kMinEntries times and did not
+    // find hot (Evidence::isHot), Hot for the rest. `harvestEntries` is the
+    // count. Hot is not "speculated": a function entered a million times
+    // that the sampler never caught is Hot here and may have no S.
+    enum class Heat : uint8_t { Unknown, Never, Entered, Hot };
+    Heat heat = Heat::Unknown;
+    uint64_t harvestEntries = 0;
     // The calls the inliner replaced by their callee's body: scope k + 1 is
     // the body of module function `callee` (whose frame a stack trace shows)
     // called at `call`, in scope `parent` (0: this function's own code).

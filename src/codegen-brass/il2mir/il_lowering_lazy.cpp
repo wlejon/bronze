@@ -16,6 +16,7 @@ namespace il2mir {
 
 bool IlLowering::lower_body(size_t i, Module& mod, Function* target) {
     current_fn_idx_ = i;
+    prop_lowering_.set_cold_code(current_ast_->functions[i].cold);
     return lower_function(current_ast_->functions[i], mod, resolved_names_[i], target);
 }
 
@@ -24,6 +25,7 @@ bool IlLowering::lower_wrapper(size_t i, Module& mod) {
     const std::string& fn_name = resolved_names_[i];
     if (fn_name == "main" || fn_ast.is_coroutine_body()) return true;
     current_fn_idx_ = i;
+    prop_lowering_.set_cold_code(false);
     // What the function's body computed at its entry is not the wrapper's.
     current_module_delta_ = nullptr;
     uint32_t arity = static_cast<uint32_t>(fn_ast.params.size());

@@ -154,6 +154,10 @@ ElemIndex elem_index(Builder& b, Value* index) {
 // the receiver's shape and the key, the rest bronze_elem_get.
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
     Value* key = boxed_elem_key(b, index);
+    if (cold_code_) {
+        slow_arm(b);
+        return b.build_call(stub_sym(kElemGetStub), Type::i64(), {obj, key});
+    }
     const ElemIndex ei = elem_index(b, index);
     BasicBlock* cur = b.current_block();
     const std::string prefix = "elem_get_" + std::to_string(cur->parent()->next_block_id());
@@ -356,8 +360,18 @@ Value* PropertyLoweringHelper::lower_has_elem(Builder& b, Value* obj, Value* key
 // typed array and everything else are bronze_elem_define's.
 void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
     Value* key = boxed_elem_key(b, index);
-    const ElemIndex ei = elem_index(b, index);
     if (val->type().is_tagged()) val = b.build_bitcast_tagged_i64(val);
+    if (cold_code_) {
+        slow_arm(b);
+        if (strict == kDefineWriteMode) {
+            b.build_call("bronze_elem_define", Type::void_type(), {obj, key, val});
+        } else {
+            b.build_call("bronze_elem_set", Type::void_type(),
+                         {obj, key, val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+        }
+        return;
+    }
+    const ElemIndex ei = elem_index(b, index);
     BasicBlock* cur = b.current_block();
     const std::string prefix = "elem_set_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
