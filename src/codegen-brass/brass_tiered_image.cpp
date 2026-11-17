@@ -1,5 +1,6 @@
 #include "codegen-brass/brass_tiered_image.h"
 
+
 #include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "embed/embed.h"
@@ -146,8 +147,6 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
                                                              DiagnosticSink& diags) {
     support::PhaseTimer timer(support::timingsEnabled(), 6);
     std::unique_ptr<TieredProgramImage> self(new TieredProgramImage());
-    self->module_ = &module;
-    self->pipeline_ = &pipeline;
     self->data_ =std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
     brass::codegen::JitExecutionEngine& data = *self->data_;
     registerBronzeJitSymbols(data);
@@ -179,28 +178,47 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
         pipeline.register_external_symbol("bronze_main_key_constants", keys);
     }
 
-    // Descriptors resolve on first ask (descriptorOf).
-    self->entrySymbol_ = entrySymbol;
+    brass::codegen::JitExecutionEngine* engine = self->data_.get();
+    self->lookup_ = [engine](std::string_view name) { return engine->get_symbol_address(name); };
+    self->observe(module, il, entrySymbol, pipeline);
     timer.mark("symbols");
+    return self;
+}
+
+std::unique_ptr<TieredProgramImage> TieredProgramImage::attach(std::function<void*(std::string_view)> lookup,
+                                                               const brass::Module& module, const il::Module& il,
+                                                               const std::string& entrySymbol,
+                                                               brass::runtime::MultiTierPipeline& pipeline) {
+    std::unique_ptr<TieredProgramImage> self(new TieredProgramImage());
+    self->lookup_ = std::move(lookup);
+    self->observe(module, il, entrySymbol, pipeline);
+    return self;
+}
+
+void TieredProgramImage::observe(const brass::Module& module, const il::Module& il, const std::string& entrySymbol,
+                                 brass::runtime::MultiTierPipeline& pipeline) {
+    module_ = &module;
+    pipeline_ = &pipeline;
+    // Descriptors resolve on first ask (descriptorOf).
+    entrySymbol_ = entrySymbol;
 
     // The file table and the MIR's file ids of its files, as
     // translateDebugLocations reads an object's (brass_backend_debug.cpp).
-    self->files_ = static_cast<const char* const*>(
-        data.get_symbol_address(codegen::moduleSymbolName(entrySymbol, "__bronze_file_table")));
-    self->fileCount_ = self->files_ ? static_cast<uint32_t>(il.sourceFiles.size()) : 0;
+    files_ = static_cast<const char* const*>(symbolAddress(codegen::moduleSymbolName(entrySymbol, "__bronze_file_table")));
+    fileCount_ = files_ ? static_cast<uint32_t>(il.sourceFiles.size()) : 0;
     const brass::DebugContext& dc = module.debug_context();
     for (size_t f = 0; f < il.sourceFiles.size(); ++f) {
         const uint32_t id = dc.get_file_id(il.sourceFiles[f]);
-        if (id != 0) self->fileIndexById_.emplace(id, static_cast<uint32_t>(f));
+        if (id != 0) fileIndexById_.emplace(id, static_cast<uint32_t>(f));
     }
     const std::string placeholder = !il.name.empty()              ? il.name
                                     : !il.sourceFiles.empty()     ? il.sourceFiles[0]
                                                                   : std::string("<anonymous>");
     if (std::find(il.sourceFiles.begin(), il.sourceFiles.end(), placeholder) == il.sourceFiles.end()) {
-        self->placeholderFileId_ = dc.get_file_id(placeholder);
+        placeholderFileId_ = dc.get_file_id(placeholder);
     }
 
-    TieredProgramImage* raw = self.get();
+    TieredProgramImage* raw = this;
     pipeline.set_code_install_observer(
         [raw](const brass::runtime::InstalledCode& code) { raw->onCodeInstalled(code); });
     {
@@ -210,7 +228,6 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
     embed::setInterpretedFrameWalker(&walkInterpretedFrames);
     embed::setMirNameDescriber(&describeMirName);
     embed::setMirNameTier1Rejection(&tier1RejectionOf);
-    return self;
 }
 
 void TieredProgramImage::detachPipeline() {
@@ -229,7 +246,7 @@ TieredProgramImage::~TieredProgramImage() {
 }
 
 void* TieredProgramImage::symbolAddress(std::string_view name) const {
-    return data_ ? data_->get_symbol_address(name) : nullptr;
+    return lookup_ ? lookup_(name) : nullptr;
 }
 
 const bronze_fn_desc* TieredProgramImage::descriptorOf(std::string_view mirName) const {
@@ -242,10 +259,12 @@ const bronze_fn_desc* TieredProgramImage::descriptorOf(std::string_view mirName)
     if (it != descs_.end()) return it->second;
     const brass::Function* fn = module_ ? module_->get_function(mirName) : nullptr;
     const bronze_fn_desc* desc = nullptr;
-    if (fn && fn->has_body() && data_) {
+    // An attached program's callees are another image's functions, which
+    // its lookup answers for (only descriptors it was given).
+    if ((fn && fn->has_body()) || !data_) {
         const std::string unique = (key == entrySymbol_) ? "main" : key;
         desc = static_cast<const bronze_fn_desc*>(
-            data_->get_symbol_address(codegen::moduleSymbolName(entrySymbol_, "__bronze_fn_desc_" + unique)));
+            symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_fn_desc_" + unique)));
     }
     descs_.emplace(std::move(key), desc);
     return desc;

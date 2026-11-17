@@ -393,7 +393,7 @@ void emitPcTablesAndCodeRanges(
     ObjectFile& obj, Section& roSec, int32_t roIdx,
     const std::string& entrySymbol, const std::vector<std::string>& sourceFiles,
     const std::unordered_map<std::string, std::string>& fnToDesc,
-    support::PhaseTimer& timer) {
+    const std::unordered_set<std::string>& stubs, support::PhaseTimer& timer) {
     std::unordered_map<std::string, const brass::FunctionDebugTable*> debugTableMap;
     for (const auto& dt : obj.debug_tables) {
         debugTableMap[dt.function_name()] = &dt;
@@ -504,7 +504,10 @@ void emitPcTablesAndCodeRanges(
         // passes over at the twin's caller, as it does the speculated
         // function's.
         const bool twin = isResumeTwinName(cfi.name);
-        auto itDesc = fnToDesc.find(twin ? twinFunctionName(cfi.name) : cfi.name);
+        // An interpreted function's stub is no frame of its own: the frame
+        // is the companion's code it calls (cold_companion.h).
+        auto itDesc = stubs.count(cfi.name) ? fnToDesc.end()
+                                            : fnToDesc.find(twin ? twinFunctionName(cfi.name) : cfi.name);
         emitPointer(roSec, itDesc != fnToDesc.end() ? itDesc->second : "");
         auto itPc = fnToPcTable.find(cfi.name);
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
@@ -861,7 +864,13 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     const auto fnToDesc = emitFunctionDescriptors(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     timer.mark("descriptors");
 
-    emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, timer);
+    std::unordered_set<std::string> stubs;
+    if (in.interpreted) {
+        for (size_t i = 0; i < in.interpreted->size(); ++i) {
+            if ((*in.interpreted)[i] != UINT32_MAX) stubs.insert(in.uniqueNames[i]);
+        }
+    }
+    emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, stubs, timer);
 
     std::vector<std::string> entryCells;
     for (const uint32_t s : deopt.retirable) entryCells.push_back(in.uniqueNames[s]);

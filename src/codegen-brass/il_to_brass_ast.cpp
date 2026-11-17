@@ -726,6 +726,7 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
                               ? il2mir::BronzeType::I32
                               : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
+        bfn.is_import = fn.isExternal;
         bfn.coro_kind = fn.coroKind;
         for (const il::Function::InlineScope& scope : fn.inlineScopes) {
             il2mir::BronzeFunction::InlineScope out;

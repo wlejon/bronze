@@ -288,6 +288,12 @@ std::unordered_set<std::string> getParamReferencedNames(const std::vector<Param>
     return v.names;
 }
 
+std::unordered_set<std::string> getParamCapturedNames(const std::vector<Param>& params) {
+    CaptureVisitor v;
+    visitParamExprs(params, v);
+    return v.captured;
+}
+
 std::unordered_set<std::string> getCapturedNames(const std::vector<const Stmt*>& stmts) {
     CaptureVisitor v;
     for (const auto* s : stmts) {

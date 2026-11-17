@@ -1,0 +1,10 @@
+warm 190000
+caught cold 3
+RangeError:hot 7 8
+9 10
+coldStack hotApply coldViaHot
+counter 3000
+adder 60
+finally cold
+outer cold deep
+hot outer cold 1

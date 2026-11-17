@@ -53,6 +53,9 @@ struct SectionInputs {
     // The slow sites lowering armed with a counter (il2mir::TranslatorOptions
     // `slow_armed`), or null when it counted none.
     const std::vector<uint64_t>* slowArmed = nullptr;
+    // Per function, its cell when it is interpreted (il2mir::TranslatorOptions
+    // `interpreted`), or null for none: its code is a stub, no frame.
+    const std::vector<uint32_t>* interpreted = nullptr;
 };
 
 // Appends the bronze-owned sections to `obj`, in place:

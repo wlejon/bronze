@@ -285,6 +285,22 @@ struct TranslatorOptions {
     // none), one a function by its IL index; each cold function
     // (BronzeFunction::cold_entry) adds one to its word on entry.
     uint32_t cold_entry_count = 0;
+    // INTERPRETED COLD FUNCTIONS (codegen-brass/cold_companion.h), by IL
+    // function index: the function's cell in the image's
+    // `__bronze_cold_cells` (il_abi.h kColdCellsSymbol), or kNotInterpreted.
+    // An image gives each such function a STUB in place of its body
+    // (il_lowering_cold.cpp): the call goes where its cell points, and the
+    // first fills the cell (bronze_cold_resolve). Its wrapper stays.
+    // A COMPANION (`companion`) is the other half: the module the cells point
+    // into, run by the tiered pipeline. It lowers these bodies alone, and
+    // every other function, wrapper and module stub is the image's, called by
+    // its symbol with the signature the image gave it.
+    static constexpr uint32_t kNotInterpreted = UINT32_MAX;
+    std::vector<uint32_t> interpreted;
+    bool companion = false;
+    bool is_interpreted(size_t fn_index) const {
+        return fn_index < interpreted.size() && interpreted[fn_index] != kNotInterpreted;
+    }
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

@@ -246,8 +246,13 @@ bool IlLowering::lower_resume_call(const BronzeInstruction& inst, Builder& b, Fu
 // TranslatorOptions::deopt_optimistic_after, the twin copies S's entry cell
 // into S+'s, so S+'s calls run S (or G, when S has retired already). G's
 // retirement stores the retired entry into both cells.
+//
+// A cold companion (cold_companion.h) calls S directly: its code is compiled
+// in process, out of `call [rip + cell]`'s reach of the image's cells, and S
+// computes what the cell's entry computes, as its guards leave to G. Its
+// calls of a retired S then run S's code and exits, not the retired entry.
 void IlLowering::through_entry_cell(Builder& b, const std::string& callee) {
-    if (options_.deopt_speculated.count(callee) == 0) return;
+    if (options_.companion || options_.deopt_speculated.count(callee) == 0) return;
     Instruction* call = b.current_block()->tail();
     if (call == nullptr || !call->is_call()) return;
     call->set_extra_symbol(b.current_block()->parent()->parent()->string_pool().intern(module_sym(entry_cell_name(callee))));

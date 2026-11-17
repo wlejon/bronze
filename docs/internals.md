@@ -533,6 +533,14 @@ Key capabilities:
 
 For the complete architectural design and API specification, see [`docs/dynamic-eval.md`](docs/dynamic-eval.md).
 
+The same engine runs an ahead-of-time module's COLD functions, the ones its
+harvest saw run seldom or never: the module carries their IL instead of their
+code, and the first call of one builds the module's companion program in the
+tiered pipeline, bound to the module's own symbols (`codegen-brass/cold_companion.h`,
+`runtime/cold_resolve.h`; docs/type-feedback.md "Cold functions"). The
+runtime does not link the code generator, so eval installs the resolver
+(`runtime::setColdResolver`, from `eval/aot_module.cpp`).
+
 ## Build modes
 
 ```

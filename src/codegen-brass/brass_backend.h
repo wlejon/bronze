@@ -17,6 +17,10 @@ struct TranslatorOptions;
 struct SlowArmedBits;
 }
 
+namespace bronze::codegen {
+struct ColdCompanionInputs;
+}
+
 namespace bronze {
 
 constexpr brass::Type brassTypeOf(il::Type t) noexcept {
@@ -118,6 +122,12 @@ public:
     // when its code counts nothing: an in-process image attaches its own
     // words to it once loaded, since lazy bodies arm their sites later.
     const std::shared_ptr<il2mir::SlowArmedBits>& slowArmed() const { return slowArmed_; }
+    // Builds the COMPANION of an image (codegen-brass/cold_companion.h) from
+    // `inputs`: buildMirModule lowers only the interpreted bodies of the
+    // stripped module it is given, against the image's tables.
+    void setColdCompanion(const codegen::ColdCompanionInputs* inputs) { companion_ = inputs; }
+    const std::string& entrySymbol() const { return entrySymbol_; }
+    bool perThreadModuleData() const { return perThreadModuleData_; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -164,6 +174,13 @@ private:
     // (il2mir::TranslatorOptions `slow_armed`), for buildObjectFile to lay out
     // before the counters; null when it counted none.
     std::shared_ptr<il2mir::SlowArmedBits> slowArmed_;
+    const codegen::ColdCompanionInputs* companion_ = nullptr;
+    // The image buildObjectFile is building: its interpreted functions
+    // (il2mir::TranslatorOptions::interpreted), empty for none.
+    std::vector<uint32_t> interpreted_;
 };
+
+// Per IL function, the name it is compiled under ("main" for the entry).
+std::vector<std::string> computeUniqueFunctionNames(const il::Module& module);
 
 }  // namespace bronze

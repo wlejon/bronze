@@ -48,6 +48,7 @@ bronze_add_module(runtime
         integrity.cpp
         exception.cpp
         stack_trace.cpp
+        cold_resolve.cpp
         code_stack_maps.cpp
         object.cpp
         array.cpp

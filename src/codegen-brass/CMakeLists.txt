@@ -28,6 +28,8 @@ add_library(bronze_codegen_brass STATIC
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
     brass_tiered_image.cpp
+    cold_companion.cpp
+    cold_companion_build.cpp
     deopt_sites.cpp
     il_to_brass_ast.cpp
     module_image.cpp
@@ -51,6 +53,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_lowering_loc.cpp
     il2mir/il_lowering_inst.cpp
     il2mir/il_lowering_lazy.cpp
+    il2mir/il_lowering_cold.cpp
     il2mir/il_lowering_ops.cpp
     il2mir/il_lowering_dynamic.cpp
     il2mir/il_lowering_numeric.cpp

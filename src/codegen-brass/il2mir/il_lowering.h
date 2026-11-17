@@ -193,6 +193,9 @@ private:
     // again cannot find it by its lowering name.
     bool lower_body(size_t i, Module& mod, Function* target = nullptr);
     bool lower_wrapper(size_t i, Module& mod);
+    // An image's interpreted cold function (TranslatorOptions::interpreted):
+    // its stub, in place of its body (il_lowering_cold.cpp).
+    bool build_interpreted_stub(size_t i, Module& mod);
     // Whether AST function `i` is built up front even with lazy bodies.
     bool must_lower_eagerly(size_t i) const;
     // The bodies the module's provider builds (the lazy functions, and an

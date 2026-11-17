@@ -52,6 +52,10 @@ std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& s
 // computed key are code that runs in the function and appears nowhere in its
 // body, so a caller that scans only the body misses them.
 std::unordered_set<std::string> getParamReferencedNames(const std::vector<Param>& params);
+// getCapturedNames of the parameter list's default values: a closure made in
+// one (`function f(a, g = () => a)`) captures the parameters as one made in
+// the body does.
+std::unordered_set<std::string> getParamCapturedNames(const std::vector<Param>& params);
 
 // Names declared directly by `stmts` — let/const and function declarations
 // in this statement list only, NOT inside nested blocks or functions — in

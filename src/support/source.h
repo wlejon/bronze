@@ -46,6 +46,17 @@ public:
     // 1-based line and byte column of `offset`, clamped to the text's end.
     SourceBuffer::LineCol lineCol(uint32_t offset) const;
 
+    // The table as data, and back: what a module that keeps no text carries
+    // to place its positions (codegen-brass/cold_companion.h).
+    const std::vector<uint32_t>& lineStarts() const { return lineStarts_; }
+    uint32_t size() const { return size_; }
+    static LineTable fromLineStarts(std::vector<uint32_t> starts, uint32_t size) {
+        LineTable t;
+        t.lineStarts_ = std::move(starts);
+        t.size_ = size;
+        return t;
+    }
+
 private:
     // Byte offset of the first character of each line; lineStarts_[0] == 0.
     std::vector<uint32_t> lineStarts_;

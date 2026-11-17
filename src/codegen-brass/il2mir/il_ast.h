@@ -304,6 +304,9 @@ struct BronzeFunction {
     std::vector<std::pair<uint32_t, BronzeType>> params;
     BronzeType return_type = BronzeType::Void;
     bool is_exported = false;
+    // A native import (il.h Function::isExternal): no body anywhere, raw
+    // bits in and out.
+    bool is_import = false;
     // A coroutine body's BRONZE_ABI_CORO_* kind, or -1: the function runs on
     // a brass coroutine frame (its leading parameter) and is reached only
     // through `coro_create`.

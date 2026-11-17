@@ -16,6 +16,7 @@
 #include "abi/bronze_abi.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_sections.h"
+#include "codegen-brass/cold_companion.h"
 #include "codegen-brass/module_image.h"
 #include "embed/embed.h"
 #include "embed/embed_native.h"
@@ -23,6 +24,7 @@
 #include "eval/eval_internal.h"
 #include "modules/modules.h"
 #include "opt/pipeline/pipeline.h"
+#include "runtime/cold_resolve.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/sampler.h"
@@ -46,6 +48,16 @@ namespace bronze::eval {
 namespace {
 
 namespace fs = std::filesystem;
+
+// An image's interpreted cold functions are built by the code generator,
+// which every process that loads an image links through eval
+// (codegen-brass/cold_companion.h).
+[[maybe_unused]] const bool g_coldResolverInstalled = [] {
+    runtime::setColdResolver([](const void* link, uint32_t cell) {
+        codegen::resolveColdCell(static_cast<const codegen::ColdLink*>(link), cell);
+    });
+    return true;
+}();
 
 // The entry every module is built under. Not the default `bronze_main`, whose
 // stamp keeps a historical spelling (bronze_object_abi_fingerprint): a module

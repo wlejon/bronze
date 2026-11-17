@@ -678,18 +678,61 @@ function the harvested build did not count. A `Never` or `Entered` function is
 COLD: its property, element, method, call and `new` sites lower to their
 runtime helpers alone, with no inline-cache test in front
 (`PropertyLoweringHelper::cold_code`); the helpers read and fill the same
-sites, so a later hot caller's cache is warm all the same. brass is told
-too (`mir::Function::set_cold`): no MIR optimization passes, no inlining
-into it, and codegen without loop pipes, post-RA scheduling, software
-pipelining or trace layout. A plain build has no heat and compiles
-everything as before. A wrong profile costs speed, never an answer: three_meshes
-built on a harvest that says nothing ran (every function cold) runs 18 ms a
-frame against 2.9 and prints the same checksum.
+sites, so a later hot caller's cache is warm all the same. A plain build has
+no heat and compiles everything as before. A wrong profile costs speed, never
+an answer (the oracle's adversarial mode builds every case on a harvest that
+says no function ran).
 
-On three_meshes the cold tier takes the profiled build from 16.3 s to 9.3 s
-and its bench.so from 32.9 MB to 21.1 MB (cold functions' code 10.1 to 4.1
-MB, the rest is stack maps and pc tables), at equal instructions per frame
-on all seven scenes.
+**Cold functions.** An image built ahead of time on a harvest does not
+compile its cold functions: it INTERPRETS them (`codegen-brass/cold_companion.h`).
+Each keeps its wrapper and descriptor, and in place of its body has a STUB of
+the body's signature (`il2mir/il_lowering_cold.cpp`) that calls through the
+function's CELL in `__bronze_cold_cells`, a word the image shares across
+threads. The image carries the cold functions' IL (the module with every other
+body dropped, and the tables numbered over all bodies that the IL alone cannot
+number again: global-read keys, element-cell sites, method sites, descriptor
+flags, the retirable speculated functions, the line tables) and a LINK TABLE
+of every image symbol their code refers to: compiled functions, descriptors,
+data tables, module stubs, thunks. The build lowers that IL once as the run
+will, which is how it knows the table and that the IL lowers at all. The first
+call through an empty cell calls `bronze_cold_resolve`, which builds the
+image's COMPANION once per process (the IL lowered to MIR as a program of the
+tiered pipeline, its every reference bound to the link table, attached for
+stack traces and the profiler as an in-process program is:
+`TieredProgramImage::attach`) and fills that cell with its function's address
+in that pipeline; each other cell is filled on its own first call. A cold
+function then runs in Tier 0 and tiers up by its own invocation and loop
+counts (a call from native code does not request a compile:
+`TieringConfig::native_call_requests_tier1`); a cold function calls a
+compiled one at the image's own code, and the image calls a cold one through
+its stub. A speculated callee is called directly, not through its entry cell:
+companion code is compiled in process, out of `call [rip + cell]`'s reach of
+the image, and the callee's guards leave to its generic function as the
+retired entry would. The stub is no frame of its own (its code range names no
+descriptor). Kept compiled, as brass's cold functions (no MIR optimization
+passes, light codegen: `mir::Function::set_cold`): coroutine bodies and
+functions that start or suspend one (brass lowers coroutines over a whole
+module before it runs), speculated functions and those holding resume points
+or leaves (a resume twin is cut from its function's body), functions of more
+parameters than a native-to-Tier-0 bridge takes, and the program's top-level
+code (`BRONZE_FN_DESC_TOPLEVEL`: run once, at start, where lowering it for
+the interpreter costs more than its code); every function the harvested run
+entered at all (`Function::heat` Entered: start-up code, run again at every
+launch, where the interpreter's first call costs more than native cold code;
+with those interpreted too the first frame of three_meshes came at 100 ms
+where it comes at 26 ms); and every cold function of an image for another
+target, or built in process. On three_meshes 2429 never-entered functions are
+interpreted; bench.so goes from 23.4 MB to 21.6 MB (the IL is 1.71 MB, the
+link table 0.12 MB), pixi_text's from 31.3 to 28.6 MB (3737 interpreted).
+The build is about as fast as with the native cold tier: most of a profiled
+build is inference and the IL optimizer, which run before heat decides anything.
+Frames and start-up are unchanged (first output of three_meshes at 26 ms,
+of pixi_text at 45 ms): a run like the harvested one calls no interpreted
+function. The first call of one builds the companion (30 to 45 ms on these
+modules, the whole IL decoded at once). A wrong profile (every function never
+entered) costs what it did with the native cold tier: three_meshes runs
+18.1 ms a frame on it either way, against 2.8 ms on its own harvest, until
+bro's cold-entry count drops the profile.
 
 **Configuration.** Harvesting is off unless a path is given. A path can be
 given in three ways:
@@ -742,7 +785,9 @@ nothing is written.
 (`Function::heat` Never or Entered) gives the image one word per function,
 `__bronze_cold_entries` (exported behind its word count as
 `<entry>_cold_entries`, `eval::LoadedModule::coldEntries`), and each cold
-function adds one to its word on entry. Cold functions are entered seldom by
+function adds one to its word on entry, in whichever tier runs it (an
+interpreted one's body counts in Tier 0 and in the code it tiers up to).
+Cold functions are entered seldom by
 the harvest's own measure, so this costs nothing that shows; a host reads it
 after a run to see whether the run entered often what the harvest saw seldom
 or never: the harvest was too thin a run, and the host harvests again (bro

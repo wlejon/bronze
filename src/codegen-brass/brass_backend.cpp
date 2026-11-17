@@ -1,9 +1,11 @@
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_debug.h"
 #include "codegen-brass/brass_backend_sections.h"
+#include "codegen-brass/cold_companion.h"
 #include "codegen-brass/deopt_sites.h"
 #include "codegen-brass/elem_cells.h"
 #include "codegen-brass/il_to_brass_ast.h"
+#include "codegen-brass/size_report.h"
 
 #include "abi/bronze_abi.h"
 #include "il/feedback_site.h"
@@ -21,6 +23,7 @@
 #include <brass/target/host_cpu.hpp>
 #include <brass/target/target.hpp>
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string_view>
@@ -39,6 +42,8 @@ std::string sanitizeFunctionName(std::string_view name) {
     }
     return s;
 }
+
+}  // namespace
 
 std::vector<std::string> computeUniqueFunctionNames(const il::Module& module) {
     const size_t numFns = module.functions.size();
@@ -77,6 +82,8 @@ std::vector<std::string> computeUniqueFunctionNames(const il::Module& module) {
 
     return uniqueNames;
 }
+
+namespace {
 
 
 // The calling thread's address of one of the module's writable tables
@@ -388,10 +395,16 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         const uint32_t place = c.kind == il::Module::MemberKind::Data ? c.callee : 0;
         options.member_cells.push_back({static_cast<uint32_t>(c.kind), c.keyIndex, c.group, c.groupSize, place});
     }
-    options.elem_cell_sites = codegen::elemCellSites(module);
+    options.elem_cell_sites = companion_ ? companion_->elemCellSites : codegen::elemCellSites(module);
+    // A companion's bodies hold no resume point or leave: what it needs of
+    // the deopt sites is which callees can retire.
+    if (companion_) {
+        for (const auto& [s, g] : companion_->speculated) options.deopt_speculated[uniqueNames[s]] = uniqueNames[g];
+        for (const auto& [s, f] : companion_->fallbacks) options.deopt_fallback[uniqueNames[s]] = uniqueNames[f];
+    }
     // The deopt counters (deopt_sites.h): the twins' exit counts and the
     // speculated functions that can retire (their entry cells).
-    {
+    if (!companion_) {
         const codegen::DeoptSites deopt = codegen::collectDeoptSites(module, uniqueNames);
         options.deopt_generic_count = static_cast<uint32_t>(deopt.generics.size());
         options.deopt_site_count = static_cast<uint32_t>(deopt.sites.size());
@@ -441,8 +454,13 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // may address a site as `table + index * BRONZE_ABI_IC_SITE_SIZE` without
     // a check.
     options.ic_site_count = module.icSiteCount;
-    const std::vector<uint32_t> methodIcSites = module.methodIcSites();
-    options.method_ic_sites = methodIcSites;
+    options.method_ic_sites = companion_ ? companion_->methodIcSites : module.methodIcSites();
+    if (companion_) {
+        options.interpreted = companion_->interpreted;
+        options.companion = true;
+    } else {
+        options.interpreted = interpreted_;
+    }
 
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
@@ -455,8 +473,11 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         meta.has_rest_param = fn.hasRestParam;
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
-        meta.fn_flags = fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
-                        (directCallees_ && il::functionEntersDirectly(module, fn) ? BRONZE_ABI_FN_FLAG_DIRECT_CALL : 0u);
+        meta.fn_flags = companion_ ? companion_->fnFlags[i]
+                                   : fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
+                                         (directCallees_ && il::functionEntersDirectly(module, fn)
+                                              ? BRONZE_ABI_FN_FLAG_DIRECT_CALL
+                                              : 0u);
         meta.name_key = fn.nameKeyIndex;
         meta.required_args = fn.requiredArgs;
         meta.adapt_arity = fn.adaptArity();
@@ -469,7 +490,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         options.function_meta[uniqueNames[i]] = std::move(meta);
     }
 
-    const size_t sourceFileCount = registerFnSources_ ? module.sourceTexts.size() : 0;
+    const size_t sourceFileCount = registerFnSources_ && !companion_ ? module.sourceTexts.size() : 0;
     options.source_files.reserve(sourceFileCount);
     for (uint16_t file = 0; file < sourceFileCount; ++file) {
         il2mir::TranslatorOptions::SourceFileMeta sf;
@@ -497,6 +518,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     std::vector<uint32_t> globalReadKeys;
     mtimer.mark("options");
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
+    if (companion_) globalReadKeys = companion_->globalReadKeys;
     ast.global_read_keys = globalReadKeys;
     mtimer.mark("brass ast");
     il2mir::TranslationResult res = il2mir::translate_bronze_ast_lazy(std::move(ast), options, &reporter);
@@ -525,8 +547,11 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         }
     }
 
-    emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys, perThreadModuleData_);
-    emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_);
+    // A companion calls its image's thunks.
+    if (!companion_) {
+        emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys, perThreadModuleData_);
+        emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_);
+    }
     mtimer.mark("thunks");
 
     if (globalReadKeysOut) {
@@ -543,6 +568,15 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
     std::vector<uint32_t> globalReadKeys;
 
+    // The functions the harvest saw run seldom or never are not compiled but
+    // interpreted (cold_companion.h), where this process can run the
+    // companion: an image for this machine, which can make code at run time.
+    interpreted_.clear();
+    codegen::ColdSelection cold;
+    if (!companion_ && !inProcess_ && target_ == brass::Target::host()) {
+        cold = codegen::selectInterpreted(module, uniqueNames);
+        if (cold.cells != 0) interpreted_ = cold.interpreted;
+    }
     auto mirMod = buildMirModule(module, diags, &globalReadKeys);
     if (!mirMod) {
         return std::nullopt;
@@ -580,9 +614,47 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // table (brass_backend_sections.cpp).
     codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
                                          globalCacheCount, methodIcSites,
-                                         slowArmed_ ? &slowArmed_->words : nullptr};
+                                         slowArmed_ ? &slowArmed_->words : nullptr,
+                                         interpreted_.empty() ? nullptr : &interpreted_};
     codegen::translateDebugLocations(obj, module, uniqueNames, entrySymbol_);
     codegen::emitBronzeSections(obj, target, sectionInputs, timer);
+    if (!interpreted_.empty()) {
+        codegen::ColdCompanionInputs inputs;
+        inputs.interpreted = interpreted_;
+        inputs.globalReadKeys = std::move(globalReadKeys);
+        inputs.elemCellSites = codegen::elemCellSites(module);
+        inputs.methodIcSites = methodIcSites;
+        inputs.fnFlags.reserve(module.functions.size());
+        for (const il::Function& fn : module.functions) {
+            inputs.fnFlags.push_back(fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
+                                     (directCallees_ && il::functionEntersDirectly(module, fn)
+                                          ? BRONZE_ABI_FN_FLAG_DIRECT_CALL
+                                          : 0u));
+        }
+        for (const uint32_t sIdx : codegen::collectDeoptSites(module, uniqueNames).retirable) {
+            const il::Function& sFn = module.functions[sIdx];
+            inputs.speculated.emplace_back(sIdx, sFn.speculatedFrom);
+            if (sFn.isOptimistic()) inputs.fallbacks.emplace_back(sIdx, sFn.fallback);
+        }
+        inputs.perThreadData = perThreadModuleData_;
+        std::string why;
+        if (!codegen::emitColdCompanion(obj, *this, module, uniqueNames, inputs, why)) {
+            diags.error(Span{}, "the module's cold functions cannot be interpreted: " + why);
+            return std::nullopt;
+        }
+        timer.mark("cold companion");
+        if (codegen::sizeReportEnabled()) {
+            std::fprintf(stderr,
+                         "cold: %u functions interpreted; compiled cold: %u coroutine (%llu insts), "
+                         "%u speculation (%llu insts), %u over the bridge's parameters (%llu insts), "
+                         "%u top-level (%llu insts)\n",
+                         cold.cells, cold.coroutine.functions,
+                         static_cast<unsigned long long>(cold.coroutine.instructions), cold.speculation.functions,
+                         static_cast<unsigned long long>(cold.speculation.instructions), cold.params.functions,
+                         static_cast<unsigned long long>(cold.params.instructions), cold.toplevel.functions,
+                         static_cast<unsigned long long>(cold.toplevel.instructions));
+        }
+    }
     codegen::emitNativeDebugSections(obj, module, uniqueNames, entrySymbol_, emitDebugInfo_);
     timer.mark("native debug");
 

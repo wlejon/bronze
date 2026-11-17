@@ -258,6 +258,13 @@ inline constexpr std::string_view kShapeCellsSymbol = "__bronze_shape_cells";
 // `<entry>_cold_entry_count` (brass_backend_sections.cpp), for the host
 // that ran the module (eval::LoadedModule::coldEntries).
 inline constexpr std::string_view kColdEntriesSymbol = "__bronze_cold_entries";
+// THE COLD CELLS (TranslatorOptions::interpreted): `__bronze_cold_cells`, one
+// code pointer per interpreted cold function, shared by every thread (the
+// code it points at runs on any), zero until the function's first call fills
+// it; and `__bronze_cold_link`, read-only, what that call hands
+// bronze_cold_resolve (codegen-brass/cold_companion.h ColdLink).
+inline constexpr std::string_view kColdCellsSymbol = "__bronze_cold_cells";
+inline constexpr std::string_view kColdLinkSymbol = "__bronze_cold_link";
 inline constexpr std::string_view kShapeCellKeysSymbol = "__bronze_shape_cell_keys";
 // `__bronze_number_slot_keys`, read-only: the module's double-slot keys
 // (il.h Module::numberSlotKeys) as u32 key constant indices, which the entry

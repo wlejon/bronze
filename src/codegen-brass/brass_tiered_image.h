@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -46,6 +47,13 @@ public:
                                                     const std::string& entrySymbol,
                                                     brass::runtime::MultiTierPipeline& pipeline,
                                                     DiagnosticSink& diags);
+    // A program whose tables are already in memory, `lookup` answering each
+    // symbol's address (an AOT image's interpreted cold functions:
+    // codegen-brass/cold_companion.h): observed and walked as load's are.
+    static std::unique_ptr<TieredProgramImage> attach(std::function<void*(std::string_view)> lookup,
+                                                      const brass::Module& module, const il::Module& il,
+                                                      const std::string& entrySymbol,
+                                                      brass::runtime::MultiTierPipeline& pipeline);
     ~TieredProgramImage();
 
     TieredProgramImage(const TieredProgramImage&) = delete;
@@ -87,6 +95,9 @@ public:
 
 private:
     TieredProgramImage() = default;
+    // What load and attach share once the tables have addresses.
+    void observe(const brass::Module& module, const il::Module& il, const std::string& entrySymbol,
+                 brass::runtime::MultiTierPipeline& pipeline);
     void onCodeInstalled(const brass::runtime::InstalledCode& code);
 
     struct RangeRecord {
@@ -100,6 +111,7 @@ private:
     // detached. Under the image registry's lock.
     brass::runtime::MultiTierPipeline* pipeline_ = nullptr;
     std::unique_ptr<brass::codegen::JitExecutionEngine> data_;
+    std::function<void*(std::string_view)> lookup_;
     std::string entrySymbol_;
     // Resolved on first ask, misses included (descriptorOf).
     mutable std::mutex descsMutex_;

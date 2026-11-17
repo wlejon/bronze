@@ -366,25 +366,30 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         const std::string& fn_name = resolved_names[i];
 
         // A native import (no body) takes and returns raw bits; a compiled
-        // function passes its dynamic values tagged.
-        const bool external = fn_ast.blocks.empty();
+        // function passes its dynamic values tagged. A companion's functions
+        // other than its own are the image's, compiled ones included.
+        const bool elsewhere = options_.companion && !options_.is_interpreted(i);
+        const bool raw = options_.companion ? fn_ast.is_import : fn_ast.blocks.empty();
+        const bool external = elsewhere || raw;
         std::vector<Type> param_types;
         // A coroutine body declares its frame as a leading parameter, which
         // is how it reads the resume mode off the frame header.
         if (fn_ast.is_coroutine_body()) param_types.push_back(Type::gcref());
         for (const auto& p : fn_ast.params) {
-            param_types.push_back(external ? lower_type(p.second) : lower_abi_type(p.second));
+            param_types.push_back(raw ? lower_type(p.second) : lower_abi_type(p.second));
         }
-        Type ret_type = external ? lower_type(fn_ast.return_type) : lower_abi_type(fn_ast.return_type);
+        Type ret_type = raw ? lower_type(fn_ast.return_type) : lower_abi_type(fn_ast.return_type);
         if (external) {
             external_signatures_[fn_name] = {ret_type, std::move(param_types)};
             continue;
         }
         Function* fn = mod->create_function(fn_name, ret_type, Span<const Type>(param_types.data(), param_types.size()));
         fn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
-        fn->set_cold(fn_ast.cold);
+        // A companion's function is compiled when it gets hot, and then as
+        // any other.
+        fn->set_cold(fn_ast.cold && !options_.companion);
 
-        if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
+        if (fn_name != "main" && !fn_ast.is_coroutine_body() && !options_.companion) {
             std::vector<Type> wrapper_param_types = {Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
             Function* wfn = mod->create_function(
                 "__wrapper_" + fn_name,
@@ -395,8 +400,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     }
 
     // The module's stubs: the trampoline protected blocks enter code through
-    // (il_call_entry.h) and the property stubs (il_prop_stubs.h).
-    {
+    // (il_call_entry.h) and the property stubs (il_prop_stubs.h). A
+    // companion calls its image's.
+    if (!options_.companion) {
         const Type tramp_params[] = {Type::ptr(), Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
         build_enter_code_trampoline(
             mod->create_function(module_sym(kEnterCodeTrampoline), Type::i64(), Span<const Type>(tramp_params, 5)));
@@ -432,6 +438,12 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     for (size_t i = 0; i < ast.functions.size(); ++i) {
         if (resolved_names[i].empty()) continue;
         if (ast.functions[i].blocks.empty()) continue;
+        if (options_.companion && !options_.is_interpreted(i)) continue;
+        // An image's interpreted function: its stub, and its wrapper.
+        if (!options_.companion && options_.is_interpreted(i)) {
+            if (!build_interpreted_stub(i, *mod) || !lower_wrapper(i, *mod)) return nullptr;
+            continue;
+        }
         if (options_.lazy_bodies && !must_lower_eagerly(i)) {
             Function* fn = mod->get_function(resolved_names[i]);
             if (!fn) return nullptr;
@@ -456,7 +468,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             fn->note_built();
             continue;
         }
-        if (!lower_body(i, *mod) || !lower_wrapper(i, *mod)) return nullptr;
+        if (!lower_body(i, *mod) || (!options_.companion && !lower_wrapper(i, *mod))) return nullptr;
     }
 
     ltimer.mark("lower fns");

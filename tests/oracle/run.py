@@ -22,7 +22,8 @@ Modes (the default is every one but adversarial):
            deopt.txt when the case fails. The other modes of such a case
            also take a run that did not train.
   adversarial  the profile mode's harvest (one harvest run serves both) made
-           WRONG three ways (PROFILES), a --feedback-in build on each and its
+           WRONG four ways (PROFILES; the fourth says no function ran, so
+           the build interprets them all), a --feedback-in build on each and its
            run, which must print the pinned bytes and exit as the harvest run
            did: "a wrong profile costs speed, never an answer"
            (docs/type-feedback.md). Each perturbed profile is well-formed and
@@ -394,10 +395,24 @@ def p_hot(h, r):
             h.slow[i + 1] = max(h.slow.get(i + 1, 0), 1 << 20)
 
 
+def p_cold(h, r):
+    """Every function never entered: its entry and loop counts counted and
+    zero, so the build interprets all of them that it can (docs/
+    type-feedback.md "Cold functions") and the run tiers up the ones it
+    calls often, as a run does that the harvest misread."""
+    if not h.slowsites:
+        return
+    for i in h.functions:
+        for j in (i, i + 1):
+            h.arm(j)
+            h.slow.pop(j, None)
+
+
 PROFILES = [
     [p_receivers, p_forms, p_places, p_reprs, p_unseen, p_hot],
     [p_monomorphic, p_callees, p_lifetimes, p_hot],
     [p_arms, p_borrowed, p_hot],
+    [p_cold],
 ]
 
 

@@ -780,7 +780,8 @@
     X(bronze_print_newline_err,   BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(brass_gc_write_barrier,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_register_code_ranges,   BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32)) \
-    X(bronze_unregister_code_ranges, BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32))
+    X(bronze_unregister_code_ranges, BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32)) \
+    X(bronze_cold_resolve,           BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32))
 
 /*
  * There are no data symbols in this ABI. Every mutable word generated code

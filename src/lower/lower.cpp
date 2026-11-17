@@ -364,6 +364,21 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
     capturedNames_ = ast::getCapturedNames(body);
+    // A closure in a default value sees the parameters, never the body's
+    // declarations (those are another scope: `function f(g = () => late) {
+    // let late; }` reads an outer `late`).
+    {
+        std::unordered_set<std::string> bound;
+        for (const ast::Param& p : params) {
+            if (!p.name.empty()) bound.insert(p.name);
+            if (p.pattern) {
+                for (auto& n : ast::patternBoundNames(*p.pattern)) bound.insert(std::move(n));
+            }
+        }
+        for (auto& name : ast::getParamCapturedNames(params)) {
+            if (bound.count(name) != 0) capturedNames_.insert(std::move(name));
+        }
+    }
     functionRefMap_.clear();
     // The second reason a binding cannot be in SSA. Unioned here and nowhere
     // else, so `capturedNames_` keeps meaning exactly "a closure can reach it"
