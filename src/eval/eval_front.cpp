@@ -205,32 +205,43 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
 
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
-                         std::string_view entryText, bool withFeedback) {
+                         std::string_view entryText, bool withFeedback, std::vector<cache::KeyPart>* parts) {
     cache::KeyBuilder k;
+    k.part("environment");
     k.field(processMaterial);
+    k.part("file name");
     k.field(options.filename);
     k.field(options.entryResolvesAs.generic_string());
+    k.part("options");
     k.field(options.retainSource ? "src" : "nosrc");
     k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
+    k.part("module roots");
     k.field("|roots");
     for (const auto& root : modOpts.moduleRoots) {
         k.field(root.prefix);
         k.field(root.target.generic_string());
     }
+    k.part("module registry");
     k.field("|externals");
     std::vector<std::string> externals = modOpts.externalModules;
     std::sort(externals.begin(), externals.end());
     for (const auto& ext : externals) k.field(ext);
+    k.part("host globals");
     k.field("|globals");
     for (const auto& g : in.hostGlobals) k.field(g);
+    k.part("natives");
     k.field("|natives");
     k.field(in.manifestJson);
+    k.part("pins");
     k.field(in.pinsText);
+    k.part("profile");
     if (withFeedback) {
         k.field("|feedback");
         k.field(in.feedbackText);
     }
+    k.part("text");
     k.field(entryText);
+    if (parts) *parts = k.parts();
     return k.finish();
 }
 

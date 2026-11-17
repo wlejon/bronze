@@ -607,6 +607,18 @@ void KeyBuilder::field(std::string_view s) {
     material_.append(s.data(), s.size());
 }
 
+void KeyBuilder::part(std::string_view name) { partStarts_.emplace_back(std::string(name), material_.size()); }
+
+std::vector<KeyPart> KeyBuilder::parts() const {
+    std::vector<KeyPart> out;
+    for (size_t i = 0; i < partStarts_.size(); ++i) {
+        const size_t begin = partStarts_[i].second;
+        const size_t end = i + 1 < partStarts_.size() ? partStarts_[i + 1].second : material_.size();
+        out.push_back({partStarts_[i].first, hashBytes(std::string_view(material_).substr(begin, end - begin))});
+    }
+    return out;
+}
+
 const std::string& processKeyMaterial() {
     static const std::string material = [] {
         const std::string identity = binaryIdentity();
@@ -634,16 +646,39 @@ const std::string& moduleKeyMaterial() {
 }
 
 namespace {
-constexpr uint32_t kRecordMagic = 0x315A4D42u;  // "BMZ1"
+constexpr uint32_t kRecordMagic = 0x325A4D42u;  // "BMZ2"
+
+// The names of the parts whose digests differ between a record's and the
+// reader's, or of every part when the two lists name different inputs.
+std::string differingParts(const std::vector<KeyPart>& recorded, const std::vector<KeyPart>& now) {
+    std::string out;
+    const bool sameInputs =
+        recorded.size() == now.size() &&
+        std::equal(recorded.begin(), recorded.end(), now.begin(),
+                   [](const KeyPart& a, const KeyPart& b) { return a.name == b.name; });
+    for (size_t i = 0; i < now.size(); ++i) {
+        if (sameInputs && recorded[i].digest == now[i].digest) continue;
+        if (!out.empty()) out += ", ";
+        out += now[i].name;
+    }
+    return out;
+}
 }  // namespace
 
-bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const ModuleRecord& record,
-                       const SourceSet& sources, const modules::DependencyLog& deps, std::string& err) {
+bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const std::vector<KeyPart>& parts,
+                       const ModuleRecord& record, const SourceSet& sources, const modules::DependencyLog& deps,
+                       std::string& err) {
     if (sources.empty()) {
         err = "the program has no sources";
         return false;
     }
     std::string payload;
+    putU32(payload, static_cast<uint32_t>(parts.size()));
+    for (const KeyPart& p : parts) {
+        putStr(payload, p.name);
+        putU64(payload, p.digest.lo);
+        putU64(payload, p.digest.hi);
+    }
     putStr(payload, record.resName);
     putStr(payload, record.entrySymbol);
     putStr(payload, record.moduleFile);
@@ -688,8 +723,9 @@ bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, con
     return true;
 }
 
-bool readModuleRecord(const std::filesystem::path& path, const Digest& key, std::string_view entryText,
-                      const std::vector<modules::ModuleRoot>& moduleRoots, ModuleRecord& out, std::string& why) {
+bool readModuleRecord(const std::filesystem::path& path, const Digest& key, const std::vector<KeyPart>& parts,
+                      std::string_view entryText, const std::vector<modules::ModuleRoot>& moduleRoots,
+                      ModuleRecord& out, std::string& why) {
     std::string bytes;
     if (!readWholeFile(path, bytes)) {
         why = "no module record";
@@ -721,13 +757,21 @@ bool readModuleRecord(const std::filesystem::path& path, const Digest& key, std:
         why = "damaged record";
         return false;
     }
+    Cursor c(payload);
+    std::vector<KeyPart> recorded(c.u32());
+    for (KeyPart& p : recorded) {
+        if (!c.ok()) break;
+        p.name = std::string(c.str());
+        p.digest.lo = c.u64();
+        p.digest.hi = c.u64();
+    }
     // After the checksum, so a damaged file is never reported as a program
     // whose inputs changed.
     if (keyLo != key.lo || keyHi != key.hi) {
-        why = "compiled with other inputs (host globals, natives, module registry, environment or text)";
+        const std::string differ = c.ok() ? differingParts(recorded, parts) : std::string();
+        why = "compiled with other inputs (" + (differ.empty() ? std::string("unnamed") : differ) + ")";
         return false;
     }
-    Cursor c(payload);
     out.resName = std::string(c.str());
     out.entrySymbol = std::string(c.str());
     out.moduleFile = std::string(c.str());

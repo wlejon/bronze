@@ -136,7 +136,9 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     modules::ModuleOptions modOpts = detail::moduleOptionsFor(options);
     modules::DependencyLog deps;
     modOpts.dependencyLog = &deps;
-    const cache::Digest profiledKey = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source);
+    std::vector<cache::KeyPart> keyParts;
+    const cache::Digest profiledKey =
+        detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, true, &keyParts);
     const cache::Digest plainKey =
         detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, /*withFeedback=*/false);
     const std::string resName = resNameFor(plainKey);
@@ -201,11 +203,11 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     if (!out.feedbackApplied && !options.feedbackInPath.empty()) {
         detail::CompileInputs unfed = in;
         unfed.feedbackText.clear();
-        key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, unfed, source);
+        key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, unfed, source, true, &keyParts);
     }
     cache::ModuleRecord record{resName, kEntrySymbol, fs::path(modulePath).filename().string()};
     std::string err;
-    if (!cache::writeModuleRecord(fs::path(recordPath), key, record, sources, deps, err)) {
+    if (!cache::writeModuleRecord(fs::path(recordPath), key, keyParts, record, sources, deps, err)) {
         out.errorMessage = err;
         return out;
     }
@@ -223,9 +225,12 @@ LoadedModule loadModule(std::string_view source, const EvalOptions& options, con
         return out;
     }
     const modules::ModuleOptions modOpts = detail::moduleOptionsFor(options);
-    const cache::Digest key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source);
+    std::vector<cache::KeyPart> keyParts;
+    const cache::Digest key =
+        detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, true, &keyParts);
     cache::ModuleRecord record;
-    if (!cache::readModuleRecord(fs::path(recordPath), key, source, modOpts.moduleRoots, record, out.why)) {
+    if (!cache::readModuleRecord(fs::path(recordPath), key, keyParts, source, modOpts.moduleRoots, record,
+                                 out.why)) {
         return out;
     }
 

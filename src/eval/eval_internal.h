@@ -63,7 +63,8 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options);
 // layout the harvest is checked against, il/feedback_site.h icLayoutDigest).
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
-                         std::string_view entryText, bool withFeedback = true);
+                         std::string_view entryText, bool withFeedback = true,
+                         std::vector<cache::KeyPart>* parts = nullptr);
 
 // The front end after the graph is loaded: the eval transform (a trailing
 // expression's value kept under `resName`, top-level declarations made

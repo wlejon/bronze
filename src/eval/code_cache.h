@@ -60,14 +60,25 @@ struct Digest {
 
 Digest hashBytes(std::string_view bytes);
 
-// Accumulates length-prefixed fields, so no two keys run together.
+// One named input of a key and the digest of the fields it added.
+struct KeyPart {
+    std::string name;
+    Digest digest;
+};
+
+// Accumulates length-prefixed fields, so no two keys run together. part()
+// names the fields that follow it (the key itself is the same with or without
+// names), so a module record can say which input differs when a key does.
 class KeyBuilder {
 public:
     void field(std::string_view s);
+    void part(std::string_view name);
     Digest finish() const { return hashBytes(material_); }
+    std::vector<KeyPart> parts() const;
 
 private:
     std::string material_;
+    std::vector<std::pair<std::string, size_t>> partStarts_;
 };
 
 // The part of every key that describes this process rather than the program:
@@ -124,14 +135,19 @@ const std::string& moduleKeyMaterial();
 
 // Written to a temporary file and renamed over `path`. False, with `err` set,
 // when it could not be.
-bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const ModuleRecord& record,
-                       const SourceSet& sources, const modules::DependencyLog& deps, std::string& err);
+// `parts` are the key's named inputs (KeyBuilder::parts), kept so a reader
+// whose key differs can name the inputs that do.
+bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const std::vector<KeyPart>& parts,
+                       const ModuleRecord& record, const SourceSet& sources, const modules::DependencyLog& deps,
+                       std::string& err);
 
 // True when the record at `path` was written under `key` and every source and
 // resolution it lists is unchanged (`entryText` is the entry's text). False,
-// with `why` set, on any difference or a missing or damaged record.
-bool readModuleRecord(const std::filesystem::path& path, const Digest& key, std::string_view entryText,
-                      const std::vector<modules::ModuleRoot>& moduleRoots, ModuleRecord& out, std::string& why);
+// with `why` set, on any difference or a missing or damaged record; a key
+// that differs is reported with the names of the `parts` that differ.
+bool readModuleRecord(const std::filesystem::path& path, const Digest& key, const std::vector<KeyPart>& parts,
+                      std::string_view entryText, const std::vector<modules::ModuleRoot>& moduleRoots,
+                      ModuleRecord& out, std::string& why);
 
 // The entry's warm list (`<key>.bzw`, text): the functions a run of the
 // program first called, in order, which the next run builds Tier-0 bytecode
