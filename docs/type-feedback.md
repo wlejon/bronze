@@ -754,6 +754,66 @@ inlined method's cell pair, which holds one shape where the site's cache
 holds two (leaving on its miss sent pixi's `updateTransformAndChildren` to
 its generic entry).
 
+**Pretenuring.** Every object literal and construct is an ALLOCATION SITE
+with a slow site (`il::numberSlowSites`; a construct the speculation step
+turns into `create.this` gives it the construct's, `opt/speculate/construct.cpp`).
+A build made to be harvested (`--harvest-out`: `cache_evidence`; a memento is
+two words more of eden per object, which a build that may only be harvested
+does not pay) adds one to its `kAllocCountArm` word for each object its inline
+path makes (`IlLowering::alloc_memento`) and bumps an ALLOCATION MEMENTO right
+behind the object: a one-word leaf of the runtime's memento layout
+(`gc_detail::layoutIds().memento`, its header the TLS block's
+`gc_memento_header`) holding the address of the site's `kAllocTenuredArm`
+word. Arming a harvest tells brass the layout (`brass::gc::set_memento_layout`,
+brass docs/gc_contract.md 2.14), and from then on a minor collection carries
+the memento along with a surviving object and, when it promotes the object,
+adds one to that word. Both are the image's own words, not a thread's or a
+realm's copy: the home instance, which the harvest folds and which lives as
+long as the image, where another copy may be freed while a memento names it.
+The two come back as `slow` rows. The build on the harvest
+(`opt/pipeline/pipeline.cpp`, `planPretenure`) pretenures each site that made
+`kPretenureMinObjects` (256) or more, four fifths or more of them promoted,
+and at least a hundredth of what the module's allocation sites made
+(`Module::pretenureSites`, carried by the IL file). Promoted decides, not
+surviving one collection: pixi_graphics' per-frame `{path,style}` survived
+its first collection at 0.94 but only 0.12 of those were promoted, and
+allocated old they would be garbage only a full collection takes back. The
+share decides too: an object allocated old saves its copies, but every store
+of a young value into it is a barrier's call and a dirty card, which a site of
+few objects filled at length after its birth (pixi_graphics' Graphics, one a
+frame) pays without the saving. A pretenured site's inline path calls
+`bronze_alloc_pretenured` (`runtime/rt_object.cpp`, over brass's
+`Heap::try_allocate_pretenured`) where it would bump eden, passing the site's
+record (`__bronze_pretenure_sites`, one brass `PretenureSite` per pretenured
+site in the image's own data, `IlLowering::pretenure_site`); the call never
+collects and answers 0, taken to the site's ordinary slow path, when neither
+generation has room without a collection. The object is old with its card
+dirty (grey in a marking cycle), or young, so an object literal's own field
+stores keep no barrier, and the next minor collection promotes what an old
+one was filled with (brass docs/gc_contract.md 2.14). pixi_text pretenures
+`measureText`'s metrics object and `LRU.set`'s node: 26.3M to 25.1M
+instructions a frame and 93 minor collections (52 ms) to 34 (27 ms).
+
+A claim can be wrong for the run at hand: the program's inputs differ from
+the harvested run's. A site allocated old whose objects die young is garbage
+until a full collection, and every minor collection meanwhile promotes what
+its dead objects' dirty cards name. So the collector checks the claim as the
+program runs: one object in 32 of a pretenured site (at most 64 between two
+minor collections) is made young, a probe, and once more than half of a
+site's probes die young the site makes young objects for the rest of the run
+(brass `src/gc/heap_pretenure.cpp`). The probes made before the first minor
+collection, when everything is young, are judged by it, so a site wrong
+from the start never allocates old; one whose objects turn short-lived is
+refused within about four minor collections. A kernel whose training run
+keeps a literal's 300,000 objects and whose real run drops 12M of them: 506
+ms of minor pauses in 97 collections (5.3 ms each) and 48 full ones without
+the check, 1.7 ms in 143 with it, as with no pretenuring (1.7 ms); one that
+keeps 300,000 before dropping 12M: 531 ms and 50 full collections without the
+check, 18.5 ms with it, 28.3 ms with no pretenuring. `adversarial`'s
+`p_lifetimes` builds on both kinds of wrong claim, and the oracle case
+`pretenure_wrong_claim` switches a literal's and a construct's objects from
+kept to dropped.
+
 **Tests.** `tests/oracle/run.py`'s `profile` mode builds each oracle case
 with `--harvest-out`, runs it, rebuilds on that harvest and requires the
 pinned bytes and exit code; `switch` covers a case whose run leaves the arm

@@ -325,6 +325,19 @@ modules made and dropped, WeakRefs, WeakMaps, FinalizationRegistry), at the
 auto tier and tier 2, also under `BRASS_GC_VERIFY=1` and
 `BRASS_GC_STRESS=incremental`.
 
+Allocation sites a harvest found long-lived are PRETENURED: a build on the
+harvest allocates their objects in the old generation (brass
+`Heap::try_allocate_pretenured`, never a GC point, and young until the first
+minor collection has run), and the next minor collection promotes the parts
+each was filled with without a stay in the survivor space. Which sites, how
+the harvest counts promotions (allocation mementos behind the objects of a
+build made to be harvested) and what it bought: docs/type-feedback.md
+"Pretenuring"; the collector's side: brass docs/gc_contract.md 2.14. The
+collector checks the claim as the program runs, with a young probe of each
+site now and then, and a site whose probes die young allocates young for the
+rest of the run, so a harvest the run's behaviour has drifted from costs
+pauses for at most a few minor collections.
+
 The collector's helper threads (the ones a parallel minor collection copies
 on and a slice or full collection marks on, parked between collections) are
 created by the first collection that wants them, inside its pause: about

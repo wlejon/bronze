@@ -50,7 +50,16 @@ void rewriteConstruct(RewriteContext& ctx, const SitePlan& plan) {
     b.guard(emitCodeIs(b, ctor, plan.callee));
     b.guard(b.emit(il::Op::FnConstructs, il::Type::Bool, {ctor}));
     const ValueId shape = b.emit(il::Op::FnInstanceShape, il::Type::Ptr, {ctor});
-    const ValueId self = b.emit(il::Op::CreateThis, il::Type::Dynamic, {ctor, shape});
+    // The instance is the construct's allocation: it keeps the construct's
+    // slow site, which says whether the site is pretenured
+    // (il.h Module::pretenureSites).
+    il::Instruction create;
+    create.op = il::Op::CreateThis;
+    create.type = il::Type::Dynamic;
+    create.operands = {ctor, shape};
+    create.slowSite = site.slowSite;
+    create.span = site.span;
+    const ValueId self = b.emitInst(std::move(create));
     const ValueId returned = emitDirectCallValue(b, plan.callee, ctor, self, args);
     if (site.result != il::kNoValue) {
         il::Instruction result;

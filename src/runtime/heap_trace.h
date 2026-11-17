@@ -11,6 +11,9 @@ struct LayoutIds {
     brass::gc::LayoutId leaf;
     brass::gc::LayoutId weakLast;
     brass::gc::LayoutId ephemerons;
+    // An allocation memento's (bronze_abi_tls.h gc_memento_header): a leaf of
+    // one word, never a bronze object.
+    brass::gc::LayoutId memento;
 };
 
 // Registered once per process on first use; the ids are the same on every

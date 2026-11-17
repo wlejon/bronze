@@ -43,6 +43,9 @@ Value* direct_callee(Builder& b, Value* callee, Value* argc, BasicBlock* miss);
 Value* call_function_code(Builder& b, Value* fn, Value* this_val, Value* argc, Value* argv);
 
 // `new ctor(...args)`.
-Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& args);
+// `slow_site`: the construct's, an allocation site (pretenured, or counted
+// with a memento: bump_plain_object).
+Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& args,
+                              uint32_t slow_site);
 
 }  // namespace il2mir

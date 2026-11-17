@@ -84,6 +84,22 @@ public:
     // data — the symbol plus this thread's delta
     // (TranslatorOptions::per_thread_module_data).
     Value* module_data_addr(Builder& b, const std::string& base);
+    // ALLOCATION MEMENTOS (docs/type-feedback.md, "Pretenuring"): in a build
+    // made to be harvested (TranslatorOptions::cache_evidence: a memento is
+    // two words more of eden per object, which a build that may only be
+    // harvested does not pay), one more in slow site `site`'s allocation count
+    // (kAllocCountArm) and the address of its tenured count
+    // (kAllocTenuredArm), which bump_plain_object puts in the memento behind
+    // its object for the collector to add to. The image's own words, not
+    // this thread's copy: the home instance, which the harvest folds and
+    // which lives as long as the image, where a thread's or a realm's copy
+    // may be freed before the collector reads a memento. Null in any other
+    // build or for no site.
+    Value* alloc_memento(Builder& b, uint32_t site);
+    // A PRETENURED site's record (il_abi.h kPretenureSitesSymbol, the image's
+    // own), whose address bump_plain_object passes the allocation; null for a
+    // site not pretenured (TranslatorOptions::pretenure_sites) or no site.
+    Value* pretenure_site(Builder& b, uint32_t site);
     // This thread's delta for the module being lowered: the value the
     // function computed once at entry, or a fresh load where it has none.
     Value* module_delta(Builder& b);

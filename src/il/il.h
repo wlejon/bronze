@@ -429,6 +429,12 @@ struct Module {
     // IC table, and the harvest reads them back (docs/type-feedback.md,
     // "Slow paths").
     uint32_t slowSiteCount = 0;
+    // The PRETENURED allocation sites, by slow site (ascending): sites whose
+    // objects a harvest saw nearly all tenured, which the backend allocates
+    // straight into the old generation (docs/type-feedback.md,
+    // "Pretenuring"). An object literal, a construct, and the `create.this`
+    // a speculated construct makes (which carries the construct's site).
+    std::vector<uint32_t> pretenureSites;
     // Whether `global.get "Math"` / `global.get "Number"` name the builtins:
     // lockdown freezes them and pins both bindings (docs/internals.md,
     // "Realms and lockdown"), so only a host that claims the name

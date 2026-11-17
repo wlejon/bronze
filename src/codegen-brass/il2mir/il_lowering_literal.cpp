@@ -61,13 +61,20 @@ bool is_literal_il_op(BronzeOp op) {
 
 bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builder& b,
                                            std::unordered_map<uint32_t, Value*>& val_map, Value*& res_val) {
-    std::vector<Value*> opd;
-    opd.reserve(inst.operands.size());
     for (uint32_t id : inst.operands) {
-        Value* v = get_val_by_id(id, b, val_map);
-        if (v == nullptr) return inst_error(inst, "an operand of a literal or construction form is not defined here");
-        opd.push_back(ensure_type(v, Type::i64(), b));
+        if (!val_map.count(id) && !module_env_regs_.count(id)) {
+            return inst_error(inst, "an operand of a literal or construction form is not defined here");
+        }
     }
+    // The operands' bits. Bits are no root (get_val_by_id reads them from the
+    // rooted, tagged value): a form that may collect before it stores them
+    // (array.literal's allocation) reads them after that point, or a
+    // collection that moves an operand leaves it storing the old address.
+    std::vector<Value*> opd;
+    const auto take_bits = [&] {
+        for (uint32_t id : inst.operands) opd.push_back(ensure_type(get_val_by_id(id, b, val_map), Type::i64(), b));
+    };
+    if (inst.op != BronzeOp::ArrayLiteral) take_bits();
     auto need = [&](size_t n) {
         return opd.size() >= n ? true : inst_error(inst, "a construction form with too few operands");
     };
@@ -133,13 +140,19 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                 }
                 ok = b.build_eq(b.build_and(refused, doubles), b.build_iconst_i64(0));
             }
-            Value* obj = alloc_lowering_.bump_plain_object(b, shape, ok, slow, fast, slots);
+            // A pretenured literal's object is young or old with its card
+            // dirty (and grey while marking), so the stores that fill it,
+            // before any GC point, need no barrier.
+            Value* site = pretenure_site(b, inst.slow_site);
+            const bool pretenured = site != nullptr;
+            Value* obj = alloc_lowering_.bump_plain_object(b, shape, ok, slow, fast, slots, site,
+                                                           alloc_memento(b, inst.slow_site));
             Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
             for (size_t i = 0; i < opd.size(); ++i) {
                 Value* addr = b.build_add(ptr, b.build_iconst_i64(kBronzeObjSlotsOffset + 8 * static_cast<int64_t>(i)));
                 const bool primitive =
                     is_primitive_value(inst.operands[i]) || prop_lowering_.is_known_non_ref(opd[i]);
-                prop_lowering_.store_value(b, addr, opd[i], kObjectSlotAliasClass, !primitive);
+                prop_lowering_.store_value(b, addr, opd[i], kObjectSlotAliasClass, !primitive && !pretenured);
             }
             b.build_br(merge, {obj});
 
@@ -157,8 +170,9 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             return true;
         }
         case BronzeOp::ArrayLiteral: {
-            const uint32_t n = static_cast<uint32_t>(opd.size());
+            const uint32_t n = static_cast<uint32_t>(inst.operands.size());
             Value* arr = alloc_lowering_.lower_create_array(b, b.build_iconst_i32(static_cast<int32_t>(n)), n);
+            take_bits();
             if (n != 0) {
                 Value* ptr = b.build_and(arr, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
                 Value* elems = with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET),
@@ -229,7 +243,8 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             slow->set_cold();
             b.position_at_end(cur);
             Value* obj = alloc_lowering_.bump_plain_object(b, opd[1], b.build_ne(opd[1], b.build_iconst_i64(0)),
-                                                           slow, fast);
+                                                           slow, fast, 0, pretenure_site(b, inst.slow_site),
+                                                           alloc_memento(b, inst.slow_site));
             b.build_br(merge, {obj});
             b.position_at_end(slow);
             b.build_br(merge, {b.build_call("bronze_create_this", Type::i64(), {opd[0]})});

@@ -85,7 +85,7 @@ bool lower_call_instruction(
             Value* ctor = ensure_type(get_opd(0), Type::i64());
             std::vector<Value*> args;
             for (uint32_t i = 0; i < inst_ast.param_count; ++i) args.push_back(get_opd(1 + i));
-            res_val = lower_construct_inline(lowering, b, ctor, args);
+            res_val = lower_construct_inline(lowering, b, ctor, args, inst_ast.slow_site);
             break;
         }
 

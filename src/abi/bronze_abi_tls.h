@@ -154,6 +154,14 @@ typedef struct bronze_tls_block {
      * BRONZE_ABI_OBJ_SHAPE_OFFSET, and what `is.plain_array` compares an
      * array's shape word with; a 0 takes the helper, which makes it. */
     uint64_t array_shape;
+    /* The collector's header word of an ALLOCATION MEMENTO (brass
+     * set_memento_layout; docs/type-feedback.md "Pretenuring"): brass's
+     * object header for one 8-byte word of the runtime's memento layout. A
+     * build made to be harvested allocates one right behind each object of a
+     * site that may be pretenured, the word the address of the site's
+     * tenured counter, which the collector bumps when it promotes the
+     * object. Set when the thread binds to a heap, like gc_cell_header. */
+    uint64_t gc_memento_header;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -180,6 +188,7 @@ typedef struct bronze_tls_block {
     8 * BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS)
 #define BRONZE_TLS_ARRAY_SHAPE_OFF               (BRONZE_TLS_PLAIN_SHAPES_OFF + \
     8 * (BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1))
+#define BRONZE_TLS_GC_MEMENTO_HEADER_OFF         (BRONZE_TLS_ARRAY_SHAPE_OFF + 8)
 
 /*
  * ---- the constants below the block ---------------------------------------

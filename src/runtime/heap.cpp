@@ -410,6 +410,8 @@ void Heap::bind_thread() {
     // brass's object header for an inline allocation, size left zero
     // (bronze_abi_tls.h, gc_cell_header).
     tls->gc_cell_header = static_cast<uint64_t>(gc_detail::layoutIds().cell) << 32;
+    // An allocation memento's, its one word included (gc_memento_header).
+    tls->gc_memento_header = (static_cast<uint64_t>(gc_detail::layoutIds().memento) << 32) | sizeof(uint64_t);
     gc_->bind_allocation_buffer(reinterpret_cast<brass::gc::Heap::AllocationBuffer*>(&tls->alloc_cursor));
     // The barrier filter's range (bronze_abi_tls.h, young_base): brass fixes
     // it when the heap reserves its space, so it is read once, here.

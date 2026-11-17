@@ -112,6 +112,7 @@ struct ModuleMirror {
     uint32_t icSiteCount;
     uint32_t templateSiteCount;
     uint32_t slowSiteCount;
+    std::vector<uint32_t> pretenureSites;
     bool mathPinned;
     bool numberPinned;
     std::vector<Module::CensusSiteEntry> censusSites;
@@ -582,6 +583,8 @@ std::string serializeModule(const Module& module) {
     w.var(module.icSiteCount);
     w.var(module.templateSiteCount);
     w.var(module.slowSiteCount);
+    w.var(module.pretenureSites.size());
+    for (uint32_t s : module.pretenureSites) w.var(s);
     w.var(module.mathPinned ? 1u : 0u);
     w.var(module.numberPinned ? 1u : 0u);
     w.var(module.censusSites.size());
@@ -648,6 +651,8 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     out.icSiteCount = r.u32();
     out.templateSiteCount = r.u32();
     out.slowSiteCount = r.u32();
+    out.pretenureSites.resize(r.count());
+    for (auto& s : out.pretenureSites) s = r.u32();
     out.mathPinned = r.u32() != 0;
     out.numberPinned = r.u32() != 0;
     out.censusSites.resize(r.count());

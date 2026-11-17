@@ -235,6 +235,10 @@ inline constexpr uint32_t kLengthArmView = 3;
 inline constexpr uint32_t kShapeTurnArm = 7;
 // A call's count of runs in a build made to be harvested (il/feedback_site.h).
 inline constexpr uint32_t kCallCountArm = 1;
+// An allocation site's counts of objects and of their promotions
+// (il/feedback_site.h kAllocCountArm).
+inline constexpr uint32_t kAllocCountArm = 2;
+inline constexpr uint32_t kAllocTenuredArm = 3;
 // The bit a call site's kLastShapeArm word carries beside bit 63 when it holds
 // a callee's code pointer rather than a shape (il/feedback_site.h).
 inline constexpr uint32_t kLastCalleeBit = 62;
@@ -255,6 +259,14 @@ inline constexpr std::string_view kNumberSlotKeysSymbol = "__bronze_number_slot_
 // plain shape, which names the realm's Object.prototype) and the shape the
 // literal ends at from it.
 inline constexpr std::string_view kLiteralShapesSymbol = "__bronze_literal_shapes";
+// THE PRETENURED SITES' RECORDS (il.h Module::pretenureSites; docs/type-feedback.md
+// "Pretenuring"): one brass::gc::PretenureSite (kPretenureSiteBytes, zero) per
+// pretenured site, in the order of the sorted list, which the collector keeps
+// the site's probe counts and verdict in. The image's own copy, which every
+// thread's code names (IlLowering::pretenure_site): a site's verdict is the
+// program's, and a thread's copy may be freed while a probe names it.
+inline constexpr std::string_view kPretenureSitesSymbol = "__bronze_pretenure_sites";
+inline constexpr size_t kPretenureSiteBytes = 16;
 // THE TRANSITION CELLS (il.h Module::protoCells): one u64 per cell in the
 // module's per-thread data, the prototype epoch the runtime stamped it with
 // (runtime/transition_cells.cpp), zero (no epoch) until then.

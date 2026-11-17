@@ -326,7 +326,8 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
 // gets its instance bump-allocated here (what bronze_construct's plain path
 // makes) and its code entered with it as `this`; an object it returns
 // replaces the instance (10.2.2 step 10). Everything else is bronze_construct.
-Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& args) {
+Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& args,
+                              uint32_t slow_site) {
     const uint32_t argc = static_cast<uint32_t>(args.size());
     Value* argv = lowering->stage_argv(b, args);
     const std::string p = prefix_of(b, "new");
@@ -343,7 +344,9 @@ Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, con
     // prototype exists); its bare header sizes the instance.
     Value* shape = b.build_load(Type::i64(), fn, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
     Value* obj_bits =
-        lowering->alloc_lowering().bump_plain_object(b, shape, b.build_ne(shape, imm(b, 0)), slow, fast);
+        lowering->alloc_lowering().bump_plain_object(b, shape, b.build_ne(shape, imm(b, 0)), slow, fast, 0,
+                                                     lowering->pretenure_site(b, slow_site),
+                                                     lowering->alloc_memento(b, slow_site));
     // The instance is held tagged across the call, which may collect, and
     // read back after it for the result rule.
     Value* obj = lowering->ensure_type(obj_bits, Type::tagged(), b);

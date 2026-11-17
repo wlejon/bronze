@@ -33,8 +33,18 @@ public:
     // caller's derived values stay valid up to its next call. `inline_slots`
     // is the shape's capacity when the caller knows it; 0 reads it from the
     // shape (shape.h `bare_header`), which `precondition` must guard.
+    // `pretenure_site`: the site is pretenured (il.h Module::pretenureSites),
+    // this its record (IlLowering::pretenure_site), and the object comes from
+    // bronze_alloc_pretenured instead: old, or young when the collector
+    // judged the site's objects die young or makes this one its probe. It
+    // never collects either and answers 0, taken to `miss`, when neither
+    // generation has room without a collection. An old one's card is dirty
+    // and, while a marking cycle is open, it is grey, so stores that fill it
+    // before the next GC point need no barrier, as a young one's need none.
+    // `memento`: a tenured counter's address (IlLowering::alloc_memento), put
+    // in an allocation memento bumped right behind the object.
     Value* bump_plain_object(Builder& b, Value* shape, Value* precondition, BasicBlock* miss, BasicBlock* fast,
-                             uint32_t inline_slots = 0);
+                             uint32_t inline_slots = 0, Value* pretenure_site = nullptr, Value* memento = nullptr);
 
 private:
     Value* lower_create_object_bronze(Builder& b, uint32_t inline_slots);

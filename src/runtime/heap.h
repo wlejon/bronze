@@ -400,6 +400,24 @@ public:
         header->size = static_cast<uint32_t>(total);
         return header;
     }
+    // tryAllocate() for a PRETENURED allocation site (docs/type-feedback.md,
+    // "Pretenuring"; brass Heap::try_allocate_pretenured): in the old
+    // generation, or young where the collector says so for the site whose
+    // record is `site`; null when neither has room without a collection,
+    // and, like tryAllocate, never collects.
+    HeapObjectHeader* tryAllocatePretenured(size_t bytes, Tag tag, brass::gc::PretenureSite& site) noexcept {
+        const size_t total = (sizeof(HeapObjectHeader) + bytes + 7) & ~static_cast<size_t>(7);
+        const GcLayout known = (tag == Tag::String || tag == Tag::BigInt) ? GcLayout::Leaf : GcLayout::Cell;
+        const brass::gc::LayoutId id =
+            gc_detail::g_layoutIds[static_cast<size_t>(known)].load(std::memory_order_relaxed);
+        const uintptr_t object = gc_->try_allocate_pretenured(total, id, site);
+        if (object == 0) return nullptr;
+        auto* header = reinterpret_cast<HeapObjectHeader*>(object);
+        header->tag = static_cast<uint16_t>(tag);
+        header->flags = 0;
+        header->size = static_cast<uint32_t>(total);
+        return header;
+    }
     // The same, in the OLD generation: an object that never moves, freed only
     // by a full collection. For what a non-moving off-heap table names and a
     // full collection's trace reaches (a dictionary's keys, dictionary.h).

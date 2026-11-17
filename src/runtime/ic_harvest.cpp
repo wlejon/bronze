@@ -21,6 +21,7 @@
 #include "runtime/ic_hot.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
+#include "runtime/heap_trace.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -568,6 +569,11 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
     bool any = false;
     for (const Module& each : s.modules) any = any || !each.path.empty();
     g_armed.store(any, std::memory_order_relaxed);
+    // A build made to be harvested counts its allocation sites' promotions
+    // through mementos (docs/type-feedback.md, "Pretenuring"), which the
+    // collector reads from here on. Left on when the harvest stops: a
+    // memento's counter is an image's own word, there as long as the image.
+    if (any) brass::gc::set_memento_layout(gc_detail::layoutIds().memento);
     // The samples run while some harvest is armed (harvest_sampler.h).
     if (!path.empty()) {
         rtHarvestSamplerStart();

@@ -11,6 +11,8 @@
 #include <brass/mir/printer.hpp>
 #include <brass/mir/verifier.hpp>
 #include "support/timings.h"
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -70,6 +72,32 @@ Value* IlLowering::module_data_addr(Builder& b, const std::string& base) {
     Value* addr = b.build_func_addr(module_sym(base));
     if (!options_.per_thread_module_data) return addr;
     return b.build_add(addr, module_delta(b));
+}
+
+Value* IlLowering::alloc_memento(Builder& b, uint32_t site) {
+    if (!options_.cache_evidence || site == BronzeInstruction::kNoSlowSite || site + kAllocTenuredArm >= options_.slow_site_count) {
+        return nullptr;
+    }
+    const auto word = [&](uint32_t index) {
+        if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
+            std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
+                .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
+        }
+        return b.build_add(b.build_func_addr(module_sym("__bronze_ic_table")),
+                           b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
+    };
+    Value* count = word(site + kAllocCountArm);
+    Value* n = with_alias_class(b.build_load(Type::i64(), count, 0), kSlowCountAliasClass);
+    with_alias_class(b.build_store(Type::i64(), count, 0, b.build_add(n, b.build_iconst_i64(1))), kSlowCountAliasClass);
+    return word(site + kAllocTenuredArm);
+}
+
+Value* IlLowering::pretenure_site(Builder& b, uint32_t site) {
+    const std::vector<uint32_t>& sites = options_.pretenure_sites;
+    const auto it = std::lower_bound(sites.begin(), sites.end(), site);
+    if (site == BronzeInstruction::kNoSlowSite || it == sites.end() || *it != site) return nullptr;
+    const int64_t at = static_cast<int64_t>(it - sites.begin()) * static_cast<int64_t>(kPretenureSiteBytes);
+    return b.build_add(b.build_func_addr(module_sym(std::string(kPretenureSitesSymbol))), b.build_iconst_i64(at));
 }
 
 uint32_t IlLowering::find_key_constant(const std::string& name) const {

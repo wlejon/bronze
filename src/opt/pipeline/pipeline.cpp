@@ -2,8 +2,10 @@
 
 #include "opt/pipeline/pipeline.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -55,6 +57,62 @@ PreheaderResumeFn loopEntryResumes(const il::Module& module) {
     };
 }
 
+// PRETENURING (docs/type-feedback.md, "Pretenuring"): the allocation sites
+// whose objects the harvested run's collector mostly promoted, four fifths or
+// more of kPretenureMinObjects or more, and which made at least a hundredth
+// of the objects the module's allocation sites made, allocate old (il.h
+// Module::pretenureSites). Promoted is what decides, not surviving one
+// collection: a per-frame working set survives its first collection and dies
+// in the survivor space, and allocated old it would be garbage only a full
+// collection takes back. The share is what pays: a site's objects allocated
+// old save the minor collections their copies, and cost every store of a
+// young value into them a barrier's call and a dirty card, which a site of
+// few objects filled at length after its birth (a scene node built up over a
+// frame) pays without the saving.
+constexpr uint64_t kPretenureMinObjects = 256;
+constexpr uint64_t kPretenureTenuredNum = 4;
+constexpr uint64_t kPretenureTenuredDen = 5;
+constexpr uint64_t kPretenureShareDen = 100;
+
+void planPretenure(il::Module& module, const spec::Harvest& h) {
+    const auto armed = [&h](uint32_t index) {
+        return index / 64 < h.slowArmed.size() && ((h.slowArmed[index / 64] >> (index % 64)) & 1u) != 0;
+    };
+    const auto count = [&h](uint32_t index) -> uint64_t {
+        const auto it = h.slow.find(index);
+        return it != h.slow.end() ? it->second : 0;
+    };
+    // The allocation sites the harvested build counted, by slow site (an
+    // inlined copy shares its original's).
+    std::map<uint32_t, std::pair<uint64_t, uint64_t>> sites;
+    uint64_t total = 0;
+    for (const il::Function& fn : module.functions) {
+        for (const il::Block& block : fn.blocks) {
+            for (const il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::ObjectLiteral && inst.op != il::Op::Construct && inst.op != il::Op::CreateThis) {
+                    continue;
+                }
+                const uint32_t site = inst.slowSite;
+                if (site == il::Instruction::kNoSlowSite || site + il::kAllocTenuredArm >= module.slowSiteCount ||
+                    !armed(site + il::kAllocCountArm) || !armed(site + il::kAllocTenuredArm) || sites.count(site)) {
+                    continue;
+                }
+                const uint64_t made = count(site + il::kAllocCountArm);
+                sites[site] = {made, count(site + il::kAllocTenuredArm)};
+                total += made;
+            }
+        }
+    }
+    module.pretenureSites.clear();
+    for (const auto& [site, counts] : sites) {
+        const auto [made, tenured] = counts;
+        if (made >= kPretenureMinObjects && tenured * kPretenureTenuredDen >= made * kPretenureTenuredNum &&
+            made * kPretenureShareDen >= total) {
+            module.pretenureSites.push_back(site);
+        }
+    }
+}
+
 }  // namespace
 
 OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profile,
@@ -70,6 +128,10 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
         result.speculate = speculate::speculateModule(module, *profile, options.speculate);
     }
     const bool anySpeculated = result.speculate.functionsSpeculated != 0;
+    if (const spec::Harvest* h = profile != nullptr ? profile->harvest() : nullptr;
+        h != nullptr && result.speculate.harvestIgnored == 0 && h->slowSites == module.slowSiteCount) {
+        planPretenure(module, *h);
+    }
 
     // Always run: it also clears every call's resumeAfter, which the
     // redundancy pass would otherwise leave naming a point it deletes.

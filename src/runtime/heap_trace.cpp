@@ -208,6 +208,11 @@ const LayoutIds& layoutIds() {
         leaf.type_tag = 0xB50E;
         leaf.name = "bronze.leaf";
         out.leaf = brass::gc::register_layout(leaf);
+        brass::gc::LayoutDescriptor memento;
+        memento.kind = brass::gc::LayoutKind::Leaf;
+        memento.type_tag = 0xB50F;
+        memento.name = "bronze.memento";
+        out.memento = brass::gc::register_layout(memento);
         return out;
     }();
     return ids;

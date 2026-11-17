@@ -132,8 +132,22 @@ static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronz
 }
 
 Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* precondition,
-                                              BasicBlock* miss, BasicBlock* bb_fast, uint32_t inline_slots) {
+                                              BasicBlock* miss, BasicBlock* bb_fast, uint32_t inline_slots,
+                                              Value* pretenure_site, Value* memento) {
     using namespace bronze_heap_abi;
+    if (pretenure_site) {
+        BasicBlock* bb_cur = b.current_block();
+        Function* fn = bb_cur->parent();
+        BasicBlock* bb_old = b.append_block("old_plain_" + std::to_string(fn->next_block_id()));
+        b.position_at_end(bb_cur);
+        if (precondition) b.build_br_if(precondition, bb_old, miss);
+        else b.build_br(bb_old);
+        b.position_at_end(bb_old);
+        Value* obj = b.build_call("bronze_alloc_pretenured", Type::i64(), {shape, pretenure_site});
+        b.build_br_if(b.build_ne(obj, b.build_iconst_i64(0)), bb_fast, miss);
+        b.position_at_end(bb_fast);
+        return obj;
+    }
     Value* tls_addr = bronze_tls_addr(b);
     // The object's bronze bytes: a constant for a known capacity, else its
     // shape's bare header (shape.h `bare_header`) read once the precondition
@@ -157,13 +171,21 @@ Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* p
     }
     Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
     Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
-    Value* new_cursor = b.build_add(b.build_add(cur_cursor, bytes), b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
+    const size_t extra = memento ? 2 * GC_HDR_BYTES + 8 : GC_HDR_BYTES;
+    Value* new_cursor = b.build_add(b.build_add(cur_cursor, bytes), b.build_iconst_i64(static_cast<int64_t>(extra)));
     Value* can_fit = b.build_ule(new_cursor, cur_limit);
     b.build_br_if(precondition ? b.build_and(can_fit, precondition) : can_fit, bb_fast, miss);
 
     // Fast path: bump pointer and initialize plain object
     b.position_at_end(bb_fast);
     b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
+    if (memento) {
+        // The memento: its brass header (its one word's size included), then
+        // the counter's address, the last two words of the bump.
+        b.build_store(Type::i64(), new_cursor, -16,
+                      b.build_load(Type::i64(), tls_addr, BRONZE_TLS_GC_MEMENTO_HEADER_OFF));
+        b.build_store(memento->type(), new_cursor, -8, memento);
+    }
     Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
     b.build_store(Type::i64(), cur_cursor, 0, b.build_or(cell, bytes));
     Value* obj_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));

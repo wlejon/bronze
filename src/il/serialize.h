@@ -63,7 +63,8 @@ namespace bronze::il {
 // 50: Function::entrySlowSite.
 // 51: Function::fallback; a resume point's kind (il_op.h kResumeOptimistic).
 // 52: shape.proto (il_op.h) and data member cells (Module::MemberKind::Data).
-inline constexpr uint32_t kFormatVersion = 52;
+// 53: Module::pretenureSites; object literals' slow sites.
+inline constexpr uint32_t kFormatVersion = 53;
 
 std::string serializeModule(const Module& module);
 

@@ -615,6 +615,17 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
                      litOffset, litBytes, SymbolBinding::Local);
     }
 
+    // The pretenured sites' records (il2mir::kPretenureSitesSymbol): zero.
+    // Code reads the home instance's, which every thread shares.
+    if (!module.pretenureSites.empty()) {
+        dataSec.align_to(8);
+        const size_t sitesOffset = dataSec.data.size();
+        const size_t sitesBytes = module.pretenureSites.size() * il2mir::kPretenureSiteBytes;
+        dataSec.data.resize(sitesOffset + sitesBytes, 0);
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kPretenureSitesSymbol)), dataIdx,
+                     sitesOffset, sitesBytes, SymbolBinding::Local);
+    }
+
     // The transition cells (il2mir::kProtoCellsSymbol): zero, per thread.
     if (!module.protoCells.empty()) {
         dataSec.align_to(8);

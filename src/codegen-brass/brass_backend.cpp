@@ -373,6 +373,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.in_process = inProcess_;
     options.shape_cell_count = static_cast<uint32_t>(module.shapeCells.size());
     options.number_slot_keys = module.numberSlotKeys;
+    options.pretenure_sites = module.pretenureSites;
     options.object_literals.reserve(module.objectLiterals.size());
     for (const il::Module::ObjectLiteral& lit : module.objectLiterals) {
         options.object_literals.push_back({lit.keys, lit.inlineSlots});

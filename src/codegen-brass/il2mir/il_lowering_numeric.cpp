@@ -160,9 +160,13 @@ Value* lower_dynamic_mod(PropertyLoweringHelper& prop, Builder& b, Value* op0, V
     Value* i1 = inline_to_int32(b, f1);
     // Exact int32 values (the round trip), the dividend >= 0 and the divisor
     // > 0: the sign bit of the bits rules out -0 as well as the negatives.
+    // Tested unsigned, as every compare of Value bits is: an operand the
+    // optimizer folded to a constant non-Number (an inlined call's missing
+    // argument, undefined) reaches this arm's code, though never its run.
     Value* exact = b.build_and(b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i0)), f0),
                                b.build_eq(b.build_sitofp_f64_i64(b.build_sext_i64(i1)), f1));
-    Value* signs = b.build_and(b.build_sge(op0, b.build_iconst_i64(0)), b.build_sgt(i1, b.build_iconst_i32(0)));
+    Value* signs = b.build_and(b.build_ult(op0, iconst64(b, 0x8000000000000000ULL)),
+                               b.build_sgt(i1, b.build_iconst_i32(0)));
     b.build_br_if(b.build_and(exact, signs), fast, slow);
     b.position_at_end(fast);
     if (prop.evidence_marked()) prop.arm_begin(b, kArithArmNumbers);

@@ -110,7 +110,8 @@ uint64_t icLayoutDigest(const Module& module);
 // strict compare, a checked unbox, a dynamic numeric op — `+ - * / %`, unary
 // `-`, `~`, the bitwise and shift ops, `< <= > >=`, `==`, `++`/`--`,
 // ToNumeric — whose form computes Numbers inline), and every call (`call`,
-// `call.dynamic`, `method.call`, construct: kCallCountArm) the next index in
+// `call.dynamic`, `method.call`, construct: kCallCountArm) and every object
+// literal (an allocation site, as a construct is: kAllocCountArm) the next index in
 // `slowSiteCount`, in function, block and instruction order. Run first thing
 // in the final passes, on the module every build of the program starts them
 // from, so a harvest's counts name the same instructions in the build that
@@ -142,6 +143,14 @@ inline constexpr uint32_t kShapeTurnArm = 7;
 // budget reads it (opt/inline driver.cpp). Instructions copied by inlining
 // share their original's count.
 inline constexpr uint32_t kCallCountArm = 1;
+// An ALLOCATION SITE's counts (docs/type-feedback.md, "Pretenuring"): an
+// object literal's, a construct's (and the create.this a speculated one
+// becomes, which keeps its site) objects a build made to be harvested
+// allocated, and how many of them the collector promoted, counted through
+// the memento behind each (brass set_memento_layout). Their ratio is what
+// pretenures a site (opt/pipeline/pipeline.cpp planPretenure).
+inline constexpr uint32_t kAllocCountArm = 2;
+inline constexpr uint32_t kAllocTenuredArm = 3;
 // Each function with a body is handed one index of its own first, its ENTRY
 // COUNT (Function::entrySlowSite), which a build made to be harvested adds
 // one to at every entry.

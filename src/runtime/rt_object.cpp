@@ -1,9 +1,10 @@
-// Object, array and function construction, the two class links, environment
-// records, and the dynamic call path. Property access itself is rt_prop.cpp;
-// own-key names and `Object.keys` are rt_object_keys.cpp; the `Reflect`
-// namespace is rt_reflect.cpp, whose members are forwards into the same
-// funnels this file calls; typed arrays build themselves through ordinary
-// constructor objects and so need nothing here.
+// Object, array and function construction, the two class links, and the
+// dynamic call path. Environment records are rt_env.cpp; property access
+// itself is rt_prop.cpp; own-key names and `Object.keys` are
+// rt_object_keys.cpp; the `Reflect` namespace is rt_reflect.cpp, whose
+// members are forwards into the same funnels this file calls; typed arrays
+// build themselves through ordinary constructor objects and so need nothing
+// here.
 
 #include <algorithm>
 #include <array>
@@ -744,103 +745,27 @@ uint64_t bronze_create_this(uint64_t fnBits) {
     return Value::fromObject(instance).rawBits();
 }
 
-// ---- Environment records: `depth` parent hops, then `index` ----
+// A record's size as the backend lays the records out (codegen-brass il_abi.h
+// kPretenureSiteBytes).
+static_assert(sizeof(brass::gc::PretenureSite) == 16, "a pretenured site's record, sized twice");
 
-uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
-    recordHelperCall("bronze_env_create");
-    Rooted<Value> parent{Value(parentBits)};
-    EnvHeader* env = EnvHeader::create(rtHeap(), parent, slotCount);
-    return Value::fromObject(env).rawBits();
-}
-
-static EnvHeader* resolveEnv(uint64_t envBits, uint32_t depth) {
-    Value envVal(envBits);
-    if (!envVal.isObject()) {
-        fatal("environment access on a value that is not an environment record");
-    }
-    auto* env = envVal.asObject<EnvHeader>();
-    if (env->header.flags != EnvHeader::kFlags) {
-        fatal("environment access on a value that is not an environment record");
-    }
-    return env->ancestor(depth);
-}
-
-uint64_t bronze_env_get(uint64_t envBits, uint32_t depth, uint32_t index) {
-    recordHelperCall("bronze_env_get");
-    EnvHeader* env = resolveEnv(envBits, depth);
-    if (index >= env->slotCount()) {
-        fatal("environment slot index out of range (lowering bug)");
-    }
-    return env->slotsData()[index].rawBits();
-}
-
-static_assert(Value::fromUninitialized().rawBits() == BRONZE_ABI_UNINITIALIZED_BITS,
-              "BRONZE_ABI_UNINITIALIZED_BITS in bronze_abi.h has drifted from the "
-              "uninitialized-binding singleton");
-
-// The same read, for a slot holding a `let`, `const` or `class` binding.
-// ECMA-262 9.1.1.1.6 GetBindingValue: "if the binding for N in envRec is an
-// uninitialized binding, throw a ReferenceError". The marker is the only thing
-// that distinguishes the two states, and it can never be a program's value, so
-// one compare against it IS the check.
-//
-// `keyIndex` is the module's interned name, so the message can say which
-// binding without the backend carrying a string — the same arrangement
-// `bronze_reference_error` uses.
-uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
-                            uint32_t keyIndex) {
-    recordHelperCall("bronze_env_get_tdz");
-    const uint64_t bits = bronze_env_get(envBits, depth, index);
-    if (bits != BRONZE_ABI_UNINITIALIZED_BITS) return bits;
-    // A binding name reaching here can be a FLATTENED one — the module linker
-    // renames a non-entry file's module scope to `modN.local`, and it can do
-    // that safely precisely because a JavaScript identifier contains no dot. So
-    // the text after the last dot is the name the program wrote, and a name
-    // with no dot is already it. The message says what the source says;
-    // `mod3.aLate` names a compilation strategy the programmer did not choose.
-    const std::string& key = rtKeyString(keyIndex);
-    const size_t dot = key.rfind('.');
-    const std::string shown = dot == std::string::npos ? key : key.substr(dot + 1);
-    return rtThrowReferenceError("Cannot access '" + shown + "' before initialization").rawBits();
-}
-
-// The inline path's access guard failed. Every question it asks is settled by
-// the scope plan before the IL exists — the depth and the index are constants
-// and a record's layout is fixed where it is created — so reaching here is a
-// backend or lowering bug and there is no program state to recover. Walking
-// the chain again is only so the diagnostic can name WHICH of the three
-// questions the generated code answered no to.
-// `fatal` is [[noreturn]], so every path out of this ends the process; the
-// attribute is not repeated on the definition because the ABI header already
-// declared the symbol without it.
-void bronze_env_access_failed(uint64_t envBits, uint32_t depth, uint32_t index) {
-    Value cur(envBits);
-    for (uint32_t step = 0;; ++step) {
-        if (!cur.isObject()) {
-            fatal("environment access on a value that is not an environment record");
-        }
-        auto* env = cur.asObject<EnvHeader>();
-        if (env->header.flags != EnvHeader::kFlags) {
-            fatal("environment access on a value that is not an environment record");
-        }
-        if (step == depth) {
-            if (index >= env->slotCount()) {
-                fatal("environment slot index out of range (lowering bug)");
-            }
-            break;
-        }
-        cur = env->parent;
-    }
-    fatal("environment access guard failed on a well-formed record (backend bug)");
-}
-
-void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t valBits) {
-    recordHelperCall("bronze_env_set");
-    EnvHeader* env = resolveEnv(envBits, depth);
-    if (index >= env->slotCount()) {
-        fatal("environment slot index out of range (lowering bug)");
-    }
-    env->slotsData()[index] = Value(valBits);
+uint64_t bronze_alloc_pretenured(uint64_t shapeBits, uint64_t siteBits) {
+    auto* shape = reinterpret_cast<Shape*>(static_cast<uintptr_t>(shapeBits));
+    // The header word the inline bump writes: Tag::Object, HeapKind::Plain
+    // and the object's bronze size, which also sizes it.
+    const uint64_t header = shape->bare_header;
+    const size_t total = static_cast<size_t>(header >> 32);
+    if (total == 0) return 0;
+    auto* site = reinterpret_cast<brass::gc::PretenureSite*>(static_cast<uintptr_t>(siteBits));
+    HeapObjectHeader* raw = rtHeap().tryAllocatePretenured(total - sizeof(HeapObjectHeader), Tag::Object, *site);
+    if (raw == nullptr) return 0;
+    // The shape, then the overflow word and the inline slots, undefined (no
+    // reference, so raw stores: no barrier to run).
+    auto* words = reinterpret_cast<uint64_t*>(raw);
+    words[0] = header;
+    words[1] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
+    for (size_t i = 2; i < total / sizeof(uint64_t); ++i) words[i] = Value::fromUndefined().rawBits();
+    return Value::fromObject(reinterpret_cast<ObjectHeader*>(raw)).rawBits();
 }
 
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,

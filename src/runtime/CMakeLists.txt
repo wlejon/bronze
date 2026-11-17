@@ -108,6 +108,7 @@ bronze_add_module(runtime
         rt_members.cpp
         native_base.cpp
         rt_object.cpp
+        rt_env.cpp
         rt_object_keys.cpp
         realm.cpp
         lockdown.cpp

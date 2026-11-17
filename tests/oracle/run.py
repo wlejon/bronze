@@ -60,7 +60,7 @@ def option(name, default):
 
 
 bronze = option('--bronze', str(here.parent.parent / 'build/src/cli/bronze'))
-modes = option('--modes', 'run,aot,profile,switch').split(',')
+modes = option('--modes', 'run,aot,profile,switch,adversarial').split(',')
 jobs = int(option('--jobs', '12'))
 work = pathlib.Path(option('--work', '/tmp/bronze-oracle'))
 every = sorted(p.stem for p in (here / 'cases').glob('*.js') if p.with_suffix('.expected').exists())
@@ -352,6 +352,25 @@ def p_borrowed(h, r):
         h.slow = moved
 
 
+def p_lifetimes(h, r):
+    """Allocation sites' lifetimes reversed (il/feedback_site.h
+    kAllocCountArm, kAllocTenuredArm; docs/type-feedback.md "Pretenuring"):
+    a site whose objects died claimed to have had every one promoted, past
+    the threshold, so its garbage is allocated old, and one whose objects
+    lived claimed to have had none promoted. Every pair of armed neighbours
+    stands in for one."""
+    armed = set(h.armed())
+    for i in sorted(armed):
+        if i + 1 not in armed or r.random() >= 0.6:
+            continue
+        made = h.slow.get(i, 0)
+        if made and h.slow.get(i + 1, 0) * 5 >= made * 4:
+            h.slow.pop(i + 1, None)
+        else:
+            h.slow[i] = max(made, 256)
+            h.slow[i + 1] = h.slow[i]
+
+
 def p_hot(h, r):
     """Every function sampled hot (a harvest names a function by the FNV-1a
     hash of its IL name, il/feedback_site.h functionNameHash), so every site
@@ -366,7 +385,7 @@ def p_hot(h, r):
 
 PROFILES = [
     [p_receivers, p_forms, p_places, p_reprs, p_unseen, p_hot],
-    [p_monomorphic, p_callees, p_hot],
+    [p_monomorphic, p_callees, p_lifetimes, p_hot],
     [p_arms, p_borrowed, p_hot],
 ]
 

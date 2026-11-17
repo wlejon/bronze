@@ -177,6 +177,11 @@ struct TranslatorOptions {
     // (bronze_register_slot_repr, il_abi.h kNumberSlotKeysSymbol), and an
     // object literal's fast path tests the values it stores under them.
     std::vector<uint32_t> number_slot_keys;
+    // The pretenured allocation sites by slow site, ascending (il.h
+    // Module::pretenureSites): their plain objects come from
+    // bronze_alloc_pretenured (il_alloc_lowering.h bump_plain_object), each
+    // with its record (IlLowering::pretenure_site).
+    std::vector<uint32_t> pretenure_sites;
     // The module's object literals (il.h Module::objectLiterals): their keys
     // and inline slots. `object.literal n` caches its shape in words 2n and
     // 2n+1 of `__bronze_literal_shapes` (il_abi.h kLiteralShapesSymbol).

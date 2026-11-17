@@ -340,6 +340,15 @@
     /* `create.this f` when the inline bump had no room: a plain object of the
      * vetted constructor `f`'s instance shape. */ \
     X(bronze_create_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    /* A PRETENURED site's plain object (docs/type-feedback.md,\
+     * "Pretenuring"): one of shape `shape` (a raw Shape*, its bare header\
+     * sizing it), every slot undefined, allocated straight into the old\
+     * generation, or young where the collector says so (brass\
+     * try_allocate_pretenured) for the site whose record is `site` (a\
+     * brass::gc::PretenureSite*); 0 when neither generation has room without\
+     * a collection, which the site answers with its ordinary allocation.\
+     * Never collects. */ \
+    X(bronze_alloc_pretenured,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* A TRANSITION CELL's stamp (runtime/transition_cells.cpp): the cell,\
      * the add's from-shape, runtime key id, to-shape and slot. */ \
     X(bronze_transition_publish,  BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
