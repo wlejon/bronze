@@ -18,6 +18,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <brass/runtime/fast_trig.hpp>
 
 
 #include "abi/bronze_abi.h"
@@ -637,7 +638,9 @@ double rtExponentiate(double base, double exponent) {
     if (std::abs(base) == 1.0 && std::isinf(exponent)) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    return std::pow(base, exponent);
+    // fdlibm's pow, as V8 computes it: the platform's differs from it, and
+    // from one platform to the next, in the last bit.
+    return brass::math::pow_f64(base, exponent);
 }
 
 extern "C" {
