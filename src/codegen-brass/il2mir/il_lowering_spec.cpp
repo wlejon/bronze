@@ -22,9 +22,6 @@ namespace {
 
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr uint64_t kNegativeZeroBits = 0x8000000000000000ULL;
-// |x| < 2^63 as a double's bits with the sign cleared: the doubles fptosi to
-// i64 is defined on (and no NaN or infinity).
-constexpr uint64_t kBelowTwoTo63Bits = 0x43E0000000000000ULL;
 // A function object's header word, low half: its kind over the object tag
 // (runtime/heap.h HeapObjectHeader: tag, then flags).
 constexpr int32_t kFunctionHeaderLow =
@@ -34,6 +31,17 @@ constexpr int32_t kArrayHeaderLow =
     static_cast<int32_t>((uint32_t{BRONZE_ABI_OBJ_FLAGS_ARRAY} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
 
 Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
+
+// Whether the double `f` is an int32 other than -0: its truncation, cut to
+// 32 bits and converted back, is `f` again. fptosi.i64 is INT64_MIN for a NaN
+// or a value outside the i64 range (mir_reference.md), a fraction does not
+// survive the truncation, and an integral value outside int32 does not
+// survive the cut, so each compares unequal; -0 compares equal to 0 and is
+// refused by its bits.
+Value* double_is_int32(Builder& b, Value* f) {
+    Value* back = b.build_sitofp_f64_i32(b.build_trunc_i32(b.build_fptosi_i64(f)));
+    return b.build_and(b.build_eq(back, f), b.build_ne(b.build_bitcast_i64_f64(f), iconst64(b, kNegativeZeroBits)));
+}
 
 // The address `slot` of the plain object at `ptr` is at: inline below
 // BRONZE_ABI_OBJ_OVERFLOW_SLOT, else in the overflow block, whose Values
@@ -308,31 +316,35 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             return true;
         }
         // bool = is.i32 %v: the Int32 box, or a double that is integral, in
-        // int32 range and not -0.
-        //   tag = v >> 48 == INT32 ; in = |v| < 2^63 ; f = in ? v : 0
-        //   k = cvttsd2si64 f ; ok = in & (cvtsi2sd k == f) & (sext32 k == k) & v != -0
+        // int32 range and not -0. Read as a double, every other value's bits
+        // are a NaN, which the double's test refuses, so the test needs no
+        // range check in front of it; and a box made of a double here (a
+        // box.f64, a double slot's or a NUMBERS element's load) is that
+        // double, whose bits are never the Int32 tag's.
+        //   tag = v >> 48 == INT32 ; ok = tag | double_is_int32(v as f64)
         case BronzeOp::IsI32: {
             if (!need(1)) return false;
+            if (Value* f = boxed_f64_source(opd[0])) {
+                res_val = double_is_int32(b, f);
+                return true;
+            }
             Value* v = bits(0);
             Value* tagged_i32 = b.build_eq(b.build_lshr(v, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT)),
                                            b.build_iconst_i64(BRONZE_ABI_TAG_INT32));
-            Value* abs_bits = b.build_and(v, iconst64(b, ~kNegativeZeroBits));
-            Value* in_range = b.build_ult(abs_bits, iconst64(b, kBelowTwoTo63Bits));
-            Value* f = b.build_bitcast_f64_i64(b.build_select(in_range, v, b.build_iconst_i64(0)));
-            Value* k = b.build_fptosi_i64(f);
-            Value* integral = b.build_eq(b.build_sitofp_f64_i64(k), f);
-            Value* fits = b.build_eq(b.build_sext_i64(b.build_trunc_i32(k)), k);
-            Value* not_minus_zero = b.build_ne(v, iconst64(b, kNegativeZeroBits));
-            Value* double_i32 = b.build_and(b.build_and(in_range, integral), b.build_and(fits, not_minus_zero));
-            res_val = b.build_or(tagged_i32, double_i32);
+            res_val = b.build_or(tagged_i32, double_is_int32(b, b.build_bitcast_f64_i64(v)));
             return true;
         }
         // i32 = unbox.i32.unchecked %v: the Int32 box's low half, or the
         // double's truncation (exact on is.i32's true edge). The double is
         // read as 0 for an Int32 box, so the conversion never sees a NaN.
         //   tag = v >> 48 == INT32 ; f = tag ? 0 : v ; r = tag ? (i32)v : (i32)cvttsd2si64 f
+        // A box made of a double here is that double's truncation.
         case BronzeOp::UnboxI32: {
             if (!need(1)) return false;
+            if (Value* f = boxed_f64_source(opd[0])) {
+                res_val = b.build_trunc_i32(b.build_fptosi_i64(f));
+                return true;
+            }
             Value* v = bits(0);
             Value* tagged_i32 = b.build_eq(b.build_lshr(v, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT)),
                                            b.build_iconst_i64(BRONZE_ABI_TAG_INT32));

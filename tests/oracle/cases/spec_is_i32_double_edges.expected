@@ -1,0 +1,66 @@
+trained 224680
+at 0 0 undefined
+at -0 0 undefined
+at 1 undefined undefined
+at 3 frac one and a half
+at 30 150 undefined
+at 31 undefined undefined
+at 4294967294 undefined undefined
+at -4294967296 undefined undefined
+at 8589934592 undefined two to the 32
+at NaN undefined not a number
+at Infinity undefined inf
+at -Infinity undefined minus inf
+at 1e+300 undefined undefined
+at -1e+300 undefined undefined
+at 18446744073709552000 undefined undefined
+at -18446744073709552000 undefined undefined
+at 18446744073709552000 undefined undefined
+at 0.5 undefined undefined
+at -0.5 undefined undefined
+at 5e-324 0 undefined
+any 0 number 0
+any 0 number 0
+any 1.5 number frac
+any 15 number 150
+any 16 number undefined
+any 2147483648 number undefined
+any -1 number undefined
+any 4294967296 number undefined
+any NaN number undefined
+any 3 string 30
+any 03 string undefined
+any true boolean undefined
+any null object undefined
+any undefined undefined undefined
+any [object Object] object undefined
+any 2 object 20
+any symbol symbol function values() { [native code] }
+any 10 bigint 100
+any Infinity number undefined
+any -Infinity number undefined
+any 2147483647 number undefined
+any -2147483648 number undefined
+isInt 0 0
+isInt -0 0
+isInt 3 1
+isInt -3 -1
+isInt 1 no
+isInt 6442450941 2147483647
+isInt 6442450944 no
+isInt -6442450944 -2147483648
+isInt NaN no
+isInt 100000000000000000000 no
+isInt 4.5 no
+sw 0 zero
+sw -0 zero
+sw 1 one
+sw -1 minus one
+sw 2147483647 max
+sw -2147483648 min
+sw 2147483648 other 2147483648
+sw 0.5 other 0.5
+sw NaN other NaN
+sw Infinity other Infinity
+sw 1.0000000000000002 other 1.0000000000000002
+sum 449360
