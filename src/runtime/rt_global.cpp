@@ -240,76 +240,8 @@ extern "C" uint64_t bronze_call_dynamic_n(uint64_t callee, uint64_t thisVal, uin
 
 extern "C" uint64_t bronze_super_call(uint64_t activeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits);
 
-extern "C" uint64_t bronze_super_call_0(uint64_t active, uint64_t thisVal) {
-    return bronze_super_call(active, thisVal, 0, nullptr);
-}
-
-template <typename... Args>
-inline uint64_t bronze_super_call_helper(uint64_t active, uint64_t thisVal, Args... args) {
-    constexpr uint32_t N = sizeof...(Args);
-    RootedBlock argv(N);
-    uint32_t i = 0;
-    ((argv.set(i++, Value(args))), ...);
-    return bronze_super_call(active, thisVal, N, argv.data());
-}
-
-extern "C" uint64_t bronze_super_call_1(uint64_t active, uint64_t thisVal, uint64_t a0) {
-    return bronze_super_call_helper(active, thisVal, a0);
-}
-
-extern "C" uint64_t bronze_super_call_2(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1) {
-    return bronze_super_call_helper(active, thisVal, a0, a1);
-}
-
-extern "C" uint64_t bronze_super_call_3(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2);
-}
-
-extern "C" uint64_t bronze_super_call_4(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3);
-}
-
-extern "C" uint64_t bronze_super_call_5(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4);
-}
-
-extern "C" uint64_t bronze_super_call_6(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5);
-}
-
-extern "C" uint64_t bronze_super_call_7(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6);
-}
-
-extern "C" uint64_t bronze_super_call_8(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7);
-}
-
-extern "C" uint64_t bronze_super_call_9(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8);
-}
-extern "C" uint64_t bronze_super_call_10(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
-}
-extern "C" uint64_t bronze_super_call_11(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
-}
-extern "C" uint64_t bronze_super_call_12(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
-}
-extern "C" uint64_t bronze_super_call_13(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12);
-}
-extern "C" uint64_t bronze_super_call_14(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
-}
-extern "C" uint64_t bronze_super_call_15(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
-}
-extern "C" uint64_t bronze_super_call_16(uint64_t active, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
-    return bronze_super_call_helper(active, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
-}
-
+// super() the inline path did not enter (il_call_entry.cpp lower_super_call_inline);
+// argv is the caller's rooted argv block.
 extern "C" uint64_t bronze_super_call_n(uint64_t active, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
     return bronze_super_call(active, thisVal, argv ? argc : 0, argv);
 }

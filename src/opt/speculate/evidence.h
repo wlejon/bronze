@@ -26,12 +26,32 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "abi/bronze_feedback_site.h"
 #include "il/feedback_site.h"
 #include "il/il.h"
 #include "opt/spec/profile.h"
 #include "opt/speculate/speculate.h"
 
 namespace bronze::opt::speculate {
+
+// ---- recorded sites ----------------------------------------------------------
+inline constexpr uint32_t kTagBit(uint32_t tag) { return 1u << tag; }
+
+// Recorded tags that say "a plain object" and nothing else: the receivers a
+// shape guard can pass.
+inline bool onlyPlainObjects(const spec::SiteFeedback& site) {
+    return site.tagMask() == kTagBit(BRONZE_FEEDBACK_TAG_OBJECT);
+}
+
+// The names a site saw, when they are all real names: `*other*` is the
+// folded tail of more than the recorder tracks.
+inline bool namesComplete(const std::vector<std::pair<std::string, uint64_t>>& names) {
+    if (names.empty()) return false;
+    for (const auto& [name, count] : names) {
+        if (name == "*other*" || count == 0) return false;
+    }
+    return true;
+}
 
 // ---- thresholds -------------------------------------------------------------
 // A function is hot when the recorded run entered it this often...

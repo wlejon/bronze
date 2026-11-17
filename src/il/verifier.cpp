@@ -669,9 +669,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 return false;
             }
 
-            // The fixed-operand call forms end at sixteen arguments — the
-            // last helper of the super-call ladder is `bronze_super_call_16`
-            // (abi/bronze_abi.h), and every form is bounded alike.
+            // The fixed-operand call forms end at sixteen arguments, every
+            // form bounded alike.
             // The lowerer hands a longer list to the `*.spread` form as one
             // array (`Lowerer::argsTakeArrayPath`); this is what says so.
             {

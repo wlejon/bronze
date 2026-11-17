@@ -38,6 +38,11 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
 Value* lower_apply_args_inline(IlLowering* lowering, Builder& b, Value* recv, Value* this_val, Value* count,
                                Value* key_id, const std::vector<Value*>& args, uint32_t ic_index);
 
+// `super(...args)` with the active function `active` and the receiver
+// `this_val` (13.3.7.1): the base entered directly when it may be.
+Value* lower_super_call_inline(IlLowering* lowering, Builder& b, Value* active, Value* this_val,
+                               const std::vector<Value*>& args);
+
 // A callee compiled code may call without the runtime (the call form of the
 // flags-word test, a native's arity checked against the i32 `argc`): leaves
 // the builder where it may and returns the function's payload; any other value

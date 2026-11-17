@@ -43,8 +43,7 @@ uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& 
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
             const bool stages = inst.op == BronzeOp::MethodCall || inst.op == BronzeOp::Construct ||
-                                inst.op == BronzeOp::CallDynamic ||
-                                (inst.op == BronzeOp::SuperCall && inst.param_count > 16);
+                                inst.op == BronzeOp::CallDynamic || inst.op == BronzeOp::SuperCall;
             if (stages && inst.param_count > widest) widest = inst.param_count;
             // apply.args stages its values, and on its helper path the
             // method call's two arguments.
@@ -140,21 +139,9 @@ bool lower_call_instruction(
         case BronzeOp::SuperCall: {
             Value* active_fn = ensure_type(get_opd(0), Type::i64());
             Value* this_val = ensure_type(get_opd(1), Type::i64());
-            uint32_t argc = inst_ast.param_count;
-            if (argc <= 16) {
-                std::vector<Value*> super_args = {active_fn, this_val};
-                for (size_t a = 0; a < argc; ++a) {
-                    super_args.push_back(ensure_type(get_opd(2 + a), Type::i64()));
-                }
-                std::string helper = "bronze_super_call_" + std::to_string(argc);
-                res_val = b.build_call(helper, Type::i64(), Span<Value* const>(super_args.data(), super_args.size()));
-            } else {
-                std::vector<Value*> args;
-                for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(2 + a));
-                Value* argv = lowering->stage_argv(b, args);
-                Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                res_val = b.build_call("bronze_super_call_n", Type::i64(), {active_fn, this_val, argc_val, argv});
-            }
+            std::vector<Value*> args;
+            for (size_t a = 0; a < inst_ast.param_count; ++a) args.push_back(get_opd(2 + a));
+            res_val = lower_super_call_inline(lowering, b, active_fn, this_val, args);
             break;
         }
 

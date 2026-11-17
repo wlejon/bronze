@@ -385,6 +385,58 @@ Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, con
     return result;
 }
 
+// `super(...args)` in a derived constructor: 13.3.7.1, the base (the active
+// function's [[Prototype]], FunctionHeader::parent) constructed on the
+// receiver this construction already allocated. A base whose flags word says
+// compiled code may enter it (the direct-call bit: its body never reads the
+// new.target scope; not native, so neither bound, a wrapper nor a native
+// base; with [[Construct]]; of the thread's realm) is entered here with the
+// receiver as `this`, which is what the runtime's superConstruct does with
+// it through FunctionHeader::call: no scope pushed, the realm the current
+// one, a short list read as undefined by the callee's wrapper. The result
+// rule is the same: the object the base returned, else the receiver.
+// Anything else (a proxy, a bound or native base, %Function.prototype% of a
+// `class extends null`, a base that reads new.target or calls super itself)
+// is bronze_super_call_n's.
+Value* lower_super_call_inline(IlLowering* lowering, Builder& b, Value* active, Value* this_val,
+                               const std::vector<Value*>& args) {
+    const uint32_t argc = static_cast<uint32_t>(args.size());
+    Value* argv = lowering->stage_argv(b, args);
+    Value* n = b.build_iconst_i32(static_cast<int32_t>(argc));
+    if (lowering->prop_lowering().cold_code()) {
+        return b.build_call("bronze_super_call_n", Type::i64(), {active, this_val, n, argv});
+    }
+    constexpr uint64_t kSuperMask = kRealmMask | BRONZE_ABI_FN_FLAG_DIRECT_CALL | BRONZE_ABI_FN_FLAG_NATIVE |
+                                    BRONZE_ABI_FN_FLAG_CONSTRUCT;
+    constexpr uint64_t kSuperBits = BRONZE_ABI_FN_FLAG_DIRECT_CALL | BRONZE_ABI_FN_FLAG_CONSTRUCT;
+    const std::string p = prefix_of(b, "super");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* slow = b.append_block(p + "_slow");
+    BasicBlock* merge = b.append_block(p + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    slow->set_cold();
+
+    b.position_at_end(cur);
+    // The active function is the class constructor's own binding: always a
+    // function object (superConstructorOf).
+    Value* active_ptr = b.build_xor(active, imm(b, static_cast<int64_t>(kObjectTagBits)));
+    Value* base = b.build_load(Type::i64(), active_ptr, BRONZE_ABI_FN_PARENT_OFFSET);
+    Value* fn = function_entry_test(b, base, kSuperMask, kSuperBits, slow);
+    // The receiver is held tagged across the call, which may collect.
+    Value* self_tagged = lowering->ensure_type(this_val, Type::tagged(), b);
+    Value* code = b.build_load(Type::ptr(), fn, BRONZE_ABI_FN_CODE_OFFSET);
+    Value* env = b.build_load(Type::i64(), fn, BRONZE_ABI_FN_ENV_OFFSET);
+    Value* ret = enter_code(lowering, b, code, env, this_val, n, argv);
+    Value* self = lowering->unbox_tagged(self_tagged, b);
+    Value* ret_is_obj = b.build_ult(b.build_xor(ret, imm(b, static_cast<int64_t>(kObjectTagBits))), imm(b, kPayloadLimit));
+    b.build_br(merge, {b.build_select(ret_is_obj, ret, self)});
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_call("bronze_super_call_n", Type::i64(), {active, this_val, n, argv})});
+    b.position_at_end(merge);
+    return result;
+}
+
 // `recv.apply(this, list)` with the list the first `count` of `args`: a
 // function at the shape the site latched for %Function.prototype.apply% (as
 // `call`'s inline path tests it) is entered with the values as its

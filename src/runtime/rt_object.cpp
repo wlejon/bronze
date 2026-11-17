@@ -576,6 +576,25 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
     }
+    // A compiled function this helper already took the plain path for (the
+    // vet byte, below): every probe between here and there answers by facts
+    // that never change for it — a bound function, a wrapper, `BigInt`, the
+    // RegExp and Array intrinsics are all natives; [[Construct]] is its flag
+    // byte; its native base was recorded when its class was defined — so it
+    // goes straight to the allocation and the call. A derived class whose
+    // `super()` the runtime may run (its body reads the new.target scope)
+    // comes here on every `new`.
+    if (const FunctionHeader* vetted = fnVal.asObject<FunctionHeader>();
+        vetted->construct_vetted && !vetted->isNativeCode()) {
+        NewTargetScope targetScope(fnVal);
+        Rooted<Value> fnRoot{fnVal};
+        ObjectHeader* instance = ObjectHeader::create(rtHeap(), rtArena(), vetted->instance_shape);
+        instance->header.flags = HeapKind::Plain;
+        Rooted<Value> self{Value::fromObject(instance)};
+        const Value result = fnRoot.get().asObject<FunctionHeader>()->call(
+            self.get(), argc, const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+        return result.isObject() ? result.rawBits() : self.get().rawBits();
+    }
     // A regular expression literal: the intrinsic constructor on two
     // constant strings. What the construction protocol below would build is
     // rtRegExpLiteral's object, and a literal in a loop is this once a turn.

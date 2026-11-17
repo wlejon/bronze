@@ -973,6 +973,11 @@
 #define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 56
 #define BRONZE_ABI_FN_ARITY_OFFSET          72
 #define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    41
+/* FunctionHeader::parent — the function's own [[Prototype]], or undefined
+ * for its kind's default: a derived constructor's base, which `super()`'s
+ * inline path reads (il_call_entry.cpp lower_super_call_inline). Pinned in
+ * runtime/fn.h. */
+#define BRONZE_ABI_FN_PARENT_OFFSET         80
 /* The whole FunctionHeader, header word included. */
 #define BRONZE_ABI_FN_HEADER_BYTES          88
 /* The u64 that holds `function_flags` in its low byte, `construct_vetted` in

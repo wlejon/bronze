@@ -266,6 +266,7 @@ static_assert(offsetof(FunctionHeader, prototype) == BRONZE_ABI_FN_PROTOTYPE_OFF
 static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
 static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
 static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);
+static_assert(offsetof(FunctionHeader, parent) == BRONZE_ABI_FN_PARENT_OFFSET);
 // The word a direct entry tests whole (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL).
 static_assert(offsetof(FunctionHeader, function_flags) == BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
 static_assert(offsetof(FunctionHeader, realm_slot_bytes) ==

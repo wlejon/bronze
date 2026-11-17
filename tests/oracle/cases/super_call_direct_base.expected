@@ -1,0 +1,32 @@
+{"a":0,"c":3} D1
+{"replaced":1,"after":2} Object
+{"kept":true,"after":3} D3
+{"target":"D4"} D4
+{"v":6} D6
+{"v":11,"mid":true} D7
+{"ok":1} D5
+{"a":1,"c":3} D1
+{"replaced":1,"after":2} Object
+{"kept":true,"after":3} D3
+{"target":"D4"} D4
+{"v":6} D6
+{"v":11,"mid":true} D7
+base threw 1
+{"a":2,"c":3} D1
+{"replaced":1,"after":2} Object
+{"kept":true,"after":3} D3
+{"target":"D4"} D4
+{"v":6} D6
+{"v":11,"mid":true} D7
+base threw 2
+{"a":1,"b":2} Swap
+{"target":"Swap"} Swap
+{"a":1,"b":2,"proxied":true} Swap
+{"a":"bound","b":1} Swap
+TypeError
+TypeError
+{"a":1,"b":2} Swap
+TypeError
+ReferenceError
+2 1 1 true
+r undefined true
