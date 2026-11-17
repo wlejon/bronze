@@ -587,7 +587,7 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
             // identity picks the arm (method_call.cpp).
             for (const std::string& name : callees) {
                 const uint32_t f = calleeByHarvestName(name);
-                if (f == kNoFunction || !directCallFits(module_.functions[f], argc)) return std::nullopt;
+                if (f == kNoFunction || !directCallFits(module_, module_.functions[f], argc)) return std::nullopt;
                 plan.callees.push_back(f);
             }
             plan.kind = SiteKind::MethodProto;
@@ -610,7 +610,7 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
             if (auto parsed = parseShapeName(shape); parsed && ownSlot(*parsed, key)) ownShape = shape;
         }
     }
-    if (plan.callee == kNoFunction || !directCallFits(module_.functions[plan.callee], argc)) return std::nullopt;
+    if (plan.callee == kNoFunction || !directCallFits(module_, module_.functions[plan.callee], argc)) return std::nullopt;
 
     if (!ownShape.empty() && isNamedKey(key)) {
         const std::optional<ShapeName> shape = parseShapeName(ownShape);
@@ -705,7 +705,7 @@ std::optional<SitePlan> Evidence::planConstruct(const il::Instruction& inst, con
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }
     const uint32_t callee = harvestedCallee(inst);
-    if (callee == kNoFunction || !constructFits(module_.functions[callee], inst.operands.size() - 1)) {
+    if (callee == kNoFunction || !constructFits(module_, module_.functions[callee], inst.operands.size() - 1)) {
         return std::nullopt;
     }
     SitePlan plan;
@@ -754,7 +754,7 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
         }
         callee = harvestedCallee(inst);
     }
-    if (callee == kNoFunction || !directCallFits(module_.functions[callee], inst.operands.size() - 2)) {
+    if (callee == kNoFunction || !directCallFits(module_, module_.functions[callee], inst.operands.size() - 2)) {
         return std::nullopt;
     }
     SitePlan plan;

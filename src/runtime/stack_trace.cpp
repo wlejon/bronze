@@ -127,7 +127,26 @@ struct CodeRangeRegistry {
         }
         return nullptr;
     }
+
+    // The descriptor whose `code` (a function object's entry) is `code`: a
+    // scan, for the rare question a frame's own descriptor did not answer.
+    const bronze_fn_desc* descOfCode(const void* code) {
+        std::lock_guard<std::mutex> lock(mu);
+        for (const RangeEntry& e : entries) {
+            if (e.range->desc && e.range->desc->code == code) return e.range->desc;
+        }
+        return nullptr;
+    }
 };
+
+// Descriptors of one source function: its generic code, its speculated
+// copies and their resume twin each have their own, which agree on the
+// function's file, position and name.
+bool sameSourceFunction(const bronze_fn_desc* a, const bronze_fn_desc* b) {
+    return a == b || (a != nullptr && b != nullptr && a->def_line == b->def_line && a->def_col == b->def_col &&
+                      a->file == b->file && a->name != nullptr && b->name != nullptr &&
+                      std::strcmp(a->name, b->name) == 0);
+}
 
 static CodeRangeRegistry g_code_ranges;
 
@@ -446,14 +465,18 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     // The frame under a resume twin's is the one whose guard left for it
     // (BRONZE_CODE_RANGE_TWIN): the twin has reported that activation, so at
     // its caller's position the twin's function is passed over, with the
-    // calls compiled into it that the guard was in.
+    // calls compiled into it that the guard was in. That frame is the
+    // function's speculated code (its own leave) or a caller's that inlined it
+    // (a resume.call, positioned at the guard in the inlined copy:
+    // opt/inline splice.cpp), whose descriptors are not the twin's (G's) but
+    // describe the same source function (sameSourceFunction).
     const bronze_fn_desc* underTwin = nullptr;
     const auto pushCompiled = [&](const CodeSite& found) {
         CodeSite site = found;
         const bronze_fn_desc* finished = underTwin;
         underTwin = (found.range->flags & BRONZE_CODE_RANGE_TWIN) != 0 ? found.range->desc : nullptr;
         while (finished != nullptr) {
-            const bool last = site.desc == finished;
+            const bool last = sameSourceFunction(site.desc, finished);
             if (!outer_code_site(site)) return;
             if (last) break;
         }
@@ -591,6 +614,18 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
                     start_idx = i + 1;
                     found = true;
                     break;
+                }
+            }
+        }
+        // The activation may be another copy's frame: the generic code's
+        // resume twin finishing the call after a guard of the speculated code
+        // the function object enters left, or the generic code once that code
+        // retired.
+        if (const bronze_fn_desc* own = found || targetCode == nullptr ? nullptr : g_code_ranges.descOfCode(targetCode)) {
+            for (size_t i = 0; i < frames.size() && !found; ++i) {
+                if (frames[i].desc && sameSourceFunction(frames[i].desc, own)) {
+                    start_idx = i + 1;
+                    found = true;
                 }
             }
         }

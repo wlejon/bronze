@@ -109,7 +109,13 @@ uint32_t finishGenerically(il::Module& module, il::Function& caller, BlockId blo
     rc.immI32 = leave.immI32;
     rc.keyIndex = leave.keyIndex;
     rc.operands = leave.operands;
+    // At the guard, in the copy's scope: the twin it calls reports the
+    // callee's activation, and a stack walk passes over the frames the
+    // guard's position is inlined in up to that callee's
+    // (runtime/stack_trace.cpp, BRONZE_CODE_RANGE_TWIN) and reports the
+    // caller's from there.
     rc.span = leave.span;
+    rc.inlineScope = leave.inlineScope;
     if (rc.type != il::Type::Void) rc.result = newValue(caller);
     const ValueId returned = rc.result;
     insts.push_back(std::move(rc));
@@ -180,7 +186,7 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
     assert(caller.isSpeculated() && block < caller.blocks.size());
     assert(index + 1 < caller.blocks[block].instructions.size() && "a call is not a terminator");
     const il::Instruction call = caller.blocks[block].instructions[index];
-    assert(siteFits(call, callee, after) && calleeInlinable(callee));
+    assert(siteFits(call, callee, after) && calleeInlinable(module, callee));
     assert(&callee != &caller && "a self-call splices a snapshot, not the function being edited");
     const BlockId siteHandler = caller.blocks[block].handler;
     const bool siteCold = caller.blocks[block].cold;
@@ -270,9 +276,9 @@ SpliceResult spliceCall(il::Module& module, uint32_t callerIndex, BlockId block,
             callee.needsThis ? call.operands[callee.needsEnv ? 1 : 0] : kNoValue;
         const size_t kept = caller.blocks[id].instructions.size();
         result.instructionsAdded += finishGenerically(module, caller, id, leave, *after, instance);
-        // The generic finish is the caller's call of the callee's G, made
-        // where the call was: a trace through it shows G's own frame.
-        for (size_t k = kept; k < caller.blocks[id].instructions.size(); ++k) {
+        // What follows the resume.call is the caller's, after the call: its
+        // leave, from the call's position.
+        for (size_t k = kept + 1; k < caller.blocks[id].instructions.size(); ++k) {
             caller.blocks[id].instructions[k].inlineScope = call.inlineScope;
             caller.blocks[id].instructions[k].span = call.span;
         }

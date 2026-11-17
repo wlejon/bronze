@@ -36,7 +36,7 @@ uint32_t bodySize(const il::Function& fn);
 
 // Whether `fn` may ever have its body copied into a caller. The rules, each
 // with its reason, are in callee.cpp.
-bool calleeInlinable(const il::Function& fn);
+bool calleeInlinable(const il::Module& module, const il::Function& fn);
 
 // THE POINT AFTER A GENERIC CALL of the caller's G (il.h `resumeAfter`), as
 // the inliner needs it: the id, the state in G's ids, and which state value is

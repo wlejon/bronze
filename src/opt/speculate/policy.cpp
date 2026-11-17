@@ -23,8 +23,8 @@ bool functionMaySpeculate(const il::Function& fn) {
 
 namespace {
 
-bool conventionFits(const il::Function& callee, size_t argc) {
-    if (!il::functionEntersDirectly(callee)) return false;
+bool conventionFits(const il::Module& module, const il::Function& callee, size_t argc) {
+    if (!il::functionEntersDirectly(module, callee)) return false;
     if (callee.needsArguments || callee.hasRestParam) return false;
     if (argc > 16) return false;
     for (size_t p = callee.firstSourceParam(); p < callee.params.size(); ++p) {
@@ -40,12 +40,12 @@ bool conventionFits(const il::Function& callee, size_t argc) {
 
 }  // namespace
 
-bool directCallFits(const il::Function& callee, size_t argc) {
-    return (callee.fnFlags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) == 0 && conventionFits(callee, argc);
+bool directCallFits(const il::Module& module, const il::Function& callee, size_t argc) {
+    return (callee.fnFlags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) == 0 && conventionFits(module, callee, argc);
 }
 
-bool constructFits(const il::Function& callee, size_t argc) {
-    return callee.needsThis && conventionFits(callee, argc);
+bool constructFits(const il::Module& module, const il::Function& callee, size_t argc) {
+    return callee.needsThis && conventionFits(module, callee, argc);
 }
 
 }  // namespace bronze::opt::speculate

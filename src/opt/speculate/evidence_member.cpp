@@ -52,7 +52,7 @@ std::optional<SitePlan> Evidence::planMember(const spec::HarvestSite& h, SiteKin
         const uint32_t f = calleeByHarvestName(name);
         if (f == kNoFunction) return std::nullopt;
         const il::Function& callee = module_.functions[f];
-        if (!directCallFits(callee, argc) || callee.needsEnv) return std::nullopt;
+        if (!directCallFits(module_, callee, argc) || callee.needsEnv) return std::nullopt;
         plan.callees.push_back(f);
         plan.shapes.push_back(ShapeSlot{way.receiver, 0});
     }

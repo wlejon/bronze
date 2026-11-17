@@ -45,7 +45,7 @@ void rewriteConstruct(RewriteContext& ctx, const SitePlan& plan) {
     assert(site.op == il::Op::Construct && !site.operands.empty());
     const ValueId ctor = site.operands[0];
     const std::vector<ValueId> args(site.operands.begin() + 1, site.operands.end());
-    assert(constructFits(ctx.module.functions[plan.callee], args.size()));
+    assert(constructFits(ctx.module, ctx.module.functions[plan.callee], args.size()));
 
     b.guard(emitCodeIs(b, ctor, plan.callee));
     b.guard(b.emit(il::Op::FnConstructs, il::Type::Bool, {ctor}));

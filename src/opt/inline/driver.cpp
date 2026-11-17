@@ -227,7 +227,7 @@ std::vector<Candidate> candidatesOf(const il::Module& module, const il::Function
             ++stats.sitesConsidered;
             const uint32_t body = bodyOf(module, caller, call.calleeIndex, plus);
             const il::Function& callee = module.functions[body];
-            if (!calleeInlinable(callee)) {
+            if (!calleeInlinable(module, callee)) {
                 ++stats.refusedCallee;
                 continue;
             }
@@ -409,7 +409,7 @@ void prefetchStable(const il::Module& module, CalleeSizes& sizes) {
                 const uint32_t f = inst.calleeIndex;
                 if (done[f] || generic[f] || module.functions[f].isSpeculated()) continue;
                 done[f] = 1;
-                if (calleeInlinable(module.functions[f])) sizes.prefetch(f);
+                if (calleeInlinable(module, module.functions[f])) sizes.prefetch(f);
             }
         }
     }

@@ -402,9 +402,13 @@ struct Function {
 // the runtime (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL): its body never
 // reads the new.target scope a runtime call would have pushed — no
 // `get.new_target` and no `super()` — and it is neither a generator nor an
-// async function, whose calls start a coroutine. The one predicate the flag
-// is set from; defined in effects.cpp.
-bool functionEntersDirectly(const Function& fn);
+// async function, whose calls start a coroutine; and, for a speculated
+// function, its generic function enters directly too, since a guard that
+// leaves finishes the call there (and an optimistic copy may have cut every
+// reader out of its own body). The one predicate the flag is set from;
+// defined in effects.cpp.
+struct Module;
+bool functionEntersDirectly(const Module& module, const Function& fn);
 
 struct Module {
     std::string name;

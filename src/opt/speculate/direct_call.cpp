@@ -122,7 +122,7 @@ ValueId directCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueI
 
 void emitDirectCall(GuardBuilder& b, uint32_t callee, ValueId calleeValue, ValueId thisValue,
                     const std::vector<ValueId>& args) {
-    assert(directCallFits(b.context().module.functions[callee], args.size()));
+    assert(directCallFits(b.context().module, b.context().module.functions[callee], args.size()));
     assert(b.site().type == il::Type::Dynamic && b.site().result != il::kNoValue);
     directCall(b, callee, calleeValue, thisValue, args, true);
 }

@@ -467,8 +467,12 @@ bool canCollect(const Instruction& inst) { return effectsOf(inst).collects; }
 // Written the safe way round too: the ops that read the scope are named, and a
 // function the lowering marks a generator, an async function or a coroutine
 // body is refused whatever its instructions are.
-bool functionEntersDirectly(const Function& fn) {
+bool functionEntersDirectly(const Module& module, const Function& fn) {
     if (fn.isExternal || fn.isEntryPoint || fn.isGenerator || fn.isCoroutineBody()) return false;
+    if (fn.isSpeculated() && (fn.speculatedFrom >= module.functions.size() ||
+                              !functionEntersDirectly(module, module.functions[fn.speculatedFrom]))) {
+        return false;
+    }
     if (fn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC | BRONZE_ABI_FN_FLAG_NATIVE)) {
         return false;
     }

@@ -70,10 +70,10 @@ uint32_t bodySize(const il::Function& fn) {
     return size;
 }
 
-bool calleeInlinable(const il::Function& fn) {
+bool calleeInlinable(const il::Module& module, const il::Function& fn) {
     if (fn.isExternal || fn.blocks.empty() || fn.isEntryPoint) return false;
     if ((fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0) return false;
-    if (!il::functionEntersDirectly(fn)) return false;
+    if (!il::functionEntersDirectly(module, fn)) return false;
     if (fn.needsArguments || fn.hasRestParam) return false;
     for (const il::Block& block : fn.blocks) {
         for (const il::Instruction& inst : block.instructions) {

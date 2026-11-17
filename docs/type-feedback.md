@@ -37,7 +37,7 @@ Implementation:
 | inline-cache harvest: identity record | `src/abi/bronze_abi_layout.h`, `src/codegen-brass/brass_backend_sections.cpp` (`emitIcIdentity`) |
 | inline-cache harvest: reader of the caches, writer | `src/runtime/ic_harvest.{h,cpp}`, `src/runtime/ic_hot.cpp` |
 | inline-cache harvest: plan | `src/opt/spec/feedback_plan.cpp` (`planHarvest`) |
-| harvest suite | `tests/oracle/run.py` (modes `profile`, `switch`) |
+| harvest suite | `tests/oracle/run.py` (modes `profile`, `switch`, `adversarial`) |
 | report | `bench/tools/feedback_report.py` |
 
 ## Sites
@@ -333,8 +333,14 @@ executions; a shape or callee needs `kDominantPercent` (99%) of them.
 sites taken and the profiled executions they cover.
 
 A wrong profile costs speed, never an answer: a guess the run does not bear
-out leaves to the generic code. No suite feeds adversarial profiles at
-present (the one that did went with the old optimiser).
+out leaves to the generic code. `tests/oracle/run.py --modes adversarial`
+holds every oracle case to it: it derives three wrong harvests from the
+case's own (receivers' key lists rotated or borrowed from other sites, way
+forms exchanged, proto ways' depth and slot moved, slot representations
+flipped, sites and calls that ran made to look unrun; every site one way,
+callees exchanged across sites and arities; slow-site counts toggled, whole
+sites' rows exchanged; every function sampled hot in all three), builds on
+each and requires the pinned output and the harvest run's exit status.
 
 ## Harvest (`bronze build --harvest-out <file.tfb>`)
 
@@ -751,8 +757,9 @@ its generic entry).
 **Tests.** `tests/oracle/run.py`'s `profile` mode builds each oracle case
 with `--harvest-out`, runs it, rebuilds on that harvest and requires the
 pinned bytes and exit code; `switch` covers a case whose run leaves the arm
-it trained on. `aot-module` runs the evaluator path, and `spec` covers
-parsing and round trips.
+it trained on, and `adversarial` (above) builds each case on wrong harvests.
+`aot-module` runs the evaluator path, and `spec` covers parsing and round
+trips.
 
 ## Function placement (`src/lower/function_placement.{h,cpp}`)
 
