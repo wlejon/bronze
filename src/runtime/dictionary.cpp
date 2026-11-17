@@ -12,6 +12,7 @@
 
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
+#include "runtime/ic_harvest.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
@@ -182,11 +183,14 @@ void Dictionary::releaseMemory() noexcept {
 // thread's life (an address reused by another shape could be answered for);
 // only its tables go. Its keys were moved to the arena when it froze
 // (integrity.cpp), for the same reason. The shape census keeps every shape it
-// saw for its report at exit, so while it runs nothing is freed either.
+// saw for its report at exit, so while it runs nothing is freed either; nor
+// while a harvest is armed, whose sites keep their last receiver's shape
+// (il/feedback_site.h kLastShapeArm), a dictionary one included, and name
+// it when the harvest is written.
 void releaseDictionaryShape(void* shapePtr) {
     auto* shape = static_cast<Shape*>(shapePtr);
     Dictionary* d = shape->dict;
-    if (d->level == IntegrityLevel::Frozen || runtime::g_shapeCensusEnabled) {
+    if (d->level == IntegrityLevel::Frozen || runtime::g_shapeCensusEnabled || runtime::rtIcHarvestArmed()) {
         d->releaseMemory();
         return;
     }

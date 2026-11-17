@@ -639,7 +639,9 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         for (uint32_t i = 0; i < id.slowSites; ++i) {
             // A word with bit 63 is a site's last shape (il/feedback_site.h
             // kLastShapeArm), not a count: it stays, and is named. A shape
-            // is never freed, so the word names one whenever it is read.
+            // is never freed while a harvest is armed (a dictionary one is
+            // kept: dictionary.cpp releaseDictionaryShape), so the word
+            // names one whenever it is read.
             if ((counts[i] >> 62) == 3) {
                 // A call's last callee: its code pointer, which names a
                 // compiled function as long as its module is loaded, and a
