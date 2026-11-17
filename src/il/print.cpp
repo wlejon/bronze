@@ -98,6 +98,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         if (fn.isExported) out += " export";
         if (fn.isSpeculated()) out += " speculated @" + getFnName(fn.speculatedFrom);
         if (fn.isOptimistic()) out += " optimistic @" + getFnName(fn.fallback);
+        // Its entry count's slow-site index, the loop count's after it
+        // (il/feedback_site.h numberSlowSites).
+        if (fn.entrySlowSite != Instruction::kNoSlowSite) out += " counts #" + std::to_string(fn.entrySlowSite);
         out += " {\n";
         for (const auto& block : fn.blocks) {
             out += "  b" + std::to_string(block.id);

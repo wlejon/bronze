@@ -312,7 +312,7 @@ void Evidence::buildCalleeNames() const {
         if (fn.isExternal || fn.isSpeculated() || fn.isCoroutineBody()) continue;
         const std::string src = sourceText(fn);
         if (src.empty()) continue;
-        const std::string hash = hex8(il::functionNameHash(src));  // FNV-1a 32, as the runtime's fnv32
+        const std::string hash = hex8(il::fnv32(src));
         std::string jsName;
         if (fn.nameKeyIndex < module_.keyConstants.size()) jsName = module_.keyConstants[fn.nameKeyIndex];
         if (jsName.empty()) jsName = "<anonymous>";

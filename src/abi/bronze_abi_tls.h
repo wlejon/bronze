@@ -19,9 +19,10 @@ extern "C" {
  * dedicated machine register by the calling convention (x64: R13, aarch64: X28).
  */
 /* The megamorphic property cache's geometry (mega_prop below). An entry's
- * index is ((shape ^ key * MUL) * MUL) >> (64 - BITS), computed the same way
- * by the runtime and by generated code; a write entry's key carries
- * SET_KEY_BIT, since a read entry says nothing about writability. */
+ * index is ((hash ^ key * MUL) * MUL) >> (64 - BITS), `hash` the shape's
+ * mega_hash (BRONZE_ABI_SHAPE_MEGA_HASH_OFFSET), computed the same way by the
+ * runtime and by generated code; a write entry's key carries SET_KEY_BIT,
+ * since a read entry says nothing about writability. */
 #define BRONZE_ABI_MEGA_PROP_BITS        10
 #define BRONZE_ABI_MEGA_PROP_ENTRIES     (1u << BRONZE_ABI_MEGA_PROP_BITS)
 #define BRONZE_ABI_MEGA_PROP_ENTRY_WORDS 4

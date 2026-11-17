@@ -65,7 +65,8 @@ namespace bronze::il {
 // 52: shape.proto (il_op.h) and data member cells (Module::MemberKind::Data).
 // 53: Module::pretenureSites; object literals' slow sites.
 // 54: Function::heat and Function::harvestEntries.
-inline constexpr uint32_t kFormatVersion = 54;
+// 55: a function's loop count after its entry count (numberSlowSites).
+inline constexpr uint32_t kFormatVersion = 55;
 
 std::string serializeModule(const Module& module);
 

@@ -63,7 +63,8 @@ void mega_probe(Builder& b, Value* site, int last_way, Value* shape, Value* key,
     b.build_br_if(b.build_ne(way_word(b, site, last_way, BRONZE_ABI_IC_SHAPE_OFFSET), imm(b, 0)), probe, miss);
     b.position_at_end(probe);
     const auto mul = static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_HASH_MUL);
-    Value* h = b.build_mul(b.build_xor(shape, b.build_mul(key, imm(b, mul))), imm(b, mul));
+    Value* hash = b.build_zext_i64(b.build_load(Type::i32(), shape, BRONZE_ABI_SHAPE_MEGA_HASH_OFFSET));
+    Value* h = b.build_mul(b.build_xor(hash, b.build_mul(key, imm(b, mul))), imm(b, mul));
     Value* index = b.build_lshr(h, imm(b, 64 - BRONZE_ABI_MEGA_PROP_BITS));
     static_assert(BRONZE_ABI_MEGA_PROP_ENTRY_WORDS * 8 == 32, "an entry is 32 bytes");
     Value* at = b.build_add(tls(b), b.build_add(b.build_shl(index, imm(b, 5)), imm(b, BRONZE_TLS_MEGA_PROP_OFF)));

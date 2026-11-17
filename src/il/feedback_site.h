@@ -151,16 +151,23 @@ inline constexpr uint32_t kCallCountArm = 1;
 // pretenures a site (opt/pipeline/pipeline.cpp planPretenure).
 inline constexpr uint32_t kAllocCountArm = 2;
 inline constexpr uint32_t kAllocTenuredArm = 3;
-// Each function with a body is handed one index of its own first, its ENTRY
-// COUNT (Function::entrySlowSite), which a build made to be harvested adds
-// one to at every entry.
+// Each function with a body is handed kFunctionSlowSites indices of its own
+// first: its ENTRY COUNT (Function::entrySlowSite), which a build made to be
+// harvested adds one to at every entry (a coroutine body's at every resume
+// too), and after it its LOOP COUNT, which that build adds one to each time
+// a loop header of the function's code runs (a back edge's target in a
+// depth-first walk from the entry: an iteration or a loop's start). The two
+// are the run's measure of where its work went (opt/speculate evidence.h,
+// "Which functions are hot"): counts, the same for every run of a
+// deterministic program.
+inline constexpr uint32_t kLoopCountOffset = 1;
+inline constexpr uint32_t kFunctionSlowSites = 2;
 void numberSlowSites(Module& module);
 
-// What a function's descriptor carries as `name_hash` (bronze_abi.h), and
-// what a harvest's samples name a function by: FNV-1a (32-bit) of its IL
-// name. The harvested build's names are its probe's (the same final passes),
-// and the build reading the harvest matches them back by this hash.
-inline uint32_t functionNameHash(std::string_view name) {
+// FNV-1a (32-bit), as the runtime's fnv32: what a harvest names a callee's
+// source text by (`~<offset>@<hash>`), which the build reading it matches
+// against its own functions' text.
+inline uint32_t fnv32(std::string_view name) {
     uint32_t h = 2166136261u;
     for (unsigned char c : name) {
         h ^= c;

@@ -185,10 +185,6 @@ void emitIcIdentity(ObjectFile& obj, Section& roSec, int32_t roIdx, const std::s
     roSec.emit32(module.icSiteCount);
     roSec.emit32(static_cast<uint32_t>(module.harvestOutPath.size()));
     roSec.emit64(module.icLayoutDigest);
-    // The module's code ranges: the functions whose samples its harvest
-    // carries (ic_harvest.cpp).
-    emitPointer(roSec, entrySymbol == "bronze_main" ? "bronze_object_code_ranges" : entrySymbol + "_code_ranges");
-    roSec.emit32(static_cast<uint32_t>(obj.functions.size()));
     // The slow sites' counters, right before the IC table: none in an image
     // whose code counts nothing (emitDataSection).
     roSec.emit32(counted ? module.slowSiteCount : 0u);
@@ -296,7 +292,7 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
         roSec.emit32(line);
         roSec.emit32(col);
         roSec.emit32(fn.descFlags);
-        roSec.emit32(il::functionNameHash(fn.name));
+        roSec.emit32(0);  // the padding before `code`
         // A coroutine body is entered only by brass's resume, never through a
         // call wrapper, so its descriptor names the body itself.
         emitPointer(roSec, (uniqueNames[i] == "main")

@@ -7,6 +7,7 @@
 
 #include "abi/bronze_abi_tls.h"
 #include "runtime/object.h"
+#include "runtime/shape.h"
 #include "runtime/tls_block.h"
 
 namespace bronze::runtime {
@@ -25,7 +26,7 @@ static_assert(offsetof(MegaEntry, key) == BRONZE_ABI_MEGA_PROP_KEY_WORD * sizeof
 
 inline MegaEntry& entryFor(const Shape* shape, uint32_t key) noexcept {
     const uint64_t h =
-        (reinterpret_cast<uintptr_t>(shape) ^ (uint64_t{key} * BRONZE_ABI_MEGA_PROP_HASH_MUL)) *
+        (uint64_t{shape->mega_hash} ^ (uint64_t{key} * BRONZE_ABI_MEGA_PROP_HASH_MUL)) *
         BRONZE_ABI_MEGA_PROP_HASH_MUL;
     auto* table = reinterpret_cast<MegaEntry*>(rtTls()->mega_prop);
     return table[h >> (64 - BRONZE_ABI_MEGA_PROP_BITS)];

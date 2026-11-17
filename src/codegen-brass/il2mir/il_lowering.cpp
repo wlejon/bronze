@@ -155,9 +155,13 @@ Value* IlLowering::stage_argv(Builder& b, const std::vector<Value*>& args) {
 // value and failed the MIR verifier with "operand is null". A dominator comes
 // before everything it dominates in any reverse post-order, so that order is
 // always sound. The exception handler of a block counts as its successor, since
-// that edge is as real as a branch's.
-static std::vector<const BronzeBlock*> lowering_order(const BronzeFunction& fn_ast) {
+// that edge is as real as a branch's. The same walk finds the LOOP HEADERS a
+// build made to be harvested counts (il/feedback_site.h kLoopCountOffset):
+// the targets of its back edges, the edges to a block still on its stack;
+// `headers` gets one flag per block, by index.
+static std::vector<const BronzeBlock*> lowering_order(const BronzeFunction& fn_ast, std::vector<uint8_t>& headers) {
     std::vector<const BronzeBlock*> order;
+    headers.assign(fn_ast.blocks.size(), 0);
     if (fn_ast.blocks.empty()) return order;
     std::unordered_map<uint32_t, size_t> index_of;
     for (size_t i = 0; i < fn_ast.blocks.size(); ++i) index_of.emplace(fn_ast.blocks[i].id, i);
@@ -179,7 +183,7 @@ static std::vector<const BronzeBlock*> lowering_order(const BronzeFunction& fn_a
     };
 
     // Iterative DFS: a large function has thousands of blocks, too many for
-    // the native stack.
+    // the native stack. `visited`: 1 while on the stack, 2 once finished.
     std::vector<uint8_t> visited(fn_ast.blocks.size(), 0);
     std::vector<size_t> post;
     post.reserve(fn_ast.blocks.size());
@@ -189,12 +193,14 @@ static std::vector<const BronzeBlock*> lowering_order(const BronzeFunction& fn_a
     while (!stack.empty()) {
         auto& [node, succ] = stack.back();
         if (succ.empty()) {
+            visited[node] = 2;
             post.push_back(node);
             stack.pop_back();
             continue;
         }
         const size_t next = succ.front();
         succ.erase(succ.begin());
+        if (visited[next] == 1) headers[next] = 1;
         if (visited[next]) continue;
         visited[next] = 1;
         stack.emplace_back(next, successors(fn_ast.blocks[next]));
@@ -458,10 +464,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
         // The entry count of a build made to be harvested (il/feedback_site.h
         // Function::entrySlowSite); a coroutine body's entry block runs again
-        // at every resume, so it has none.
-        if (fn_ast.entry_slow_site != UINT32_MAX && !fn_ast.is_coroutine_body()) {
-            prop_lowering_.count_index(b, fn_ast.entry_slow_site);
-        }
+        // at every resume, which counts each stretch it runs.
+        if (fn_ast.entry_slow_site != UINT32_MAX) prop_lowering_.count_index(b, fn_ast.entry_slow_site);
     }
 
     // 3. Set up non-entry block parameters
@@ -485,13 +489,18 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // 4. Lower instructions block by block, in an order where a definition
     // is lowered before its uses (see lowering_order).
     boolean_values_.clear();
-    for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
+    std::vector<uint8_t> loop_headers;
+    for (const BronzeBlock* blk_ptr : lowering_order(fn_ast, loop_headers)) {
         const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];
         // The IL's own cold mark (a profiled region's slow copy): brass sinks
         // it, and the blocks only it enters go with it.
         if (blk_ast.cold) bb->set_cold();
         b.position_at_end(bb);
+        // The loop count of a build made to be harvested, at each header.
+        if (fn_ast.entry_slow_site != UINT32_MAX && loop_headers[blk_ptr - fn_ast.blocks.data()] != 0) {
+            prop_lowering_.count_index(b, fn_ast.entry_slow_site + kLoopCountOffset);
+        }
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
 

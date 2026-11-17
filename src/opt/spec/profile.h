@@ -117,10 +117,6 @@ struct Harvest {
     // with no source name (a native). The site's kShapeTurnArm count is how
     // many times its callee changed, the first included.
     std::map<uint32_t, std::string> callees;
-    // The run's samples (runtime/harvest_sampler.h): per function, by the
-    // FNV-1a hash of its IL name (il/feedback_site.h functionNameHash), how
-    // many of the sampler's interrupts its code took.
-    std::map<uint32_t, uint64_t> samples;
     // The slot representation the run kept (runtime/ic_harvest.h,
     // rtIcHarvestNoteBirth): by receiver name, the positions in its key list
     // born a Number and found holding one on every shape of that name the

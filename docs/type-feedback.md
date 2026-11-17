@@ -132,7 +132,7 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 8)
+## File format (version 9)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
@@ -150,10 +150,13 @@ getter and setter names to a harvest's `accessor` ways (below); a build on an
 older harvest reads every accessor way as naming neither, and leaves those
 sites generic. Version 8 adds the holder's depth and slot to a harvest's
 `proto` ways (below); a build on an older harvest leaves every read with a
-`proto` way generic. The reader takes all eight versions.
+`proto` way generic. Version 9 drops the harvest's `sample` rows (a timer
+sampler's counts, now each function's loop count among the `slow` rows,
+"Which functions are hot" below); the reader skips them in an older file. The
+reader takes all nine versions.
 
 ```
-bronze-type-feedback 8
+bronze-type-feedback 9
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -253,8 +256,8 @@ the plan where each claim has to be made:
   re-entered loop a shape test that leaves the fast copy
   (`src/lower/guard_region.h`, "SHAPE GUARDS"), and leaves these in line.
 - **A2, layout cells** (in `finalPasses`, after the regions and before
-  `foldGuardedLoads`; `applyFeedbackLayoutCells`): in a function the samples
-  call hot, the claimed sites and `is.shape` tests on one receiver under one
+  `foldGuardedLoads`; `applyFeedbackLayoutCells`): in a function the harvest
+  calls hot, the claimed sites and `is.shape` tests on one receiver under one
   claim whose profiles all hold the same single shape, with its whole key
   list, move to that shape's layout cell (`il::Module::layoutCells`, one per
   shape name), which the runtime publishes for the listed (key, slot, written)
@@ -339,7 +342,8 @@ case's own (receivers' key lists rotated or borrowed from other sites, way
 forms exchanged, proto ways' depth and slot moved, slot representations
 flipped, sites and calls that ran made to look unrun; every site one way,
 callees exchanged across sites and arities; slow-site counts toggled, whole
-sites' rows exchanged; every function sampled hot in all three), builds on
+sites' rows exchanged; every function's entry count made hot, and some
+loop counts, in all three), builds on
 each and requires the pinned output and the harvest run's exit status.
 
 ## Harvest (`bronze build --harvest-out <file.tfb>`)
@@ -479,9 +483,8 @@ the final threading pass. The digest is FNV-1a over:
 - for each index, the op and key of the first instruction that carries it.
 
 The build bakes the digest into an IC IDENTITY record, `<entry>_ic_identity`
-(`bronze_abi_layout.h`, version 3): version, flags, site count, digest, the
-module's code-range table and its length (for the samples, below), its slow
-sites' count (below) and the baked harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
+(`bronze_abi_layout.h`, version 4): version, flags, site count, digest, its
+slow sites' count (below) and the baked harvest path. The record is passed to `bronze_register_ic_hot` as its fourth
 argument. The file's `harvest` row carries the digest and site count.
 
 A `--feedback-in` build compares them with its probe's. The probe runs the
@@ -591,8 +594,9 @@ the site is claimed by one range test (consumer A's family form). A list related
   The table below measures this cost.
 - **Execution counts of property sites.** A property site that ran once looks
   as hot as one that ran a million times, so the plan may spend code size on
-  cold sites. Calls and function entries are counted (CALL COUNTS, below);
-  the samples say which functions the time went to.
+  cold sites. Calls, function entries and loop iterations are counted (CALL
+  COUNTS, LOOP COUNTS, below), and those say which functions the work went
+  to.
 - **`call.dynamic` callees.** There is no call cache, so there is no closure
   split.
 - **Sites that never fill a cache.** These are sites already answered by a
@@ -615,29 +619,45 @@ ran, and shares a polymorphic site's count over its arms by their callees'
 entry counts. A method call's slot way (a function an own slot held) records
 its callee turns too, as a `call.dynamic` does.
 
-**Samples** (`runtime/harvest_sampler.{h,cpp}`). While a harvest is armed, a
-sampler thread arms the JS thread's interrupt every 250 us, and the next
-interrupt poll the thread reaches (a prologue's stack check or a loop's back
-edge, both in every compiled function already) notes the compiled function it
-polled from; at a prologue the first JS function among its callers is noted
-too, since the time before the call was the caller's. A poll in a stub's loop
-(a sort's merge) passes the sample on to the next poll, the comparator's
-entry. Nothing is added to the code. The writer files each count under the
-module whose code-range table holds the function, by its descriptor's
-`name_hash` (FNV-1a of the IL name), and `planHarvest` matches the hashes to
-the probe's functions (`FeedbackPlan::samples`). A stale harvest gives no
-samples.
+**Loop counts.** Each function with a body has a second index of its own
+after its entry count (`il::kLoopCountOffset`), its LOOP COUNT: a build made
+to be harvested adds one to it at each of the function's loop headers (the
+targets of the back edges of a depth-first walk from its entry, il2mir
+`lowering_order`), so it counts every iteration and every start of a loop,
+inlined loops included. A coroutine body's entry count is bumped at every
+resume as well, each stretch of it that ran. Entries and loop runs together
+are a function's WORK, and every counted function's summed is the run's.
 
-**Which functions are hot** (`Evidence::isHot`, `opt/speculate/evidence.h`):
-a recorded profile's entry count of at least `kMinEntries` (64), a site that
-ran `kMinSiteRunsForHot` (4096) times, or at least `kMinSamples` (2)
-samples. Samples are filed by name, so for a function the harvested build
-counted (its entry count armed) the count decides first: one it never
-entered is not hot whatever samples its namesakes left, and one entered
-fewer than `kMinEntries` times is hot only if its samples are also at least
-1 / `kLoopShareDen` (1%) of the run's, a loop the run spent a share of its
-time in rather than a step of its start-up (three.js's `WebGLProgram`: 6
-entries, 28 of 43,000 samples, 1.4 MB of S, S+ and twin code, now none).
+**Which functions are hot** (`Evidence::isHot`, `opt/speculate/evidence.h`)
+is decided from counts alone, so every harvest of a program that runs the
+same way decides the same (a timer sampler did this until version 9 of the
+format: which functions near its threshold were hot changed from one harvest
+to the next, and three_skinned's builds ranged 33.3M to 33.8M instructions a
+frame over them). A recorded profile's function is hot at `kMinEntries` (64)
+entries or a site that ran `kMinSiteRunsForHot` (4096) times. A harvested
+function is hot when the build counted it and:
+
+- the run entered it `kMinEntries` times or more; or
+- it was entered (fewer times) and its loops ran at least
+  `kMinSiteRunsForHot` times and at least 1 / `kLoopShareDen` (1%) of the
+  run's work: a loop the run spent a share of its time in, not a step of its
+  start-up (three.js's `WebGLProgram`, 6 entries, whose 1.4 MB of S, S+ and
+  twin code a share rule keeps out); or
+- it was entered and one of its call sites ran `kMinSiteRunsForHot` times: a
+  driver loop whose time is in what it calls (without it the mat4_f32 kernel
+  goes from 7.2 to 8.6 ms).
+
+A function the run never entered, or one the build did not count, is never
+hot.
+
+The run's addresses decide nothing either. The megamorphic property cache
+(`runtime/rt_prop_mega.h`) hashes a shape by `Shape::mega_hash`, the shape's
+number among its thread's shapes; hashed by address, which pairs collided
+changed with where the arena's chunks landed, and with it which full sites
+answered from the table, which shapes their ways held, and the fallback counts
+the build reads (`Object3D.updateMatrix` became an S+ clone in some
+three_skinned harvests and not others). Two harvests of three_skinned now
+differ only in a few allocation and tenure counts, and build the same IL.
 
 **Heat** (`il::Function::heat`, set for every function by the speculation
 step from `Evidence::heat`, kept by every copy and serialized): `Never` for a
@@ -660,14 +680,6 @@ On three_meshes the cold tier takes the profiled build from 16.3 s to 9.3 s
 and its bench.so from 32.9 MB to 21.1 MB (cold functions' code 10.1 to 4.1
 MB, the rest is stack maps and pc tables), at equal instructions per frame
 on all seven scenes.
-
-The sampler wakes only while JS runs: after arming it sleeps with no timeout
-until a poll takes the sample, so an app that is idle, blocked or in the
-background causes no wakeups. It exits after 10,000 samples, when no harvest
-is armed, and once the harvest is written. The interrupt it rides is the
-stack-limit word every target's compiled code checks, so it samples on every
-platform; MSVC builds credit only the polling function (no frame-pointer
-walk to the caller).
 
 **Configuration.** Harvesting is off unless a path is given. A path can be
 given in three ways:
@@ -692,7 +704,7 @@ harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
 file is this module's (a harvest from a build of the same text, even one
 in which nothing ran often enough to specialize on).
 
-**Format.** A harvest is a version 4 file with these rows (any `fn` rows
+**Format.** A harvest is a version 9 file with these rows (any `fn` rows
 come first):
 
 ```
@@ -703,7 +715,6 @@ last    <slow-site index>  <shape of the named site's last receiver>
 ic      <index>  property|method  -|full|mega|full,mega
 way     <index>  <form>  <receiver>[  <callee>]  (accessor: <getter> <setter>; proto: <depth> <slot>)
 other   <index>  <calls whose receiver no way could hold>
-sample  <8 hex name hash>  <count>
 doubles <receiver>  <key positions, ascending, comma-separated>
 mixed   <key>
 objects <receiver>  <key positions, ascending, comma-separated>
@@ -872,42 +883,6 @@ pinned bytes and exit code; `switch` covers a case whose run leaves the arm
 it trained on, and `adversarial` (above) builds each case on wrong harvests.
 `aot-module` runs the evaluator path, and `spec` covers parsing and round
 trips.
-
-## Function placement (`src/lower/function_placement.{h,cpp}`)
-
-Where each function sits in the module's text is decided from the profile,
-not left to module order (brass `FunctionPlacement`, set by
-`brass_backend_placement.cpp`). Laid out in module order, a program's hot
-functions are scattered over megabytes; which of their lines share L1
-instruction-cache sets and op-cache lines is a draw that every edit anywhere
-in the module redraws (a few percent of cycles at equal instructions on the
-realworld scenes, from padding alone). The text is laid out as:
-
-1. the IC stubs every module calls (`__bronze_prop_get_ic` and its kin);
-2. with a profile: the most sampled functions to 99% of the samples
-   (samples plus a recorded profile's entry counts), in C3 call chains, then
-   the functions they call that ran but were not sampled hot, in module
-   order; each function is followed by its call wrapper;
-3. the slow-path stubs (`__bronze_prop_get_slow`, `__bronze_sort_merge`);
-4. everything else, in module order;
-5. last: top-level code (it runs once), and with a profile the functions
-   whose cache sites could have filled and none did.
-
-Without a usable profile (none, a stale harvest, or a run too short to be
-sampled) there is no placement at all: module order, as before. Moving only
-the stubs and the top level measured +1.5% and +2.8% on pixi_sprites and
-nothing better elsewhere. Placement never changes an instruction. The hot functions keep the
-target's alignment (32 on x64): 64 bought nothing measurable, 16 was 7%
-slower on pixi_sprites (loop heads are aligned from the function's start).
-
-What it cannot fix: a hot function's own cold code. On the realworld scenes
-the lines that take 99% of a frame's cycles are 30 KB (pixi_sprites) to
-140 KB (three_skinned), inside 1.4 to 3.5 MB of hot functions, because a
-compiled function carries its slow paths inline. Where those lines fit the
-L1 instruction cache (pixi_sprites) placement takes 5% off the frame and
-holds it under edits elsewhere; where they do not, the order of whole
-functions moves the frame by a couple of percent either way, and splitting
-the slow paths out of the hot functions is the remaining lever.
 
 ## Report
 

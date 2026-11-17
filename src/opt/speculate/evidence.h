@@ -7,8 +7,9 @@
 //   - a RECORDED profile (`--feedback-out` run): per function key, per site
 //     ordinal (il/feedback_site.h enumerateFeedbackSites), the tags, shapes
 //     and callees one run saw, with counts;
-//   - an inline-cache HARVEST: per IC index the ways each cache held, the
-//     slow-site counters, and samples per function. Used only when its digest
+//   - an inline-cache HARVEST: per IC index the ways each cache held, and
+//     the slow-site counters (each function's entries and loop-header runs
+//     among them). Used only when its digest
 //     is the module's (il::icLayoutDigest), i.e. it was taken from a build
 //     numbering its sites as this one does.
 // Both are read against the module as lowering left it, before anything
@@ -54,20 +55,19 @@ inline bool namesComplete(const std::vector<std::pair<std::string, uint64_t>>& n
 }
 
 // ---- thresholds -------------------------------------------------------------
-// A function is hot when the recorded run entered it this often...
+// WHICH FUNCTIONS ARE HOT, from counts alone, so every harvest of a
+// deterministic program decides the same: a function is hot when the run
+// entered it this often...
 inline constexpr uint64_t kMinEntries = 64;
-// ...or a site of it ran this often (a function entered once that loops)...
+// ...or a site of it ran this often (a recorded profile's site; a harvest's
+// call site: a function entered a few times whose time is in what it calls)...
 inline constexpr uint64_t kMinSiteRunsForHot = 4096;
-// ...or the harvest's sampler caught its code this many times; and, for a
-// function the harvested run counted fewer than kMinEntries entries of, at
-// least 1 / kLoopShareDen of all the run's samples: entered a few times, it
-// is hot only as a loop the run spent a share of its time in, itself or in
-// what it calls (a call site of it counted kMinSiteRunsForHot runs), not a
-// step of its start (three.js's WebGLProgram: 6 entries, 28 of 43,000
-// samples). A
-// function the run counted no entries of is never hot: samples are filed by
-// function name, and the ones it seems to have are a namesake's.
-inline constexpr uint64_t kMinSamples = 2;
+// ...or, entered fewer than kMinEntries times, its loops ran at least
+// kMinSiteRunsForHot iterations and at least 1 / kLoopShareDen of the run's
+// WORK (every counted function's entries and loop-header runs, il/
+// feedback_site.h kLoopCountOffset): a loop the run spent a share of its
+// time in, not a step of its start-up (three.js's WebGLProgram, 6 entries).
+// A function the harvested run counted no entries of is never hot.
 inline constexpr uint64_t kLoopShareDen = 100;
 // A recorded site must have run this often for its tags or names to count.
 inline constexpr uint64_t kMinSiteObservations = 16;
@@ -300,6 +300,10 @@ private:
     struct SiteRefs;  // the feedback sites of one function, by instruction
 
     bool isHot(uint32_t fn) const;
+    // Whether the harvested build counted function `fn`'s entries and loops,
+    // and what they came to (its WORK).
+    bool counted(uint32_t fn) const;
+    uint64_t work(uint32_t fn) const;
     std::optional<SitePlan> planSite(uint32_t fn, BlockId block, uint32_t index, const SiteRefs& refs) const;
     std::optional<SitePlan> planPropRead(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                          BlockId block, uint32_t index) const;
@@ -374,8 +378,7 @@ private:
     std::set<std::string> numberKeys_;
     std::vector<std::string> keys_;
     uint64_t minEntries_ = kMinEntries;
-    uint64_t minSamples_ = kMinSamples;
-    uint64_t totalSamples_ = 0;  // the harvest's samples, all functions
+    uint64_t totalWork_ = 0;  // the harvest's work, every counted function
     // Callee name -> function, built on first use (kNoFunction: ambiguous).
     mutable bool namesBuilt_ = false;
     mutable std::unordered_map<std::string, uint32_t> recordedNames_;

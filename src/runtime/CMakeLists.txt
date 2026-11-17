@@ -127,7 +127,6 @@ bronze_add_module(runtime
         ic_hot.cpp
         deopt_stats.cpp
         ic_harvest.cpp
-        harvest_sampler.cpp
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp

@@ -66,6 +66,9 @@ struct ShapeTransition {
     SlotRepr repr{SlotRepr::Boxed};
 };
 
+// The next shape's `mega_hash` on this thread (shape.cpp).
+uint32_t nextShapeMegaHash() noexcept;
+
 // A hidden class: one node of a transition tree, immortal and non-moving, so
 // shape identity is a raw pointer compare for the life of the program and IC
 // words never need GC fixup.
@@ -121,6 +124,12 @@ public:
     // (`placeSlot`): the inline Values first, then the overflow block, whose
     // slots are numbered from kOverflowSlot whatever this is.
     uint8_t inline_slots{kDefaultInlineSlots};
+    // What the megamorphic property cache hashes this shape by
+    // (rt_prop_mega.h): its number among the shapes its thread made, where
+    // the address would make the table's collisions, so which entries survive
+    // and which sites fill their own ways, differ from one run of a program
+    // to the next (and a harvest of it with them).
+    uint32_t mega_hash{nextShapeMegaHash()};
     // Which proven class layout this shape's own properties BEGIN with, as the
     // process-wide id `bronze_family_stamp` assigns — or `UNSTAMPED` (never
     // asked) or `NONE` (asked, and no registered class's field list is a prefix
@@ -579,6 +588,7 @@ static_assert(offsetof(Shape, prototype) == BRONZE_ABI_SHAPE_PROTO_OFFSET);
 static_assert(offsetof(Shape, dict) == BRONZE_ABI_SHAPE_DICT_OFFSET);
 static_assert(offsetof(Shape, used_as_prototype) == BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
 static_assert(offsetof(Shape, inline_slots) == BRONZE_ABI_SHAPE_INLINE_SLOTS_OFFSET);
+static_assert(offsetof(Shape, mega_hash) == BRONZE_ABI_SHAPE_MEGA_HASH_OFFSET);
 static_assert(offsetof(Shape, bare_header) == BRONZE_ABI_SHAPE_BARE_HEADER_OFFSET);
 static_assert(BRONZE_ABI_OBJ_OVERFLOW_SLOT <= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
               BRONZE_ABI_OBJ_OVERFLOW_SLOT < 256,

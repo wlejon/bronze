@@ -176,30 +176,27 @@
  *   u32 sites     the table's site count
  *   u32 pathLen   bytes of `path`, without its NUL
  *   u64 digest    il/feedback_site.h icLayoutDigest
- *   u64 ranges    the module's code-range table (bronze_code_range[]), whose
- *                 functions' samples the harvest files under this module
- *   u32 rangeCount
  *   u32 slowSites the module's SLOW-SITE counters (il.h `slowSiteCount`):
  *                 that many u64 words ending where the IC table starts, each
  *                 bumped by its instruction's generic code in a build that
  *                 may be harvested, after (slowSites + 63) / 64 words whose
- *                 bit i says site i is counted at all; version 3
+ *                 bit i says site i is counted at all; version 3 (version 4
+ *                 dropped the code-range table and its length before it,
+ *                 which only a harvest's sampler read)
  *   char path[]   where a standalone program writes its harvest
  *                 (`bronze build --harvest-out`), NUL-terminated; empty for
  *                 none (a host names the file at run time instead)
  *
  * Exported as `<entry>_ic_identity` beside the ABI stamp, so a host that
  * loaded the image can name the module to the harvester. */
-#define BRONZE_ABI_IC_IDENTITY_VERSION      3u
+#define BRONZE_ABI_IC_IDENTITY_VERSION      4u
 #define BRONZE_ABI_IC_IDENTITY_PROFILED     1u
 #define BRONZE_ABI_IC_IDENTITY_FLAGS_OFFSET  4
 #define BRONZE_ABI_IC_IDENTITY_SITES_OFFSET  8
 #define BRONZE_ABI_IC_IDENTITY_PATHLEN_OFFSET 12
 #define BRONZE_ABI_IC_IDENTITY_DIGEST_OFFSET 16
-#define BRONZE_ABI_IC_IDENTITY_RANGES_OFFSET 24
-#define BRONZE_ABI_IC_IDENTITY_RANGE_COUNT_OFFSET 32
-#define BRONZE_ABI_IC_IDENTITY_SLOW_SITES_OFFSET 36
-#define BRONZE_ABI_IC_IDENTITY_PATH_OFFSET   40
+#define BRONZE_ABI_IC_IDENTITY_SLOW_SITES_OFFSET 24
+#define BRONZE_ABI_IC_IDENTITY_PATH_OFFSET   28
 
 /* ---- the METHOD ROWS: every method-call site's way 0, packed -------------
  *
@@ -813,6 +810,10 @@
  * has. Every node of a transition tree, and the dictionary shape an object of
  * it moves to, carries its root's. */
 #define BRONZE_ABI_SHAPE_INLINE_SLOTS_OFFSET 49
+/* Shape::mega_hash (u32): what the megamorphic cache hashes the shape by
+ * (bronze_abi_tls.h, mega_prop): its number among its thread's shapes, the
+ * same in every run of a program, where its address is not. */
+#define BRONZE_ABI_SHAPE_MEGA_HASH_OFFSET  52
 /* Shape::family_stamp — the layout-family id `bronze_family_stamp` writes and
  * a family guard reads. It lives on the SHAPE and not on the object because
  * that is where the fact belongs: every object at a shape has that shape's

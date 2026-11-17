@@ -27,6 +27,9 @@ static_assert(il2mir::kCallCountArm == bronze::il::kCallCountArm, "a call's coun
 static_assert(il2mir::kAllocCountArm == bronze::il::kAllocCountArm &&
                   il2mir::kAllocTenuredArm == bronze::il::kAllocTenuredArm,
               "an allocation site's counts, named twice");
+static_assert(il2mir::kLoopCountOffset == bronze::il::kLoopCountOffset &&
+                  il2mir::kLoopCountOffset < bronze::il::kFunctionSlowSites,
+              "a function's loop count, named twice");
 
 static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWriteLiteralElement),
               "the array literal element write mode is one number on both sides");

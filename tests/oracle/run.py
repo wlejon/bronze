@@ -137,19 +137,18 @@ class Harvest:
     def __init__(self, text):
         self.rows = []  # header, `harvest`, and any row kind not modelled
         self.slowsites = None
-        self.slow, self.last, self.callee, self.samples = {}, {}, {}, {}
+        self.slow, self.last, self.callee = {}, {}, {}
         self.ics = {}  # index -> {'method', 'flags', 'ways': [[form, receiver, extra...]], 'other'}
         self.held = {'doubles': {}, 'objects': {}}
         self.other = {'mixed': [], 'nonobject': []}
-        self.functions = []  # the module's IL function names (p_hot), set by the caller
+        self.functions = []  # the module's functions' entry-count indices (p_hot), set by the caller
         for line in text.splitlines():
             f = line.split('\t')
             k = f[0]
             if k == 'slowsites':
                 self.slowsites = f[1:]
-            elif k in ('slow', 'last', 'callee', 'sample'):
-                getattr(self, {'sample': 'samples'}.get(k, k))[f[1] if k == 'sample' else int(f[1])] = \
-                    int(f[2]) if k in ('slow', 'sample') else f[2]
+            elif k in ('slow', 'last', 'callee'):
+                getattr(self, k)[int(f[1])] = int(f[2]) if k == 'slow' else f[2]
             elif k == 'ic':
                 self.ics[int(f[1])] = {'method': f[2] == 'method', 'flags': [] if f[3] == '-' else f[3].split(','),
                                        'ways': [], 'other': 0}
@@ -171,6 +170,15 @@ class Harvest:
         n, bits = int(self.slowsites[0]), self.slowsites[1]
         return [i for i in range(n) if (int(bits[i // 64 * 16:i // 64 * 16 + 16], 16) >> (i % 64)) & 1]
 
+    def arm(self, i):
+        """Marks slow-site index `i` counted."""
+        n, bits = int(self.slowsites[0]), self.slowsites[1]
+        if i >= n:
+            return
+        w = i // 64 * 16
+        word = int(bits[w:w + 16], 16) | (1 << (i % 64))
+        self.slowsites[1] = bits[:w] + f'{word:016x}' + bits[w + 16:]
+
     def text(self):
         out = list(self.rows)
         if self.slowsites:
@@ -184,7 +192,6 @@ class Harvest:
             out += ['\t'.join(['way', str(i)] + w) for w in s['ways']]
             if s['other']:
                 out.append(f'other\t{i}\t{s["other"]}')
-        out += [f'sample\t{h}\t{c}' for h, c in sorted(self.samples.items())]
         for held, other in (('doubles', 'mixed'), ('objects', 'nonobject')):
             out += [f'{held}\t{r}\t{",".join(map(str, p))}' for r, p in sorted(self.held[held].items()) if p]
             out += [f'{other}\t{k}' for k in sorted(set(self.other[other]))]
@@ -372,15 +379,19 @@ def p_lifetimes(h, r):
 
 
 def p_hot(h, r):
-    """Every function sampled hot (a harvest names a function by the FNV-1a
-    hash of its IL name, il/feedback_site.h functionNameHash), so every site
-    with evidence is speculated, not only those of a run long enough to be
-    sampled."""
-    for name in h.functions:
-        x = 2166136261
-        for c in name.encode():
-            x = ((x ^ c) * 16777619) & 0xffffffff
-        h.samples[f'{x:08x}'] = max(h.samples.get(f'{x:08x}', 0), 64)
+    """Every function hot: its entry count (il/feedback_site.h
+    numberSlowSites, the index `bronze il` prints as `counts #N`) at least
+    kMinEntries and counted, so every site with evidence is speculated, not
+    only those of a run that entered them often; and some loop counts high
+    besides, the rows that make a function entered a few times hot."""
+    if not h.slowsites:
+        return
+    for i in h.functions:
+        h.arm(i)
+        h.slow[i] = max(h.slow.get(i, 0), 64)
+        if r.random() < 0.3:
+            h.arm(i + 1)
+            h.slow[i + 1] = max(h.slow.get(i + 1, 0), 1 << 20)
 
 
 PROFILES = [
@@ -394,12 +405,13 @@ def adversarial(name, src, d, exe, tfb, want, want_rc):
     """The case on each perturbed profile: (failures, builds that speculated
     something, guard exits)."""
     fails, speculated, exits = [], 0, 0
-    # The module's functions by IL name, as the harvested build named them
-    # (`bronze il` runs the passes a build without a profile runs).
+    # The module's functions' entry-count indices, as the harvested build
+    # numbered them (`bronze il` runs the passes a build without a profile
+    # runs).
     rc, il, err = sh([bronze, 'il', str(src)], d, 300)
     if rc != 0:
         return [(name, 'adversarial', 'il: ' + (err.strip().splitlines() or [''])[-1][:160])], 0, 0
-    functions = re.findall(r'^func (\S+)\(', il, re.M)
+    functions = [int(n) for n in re.findall(r'^func \S+\(.* counts #(\d+) \{$', il, re.M)]
     for k, perturbations in enumerate(PROFILES):
         h = Harvest(tfb.read_text(errors='replace'))
         h.functions = functions

@@ -391,7 +391,8 @@ struct Function {
     bool isOptimistic() const { return fallback != kNoFallback; }
     // The slow-site index of the function's ENTRY COUNT (il/feedback_site.h
     // numberSlowSites): a build made to be harvested adds one to its word at
-    // every entry. A speculated copy keeps its G's. Instruction::kNoSlowSite
+    // every entry, and to the next one (kLoopCountOffset) at every loop
+    // header. A speculated copy keeps its G's. Instruction::kNoSlowSite
     // for a function given none (an external one, a body with no blocks).
     uint32_t entrySlowSite = UINT32_MAX;
     // What the harvest a build spent says of this function's run, set by the
@@ -400,8 +401,8 @@ struct Function {
     // harvested build did not count), Never for one it never entered,
     // Entered for one it entered fewer than kMinEntries times and did not
     // find hot (Evidence::isHot), Hot for the rest. `harvestEntries` is the
-    // count. Hot is not "speculated": a function entered a million times
-    // that the sampler never caught is Hot here and may have no S.
+    // count. Hot is not "speculated": a hot function with no site the
+    // evidence decides has no S.
     enum class Heat : uint8_t { Unknown, Never, Entered, Hot };
     Heat heat = Heat::Unknown;
     uint64_t harvestEntries = 0;

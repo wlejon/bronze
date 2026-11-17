@@ -294,10 +294,6 @@ typedef struct bronze_fn_desc {
     uint32_t def_line;
     uint32_t def_col;
     uint32_t flags;
-    /* FNV-1a (32-bit) of the function's IL name: what an inline-cache
-     * harvest names a sampled function by (docs/type-feedback.md, "Harvest",
-     * samples), which the build reading it matches against its own IL. */
-    uint32_t name_hash;
     const void* code;
 } bronze_fn_desc;
 

@@ -17,7 +17,6 @@
 
 #include "abi/bronze_abi.h"
 #include "abi/bronze_feedback_site.h"
-#include "runtime/harvest_sampler.h"
 #include "runtime/ic_hot.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -85,9 +84,6 @@ struct Module {
     // A call's or a `new`'s last directly entered callee (il/feedback_site.h
     // kLastCalleeBit), by the same slow-site index: the `callee` rows.
     std::map<uint32_t, std::string> callees;
-    // The sampler's counts (harvest_sampler.h), by the sampled function's
-    // descriptor name_hash.
-    std::map<uint32_t, uint64_t> samples;
 };
 
 struct State {
@@ -144,8 +140,6 @@ struct Identity {
     uint32_t flags = 0;
     uint32_t sites = 0;
     uint64_t digest = 0;
-    const bronze_code_range* ranges = nullptr;
-    uint32_t rangeCount = 0;
     uint32_t slowSites = 0;
     std::string path;
 };
@@ -160,8 +154,6 @@ bool readIdentity(const void* record, Identity& out) {
     std::memcpy(&out.sites, bytes + BRONZE_ABI_IC_IDENTITY_SITES_OFFSET, 4);
     std::memcpy(&pathLen, bytes + BRONZE_ABI_IC_IDENTITY_PATHLEN_OFFSET, 4);
     std::memcpy(&out.digest, bytes + BRONZE_ABI_IC_IDENTITY_DIGEST_OFFSET, 8);
-    std::memcpy(&out.ranges, bytes + BRONZE_ABI_IC_IDENTITY_RANGES_OFFSET, sizeof(out.ranges));
-    std::memcpy(&out.rangeCount, bytes + BRONZE_ABI_IC_IDENTITY_RANGE_COUNT_OFFSET, 4);
     std::memcpy(&out.slowSites, bytes + BRONZE_ABI_IC_IDENTITY_SLOW_SITES_OFFSET, 4);
     out.path.assign(reinterpret_cast<const char*>(bytes + BRONZE_ABI_IC_IDENTITY_PATH_OFFSET), pathLen);
     return true;
@@ -449,11 +441,6 @@ std::string textOf(const State& s, const Module& m) {
         }
 
     }
-    for (const auto& [hash, count] : m.samples) {
-        char h[9];
-        std::snprintf(h, sizeof h, "%08x", hash);
-        out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
-    }
     // The representation the run kept (docs/type-feedback.md, "Harvest"):
     // per receiver its caches held, the key positions that stayed Numbers
     // (then plain objects), then every key something else was found under
@@ -489,17 +476,6 @@ std::string textOf(const State& s, const Module& m) {
     return out;
 }
 
-// The samples of the module's functions since the last fold, into `m`.
-void takeSamples(Module& m, const Identity& id) {
-    if (id.ranges == nullptr || id.rangeCount == 0) return;
-    std::vector<uint64_t> counts(id.rangeCount, 0);
-    rtHarvestTakeSamples(id.ranges, id.rangeCount, counts.data());
-    for (uint32_t i = 0; i < id.rangeCount; ++i) {
-        if (counts[i] == 0 || id.ranges[i].desc == nullptr) continue;
-        m.samples[id.ranges[i].desc->name_hash] += counts[i];
-    }
-}
-
 bool writeFile(const std::string& path, const std::string& text) {
     FILE* f = std::fopen(path.c_str(), "wb");
     if (f == nullptr) {
@@ -514,7 +490,6 @@ bool writeFile(const std::string& path, const std::string& text) {
 // reaching rtIcHarvestWriteAll (a host's exit, a thrown top level) still
 // leaves what its dropped instances held. Reads no heap.
 void writeAtExit() {
-    rtHarvestSamplerStop();
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr || !g_state->dirty || g_state->wroteLive) return;
     for (const Module& m : g_state->modules) {
@@ -576,12 +551,6 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
     // collector reads from here on. Left on when the harvest stops: a
     // memento's counter is an image's own word, there as long as the image.
     if (any) brass::gc::set_memento_layout(gc_detail::layoutIds().memento);
-    // The samples run while some harvest is armed (harvest_sampler.h).
-    if (!path.empty()) {
-        rtHarvestSamplerStart();
-    } else if (!any) {
-        rtHarvestSamplerStop();
-    }
     return true;
 }
 
@@ -710,8 +679,6 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         }
         s.dirty = true;
     }
-    takeSamples(*m, id);
-    if (!m->samples.empty()) s.dirty = true;
 }
 
 int rtIcHarvestWriteAll() {
@@ -726,9 +693,6 @@ int rtIcHarvestWriteAll() {
     }
     g_state->dirty = false;
     g_state->wroteLive = true;
-    // Written: what the samples were for is on disk. A later write still
-    // carries them; nothing is sampled after this one.
-    rtHarvestSamplerStop();
     return written;
 }
 

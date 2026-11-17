@@ -46,10 +46,9 @@ using il::ValueId;
 struct SpeculateOptions {
     // Off: nothing is speculated and the module is untouched.
     bool enabled = true;
-    // A function's entries (a recorded profile) or samples (a harvest) below
-    // these leave it generic; zero takes the defaults in evidence.h.
+    // A function's entries below this leave it generic unless its loops or
+    // sites ran often (evidence.h); zero takes the default there.
     uint64_t minEntries = 0;
-    uint64_t minSamples = 0;
     // The suffix S's IL name gets after G's.
     const char* nameSuffix = "$spec";
 };

@@ -108,8 +108,11 @@
  * property site's `accessor` way, the accessor's getter and setter as two
  * more fields, without which a build plans no accessor site; 8 names, on a
  * `proto` way, the links walked to the holder of the data property and its
- * slot there, without which a build plans no read of a prototype's data. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 8u
+ * slot there, without which a build plans no read of a prototype's data; 9
+ * drops the `sample` rows (a sampler's, read as which functions were hot:
+ * each function's loop count among the `slow` rows says it from counts),
+ * which a reader skips in an older file. */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 9u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

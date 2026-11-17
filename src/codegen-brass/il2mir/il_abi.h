@@ -239,6 +239,9 @@ inline constexpr uint32_t kCallCountArm = 1;
 // (il/feedback_site.h kAllocCountArm).
 inline constexpr uint32_t kAllocCountArm = 2;
 inline constexpr uint32_t kAllocTenuredArm = 3;
+// A function's loop count, after its entry count (il/feedback_site.h
+// kLoopCountOffset).
+inline constexpr uint32_t kLoopCountOffset = 1;
 // The bit a call site's kLastShapeArm word carries beside bit 63 when it holds
 // a callee's code pointer rather than a shape (il/feedback_site.h).
 inline constexpr uint32_t kLastCalleeBit = 62;

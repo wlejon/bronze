@@ -180,7 +180,11 @@ void forEachTransitionFor(const Shape& shape, PropertyKey key, F&& visit) {
 namespace {
 // The thread's computed-key nodes so far (Shape::kComputedTransitionBudget).
 thread_local uint32_t t_computedTransitions = 0;
+// The shapes this thread made (Shape::mega_hash).
+thread_local uint32_t t_shapesMade = 0;
 }  // namespace
+
+uint32_t nextShapeMegaHash() noexcept { return ++t_shapesMade; }
 
 bool Shape::refusesNewTransition(PropertyKey added) const noexcept {
     if (!added.isString() || added.immortal()) return false;

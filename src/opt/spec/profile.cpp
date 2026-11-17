@@ -89,7 +89,7 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   slowsites <the build's slow-site count> <the sites it armed: per 64, a
 //             word of 16 hex digits whose bit i is site 64 * word + i>
 //   slow    <slow-site index> <times its generic code ran>
-//   sample  <8 hex digits: the function's name hash> <count>
+//   (`sample` rows of a version 8 or older file, the sampler's, are skipped)
 //   doubles <receiver> <ascending key positions, comma-separated>
 //   mixed   <key>
 //   objects <receiver> <ascending key positions, comma-separated>
@@ -160,20 +160,6 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
         if (f.size() != 3 || !parseU64(f[1], index) || index >= harvest->slowSites || !unescapeName(f[2], name) ||
             name.empty() || !harvest->callees.emplace(static_cast<uint32_t>(index), std::move(name)).second) {
             why = "malformed callee row";
-            return false;
-        }
-        return true;
-    }
-    if (f[0] == "sample") {
-        uint32_t hash = 0;
-        uint64_t count = 0;
-        bool ok = f.size() == 3 && f[1].size() == 8;
-        if (ok) {
-            const auto res = std::from_chars(f[1].data(), f[1].data() + 8, hash, 16);
-            ok = res.ec == std::errc() && res.ptr == f[1].data() + 8;
-        }
-        if (!ok || !parseU64(f[2], count) || !harvest->samples.emplace(hash, count).second) {
-            why = "malformed sample row";
             return false;
         }
         return true;
@@ -312,6 +298,7 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
     FunctionFeedback* fn = nullptr;
     size_t lineNo = 0;
     bool sawHeader = false;
+    bool sampled = false;  // a version 8 or older file, whose `sample` rows are skipped
     auto fail = [&](const std::string& what) -> std::optional<TypeProfile> {
         if (error != nullptr) *error = "type feedback line " + std::to_string(lineNo) + ": " + what;
         return std::nullopt;
@@ -331,14 +318,16 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
             if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2" &&
                 line != "bronze-type-feedback 3" && line != "bronze-type-feedback 4" &&
                 line != "bronze-type-feedback 5" && line != "bronze-type-feedback 6" &&
-                line != "bronze-type-feedback 7") {
+                line != "bronze-type-feedback 7" && line != "bronze-type-feedback 8") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;
+            sampled = line != want;
             continue;
         }
         const std::vector<std::string_view> f = splitTabs(line);
-        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" ||  f[0] == "sample" ||
+        if (sampled && f[0] == "sample") continue;
+        if (f[0] == "harvest" || f[0] == "ic" || f[0] == "way" || f[0] == "other" ||
             f[0] == "slowsites" || f[0] == "slow" || f[0] == "last" || f[0] == "callee" ||
             f[0] == "doubles" || f[0] == "mixed" || f[0] == "objects" || f[0] == "nonobject") {
             if (std::string why; !parseHarvestRow(f, harvest, why)) return fail(why);
@@ -486,11 +475,6 @@ std::string TypeProfile::serialize() const {
             if (site.uncached != 0) {
                 out += "other\t" + std::to_string(index) + "\t" + std::to_string(site.uncached) + "\n";
             }
-        }
-        for (const auto& [hash, count] : harvest_->samples) {
-            char h[9];
-            std::snprintf(h, sizeof h, "%08x", hash);
-            out += "sample\t" + std::string(h) + "\t" + std::to_string(count) + "\n";
         }
         const auto rows = [&](const std::map<std::string, std::vector<uint32_t>>& held, const char* heldRow,
                               const std::set<std::string>& other, const char* otherRow) {
