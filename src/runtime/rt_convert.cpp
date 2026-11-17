@@ -373,8 +373,48 @@ static bool isEcmaWhitespace(uint16_t u) {
     }
 }
 
+// The common spelling, read in place: a Latin-1 string of an optional sign,
+// at most 15 decimal digits and at most one '.', nothing else (no
+// whitespace, exponent or radix prefix). The digits are an integer m < 10^15
+// < 2^53 and the point scales by 10^k with k <= 15, both exact doubles, so
+// m / 10^k is the one correctly rounded division (Clinger's fast path) and
+// the answer strtod gives. Anything else answers false and takes the full
+// StringNumericLiteral below.
+static bool simpleDecimal(const StringHeader* s, double& out) {
+    if (!s->isLatin1()) return false;
+    const uint32_t len = s->getLength();
+    if (len == 0 || len > 17) return false;
+    const auto* c = reinterpret_cast<const unsigned char*>(s->latin1Data());
+    uint32_t i = 0;
+    const bool negative = c[0] == '-';
+    if (c[0] == '-' || c[0] == '+') ++i;
+    uint64_t mantissa = 0;
+    uint32_t digits = 0;
+    int32_t scale = -1;  // digits after the point, once one is seen
+    for (; i < len; ++i) {
+        const unsigned char ch = c[i];
+        if (ch >= '0' && ch <= '9') {
+            mantissa = mantissa * 10 + (ch - '0');
+            ++digits;
+            if (scale >= 0) ++scale;
+        } else if (ch == '.' && scale < 0) {
+            scale = 0;
+        } else {
+            return false;
+        }
+    }
+    if (digits == 0 || digits > 15) return false;
+    static constexpr double kPow10[] = {1e0, 1e1, 1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+                                        1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15};
+    double v = static_cast<double>(mantissa);
+    if (scale > 0) v /= kPow10[scale];
+    out = negative ? -v : v;
+    return true;
+}
+
 static double stringToNumber(const StringHeader* s) {
     if (!s) return 0.0;
+    if (double fast; simpleDecimal(s, fast)) return fast;
     const uint32_t len = s->getLength();
     uint32_t begin = 0;
     while (begin < len && isEcmaWhitespace(s->charCodeAt(begin))) {

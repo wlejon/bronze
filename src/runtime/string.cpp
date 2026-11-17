@@ -641,6 +641,10 @@ StringHeader* StringHeader::slice(Heap& heap, NonMovingArena& arena, const Roote
     if (end <= start) return emptyInArena(arena);
     const uint32_t sliceLen = end - start;
     const StringHeader* s = strRoot.get().asString<StringHeader>();
+    // The whole string is the string: a String has no identity a program can
+    // tell from an equal one's. Not a builder, whose slack a `+` chain may
+    // still write into.
+    if (start == 0 && sliceLen == s->getLength() && !s->isBuilder()) return const_cast<StringHeader*>(s);
     if (sliceLen == 1) {
         const uint16_t u = s->charCodeAt(start);
         if (u <= 0xFF) return latin1CharInArena(arena, static_cast<uint8_t>(u));

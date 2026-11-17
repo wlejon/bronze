@@ -1,0 +1,12 @@
+1 ["alpha"] true 5
+1 ["bravo charlie"] true 13
+1 [""] true 0
+1 ["x"] true 1
+3 ["line one","line two","three"] false 8
+31 p0 p29 tail
+["a","1","b","22","c","333","d"] 7
+[] [""] []
+entire input true 0
+start-0-1-2-3-4 start-0-1-2-3-4! 15 16
+abcdefghijklmnopqrstuvwxyzabcdefghijklmn abcdefghijklmnopqrstuvwxyzabcdefghijklmn abcdefghijklmnopqrstuvwxyzabcdefghijklmnZ true
+true héllo wörld ✓ héllo wörld ✓

@@ -378,10 +378,12 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
 
     Heap& heap = rtHeap();
     NonMovingArena& arena = rtArena();
-    // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
-    // the length, so passing a capacity guess would leave trailing `undefined`
-    // elements in the result.
-    Rooted<Value> out{Value(bronze_create_array(0))};
+    // Length ZERO with room for four pieces, as String.prototype.split's
+    // string path makes it: most splits yield a few, and the first append
+    // into no element block would allocate one.
+    ArrayHeader* raw = ArrayHeader::create(heap, 4);
+    raw->length = 0;
+    Rooted<Value> out{Value::fromObject(raw)};
     uint32_t count = 0;
     auto push = [&](Rooted<Value>& piece) {
         out.get().asObject<ArrayHeader>()->setElem(heap, count++, piece);
