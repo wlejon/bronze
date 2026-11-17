@@ -59,7 +59,7 @@ def option(name, default):
     return default
 
 
-bronze = option('--bronze', str(here.parent.parent / 'build/src/cli/bronze'))
+bronze = os.path.abspath(option('--bronze', str(here.parent.parent / 'build/src/cli/bronze')))  # cases run in their own folders
 modes = option('--modes', 'run,aot,profile,switch,adversarial').split(',')
 jobs = int(option('--jobs', '12'))
 work = pathlib.Path(option('--work', '/tmp/bronze-oracle'))

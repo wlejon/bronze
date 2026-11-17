@@ -74,7 +74,7 @@ constexpr uint64_t kPretenureTenuredNum = 4;
 constexpr uint64_t kPretenureTenuredDen = 5;
 constexpr uint64_t kPretenureShareDen = 100;
 
-[[maybe_unused]] void planPretenure(il::Module& module, const spec::Harvest& h) {
+void planPretenure(il::Module& module, const spec::Harvest& h) {
     const auto armed = [&h](uint32_t index) {
         return index / 64 < h.slowArmed.size() && ((h.slowArmed[index / 64] >> (index % 64)) & 1u) != 0;
     };
@@ -130,7 +130,7 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     const bool anySpeculated = result.speculate.functionsSpeculated != 0;
     if (const spec::Harvest* h = profile != nullptr ? profile->harvest() : nullptr;
         h != nullptr && result.speculate.harvestIgnored == 0 && h->slowSites == module.slowSiteCount) {
-        // planPretenure(module, *h);  // off: windowed three_skinned crashes on a fed build (2026-11-17), being fixed
+        planPretenure(module, *h);
     }
 
     // Always run: it also clears every call's resumeAfter, which the
