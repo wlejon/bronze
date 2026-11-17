@@ -41,10 +41,10 @@ int64_t searchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value n
         }
         uint32_t i = from;
         for (; i + 4 <= end; i += 4) {
-            const bool any = (std::bit_cast<double>(elems[i].rawBits()) == n) |
-                             (std::bit_cast<double>(elems[i + 1].rawBits()) == n) |
-                             (std::bit_cast<double>(elems[i + 2].rawBits()) == n) |
-                             (std::bit_cast<double>(elems[i + 3].rawBits()) == n);
+            const int any = int(std::bit_cast<double>(elems[i].rawBits()) == n) |
+                            int(std::bit_cast<double>(elems[i + 1].rawBits()) == n) |
+                            int(std::bit_cast<double>(elems[i + 2].rawBits()) == n) |
+                            int(std::bit_cast<double>(elems[i + 3].rawBits()) == n);
             if (any) break;
         }
         for (; i < end; ++i) {
