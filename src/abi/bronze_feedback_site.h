@@ -106,8 +106,10 @@
  * (its count of callee turns among the `slow` rows), without which a build
  * plans a plain call from a recorded profile only; 7 names, on a harvested
  * property site's `accessor` way, the accessor's getter and setter as two
- * more fields, without which a build plans no accessor site. */
-#define BRONZE_FEEDBACK_FORMAT_VERSION 7u
+ * more fields, without which a build plans no accessor site; 8 names, on a
+ * `proto` way, the links walked to the holder of the data property and its
+ * slot there, without which a build plans no read of a prototype's data. */
+#define BRONZE_FEEDBACK_FORMAT_VERSION 8u
 
 /* Shapes and targets kept per site, largest first at write time; the rest are
  * summed under `*other*`. */

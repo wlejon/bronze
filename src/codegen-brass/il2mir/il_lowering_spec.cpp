@@ -59,6 +59,7 @@ bool is_spec_il_op(BronzeOp op) {
         case BronzeOp::ShapeIn:
         case BronzeOp::ShapeHasOwn:
         case BronzeOp::ShapeLacks:
+        case BronzeOp::ShapeProto:
         case BronzeOp::IsObject:
         case BronzeOp::SlotLoad:
         case BronzeOp::SlotStore:
@@ -261,6 +262,17 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             b.build_br(done, {b.build_ne(asked, iconst64(b, 0))});
             b.position_at_end(done);
             res_val = answer;
+            return true;
+        }
+        // dynamic = shape.proto %shape: the root's prototype Value, words
+        // only the runtime writes.
+        //   mov rax, [shape+24] ; mov rax, [rax+32]
+        case BronzeOp::ShapeProto: {
+            if (!need(1)) return false;
+            Value* root = with_alias_class(b.build_load(Type::i64(), bits(0), BRONZE_ABI_SHAPE_ROOT_OFFSET),
+                                           kRuntimeWordAliasClass);
+            res_val = with_alias_class(b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET),
+                                       kRuntimeWordAliasClass);
             return true;
         }
         // bool = is.object %v:  xor rax, OBJECT_TAG<<48 ; cmp rax, 1<<48 ; setb

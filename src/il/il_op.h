@@ -773,8 +773,9 @@ enum class Op : uint8_t {
     // a: ptr = member.cell <c>. Word 0 of member cell c (Module::memberCells):
     // the receiver shape the runtime last found to resolve the cell's key,
     // above the receiver, to the cell's function (a method in a data
-    // property, or an accessor's getter or setter) at this thread's
-    // prototype epoch, or a word no shape has. The runtime empties every
+    // property, or an accessor's getter or setter), to nothing (an absent
+    // cell) or to a data property at the cell's place (a data cell) at this
+    // thread's prototype epoch, or a word no shape has. The runtime empties every
     // such cell at each bump of the epoch. `immI32` = c. Reads `Protos`.
     MemberCell,
     // member.publish %recv, <c>. Asks the runtime to check what %recv's
@@ -783,6 +784,13 @@ enum class Op : uint8_t {
     // in the cell. Runs no user code and allocates nothing on the JS heap.
     // Writes `Protos`. Only in an exit block, before its leave.
     MemberPublish,
+    // a: dynamic = shape.proto %shape. The [[Prototype]] of every object at
+    // the shape %shape (ptr, a `load.shape`): the Value its root keeps.
+    // Unchecked: legal only where a member cell's test licensed the walk
+    // (a DATA cell, il.h Module::MemberKind), so the result is a plain
+    // object at the depth the cell names, or the link to one; `load.shape`
+    // and `slot.load` on it are then legal too. Reads `Protos`.
+    ShapeProto,
     // a = construct.result %r, %this: %r when it is an object, else %this —
     // the value of `new` given what a base constructor returned (10.2.2
     // [[Construct]] steps 10-12). Pure.

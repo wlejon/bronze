@@ -715,12 +715,18 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         out += " " + std::to_string(inst.immI32);
                         if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < module.memberCells.size()) {
                             const Module::MemberCell& c = module.memberCells[inst.immI32];
-                            static const char* const kKinds[] = {"method", "getter", "setter", "absent"};
+                            static const char* const kKinds[] = {"method", "getter", "setter", "absent", "data"};
                             out += std::string(" ") + kKinds[static_cast<int>(c.kind)] + " \"" +
                                    (c.keyIndex < module.keyConstants.size() ? module.keyConstants[c.keyIndex]
                                                                             : std::string("?")) +
                                    "\"";
-                            if (c.kind != Module::MemberKind::Absent) out += " @" + getFnName(c.callee);
+                            if (c.kind == Module::MemberKind::Data) {
+                                out += " depth " + std::to_string(c.callee >> Module::kMemberDataSlotBits) +
+                                       " slot " +
+                                       std::to_string(c.callee & ((1u << Module::kMemberDataSlotBits) - 1));
+                            } else if (c.kind != Module::MemberKind::Absent) {
+                                out += " @" + getFnName(c.callee);
+                            }
                         }
                         break;
                     }

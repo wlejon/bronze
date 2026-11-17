@@ -184,6 +184,8 @@ enum class BronzeOp {
     ShapeHasOwn,
     // The key's module index in `index`; operands the object and its shape.
     ShapeLacks,
+    // The operand a shape; no immediate.
+    ShapeProto,
     IsObject,
     SlotLoad,
     SlotStore,

@@ -383,7 +383,8 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     }
     options.member_cells.reserve(module.memberCells.size());
     for (const il::Module::MemberCell& c : module.memberCells) {
-        options.member_cells.push_back({static_cast<uint32_t>(c.kind), c.keyIndex, c.group, c.groupSize});
+        const uint32_t place = c.kind == il::Module::MemberKind::Data ? c.callee : 0;
+        options.member_cells.push_back({static_cast<uint32_t>(c.kind), c.keyIndex, c.group, c.groupSize, place});
     }
     options.elem_cell_sites = codegen::elemCellSites(module);
     // The deopt counters (deopt_sites.h): the twins' exit counts and the

@@ -78,6 +78,9 @@ struct HarvestWay {
     // Method sites: the callee, `*other*` when the entry does not say. A
     // property site's `accessor` way (version 7 on): the getter here and the
     // setter in `setter`, each `*other*` when the harvest could not name it.
+    // A property site's `proto` way (version 8 on): the links from the
+    // receiver to the holder of the data property here, its slot there in
+    // `setter`, both decimal; empty when the harvest does not say.
     std::string callee;
     std::string setter;
 };

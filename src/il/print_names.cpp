@@ -193,6 +193,7 @@ const char* opName(Op op) {
         case Op::ProtoPublish: return "proto.publish";
         case Op::MemberCell: return "member.cell";
         case Op::MemberPublish: return "member.publish";
+        case Op::ShapeProto: return "shape.proto";
         case Op::ConstructResult: return "construct.result";
         case Op::ConcatN: return "concat.n";
         case Op::TypeOfIs: return "typeof.is";

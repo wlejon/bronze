@@ -320,6 +320,16 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
             if (h->full || h->uncached > kMaxUncachedReceivers) return std::nullopt;
             return planMember(*h, SiteKind::MemberGet, 0, block, index);
         }
+        // Some ways found the key on a prototype: member cells for those,
+        // beside shape tests for the own ways and cells for the absent ones.
+        // A full site with own ways stays slot-keyed (below): its own
+        // receivers likely come in more shapes than the ways show, which
+        // the slot tests answer and shape tests would not.
+        const auto has = [&](const char* form) {
+            return std::any_of(h->ways.begin(), h->ways.end(),
+                               [&](const spec::HarvestWay& w) { return w.form == form; });
+        };
+        if (has("proto") && !(h->full && has("own"))) return planMemberData(*h, key, block, index);
         // Ways that found the key own or nowhere, some nowhere: member cells
         // when they cover every receiver, else (more receivers than the
         // ways held, or own ones beside them) slot tests and the shape's
@@ -351,8 +361,7 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
             return planSlotKeyed(SiteKind::PropSlotRead, names, key, block, index);
         }
         for (const spec::HarvestWay& way : h->ways) {
-            // `proto` (found on the chain: no constant holder to load from
-            // here), `absent` and `array` stay generic.
+            // `array` stays generic (`proto` and `absent` were taken above).
             if (way.form != "own") return std::nullopt;
             names.push_back(way.receiver);
         }

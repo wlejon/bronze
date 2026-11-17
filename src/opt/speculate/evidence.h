@@ -106,6 +106,12 @@ inline constexpr uint32_t kTruthyArmNumber = 3;
 inline constexpr uint32_t kTruthyArmLast = 4;
 
 inline constexpr uint32_t kNoFunction = UINT32_MAX;
+// A MemberData way that found the key own (SitePlan::callees): no data
+// place has depth 0.
+inline constexpr uint32_t kMemberDataOwn = 0;
+// The deepest holder a MemberData read walks to: each link is a shape load
+// and two loads of the root's words.
+inline constexpr uint32_t kMaxMemberDataDepth = 4;
 inline constexpr int32_t kDenseArray = -1;
 inline constexpr int32_t kNoConstIndex = -1;
 
@@ -138,6 +144,7 @@ enum class SiteKind : uint8_t {
     MemberGet,     // prop.get of an accessor's getter
     MemberSet,     // prop.set (an assignment) of an accessor's setter
     MemberAbsent,  // prop.get of a key on neither the receiver nor its chain
+    MemberData,    // prop.get of a data property above the receiver, beside own and absent ways (member_data.cpp)
     TdzRead,       // env.get.tdz of a binding fixed once initialized (tdz.cpp)
     ArrayPush,     // method.call "push" of one value on an array the function made (array_push.cpp)
 };
@@ -172,19 +179,25 @@ struct SitePlan {
     // PropRead and PropWrite (one or a chain), MethodSlot (one); PropAdd
     // the shape before the add, then the one after it with the key's slot;
     // MemberMethod / MemberGet / MemberSet the receiver shape of each callee
-    // (slot unused).
+    // (slot unused); MemberData each way's receiver, an `own` one's with its
+    // slot and representation.
     std::vector<ShapeSlot> shapes;
     ShapeSetRole shapeSet = ShapeSetRole::None;
     // MethodSlot, MethodProto, Call, Construct: the callee, by its index as
     // lowered. MethodProto over several (2..kMaxChainShapes): `callees`, and
     // `callee` unset. MemberMethod / MemberGet / MemberSet: `callees`, one
     // per receiver shape the harvest held (a function may repeat).
+    // MemberData: per way, kMemberDataOwn for an `own` one, kNoMemberCallee
+    // for an `absent` one, and il::Module::memberDataPlace of the holder for
+    // a `proto` one.
     uint32_t callee = kNoFunction;
     std::vector<uint32_t> callees;
     // MethodProto: a way of the harvest was a `slot` way, whose callee is the
     // one the cache latched first and never compared again, so a callee the
     // list lacks is no evidence against it: the last identity test's failure
-    // calls generically and stays in S (method_call.cpp).
+    // calls generically and stays in S (method_call.cpp). MemberData: the
+    // site met more receivers than its four ways hold (`full`), so a
+    // receiver no way names is read generically in S (member_data.cpp).
     bool calleesOpen = false;
     // Arith: one mask per operand, and the form chosen from them.
     std::vector<uint8_t> operandTags;
@@ -266,6 +279,8 @@ private:
     // above the receiver, as MemberMethod / MemberGet / MemberSet.
     std::optional<SitePlan> planMember(const spec::HarvestSite& h, SiteKind kind, size_t argc, BlockId block,
                                        uint32_t index) const;
+    std::optional<SitePlan> planMemberData(const spec::HarvestSite& h, const std::string& key, BlockId block,
+                                           uint32_t index) const;
     // The callee a harvested slow site entered, when it entered one only.
     uint32_t harvestedCallee(const il::Instruction& inst) const;
     // The harvest's name for the one callee a call site ever held, whether

@@ -140,7 +140,9 @@ uint32_t redirectFunctionReferences(il::Module& module, const std::vector<uint32
     }
     // A member cell holds the function whose code its method runs, which the
     // runtime compares with a receiver's: the same code the closures run.
+    // (An absent or a data cell names none.)
     for (il::Module::MemberCell& cell : module.memberCells) {
+        if (cell.kind == il::Module::MemberKind::Absent || cell.kind == il::Module::MemberKind::Data) continue;
         if (cell.callee >= entry.size() || entry[cell.callee] == cell.callee) continue;
         cell.callee = entry[cell.callee];
         ++redirected;

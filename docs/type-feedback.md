@@ -37,7 +37,7 @@ Implementation:
 | inline-cache harvest: identity record | `src/abi/bronze_abi_layout.h`, `src/codegen-brass/brass_backend_sections.cpp` (`emitIcIdentity`) |
 | inline-cache harvest: reader of the caches, writer | `src/runtime/ic_harvest.{h,cpp}`, `src/runtime/ic_hot.cpp` |
 | inline-cache harvest: plan | `src/opt/spec/feedback_plan.cpp` (`planHarvest`) |
-| adversarial-profile and harvest suites | `tests/oracle/oracle_feedback_test.cpp` |
+| harvest suite | `tests/oracle/run.py` (modes `profile`, `switch`) |
 | report | `bench/tools/feedback_report.py` |
 
 ## Sites
@@ -132,7 +132,7 @@ it from a host that leaves through `_exit` (bro-headless does).
 `BRONZE_FEEDBACK_OUT` overrides the baked-in path, which the CLI makes
 absolute at build time.
 
-## File format (version 7)
+## File format (version 8)
 
 UTF-8 text, one record per line, fields separated by tabs. In names, `\`, tab,
 newline and CR are escaped as `\\`, `\t`, `\n`, `\r`. Lines starting with `#`
@@ -148,10 +148,12 @@ call's or a `new`'s last directly entered callee, below); a build on an older
 harvest plans a plain call from a recorded profile only. Version 7 adds the
 getter and setter names to a harvest's `accessor` ways (below); a build on an
 older harvest reads every accessor way as naming neither, and leaves those
-sites generic. The reader takes all seven versions.
+sites generic. Version 8 adds the holder's depth and slot to a harvest's
+`proto` ways (below); a build on an older harvest leaves every read with a
+`proto` way generic. The reader takes all eight versions.
 
 ```
-bronze-type-feedback 7
+bronze-type-feedback 8
 fn      <function key>  <entries>
 site    <ordinal>  <kind>  <total>  <tag>=<count> <tag>=<count> ...
 shape   <ordinal>  <count>  <shape name>
@@ -330,12 +332,9 @@ executions; a shape or callee needs `kDominantPercent` (99%) of them.
 `--wpo-stats` prints `feedback:` lines: sites matched, and per consumer the
 sites taken and the profiled executions they cover.
 
-A wrong profile costs speed, never an answer. The `oracle-feedback` ctest
-(label `feedback`) builds each oracle case with `--feedback-out`, then on its
-own profile and on an ADVERSARIAL one (every value site numbers only, every
-shape's keys rotated so each slot guess is wrong, every callee another
-site's, each with 1000 executions), and requires the pinned bytes from all
-three. `BRONZE_ORACLE_FEEDBACK_CASES=<substr>[,...]` runs a subset.
+A wrong profile costs speed, never an answer: a guess the run does not bear
+out leaves to the generic code. No suite feeds adversarial profiles at
+present (the one that did went with the old optimiser).
 
 ## Harvest (`bronze build --harvest-out <file.tfb>`)
 
@@ -365,7 +364,10 @@ property site's four ways give `<form> <receiver>` per way:
   holder as the chain stands at the end of the run and reads the pair at the
   way's slot. `*other*` for a half that is no function, an accessor own on
   the receiver, a function receiver's statics, or a holder whose shape has no
-  accessor at that slot (the chain changed since the way was filled);
+  accessor at that slot (the chain changed since the way was filled). A
+  `proto` way names where it found the data property, `proto <receiver>
+  <depth> <slot>`: the links from the receiver to the holder and the
+  holder's slot (neither for a function receiver's statics chain);
 - `array`, from the array-method sentinel.
 
 A method site's two ways give `<form> <receiver> <callee>`:
@@ -392,6 +394,18 @@ bump of the epoch empties it. A receiver no cell holds leaves in front of the
 site, after asking the runtime to fill the site's cells for it, and G does the
 generic access. A function that reads its environment record is not called
 this way (the cell has no function object to give it one).
+
+A read site with `proto` ways that name their holders (and any `own` or
+`absent` ways beside them) is a DATA member site (`opt/speculate/member_data.cpp`):
+an `own` way is a shape cell's test and the receiver's slot, an `absent` way
+an absent cell's test and `undefined`, and a `proto` way a data cell's test,
+then the walk of its depth from the receiver's shape (`shape.proto`, the root
+shape's prototype word) and the holder's slot. A data cell holds a receiver
+shape while its chain finds the key, at the prototype epoch, as a data
+property of a plain holder at the way's depth and slot. A write of the value
+bumps nothing and needs nothing: the slot is loaded each time. A `full` read
+is planned too, with a generic arm for the receivers its ways do not name,
+unless it has `own` ways, whose receivers the slot-keyed form answers better.
 
 Two flags record that a site met more receivers than its cache holds:
 
@@ -635,7 +649,7 @@ slowsites <slow-site count>  <armed bitmap: per 64 sites, 16 hex digits>
 slow    <slow-site index>  <times its fallback ran>
 last    <slow-site index>  <shape of the named site's last receiver>
 ic      <index>  property|method  -|full|mega|full,mega
-way     <index>  <form>  <receiver>[  <callee>]
+way     <index>  <form>  <receiver>[  <callee>]  (accessor: <getter> <setter>; proto: <depth> <slot>)
 other   <index>  <calls whose receiver no way could hold>
 sample  <8 hex name hash>  <count>
 doubles <receiver>  <key positions, ascending, comma-separated>
@@ -734,18 +748,11 @@ inlined method's cell pair, which holds one shape where the site's cache
 holds two (leaving on its miss sent pixi's `updateTransformAndChildren` to
 its generic entry).
 
-**Tests.** The `oracle-harvest` ctest (label `feedback`) builds each oracle
-case three ways and requires the pinned bytes and exit code from each run:
-
-1. plain with `--harvest-out`, then run;
-2. on that harvest;
-3. on an adversarial harvest, in which every site holds one way (so it reads
-   as monomorphic with every threshold met), every receiver's keys are
-   rotated, every method site calls another site's callee, and no slow arm
-   ran (so every fallback of a twinned function leaves).
-
-`BRONZE_ORACLE_FEEDBACK_CASES` selects the cases. `aot-module` runs the
-evaluator path, and `spec` covers parsing and round trips.
+**Tests.** `tests/oracle/run.py`'s `profile` mode builds each oracle case
+with `--harvest-out`, runs it, rebuilds on that harvest and requires the
+pinned bytes and exit code; `switch` covers a case whose run leaves the arm
+it trained on. `aot-module` runs the evaluator path, and `spec` covers
+parsing and round trips.
 
 ## Function placement (`src/lower/function_placement.{h,cpp}`)
 

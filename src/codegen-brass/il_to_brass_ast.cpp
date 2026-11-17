@@ -514,6 +514,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::ShapeLacks;
             out.index = inst.keyIndex;
             break;
+        case il::Op::ShapeProto: out.op = il2mir::BronzeOp::ShapeProto; break;
         case il::Op::IsObject: out.op = il2mir::BronzeOp::IsObject; break;
         case il::Op::SlotLoad:
             out.op = il2mir::BronzeOp::SlotLoad;
@@ -595,7 +596,8 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::MemberPublish;
             out.imm_i64 = inst.immI32;
             if (inst.immI32 >= 0 && static_cast<size_t>(inst.immI32) < ctx.module.memberCells.size() &&
-                ctx.module.memberCells[inst.immI32].kind != il::Module::MemberKind::Absent) {
+                ctx.module.memberCells[inst.immI32].kind != il::Module::MemberKind::Absent &&
+                ctx.module.memberCells[inst.immI32].kind != il::Module::MemberKind::Data) {
                 out.index = ctx.module.memberCells[inst.immI32].callee;
                 out.callee_name = ctx.fnName(out.index);
             }

@@ -4,7 +4,9 @@
 // A speculated method call, getter read or setter write whose harvest found
 // the member above the receiver (opt/speculate/member_call.cpp) compiles to
 // shape tests against two-word module CELLS, each followed by a direct call
-// of — or the inlined body of — the function the cell is for. The compiler
+// of — or the inlined body of — the function the cell is for; a read of a
+// data property above it (member_data.cpp), by the walk to the holder and
+// the load of its slot. The compiler
 // can only GUESS: a receiver may carry an own property of the same name, a
 // subclass may override the member, and any of the prototypes may be
 // patched. This is the one function that decides, for one shape, that the
@@ -147,6 +149,35 @@ bool resolvesAbsent(ObjectHeader* obj, PropertyKey key) {
     return false;
 }
 
+// Whether [[Get]] of `key` on `obj` finds a data property exactly `depth`
+// links above it, at `slot` of that holder: not own, on no link below the
+// holder, and every link up to the holder a plain object at a transition-tree
+// shape (a dictionary's slots are no shape's, and an exotic link answers
+// through machinery of its own) on a chain the epoch watches. Compiled code
+// then walks the same links from the receiver's shape (`shape.proto`, which
+// reads the root's prototype word, so it reaches the holder where a
+// collection has moved it) and loads the slot: a write of the value moves no
+// shape and needs no bump, as the load reads the slot each time, and either
+// representation of the slot reads as the Value it holds (slot_repr.h).
+bool resolvesData(ObjectHeader* obj, PropertyKey key, uint32_t depth, uint32_t slot) {
+    PropertyInfo info;
+    if (depth == 0 || depth > ObjectHeader::kMaxPrototypeDepth) return false;
+    if (obj->shape->lookupProperty(key, info)) return false;
+    if (!obj->chainIsCacheable()) return false;
+    ObjectHeader* cur = obj;
+    for (uint32_t d = 1; d <= depth; ++d) {
+        const Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject()) return false;
+        auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags != HeapKind::Plain) return false;
+        cur = reinterpret_cast<ObjectHeader*>(hdr);
+        if (cur->shape == nullptr || cur->shape->isDictionary()) return false;
+        if (!cur->shape->lookupProperty(key, info)) continue;
+        return d == depth && !info.accessor && info.slot == slot;
+    }
+    return false;
+}
+
 // The absent-cache entry (bronze_abi_layout.h BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
 // a `shape.lacks` fill of `keyIndex` writes, `lacks` being the cache's first
 // word. A key has two buckets, its home and its alternate, and generated code
@@ -205,7 +236,9 @@ extern "C" {
 //   - the chain resolves the key, at this epoch, above the receiver, to a
 //     member of `kind` (il.h Module::MemberKind: 0 a method in a data
 //     property, 1 a getter, 2 a setter) whose function has exactly that code,
-//     or for kind 3 (absent) finds the key nowhere (`code` unused);
+//     for kind 3 (absent) finds the key nowhere (`code` unused), or for kind
+//     4 (data) finds a data property at the place `code` packs (il.h
+//     Module::memberDataPlace: the links to the holder, its slot there);
 //   - a function compiled code may enter without the runtime (no class
 //     constructor for a method, which throws when called; an accessor that
 //     needs no scope pushed), made in the realm running now.
@@ -217,7 +250,7 @@ void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
                                 uint32_t kind, uint64_t* group, uint32_t groupSize) {
     recordHelperCall("bronze_member_cell_publish");
     if (censusFillsSuppressed()) return;
-    if (cell == nullptr || kind > 3) return;
+    if (cell == nullptr || kind > 4) return;
     const uint64_t epoch = protoMutationEpoch();
     // A shape at this epoch stays; a refusal is asked again, as another
     // receiver may resolve differently.
@@ -234,6 +267,16 @@ void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* c
     uint64_t published = kRefused;
     if (kind == 3) {
         if (resolvesAbsent(obj, PropertyKey::forString(key))) published = shapeWord;
+        publish(cell, published, epoch);
+        return;
+    }
+    if (kind == 4) {
+        const auto place = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(code));
+        const uint32_t slotMask = (1u << BRONZE_ABI_MEMBER_DATA_SLOT_BITS) - 1;
+        if (resolvesData(obj, PropertyKey::forString(key), place >> BRONZE_ABI_MEMBER_DATA_SLOT_BITS,
+                         place & slotMask)) {
+            published = shapeWord;
+        }
         publish(cell, published, epoch);
         return;
     }

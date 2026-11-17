@@ -23,10 +23,10 @@
 // the slot's Value, a Number when the name spells the key `%k`. Nothing
 // before the last guard is observable (tests and header loads), so a failure
 // re-runs the generic `prop.get` in G with nothing done.
-// `proto` ways (the value lives on a prototype object this step has no
-// constant for), `accessor` and `array` ways stay generic; `absent` ways are
-// member cells (member_call.cpp) or, beside own ways or past what cells
-// cover, a slot-keyed read's `shape.lacks` arm (prop_slot.cpp).
+// `proto` ways are data member cells (member_data.cpp), `accessor` ways
+// getter cells (member_call.cpp), and `array` ways stay generic; `absent`
+// ways are member cells or, beside own ways or past what cells cover, a
+// slot-keyed read's `shape.lacks` arm (prop_slot.cpp).
 
 #include "opt/speculate/sites.h"
 

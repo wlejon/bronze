@@ -202,6 +202,7 @@ struct TranslatorOptions {
         uint32_t key_index = 0;
         uint32_t group = 0;
         uint32_t group_size = 1;
+        uint32_t place = 0;  // a data cell's il::Module::memberDataPlace
     };
     std::vector<MemberCellMeta> member_cells;
     // The element cells (codegen-brass/elem_cells.h): the slow sites of the

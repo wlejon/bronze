@@ -877,6 +877,11 @@
 #define BRONZE_ABI_SLOTKEY_LACKS_FOUND      (1ull << 32)
 #define BRONZE_ABI_SLOTKEY_LACKS_BYTES      (16 * BRONZE_ABI_SLOTKEY_LACKS_ENTRIES)
 
+/* A DATA member cell's place (il.h Module::memberDataPlace, the code word
+ * bronze_member_cell_publish takes for kind 4): the links from the receiver
+ * to the holder above this many bits, the holder's slot below them. */
+#define BRONZE_ABI_MEMBER_DATA_SLOT_BITS    24
+
 /* A LAYOUT CELL's member (bronze_static_layout_publish): the third u32 of its
  * (key, slot, flags) triple. WRITE: a site stores to it, so the shape must
  * hold it writable and be no prototype's. DOUBLE: the shape must call the

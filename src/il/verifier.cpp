@@ -170,6 +170,7 @@ static const SpecSignature* specSignature(Op op) {
     static const SpecSignature kProtoPublish{0, {}, Type::Void, false};
     static const SpecSignature kMemberCell{0, {}, Type::Ptr, false};
     static const SpecSignature kMemberPublish{1, {Type::Dynamic}, Type::Void, false};
+    static const SpecSignature kShapeProto{1, {Type::Ptr}, Type::Dynamic, false};
     static const SpecSignature kConstructResult{2, {Type::Dynamic, Type::Dynamic}, Type::Dynamic, false};
     switch (op) {
         case Op::FnConstructs: return &kDynTest;
@@ -180,6 +181,7 @@ static const SpecSignature* specSignature(Op op) {
         case Op::ProtoPublish: return &kProtoPublish;
         case Op::MemberCell: return &kMemberCell;
         case Op::MemberPublish: return &kMemberPublish;
+        case Op::ShapeProto: return &kShapeProto;
         case Op::ConstructResult:
         case Op::ArrayPush: return &kConstructResult;
         case Op::LoadShape: return &kLoadShape;

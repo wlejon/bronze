@@ -38,7 +38,7 @@ namespace {
 // site the callee (`*other*` when the entry does not name a source function,
 // such as a native or a build without function source names). A property
 // site's `accessor` way names the accessor's getter as its callee and its
-// setter as `setter`.
+// setter as `setter`; its `proto` way the holder's depth and slot there.
 struct Fact {
     std::string form;
     std::string receiver;
@@ -320,7 +320,17 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
             site.facts.insert(Fact{"accessor", shapeName(s, way->cached_shape), std::move(getter), std::move(setter)});
             continue;
         }
-        const char* form = way->isAbsent() ? "absent" : way->realDepth() != 0 ? "proto" : way->isStoreFilled() ? "store" : "own";
+        // A data property above the receiver names where the way found it:
+        // the links walked to the holder and the holder's slot (none for a
+        // function receiver's statics chain, which no member cell reads).
+        if (!way->isAbsent() && way->realDepth() != 0) {
+            const bool place = !way->isStatics();
+            site.facts.insert(Fact{"proto", shapeName(s, way->cached_shape),
+                                   place ? std::to_string(way->realDepth()) : std::string(),
+                                   place ? std::to_string(way->cached_slot) : std::string()});
+            continue;
+        }
+        const char* form = way->isAbsent() ? "absent" : way->isStoreFilled() ? "store" : "own";
         site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}, {}});
     }
     if (used == BRONZE_ABI_IC_WAYS) site.full = true;
@@ -420,11 +430,12 @@ std::string textOf(const State& s, const Module& m) {
             out += f.form;
             out += '\t';
             appendEscaped(out, f.receiver);
-            if (site.method || f.form == "accessor") {
+            const bool pair = !site.method && (f.form == "accessor" || !f.callee.empty());
+            if (site.method || pair) {
                 out += '\t';
                 appendEscaped(out, f.callee);
             }
-            if (!site.method && f.form == "accessor") {
+            if (pair) {
                 out += '\t';
                 appendEscaped(out, f.setter);
             }

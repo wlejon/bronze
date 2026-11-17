@@ -287,8 +287,10 @@
      * site's exit: the receiver's shape when its chain resolves the key, at\
      * the current epoch, above the receiver to a member of the given kind\
      * (0 a method in a data property, 1 a getter, 2 a setter) whose function\
-     * has exactly the given code word, and no cell of the site's group (the\
-     * group's first cell and its count) holds that shape already. */ \
+     * has exactly the given code word (3: to nothing; 4: to a data property\
+     * at the holder's place the word packs, il.h memberDataPlace), and no  \
+     * cell of the site's group (the group's first cell and its count) holds\
+     * that shape already. */ \
     X(bronze_member_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U32)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_get_cell,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \

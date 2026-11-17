@@ -264,8 +264,10 @@ inline constexpr std::string_view kProtoCellsSymbol = "__bronze_proto_cells";
 // (runtime/accessor_cell.cpp).
 inline constexpr std::string_view kMemberCellsSymbol = "__bronze_member_cells";
 // A member cell's kind as bronze_member_cell_publish numbers it (il.h
-// Module::MemberKind): an absent cell names no function.
+// Module::MemberKind): an absent cell names no function, and a data cell
+// passes its holder's place (il.h Module::memberDataPlace) for the code.
 inline constexpr uint32_t kMemberKindAbsent = 3;
+inline constexpr uint32_t kMemberKindData = 4;
 // THE ELEMENT CELLS (codegen-brass/elem_cells.h): five u64 per computed read
 // in the module's per-thread data, (shape, key bits, slot word, fills,
 // validity), zero until bronze_elem_get_cell fills one (runtime/elem_ic.cpp;

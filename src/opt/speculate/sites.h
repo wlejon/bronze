@@ -32,6 +32,7 @@ void rewriteElem(RewriteContext& ctx, const SitePlan& plan);
 void rewriteArrayLength(RewriteContext& ctx, const SitePlan& plan);  // elem.cpp
 void rewriteMathCall(RewriteContext& ctx, const SitePlan& plan);     // math_call.cpp
 void rewriteMember(RewriteContext& ctx, const SitePlan& plan);       // member_call.cpp
+void rewriteMemberData(RewriteContext& ctx, const SitePlan& plan);   // member_data.cpp
 void rewriteTdzRead(RewriteContext& ctx, const SitePlan& plan);      // tdz.cpp
 void rewriteArrayPush(RewriteContext& ctx, const SitePlan& plan);    // array_push.cpp
 

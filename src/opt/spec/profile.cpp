@@ -83,6 +83,8 @@ bool isMethodForm(std::string_view form) { return form == "direct" || form == "s
 //   way     <index> <form> <receiver> [<callee>, method sites]
 //                                     [<getter> <setter>, a property site's
 //                                      `accessor` way, version 7 on]
+//                                     [<depth> <slot>, a property site's
+//                                      `proto` way, version 8 on]
 //   other   <index> <times a receiver no way could hold reached the runtime>
 //   slowsites <the build's slow-site count> <the sites it armed: per 64, a
 //             word of 16 hex digits whose bit i is site 64 * word + i>
@@ -251,14 +253,19 @@ bool parseHarvestRow(const std::vector<std::string_view>& f, std::optional<Harve
     }
     HarvestWay way;
     const bool method = it->second.method;
-    // An accessor way names its getter and setter from version 7 on; an
-    // older one names neither.
-    const bool halves = !method && f.size() == 6 && f[2] == "accessor";
+    // An accessor way names its getter and setter from version 7 on, a proto
+    // way its holder's depth and slot from version 8 on; an older one names
+    // neither.
+    const bool halves = !method && f.size() == 6 && (f[2] == "accessor" || f[2] == "proto");
+    uint64_t depth = 0;
+    uint64_t slot = 0;
     if (f.size() != (method ? 5u : halves ? 6u : 4u) || !(method ? isMethodForm(f[2]) : isPropertyForm(f[2])) ||
         !unescapeName(f[3], way.receiver) || way.receiver.empty() ||
         (method && (!unescapeName(f[4], way.callee) || way.callee.empty())) ||
         (halves && (!unescapeName(f[4], way.callee) || way.callee.empty() || !unescapeName(f[5], way.setter) ||
-                    way.setter.empty()))) {
+                    way.setter.empty())) ||
+        (halves && f[2] == "proto" &&
+         (!parseU64(f[4], depth) || depth == 0 || !parseU64(f[5], slot) || slot > INT32_MAX))) {
         why = "malformed way row";
         return false;
     }
@@ -323,7 +330,8 @@ std::optional<TypeProfile> TypeProfile::parse(std::string_view text, std::string
                 "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION);
             if (line != want && line != "bronze-type-feedback 1" && line != "bronze-type-feedback 2" &&
                 line != "bronze-type-feedback 3" && line != "bronze-type-feedback 4" &&
-                line != "bronze-type-feedback 5" && line != "bronze-type-feedback 6") {
+                line != "bronze-type-feedback 5" && line != "bronze-type-feedback 6" &&
+                line != "bronze-type-feedback 7") {
                 return fail("expected '" + want + "', got '" + std::string(line) + "'");
             }
             sawHeader = true;

@@ -531,9 +531,16 @@ struct Module {
     // its cells, in order), each with its own function; a shape the group
     // holds is put in no second cell of it. An ABSENT cell holds a shape
     // whose chain has the key nowhere, so a read of it is `undefined`; it
-    // names no function (`callee` is kNoMemberCallee).
-    enum class MemberKind : uint8_t { Method, Getter, Setter, Absent };
+    // names no function (`callee` is kNoMemberCallee). A DATA cell holds a
+    // shape whose chain finds the key as a data property `depth` links up
+    // at `slot` of that holder, so a read of it is the walk and the slot's
+    // load; its `callee` is memberDataPlace(depth, slot).
+    enum class MemberKind : uint8_t { Method, Getter, Setter, Absent, Data };
     static constexpr uint32_t kNoMemberCallee = UINT32_MAX;
+    static constexpr uint32_t kMemberDataSlotBits = BRONZE_ABI_MEMBER_DATA_SLOT_BITS;
+    static constexpr uint32_t memberDataPlace(uint32_t depth, uint32_t slot) {
+        return (depth << kMemberDataSlotBits) | slot;
+    }
     struct MemberCell {
         MemberKind kind = MemberKind::Method;
         uint32_t keyIndex = 0;

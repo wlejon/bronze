@@ -411,6 +411,10 @@ Effects rawEffects(const Instruction& inst) {
         // runtime's, read by nothing else.
         case Op::ShapeLacks:
             return guardedOp(Loc::Protos, LocSet::none());
+        // A root shape's prototype word: the runtime's (a prototype swap
+        // makes a new root, and bumps the epoch every cell is good for).
+        case Op::ShapeProto:
+            return guardedOp(Loc::Protos, LocSet::none());
         // Reads the receiver's shape and its chain; fills a cell.
         case Op::MemberPublish: {
             Effects e;

@@ -243,6 +243,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                 if ((inst.op == Op::MemberCell || inst.op == Op::MemberPublish) &&
                     (static_cast<uint32_t>(inst.immI32) >= module.memberCells.size() ||
                      (module.memberCells[inst.immI32].kind != Module::MemberKind::Absent &&
+                      module.memberCells[inst.immI32].kind != Module::MemberKind::Data &&
                       module.memberCells[inst.immI32].callee >= module.functions.size()))) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " " +
                                             std::to_string(inst.immI32) + " names no member cell of the module");
