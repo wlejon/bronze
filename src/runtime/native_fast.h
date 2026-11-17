@@ -1,8 +1,10 @@
 #pragma once
 
 // FAST ENTRIES: a second door into a native builtin, for compiled code's
-// method sites (codegen-brass il2mir/il_native_fast.h), with the receiver and
-// the arguments in registers instead of (env, this, argc, argv).
+// method sites, with the receiver and the arguments in registers instead of
+// (env, this, argc, argv). An ahead-of-time compile splits each Array site of
+// one on `is.plain_array` (lower/selfhost_merge.cpp kFastEntries); the String
+// entries have no site that calls them today.
 //
 // A fast entry is not a second implementation. Each one answers the common
 // case of its builtin's own algorithm -- the arguments primitives whose

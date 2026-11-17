@@ -1,0 +1,48 @@
+0 true true true true false
+1 false true true false false
+2 true false false false false
+3 false false false false false
+-1 false false false false false
+1.5 false false false false false
+0 true true true true false
+1 false true true false false
+length true true true true true
+x false false false false false
+4294967296 false false false false false
+NaN false false false false false
+0 true true true true false
+1 false true true false false
+2 true false false false false
+3 false false false false false
+-1 false false false false false
+1.5 false false false false false
+0 true true true true false
+1 false true true false false
+length true true true true true
+x false false false false false
+4294967296 false false false false false
+NaN false false false false false
+0 true true true true false
+1 false true true false false
+2 true false false false false
+3 false false false false false
+-1 false false false false false
+1.5 false false false false false
+0 true true true true false
+1 false true true false false
+length true true true true true
+x false false false false false
+4294967296 false false false false false
+NaN false false false false false
+true true true true false
+true true true true false
+true true true true false
+true
+5 false [2,null,6,null,10] 3,5
+5 false [2,null,6,null,10] 3,5
+5 false [2,null,6,null,10] 3,5
+true 2,3,4 true
+true 2,3,4 true
+1,2 2 2
+1,2 2 2
+1,2 2 2

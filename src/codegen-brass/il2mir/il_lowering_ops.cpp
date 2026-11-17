@@ -679,9 +679,9 @@ bool lower_ops_instruction(
 
         case BronzeOp::In: {
             Value* op1 = lowering->ensure_type(get_opd(1), Type::i64(), b);
-            Value* op0 = lowering->ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_has_property", Type::i32(), {op0, op1});
-            res_val = b.build_and(res_val, b.build_iconst_i32(1));
+            Value* op0 = get_opd(0);
+            if (!op0) return false;
+            res_val = lowering->prop_lowering().lower_has_elem(b, op1, op0);
             return true;
         }
 

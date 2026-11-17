@@ -523,12 +523,14 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        // A computed key's definition.
+        // A computed key's definition: an open Array's element inline, as a
+        // write's (lower_elem_set), else bronze_elem_define.
         case BronzeOp::ElemDefine: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
+            Value* key = get_opd(1);
+            if (!key) return false;
             Value* val = ensure_type(get_opd(2), Type::i64(), b);
-            Value* key = ensure_type(get_opd(1), Type::i64(), b);
-            b.build_call("bronze_elem_define", Type::void_type(), {obj, key, val});
+            prop_lowering_.lower_elem_set(b, obj, key, val, kDefineWriteMode);
             break;
         }
 

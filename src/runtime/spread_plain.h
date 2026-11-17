@@ -14,7 +14,14 @@ namespace bronze::runtime {
 // under non-index string names, `target` a plain extensible one. `excluded` is
 // a rest pattern's key array (strings and symbols) or null. False when the
 // case is not this one, and then nothing has been written.
-bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value>* excluded);
+//
+// `assign` makes it 20.1.2.1 Object.assign's copy, a Set per key, for the case
+// where Set is that same define: each key the target owns is a plain data
+// property, each it lacks has nothing on the prototype chain (all plain
+// objects) that would run a setter or refuse it, and the target is not a
+// realm's global object.
+bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value>* excluded,
+                   bool assign = false);
 
 // With the shape lookup memos (Shape::forgetLookupMemo): the hints below name
 // shapes of the arena that is going away.

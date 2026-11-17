@@ -36,6 +36,12 @@
 //
 // Only what a site can reach is merged: a program with no such site gets
 // nothing, not even a source file.
+//
+// A C++ builtin with a FAST ENTRY (runtime/native_fast.h) gets the same split
+// at a site passing it exactly the entry's arguments: D calls the entry with
+// the receiver and the arguments in registers, which answers the plain case
+// and hands the rest to the builtin. The guard is the same invariant: on a
+// plain array the method is the intrinsic.
 
 #include <algorithm>
 #include <string>
@@ -89,11 +95,25 @@ bool carriesIcSite(il::Op op) {
            op == il::Op::MethodCallSpread;
 }
 
+// The Array builtins with a fast entry, by method name, and the arguments
+// the entry takes after the receiver.
+struct FastEntry {
+    const char* method;
+    const char* symbol;
+    uint32_t argc;
+};
 struct Site {
     uint32_t function = 0;
     il::BlockId block = 0;
     size_t index = 0;
     const SelfHostLibrary::Builtin* builtin = nullptr;
+    // Else a fast entry's row.
+    const FastEntry* fast = nullptr;
+};
+
+constexpr FastEntry kFastEntries[] = {
+    {"indexOf", "bronze_fast_array_index_of", 1},
+    {"includes", "bronze_fast_array_includes", 1},
 };
 
 }  // namespace
@@ -186,24 +206,34 @@ bool Lowerer::mergeSelfHostLibrary() {
                 if (inst.op != il::Op::MethodCall || inst.operands.empty() || inst.keyIndex >= mod.keyConstants.size()) {
                     continue;
                 }
-                const auto it = byMethod.find(mod.keyConstants[inst.keyIndex]);
-                if (it == byMethod.end()) continue;
+                const std::string& method = mod.keyConstants[inst.keyIndex];
+                const auto it = byMethod.find(method);
+                const FastEntry* fast = nullptr;
+                for (const FastEntry& e : kFastEntries) {
+                    if (method == e.method && inst.operands.size() == 1 + e.argc) fast = &e;
+                }
+                if (it == byMethod.end() && fast == nullptr) continue;
                 if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) continue;
                 bool boxed = true;
                 for (il::ValueId v : inst.operands) boxed = boxed && v < types.size() && types[v] == il::Type::Dynamic;
                 if (!boxed) continue;
+                if (it == byMethod.end()) {
+                    sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, nullptr, fast});
+                    continue;
+                }
                 sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, it->second});
                 for (uint32_t g : reach[it->second->direct]) used[g] = 1;
             }
         }
     }
     if (sites.empty()) return true;
+    const bool anyUsed = std::find(used.begin(), used.end(), 1) != used.end();
 
     // The library's file joins the program's, after them (its text only
     // where the program keeps its own, for the harvest identity).
     const bool positions = !mod.lineTables.empty();
     const uint16_t file = static_cast<uint16_t>(mod.lineTables.size());
-    if (positions) {
+    if (positions && anyUsed) {
         if (mod.sourceTexts.size() == mod.lineTables.size()) mod.sourceTexts.push_back(lib.sourceText);
         mod.sourceFiles.resize(mod.lineTables.size());
         mod.sourceFiles.push_back(lib.sourceName);
@@ -275,108 +305,122 @@ bool Lowerer::mergeSelfHostLibrary() {
         return a.index > b.index;
     });
     for (const Site& site : sites) {
-        il::Function& fn = mod.functions[site.function];
-        const il::Instruction call = fn.blocks[site.block].instructions[site.index];
+        if (site.fast != nullptr) {
+            const std::vector<il::Type> params(1 + site.fast->argc, il::Type::Dynamic);
+            const uint32_t target = registerExternalFunction(site.fast->symbol, il::Type::Dynamic, params);
+            splitOnPlainArray(mod.functions[site.function], site.block, site.index, target, site.fast->argc,
+                              false, false);
+            continue;
+        }
         const uint32_t target = fnMap[site.builtin->direct];
         const il::Function& entry = mod.functions[target];
-        const il::BlockId b = site.block;
-        const auto newBlock = [&]() -> il::BlockId {
-            il::Block blk;
-            blk.id = static_cast<il::BlockId>(fn.blocks.size());
-            blk.handler = fn.blocks[b].handler;
-            fn.blocks.push_back(std::move(blk));
-            return fn.blocks.back().id;
-        };
-        const auto at = [&](il::Op op, il::Type type) {
-            il::Instruction inst;
-            inst.op = op;
-            inst.type = type;
-            inst.span = call.span;
-            return inst;
-        };
-        const il::BlockId direct = newBlock();
-        const il::BlockId slow = newBlock();
-        const il::BlockId tail = newBlock();
-        {
-            auto& insts = fn.blocks[b].instructions;
-            std::vector<il::Instruction> rest(insts.begin() + static_cast<std::ptrdiff_t>(site.index) + 1, insts.end());
-            insts.resize(site.index);
-            fn.blocks[tail].instructions = std::move(rest);
-            if (call.result != il::kNoValue) fn.blocks[tail].params.push_back({call.result, il::Type::Dynamic});
-        }
-        il::Instruction guard = at(il::Op::IsPlainArray, il::Type::Bool);
-        guard.result = fn.valueCount++;
-        guard.operands = {call.operands[0]};
-        il::Instruction br = at(il::Op::Branch, il::Type::Void);
-        br.operands = {guard.result};
-        br.target.block = direct;
-        br.elseTarget.block = slow;
-        fn.blocks[b].instructions.push_back(std::move(guard));
-        fn.blocks[b].instructions.push_back(std::move(br));
-
-        // D: the entry's parameters, from the call's operands.
-        il::Block& d = fn.blocks[direct];
-        std::vector<il::ValueId> operands{call.operands[0]};
-        const bool counted = site.builtin->counted;
-        const size_t forwarded = entry.params.size() - entry.firstSourceParam() - (counted ? 2 : 0);
-        il::ValueId undef = il::kNoValue;
-        for (size_t a = 0; a < forwarded; ++a) {
-            if (1 + a < call.operands.size()) {
-                operands.push_back(call.operands[1 + a]);
-                continue;
-            }
-            if (undef == il::kNoValue) {
-                il::Instruction u = at(il::Op::ConstUndefined, il::Type::Dynamic);
-                u.result = undef = fn.valueCount++;
-                d.instructions.push_back(std::move(u));
-            }
-            operands.push_back(undef);
-        }
-        if (counted) {
-            il::Instruction count = at(il::Op::ConstF64, il::Type::F64);
-            count.immF64 = static_cast<double>(call.operands.size() - 1);
-            count.result = fn.valueCount++;
-            il::ValueId v = count.result;
-            d.instructions.push_back(std::move(count));
-            if (entry.params.back().type == il::Type::Dynamic) {
-                il::Instruction box = at(il::Op::Box, il::Type::Dynamic);
-                box.boxType = il::Type::F64;
-                box.operands = {v};
-                box.result = v = fn.valueCount++;
-                d.instructions.push_back(std::move(box));
-            }
-            operands.push_back(v);
-        }
-        il::Instruction enter = at(il::Op::Call, il::Type::Dynamic);
-        enter.calleeIndex = target;
-        enter.operands = std::move(operands);
-        il::Instruction toTail = at(il::Op::Jump, il::Type::Void);
-        toTail.target.block = tail;
-        const bool voidEntry = entry.returnType == il::Type::Void;
-        if (voidEntry) enter.type = il::Type::Void;
-        il::ValueId answer = il::kNoValue;
-        if (call.result != il::kNoValue && !voidEntry) answer = enter.result = fn.valueCount++;
-        d.instructions.push_back(std::move(enter));
-        if (call.result != il::kNoValue && voidEntry) {
-            il::Instruction u = at(il::Op::ConstUndefined, il::Type::Dynamic);
-            u.result = answer = fn.valueCount++;
-            d.instructions.push_back(std::move(u));
-        }
-        if (answer != il::kNoValue) toTail.target.args.push_back(answer);
-        d.instructions.push_back(std::move(toTail));
-
-        // S: the original call, its result renamed.
-        il::Instruction again = call;
-        il::Instruction join = at(il::Op::Jump, il::Type::Void);
-        join.target.block = tail;
-        if (call.result != il::kNoValue) {
-            again.result = fn.valueCount++;
-            join.target.args.push_back(again.result);
-        }
-        fn.blocks[slow].instructions.push_back(std::move(again));
-        fn.blocks[slow].instructions.push_back(std::move(join));
+        splitOnPlainArray(mod.functions[site.function], site.block, site.index, target,
+                          entry.params.size() - entry.firstSourceParam() - (site.builtin->counted ? 2 : 0),
+                          site.builtin->counted, entry.returnType == il::Type::Void,
+                          entry.params.back().type == il::Type::Dynamic);
     }
     return true;
+}
+
+// The split of one site (the file's comment): `target` is entered with the
+// receiver, `forwarded` of the call's arguments (padded with undefined,
+// extra ones dropped) and, `counted`, the argument count (boxed when
+// `boxedCount`).
+void Lowerer::splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, uint32_t target,
+                                size_t forwarded, bool counted, bool voidEntry, bool boxedCount) {
+    const il::Instruction call = fn.blocks[b].instructions[index];
+    const auto newBlock = [&]() -> il::BlockId {
+        il::Block blk;
+        blk.id = static_cast<il::BlockId>(fn.blocks.size());
+        blk.handler = fn.blocks[b].handler;
+        fn.blocks.push_back(std::move(blk));
+        return fn.blocks.back().id;
+    };
+    const auto at = [&](il::Op op, il::Type type) {
+        il::Instruction inst;
+        inst.op = op;
+        inst.type = type;
+        inst.span = call.span;
+        return inst;
+    };
+    const il::BlockId direct = newBlock();
+    const il::BlockId slow = newBlock();
+    const il::BlockId tail = newBlock();
+    {
+        auto& insts = fn.blocks[b].instructions;
+        std::vector<il::Instruction> rest(insts.begin() + static_cast<std::ptrdiff_t>(index) + 1, insts.end());
+        insts.resize(index);
+        fn.blocks[tail].instructions = std::move(rest);
+        if (call.result != il::kNoValue) fn.blocks[tail].params.push_back({call.result, il::Type::Dynamic});
+    }
+    il::Instruction guard = at(il::Op::IsPlainArray, il::Type::Bool);
+    guard.result = fn.valueCount++;
+    guard.operands = {call.operands[0]};
+    il::Instruction br = at(il::Op::Branch, il::Type::Void);
+    br.operands = {guard.result};
+    br.target.block = direct;
+    br.elseTarget.block = slow;
+    fn.blocks[b].instructions.push_back(std::move(guard));
+    fn.blocks[b].instructions.push_back(std::move(br));
+
+    // D: the entry's parameters, from the call's operands.
+    il::Block& d = fn.blocks[direct];
+    std::vector<il::ValueId> operands{call.operands[0]};
+    il::ValueId undef = il::kNoValue;
+    for (size_t a = 0; a < forwarded; ++a) {
+        if (1 + a < call.operands.size()) {
+            operands.push_back(call.operands[1 + a]);
+            continue;
+        }
+        if (undef == il::kNoValue) {
+            il::Instruction u = at(il::Op::ConstUndefined, il::Type::Dynamic);
+            u.result = undef = fn.valueCount++;
+            d.instructions.push_back(std::move(u));
+        }
+        operands.push_back(undef);
+    }
+    if (counted) {
+        il::Instruction count = at(il::Op::ConstF64, il::Type::F64);
+        count.immF64 = static_cast<double>(call.operands.size() - 1);
+        count.result = fn.valueCount++;
+        il::ValueId v = count.result;
+        d.instructions.push_back(std::move(count));
+        if (boxedCount) {
+            il::Instruction box = at(il::Op::Box, il::Type::Dynamic);
+            box.boxType = il::Type::F64;
+            box.operands = {v};
+            box.result = v = fn.valueCount++;
+            d.instructions.push_back(std::move(box));
+        }
+        operands.push_back(v);
+    }
+    il::Instruction enter = at(il::Op::Call, il::Type::Dynamic);
+    enter.calleeIndex = target;
+    enter.operands = std::move(operands);
+    il::Instruction toTail = at(il::Op::Jump, il::Type::Void);
+    toTail.target.block = tail;
+    if (voidEntry) enter.type = il::Type::Void;
+    il::ValueId answer = il::kNoValue;
+    if (call.result != il::kNoValue && !voidEntry) answer = enter.result = fn.valueCount++;
+    d.instructions.push_back(std::move(enter));
+    if (call.result != il::kNoValue && voidEntry) {
+        il::Instruction u = at(il::Op::ConstUndefined, il::Type::Dynamic);
+        u.result = answer = fn.valueCount++;
+        d.instructions.push_back(std::move(u));
+    }
+    if (answer != il::kNoValue) toTail.target.args.push_back(answer);
+    d.instructions.push_back(std::move(toTail));
+
+    // S: the original call, its result renamed.
+    il::Instruction again = call;
+    il::Instruction join = at(il::Op::Jump, il::Type::Void);
+    join.target.block = tail;
+    if (call.result != il::kNoValue) {
+        again.result = fn.valueCount++;
+        join.target.args.push_back(again.result);
+    }
+    fn.blocks[slow].instructions.push_back(std::move(again));
+    fn.blocks[slow].instructions.push_back(std::move(join));
 }
 
 }  // namespace bronze::lower

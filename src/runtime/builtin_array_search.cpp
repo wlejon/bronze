@@ -4,41 +4,70 @@
 #include "runtime/rt_roots.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 namespace bronze::runtime {
 
 namespace {
 
-// IsStrictlyEqual (7.2.15) of each element of an Array's block in [from, end)
-// against `needle`, split by the needle's type so the walk is a compare per
-// element: a Number matches a Number of the same value (NaN nothing, so the
-// walk is skipped); a String matches itself, or a String of its length and
-// units; a BigInt asks bronze_strict_eq only of BigInts (strictSearchBlock);
-// anything else is equal exactly when the bits are. A hole is a tag no needle
-// carries, so it matches nothing and needs no test of its own. Returns the
-// index, or -1.
+// IsStrictlyEqual (7.2.15), or with `zero` SameValueZero (7.2.11, `includes`),
+// of each element of an Array's block in [from, end) against `needle`, split
+// by the needle's type so the walk is a compare per element. Returns the
+// index, or -1. Not for a BigInt needle, whose compare is the helper's.
 //
-// A needle that is no BigInt compares without allocating (a String is flat,
-// its compare a length test and a memcmp), so the block may be walked through
-// a bare pointer.
-int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value needle) {
+// - A Number: every Value that is no Number is a NaN as a double (value.h,
+//   the tags sit above -Infinity), so the double compare alone decides, +0
+//   and -0 equal. A NaN needle matches nothing, or under `zero` any NaN.
+// - A String: itself, or a String of its length and units; the length is
+//   tested here, so the contents compare runs only for a candidate.
+// - Under `zero`, `undefined` also matches a hole, which Get reads as
+//   undefined while the chain holds no index (the caller's condition).
+// - Anything else is equal exactly when the bits are; a hole is a tag no
+//   needle carries.
+//
+// Nothing here allocates, so the block may be walked through a bare pointer.
+int64_t searchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value needle, bool zero) {
     end = std::min(end, arr->length);  // a fromIndex valueOf may have shrunk it
+    const Value* elems = arr->elementsData();
     if (needle.isNumber()) {
         const double n = needle.asNumber();
-        if (std::isnan(n)) return -1;
-        const Value* elems = arr->elementsData();
-        for (uint32_t i = from; i < end; ++i) {
-            if (elems[i].isNumber() && elems[i].asNumber() == n) return i;
+        if (std::isnan(n)) {
+            if (!zero) return -1;
+            for (uint32_t i = from; i < end; ++i) {
+                if (elems[i].isNumber() && std::isnan(elems[i].asNumber())) return i;
+            }
+            return -1;
+        }
+        uint32_t i = from;
+        for (; i + 4 <= end; i += 4) {
+            const bool any = (std::bit_cast<double>(elems[i].rawBits()) == n) |
+                             (std::bit_cast<double>(elems[i + 1].rawBits()) == n) |
+                             (std::bit_cast<double>(elems[i + 2].rawBits()) == n) |
+                             (std::bit_cast<double>(elems[i + 3].rawBits()) == n);
+            if (any) break;
+        }
+        for (; i < end; ++i) {
+            if (std::bit_cast<double>(elems[i].rawBits()) == n) return i;
         }
         return -1;
     }
-    const Value* elems = arr->elementsData();
     if (needle.isString()) {
         const StringHeader* str = needle.asString<StringHeader>();
+        const uint32_t length = str->getLength();
         for (uint32_t i = from; i < end; ++i) {
-            if (elems[i].rawBits() == needle.rawBits()) return i;
-            if (elems[i].isString() && elems[i].asString<StringHeader>()->equals(*str)) return i;
+            const Value e = elems[i];
+            if (e.rawBits() == needle.rawBits()) return i;
+            if (e.isString() && e.asString<StringHeader>()->getLength() == length &&
+                e.asString<StringHeader>()->equals(*str)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    if (zero && needle.isUndefined()) {
+        for (uint32_t i = from; i < end; ++i) {
+            if (elems[i].isUndefined() || elems[i].rawBits() == Value::fromHole().rawBits()) return i;
         }
         return -1;
     }
@@ -46,6 +75,10 @@ int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, V
         if (elems[i].rawBits() == needle.rawBits()) return i;
     }
     return -1;
+}
+
+int64_t strictSearchPlain(const ArrayHeader* arr, uint32_t from, uint32_t end, Value needle) {
+    return searchPlain(arr, from, end, needle, /*zero=*/false);
 }
 
 int64_t strictSearchBlock(Rooted<Value>& self, uint32_t from, uint32_t end, Value needle) {
@@ -127,6 +160,8 @@ namespace bronze::runtime {
 // index: SameValueZero against every index, a hole read as `undefined`.
 // SameValueZero neither converts nor allocates, so the walk needs no roots.
 static bool includesBlock(const ArrayHeader* arr, uint32_t from, uint32_t len, Value needle) {
+    if (!needle.isBigInt()) return searchPlain(arr, from, len, needle, /*zero=*/true) >= 0;
+    len = std::min(len, arr->length);
     for (uint32_t i = from; i < len; ++i) {
         if (sameValueZero(arr->getElem(i), needle)) return true;
     }

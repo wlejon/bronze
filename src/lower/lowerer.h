@@ -115,6 +115,8 @@ private:
     // module, and each Array method call site that can reach one split on
     // `is.plain_array` into a direct call of it and the original call.
     bool mergeSelfHostLibrary();
+    void splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, uint32_t target, size_t forwarded,
+                           bool counted, bool voidEntry, bool boxedCount = false);
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
 
 

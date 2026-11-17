@@ -18,6 +18,12 @@
 // the slot written. The next one stores the shape, sizes the slot block once
 // and moves the values. Shapes are immutable and immortal, so an entry stays
 // true for as long as the arena does (`rtForgetSpreadShapeHints`).
+//
+// Object.assign is the same copy with each key Set instead of defined, and the
+// two writes differ only where the target's prototype chain answers the key
+// (a setter, a read-only property, a proxy) or the target owns it with other
+// attributes. A copy where neither happens is a spread, and its hint also
+// records the prototype epoch, which every change to a chain moves.
 
 #include "runtime/spread_plain.h"
 
@@ -27,6 +33,7 @@
 #include "runtime/object.h"
 #include "runtime/property_key.h"
 #include "runtime/rt_property.h"
+#include "runtime/realm.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -49,6 +56,9 @@ struct ShapeHint {
     const Shape* before;
     Shape* after;
     uint64_t kept;
+    // An assign's hint: the chain answered none of the keys at this epoch.
+    uint64_t epoch;
+    bool assign;
     uint16_t count;
     // Slots an object at `after` needs (ObjectHeader::ensureSlots).
     uint16_t slotCount;
@@ -59,11 +69,17 @@ constexpr uint32_t kHintCount = 64;
 // Plain data, so thread teardown has nothing to run for it.
 thread_local ShapeHint t_hints[kHintCount];
 
-ShapeHint& hintFor(const Shape* source, const Shape* before, uint64_t kept) noexcept {
+ShapeHint& hintFor(const Shape* source, const Shape* before, uint64_t kept, bool assign) noexcept {
     const uint64_t a = reinterpret_cast<uintptr_t>(source);
     const uint64_t b = reinterpret_cast<uintptr_t>(before);
-    const uint64_t h = (a ^ (b * 0x9E3779B97F4A7C15ull) ^ kept) * 0xD6E8FEB86659FD93ull;
+    const uint64_t h = (a ^ (b * 0x9E3779B97F4A7C15ull) ^ kept ^ assign) * 0xD6E8FEB86659FD93ull;
     return t_hints[(h >> 40) % kHintCount];
+}
+
+bool hintMatches(const ShapeHint& hint, const Shape* source, const Shape* before, uint64_t kept,
+                 bool assign) noexcept {
+    return hint.source == source && hint.before == before && hint.kept == kept &&
+           hint.assign == assign && (!assign || hint.epoch == protoMutationEpoch());
 }
 
 // A plain object with no internal slots, on the transition tree.
@@ -99,6 +115,27 @@ struct Excluded {
 
 bool plainData(const PropertyInfo& p) noexcept {
     return !p.accessor && p.writable && p.enumerable && p.configurable;
+}
+
+// Whether Set of `key` on `target` is CreateDataProperty: the target owns it as
+// plain data, or it lacks it and no object on its chain has it as anything but
+// writable data. Every link must be a plain object, whose named properties are
+// all in its shape; a proxy, an array or a wrapper answers some from elsewhere.
+bool setIsDefine(const ObjectHeader* target, PropertyKey key) noexcept {
+    PropertyInfo info;
+    if (target->shape->lookupProperty(key, info)) return plainData(info);
+    const ObjectHeader* holder = target;
+    for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        const Value parent = holder->shape->prototypeValue();
+        if (parent.isNull()) return true;
+        if (!parent.isObject() || parent.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+            return false;
+        }
+        holder = parent.asObject<ObjectHeader>();
+        if (holder->shape == nullptr) return false;
+        if (holder->shape->lookupProperty(key, info)) return !info.accessor && info.writable;
+    }
+    return false;
 }
 
 // Whether `after` is `before` plus the keys of `nodes` it lacked, each key a
@@ -147,20 +184,22 @@ void rtForgetSpreadShapeHints() noexcept {
     for (ShapeHint& h : t_hints) h = ShapeHint{};
 }
 
-bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value>* excluded) {
+bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value>* excluded,
+                   bool assign) {
     const ObjectHeader* from = treePlain(src.get());
     if (from == nullptr) return false;
     // A plain object off the dictionary is extensible (integrity.h keeps the
     // levels in the dictionary). A prototype's adds have to be seen one at a
-    // time by the caches below it.
+    // time by the caches below it, and a global's by the global cache.
     const ObjectHeader* to = treePlain(target.get());
     if (to == nullptr || to->shape->used_as_prototype) return false;
+    if (assign && rtRealmOfGlobal(target.get()) != nullptr) return false;
     const Shape* const source = from->shape;
     const Shape* const before = to->shape;
 
     if (!excluded) {
-        const ShapeHint& hint = hintFor(source, before, kAllKept);
-        if (hint.source == source && hint.before == before && hint.kept == kAllKept) {
+        const ShapeHint& hint = hintFor(source, before, kAllKept, assign);
+        if (hintMatches(hint, source, before, kAllKept, assign)) {
             copyAsBefore(hint, target, src);
             return true;
         }
@@ -202,10 +241,15 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
         nodes[j] = t;
     }
 
-    ShapeHint& hint = hintFor(source, before, kept);
-    if (hint.source == source && hint.before == before && hint.kept == kept) {
+    ShapeHint& hint = hintFor(source, before, kept, assign);
+    if (hintMatches(hint, source, before, kept, assign)) {
         copyAsBefore(hint, target, src);
         return true;
+    }
+    if (assign) {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!setIsDefine(to, nodes[i]->key)) return false;
+        }
     }
 
     // The first copy of its kind: define the keys one at a time. Nothing here
@@ -223,6 +267,8 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
         next.before = before;
         next.after = done->shape;
         next.kept = kept;
+        next.assign = assign;
+        next.epoch = assign ? protoMutationEpoch() : 0;
         next.count = static_cast<uint16_t>(count);
         next.slotCount = static_cast<uint16_t>(slotCount);
         for (uint32_t i = 0; i < count; ++i) next.from[i] = static_cast<uint16_t>(nodes[i]->slot_index);

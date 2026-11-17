@@ -549,8 +549,8 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
                        const Rooted<Value>* excluded) {
     const Value srcVal = src.get();
     if (srcVal.isUndefined() || srcVal.isNull()) return;
-    // Plain to plain, which is nearly every spread a program runs.
-    if (mode == CopyWrite::Define && rtSpreadPlain(target, src, excluded)) return;
+    // Plain to plain, which is nearly every spread and assign a program runs.
+    if (rtSpreadPlain(target, src, excluded, mode == CopyWrite::Assign)) return;
 
     // Asked once, outside the loops: only `Object.assign` with a primitive
     // string target ever produces one, and every other spread in the program

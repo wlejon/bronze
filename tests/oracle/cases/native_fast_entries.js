@@ -1,4 +1,4 @@
-// Native builtins entered at the method site (il_native_fast.h): Array
+// Native builtins entered at the method site (selfhost_merge.cpp): Array
 // indexOf / includes / push / pop and String charCodeAt / charAt / indexOf /
 // startsWith / slice / substring, each in a loop (so the site is compiled for
 // more than one run) with the receivers and arguments the guards accept and

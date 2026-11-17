@@ -7,7 +7,13 @@ findLast, findLastIndex, reduce}`. There is one implementation of each: the C++ 
 deleted, and nothing selects between the two. A builtin moves here only when
 its JavaScript is at least as fast as the C++ it replaces: `indexOf` (a dense
 scan with `===` per element) and `Object.assign` (a keyed store per key) were
-moved and measured slower, 33% and 27%, and are C++ again.
+moved and measured slower, 33% and 27%, and are C++ again. Measured again on
+the speculating optimiser (2026-11-16, harvest-fed builds): the `indexOf` /
+`includes` loop written in JavaScript and inlined took 19.8 ms on the kernel
+where the C++ took 11.6 before and 5.4 after its site called the fast entry
+directly (below) and its scan became a double compare per element; and
+`Object.assign` between plain objects is a remembered layout copy in C++
+(runtime/spread_plain.cpp), which no keyed store per key comes near.
 
 ## How it is built
 
@@ -108,6 +114,10 @@ dialect, up to but not including the final passes) and
   answer the intrinsic, and the copy runs exactly where the registered builtin
   would have, with the same arguments (padded with `undefined`, extra ones
   dropped, `reduce`'s argument count passed to its direct entry);
+- a site of an Array builtin that stays C++ but has a FAST ENTRY
+  (`runtime/native_fast.h`: `indexOf` and `includes` with one argument) is
+  split the same way, D calling the entry with the receiver and argument in
+  registers;
 - the library functions those sites reach are copied into the module as
   ordinary functions named `selfhost.<name>`, with the library text as one more
   source file so their positions stay correct.

@@ -166,6 +166,9 @@ public:
     // helpers bronze_elem_get / bronze_elem_set behind them.
     Value* lower_elem_get(Builder& b, Value* obj, Value* index);
     void lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict);
+    // `key in obj` (i32): an Array's present element below its length is
+    // true inline, everything else bronze_has_property's.
+    Value* lower_has_elem(Builder& b, Value* obj, Value* key);
     // `a.push(v)` / `a.pop()` on an Array at the bare array shape with room
     // (il_elem_lowering.cpp); anything else branches to `miss`. The result
     // is the call's. `known_number`: `val` is a Number (array.push with

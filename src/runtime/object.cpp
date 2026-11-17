@@ -232,7 +232,10 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
     if (needed <= cap) {
         return obj;
     }
-    uint32_t new_cap = cap ? cap * 2 : 32;
+    // A first block as big as asked, from 8: a copy that sizes its target
+    // once (spread_plain.cpp) asks for what it needs, and an object grown a
+    // key at a time doubles from there.
+    uint32_t new_cap = cap ? cap * 2 : (needed < 8 ? 8 : needed);
     while (new_cap < needed) {
         new_cap *= 2;
     }

@@ -297,6 +297,49 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     return result;
 }
 
+// `key in obj`: an index an Array holds as an own element (below its length,
+// no hole) is own whatever the chain, so HasProperty is true; past the length,
+// a hole, any other receiver or key ask bronze_has_property.
+Value* PropertyLoweringHelper::lower_has_elem(Builder& b, Value* obj, Value* key) {
+    const ElemIndex ei = elem_index(b, key);
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "has_elem_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_load = b.append_block(prefix + "_load");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i32());
+    bb_slow->set_cold();
+
+    b.position_at_end(cur);
+    Value* ptr = object_address(b, obj);
+    Value* is_obj = is_object_address(b, ptr);
+    b.build_br_if(ei.ok ? b.build_and(is_obj, ei.ok) : is_obj, bb_obj, bb_slow);
+
+    b.position_at_end(bb_obj);
+    Value* header = b.build_load(Type::i32(), ptr, 0);
+    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_slow);
+
+    b.position_at_end(bb_arr);
+    Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
+                                  iconst(b, kObjectTagBits));
+    Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    b.build_br_if(b.build_and(has_elems, b.build_ult(ei.idx, len)), bb_load, bb_slow);
+
+    b.position_at_end(bb_load);
+    Value* elem = array_element_load(b, array_elements(b, ptr), b.build_zext_i64(ei.idx));
+    b.build_br_if(b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS)), bb_slow, {}, bb_merge, {b.build_iconst_i32(1)});
+
+    b.position_at_end(bb_slow);
+    Value* answer = b.build_call("bronze_has_property", Type::i32(), {boxed_elem_key(b, key), obj});
+    b.build_br(bb_merge, {b.build_and(answer, b.build_iconst_i32(1))});
+
+    b.position_at_end(bb_merge);
+    return result;
+}
+
 // A write: an Array's element below its length stored inline, or one
 // appended at its length within its capacity, at the bare array shape (no
 // named property, no integrity level) with no index hazard; a typed array's
@@ -306,6 +349,11 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
 // array, which the bare shape accepts (runtime/integrity.h
 // rtArrayElementWriteRefusal). A value that is no Number clears the array's
 // NUMBERS bit (bronze_abi_layout.h) and gets the barrier.
+//
+// `strict` kDefineWriteMode is CreateDataPropertyOrThrow (`$CreateDataPropertyOrThrow`,
+// a computed literal key): on such an Array the same store, since an own
+// element below the length or an append is what the define makes too; a
+// typed array and everything else are bronze_elem_define's.
 void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
     Value* key = boxed_elem_key(b, index);
     const ElemIndex ei = elem_index(b, index);
@@ -320,8 +368,9 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     BasicBlock* bb_append = b.append_block(prefix + "_append");
     BasicBlock* bb_store = b.append_block(prefix + "_store");
     Value* store_at = b.add_block_param(bb_store, Type::i64());
-    BasicBlock* bb_not_arr = b.append_block(prefix + "_notarr");
-    BasicBlock* bb_view = b.append_block(prefix + "_view");
+    const bool define = strict == kDefineWriteMode;
+    BasicBlock* bb_not_arr = define ? nullptr : b.append_block(prefix + "_notarr");
+    BasicBlock* bb_view = define ? nullptr : b.append_block(prefix + "_view");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_done = b.append_block(prefix + "_done");
     bb_slow->set_cold();
@@ -333,7 +382,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 
     b.position_at_end(bb_obj);
     Value* header = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr);
+    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, define ? bb_slow : bb_not_arr);
 
     b.position_at_end(bb_arr);
     Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
@@ -374,13 +423,13 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     store_value(b, store_at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
     b.build_br(bb_done);
 
-    b.position_at_end(bb_not_arr);
-    b.build_br_if(b.build_eq(header, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_view, bb_slow);
-    // A Number stored into a Float32 element in bounds is written here (as
-    // the read is, lower_elem_get); everything else is the module's stub.
-    b.position_at_end(bb_view);
-    mark_view_arm(*this, b, ptr, ei.idx, prefix);
-    {
+    if (!define) {
+        b.position_at_end(bb_not_arr);
+        b.build_br_if(b.build_eq(header, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_view, bb_slow);
+        // A Number stored into a Float32 element in bounds is written here (as
+        // the read is, lower_elem_get); everything else is the module's stub.
+        b.position_at_end(bb_view);
+        mark_view_arm(*this, b, ptr, ei.idx, prefix);
         BasicBlock* at = b.current_block();
         BasicBlock* f32 = b.append_block(prefix + "_f32");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
@@ -405,8 +454,12 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 
     b.position_at_end(bb_slow);
     slow_arm(b);
-    b.build_call("bronze_elem_set", Type::void_type(),
-                 {obj, key, val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+    if (define) {
+        b.build_call("bronze_elem_define", Type::void_type(), {obj, key, val});
+    } else {
+        b.build_call("bronze_elem_set", Type::void_type(),
+                     {obj, key, val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+    }
     b.build_br(bb_done);
 
     b.position_at_end(bb_done);
