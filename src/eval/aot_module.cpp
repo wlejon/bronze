@@ -170,6 +170,11 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         }
         out.feedbackApplied = optimized.profileFits();
     }
+    for (const il::Function& fn : ilModule->functions) {
+        if (fn.isExternal || fn.blocks.empty()) continue;
+        ++out.functions;
+        if (fn.heat == il::Function::Heat::Never || fn.heat == il::Function::Heat::Entered) ++out.coldFunctions;
+    }
     // After the pipeline: the speculation step checks a harvest against the
     // IC layout digest of the module as lowered, which hashes the texts.
     if (!options.retainSource) ilModule->sourceTexts.clear();
@@ -181,6 +186,10 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     // An image is closed only before any of its code has run (closeImage).
     backend.setDirectJsCalls(true);
     backend.setBuildThreads(options.buildThreads);
+    // A module's host harvests it into a profile and builds it again on that
+    // (EvalOptions::harvestOutPath at its run): the evidence a harvest build
+    // keeps, so that rebuild has what `bronze build --harvest-out` gives one.
+    backend.setHarvestEvidence(true);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     if (!obj) {
         out.errorMessage = rendered(diags, sources, "code generation failed");

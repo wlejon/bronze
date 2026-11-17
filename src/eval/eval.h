@@ -236,6 +236,11 @@ struct ModuleBuildResult {
     // specialized a function (a harvest of another build, or a profile naming
     // nothing here, is not used); such a module is not harvested again.
     bool feedbackApplied = false;
+    // On a harvest: the module's functions, and those the harvested run never
+    // entered or entered only a few times, which compile COLD
+    // (il::Function::heat Never and Entered; docs/type-feedback.md).
+    uint32_t functions = 0;
+    uint32_t coldFunctions = 0;
 };
 
 // Compiles `source` as compileScript would with `options`, writes the module

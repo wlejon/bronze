@@ -414,7 +414,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // Which sites it counts goes into the image beside the counters
     // (buildObjectFile).
     options.count_slow_sites = optimize && !codegen::spentHarvest(module) && !inProcess_;
-    options.cache_evidence = options.count_slow_sites && !module.harvestOutPath.empty();
+    options.cache_evidence = options.count_slow_sites && (harvestEvidence_ || !module.harvestOutPath.empty());
     slowArmed_.reset();
     if (options.count_slow_sites && module.slowSiteCount != 0) {
         slowArmed_ = std::make_shared<std::vector<uint64_t>>((module.slowSiteCount + 63) / 64, 0);

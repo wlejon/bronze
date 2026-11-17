@@ -102,6 +102,14 @@ public:
     // object's bytes are the same at any count.
     void setBuildThreads(size_t threads) { buildThreads_ = threads; }
     size_t buildThreads() const { return buildThreads_; }
+    // A build made to be harvested whose harvest a host names at load
+    // (eval::buildModule: an app's AOT module, whose profile is written
+    // beside it) rather than through il::Module::harvestOutPath: it keeps
+    // the same evidence a `--harvest-out` build does (entry counts, shape
+    // and callee turns, allocation mementos), which a build on its harvest
+    // needs for heat, never-entered blocks and pretenuring. Nothing changes
+    // for an image spending a harvest, which counts nothing.
+    void setHarvestEvidence(bool on) { harvestEvidence_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -137,6 +145,7 @@ private:
     bool verifyLowered_ = true;
     bool lazyBodies_ = false;
     bool directCallees_ = false;
+    bool harvestEvidence_ = false;
     size_t buildThreads_ = 0;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
