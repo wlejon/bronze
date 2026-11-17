@@ -694,7 +694,11 @@ out and whose code rejoins the rest, is one the speculation step's OPTIMISTIC
 copy leaves at the top of (`src/opt/speculate/never_entered.cpp`,
 `optimistic.h`); the conservative copy keeps it, and the optimistic one
 retires to it after 100 such exits (docs/deopt-stats.md, "Optimistic
-copies").
+copies"). Every block holding an instruction that never ran, with the
+blocks it dominates, is also marked cold in the generic function before
+the copies are made (`unenteredBlocks`): a layout hint that puts it after
+the main line in every copy, and the inliner skips its calls; what the
+block does is unchanged.
 
 **Slow paths.** An inline fast path with a generic fallback (an element read
 or write, a constant-index read or write and the runs of them il2mir lowers

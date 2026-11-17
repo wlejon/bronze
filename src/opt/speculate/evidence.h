@@ -255,6 +255,12 @@ public:
     // entered and where leaving pays, or none without a counting harvest.
     std::vector<BlockId> neverEnteredBlocks(uint32_t fn) const;
 
+    // never_entered.cpp: every block of function `fn` the harvested run never
+    // entered, by the same signal, with the blocks they dominate, ascending;
+    // none without a counting harvest. The speculation step lays them out
+    // cold (il.h Block::cold), which also keeps the inliner out of them.
+    std::vector<BlockId> unenteredBlocks(uint32_t fn) const;
+
 private:
     struct SiteRefs;  // the feedback sites of one function, by instruction
 

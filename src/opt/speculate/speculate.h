@@ -89,6 +89,7 @@ struct SpeculateStats {
     uint32_t optimisticCopies = 0;     // S+ copies made (optimistic.h)
     uint32_t optimisticArms = 0;       // their generic arms turned into optimistic exits
     uint32_t neverEnteredLeft = 0;     // their never-entered blocks turned into optimistic exits
+    uint32_t unenteredCold = 0;        // blocks the harvested run never entered, laid out cold
 };
 
 // Runs the step over `module`. Reads every piece of evidence before it

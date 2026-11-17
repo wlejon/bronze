@@ -123,6 +123,7 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
     // 1. Evidence, on the untouched module.
     const auto lowered = static_cast<uint32_t>(module.functions.size());
     std::vector<FunctionPlan> plans;
+    std::vector<std::vector<BlockId>> unentered(lowered);
     {
         const Evidence evidence(module, profile, options, stats);
         // The keys the spelled harvest assumed eligible, registered at init.
@@ -140,6 +141,16 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
             if (plan->sites.empty()) continue;
             plan->neverEntered = evidence.neverEnteredBlocks(f);
             plans.push_back(std::move(*plan));
+        }
+        // Blocks the run never entered go after the main line (and the
+        // inliner stays out of them), in G and so in every copy of it.
+        for (uint32_t f = 0; f < lowered; ++f) unentered[f] = evidence.unenteredBlocks(f);
+    }
+    for (uint32_t f = 0; f < lowered; ++f) {
+        for (BlockId b : unentered[f]) {
+            il::Block& block = module.functions[f].blocks[b];
+            if (!block.cold) ++stats.unenteredCold;
+            block.cold = true;
         }
     }
     if (plans.empty()) return stats;

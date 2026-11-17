@@ -194,7 +194,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
         out += "; sites: prop.get " + n(s.propReads) + " (chains " + n(s.propReadChains) + "), shape sets " + n(s.shapeSetLeads) + " (followers " + n(s.shapeSetFollowers) + "), slot-keyed " + n(s.propSlotKeyed) + " (absent " + n(s.propAbsentTests) + "), proto data " + n(s.propProtoReads) + ", number slots " + n(s.numberSlotKeys) + " keys (reads " + n(s.numberSlotReads) + ", stores " + n(s.numberSlotStores) + "), prop.set " +
                n(s.propWrites) + ", add " + n(s.propAdds) + ", method " + n(s.methodCalls) + ", call " + n(s.plainCalls) + ", new " + n(s.constructs) + ", arith " +
                n(s.arithmetic) + ", elem.get " + n(s.elementReads) + ", elem.set " + n(s.elementWrites) + ", length " + n(s.arrayLengths) + ", push " + n(s.arrayPushes) + ", tdz " + n(s.tdzReads) + ", math " + n(s.mathCalls) +
-               "; optimistic copies " + n(s.optimisticCopies) + " (arms " + n(s.optimisticArms) + ", never-entered blocks " + n(s.neverEnteredLeft) + ")" +
+               "; optimistic copies " + n(s.optimisticCopies) + " (arms " + n(s.optimisticArms) + ", never-entered blocks " + n(s.neverEnteredLeft) + ", cold " + n(s.unenteredCold) + ")" +
                "; guards " + n(s.guards) + ", resume points " + n(s.resumePoints) + " (loop entry " +
                n(s.loopEntryPoints) + "), shape cells " + n(s.shapeCells) + ", redirected " + n(s.redirected) +
                "\n";

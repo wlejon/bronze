@@ -32,6 +32,14 @@
 // function, a throw path, joins nothing). A block another such block
 // dominates goes with it. The block must admit a resume point at its top
 // (speculate.h mayPlaceResumePoint, il/resume_rules.h).
+//
+// LAID OUT COLD (unenteredBlocks). Every block holding an instruction that
+// never ran, with the blocks it dominates, is marked cold in G before the
+// copies are made (driver.cpp), so in every copy: a layout hint (il.h
+// Block::cold) that puts the code the run never reached after the main line,
+// where it took instruction-cache lines between the hot blocks, and keeps the
+// inliner out of it. A block the run did enter but this signal misses only
+// loses that layout; the code it runs is the same.
 
 #include <algorithm>
 
@@ -110,6 +118,32 @@ std::vector<BlockId> Evidence::neverEnteredBlocks(uint32_t fnIndex) const {
         const bool inner = std::any_of(candidates.begin(), candidates.end(),
                                        [&](BlockId a) { return a != b && dom.dominates(a, b); });
         if (!inner) out.push_back(b);
+    }
+    return out;
+}
+
+std::vector<BlockId> Evidence::unenteredBlocks(uint32_t fnIndex) const {
+    std::vector<BlockId> out;
+    const il::Function& fn = module_.functions[fnIndex];
+    if (harvest_ == nullptr || fn.entrySlowSite == il::Instruction::kNoSlowSite || !slowArmed(fn.entrySlowSite) ||
+        slowCount(fn.entrySlowSite) == 0) {
+        return out;
+    }
+    const Cfg cfg(fn);
+    std::vector<BlockId> seeds;
+    for (BlockId b = 1; b < fn.blocks.size(); ++b) {
+        if (!cfg.reachable(b)) continue;
+        const auto& insts = fn.blocks[b].instructions;
+        if (std::any_of(insts.begin(), insts.end(), [&](const il::Instruction& i) { return neverRan(i); })) {
+            seeds.push_back(b);
+        }
+    }
+    if (seeds.empty()) return out;
+    // A block only a never-entered block leads to was never entered either.
+    const DomTree dom(cfg);
+    for (BlockId b = 1; b < fn.blocks.size(); ++b) {
+        if (!cfg.reachable(b)) continue;
+        if (std::any_of(seeds.begin(), seeds.end(), [&](BlockId s) { return dom.dominates(s, b); })) out.push_back(b);
     }
     return out;
 }
