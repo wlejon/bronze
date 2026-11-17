@@ -383,6 +383,10 @@ BRONZE_EMBED_API HeapPressure heapPressure();
 // tier-up, an OSR entry or a deopt next reads it. Returns the bytes
 // released; 0 while a compile is reading the program. Any thread.
 BRONZE_EMBED_API size_t releaseIdleCompiledBodies();
+// The same, stopping once about `budgetBytes` are released; *finished is
+// false when bodies were left, and the next call goes on from there. For a
+// host releasing on frames, a slice a frame.
+BRONZE_EMBED_API size_t releaseIdleCompiledBodies(size_t budgetBytes, bool* finished);
 
 // The collector's relocation counter: advanced by every collection that moves
 // an object, so it changes when addresses change and not merely when
