@@ -245,6 +245,13 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     return k.finish();
 }
 
+std::string moduleResName(const EvalOptions& options, const modules::ModuleOptions& modOpts,
+                          const CompileInputs& in, std::string_view entryText) {
+    const cache::Digest key =
+        programKey(cache::moduleKeyMaterial(), options, modOpts, in, entryText, /*withFeedback=*/false);
+    return "__bronze_eval_res_m" + key.hex().substr(0, 16);
+}
+
 std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptions& options,
                                          const CompileInputs& in, const std::string& resName,
                                          DiagnosticSink& diags, SourceSet& sources,

@@ -14,6 +14,7 @@ struct PassPipelineOptions;
 }
 namespace il2mir {
 struct TranslatorOptions;
+struct SlowArmedBits;
 }
 
 namespace bronze {
@@ -108,8 +109,15 @@ public:
     // the same evidence a `--harvest-out` build does (entry counts, shape
     // and callee turns, allocation mementos), which a build on its harvest
     // needs for heat, never-entered blocks and pretenuring. Nothing changes
-    // for an image spending a harvest, which counts nothing.
+    // for an image spending a harvest, which counts nothing. In process
+    // (setInProcess) it is the first run of a host's app, compiled to be
+    // harvested (eval::EvalOptions::harvestOutPath): every tier runs the
+    // counting code, since all of them run the MIR it lowers into.
     void setHarvestEvidence(bool on) { harvestEvidence_ = on; }
+    // The last buildMirModule's armed bitmap (il2mir::SlowArmedBits), null
+    // when its code counts nothing: an in-process image attaches its own
+    // words to it once loaded, since lazy bodies arm their sites later.
+    const std::shared_ptr<il2mir::SlowArmedBits>& slowArmed() const { return slowArmed_; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -155,7 +163,7 @@ private:
     // The slow sites the last buildMirModule's lowering armed with a counter
     // (il2mir::TranslatorOptions `slow_armed`), for buildObjectFile to lay out
     // before the counters; null when it counted none.
-    std::shared_ptr<std::vector<uint64_t>> slowArmed_;
+    std::shared_ptr<il2mir::SlowArmedBits> slowArmed_;
 };
 
 }  // namespace bronze

@@ -64,10 +64,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_slow_count_fn([this](Builder& b, uint32_t index) {
             // Lowering may run on several threads.
-            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
-                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
-                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
-            }
+            if (options_.slow_armed) options_.slow_armed->mark(index);
             Value* at = b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             Value* n = with_alias_class(b.build_load(Type::i64(), at, 0), kSlowCountAliasClass);
@@ -78,10 +75,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     if (options.cache_evidence && options.slow_site_count != 0) {
         prop_lowering_.set_shape_turn_fn([this](Builder& b, uint32_t site, Value* keyed) {
             const uint32_t index = site + kShapeTurnArm;
-            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
-                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
-                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
-            }
+            if (options_.slow_armed) options_.slow_armed->mark(index);
             const auto word = [&](uint32_t arm) {
                 return b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                    b.build_iconst_i64(ic_slow_count_offset(site + arm, options_.slow_site_count)));
@@ -101,10 +95,7 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     // arm (arm_count) adds one.
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_arm_mark_fn([this](Builder& b, uint32_t index, bool count) {
-            if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
-                std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
-                    .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
-            }
+            if (options_.slow_armed) options_.slow_armed->mark(index);
             Value* at = b.build_add(module_data_addr(b, "__bronze_ic_table"),
                                     b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
             Value* now = b.build_iconst_i64(1);

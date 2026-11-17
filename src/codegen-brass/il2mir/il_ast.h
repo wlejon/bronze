@@ -317,6 +317,11 @@ struct BronzeFunction {
     // harvest the build spent saw it run seldom or never (il.h
     // Function::heat; il_to_brass_ast.cpp).
     bool cold = false;
+    // A cold function's ENTRY COUNTER in the image's cold-entry table
+    // (TranslatorOptions::cold_entry_count; UINT32_MAX: none): what says,
+    // after a run of a module built on a harvest, that the run entered often
+    // what the harvest saw seldom or never.
+    uint32_t cold_entry = UINT32_MAX;
     // il.h Function::inlineScopes: the callee's function name, the call's
     // position, and the scope the call is in (0: the function's own code).
     struct InlineScope {

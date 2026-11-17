@@ -6,6 +6,7 @@
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
+#include "il/feedback_site.h"
 #include "il/verifier_proofs.h"
 #include "support/timings.h"
 
@@ -409,16 +410,30 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         }
     }
     options.slow_site_count = module.slowSiteCount;
+    options.cold_entry_count = codegen::coldEntryCount(module);
     // An image whose caches a harvest may read counts its slow arms too: one
-    // built on no harvest, in an object (an in-process tier has no harvest).
-    // Which sites it counts goes into the image beside the counters
-    // (buildObjectFile).
-    options.count_slow_sites = optimize && !codegen::spentHarvest(module) && !inProcess_;
+    // built on no harvest, in an object, or in process when it is compiled to
+    // be harvested (setHarvestEvidence). Which sites it counts goes into the
+    // image beside the counters (buildObjectFile, buildDataImage).
+    options.count_slow_sites =
+        !codegen::spentHarvest(module) && ((optimize && !inProcess_) || (inProcess_ && harvestEvidence_));
     options.cache_evidence = options.count_slow_sites && (harvestEvidence_ || !module.harvestOutPath.empty());
     slowArmed_.reset();
     if (options.count_slow_sites && module.slowSiteCount != 0) {
-        slowArmed_ = std::make_shared<std::vector<uint64_t>>((module.slowSiteCount + 63) / 64, 0);
+        slowArmed_ = std::make_shared<il2mir::SlowArmedBits>((module.slowSiteCount + 63) / 64);
         options.slow_armed = slowArmed_;
+        if (options.lazy_bodies) {
+            // A body built on first need arms its sites then, and one never
+            // needed never does; but every body counts its entries and loop
+            // headers (il_lowering.cpp), so a function the run never entered
+            // reads as one it never entered, not one the build did not count
+            // (opt/speculate Evidence::counted), as in an object.
+            for (const il::Function& fn : module.functions) {
+                if (fn.isExternal || fn.blocks.empty() || fn.entrySlowSite == il::Instruction::kNoSlowSite) continue;
+                slowArmed_->mark(fn.entrySlowSite);
+                slowArmed_->mark(fn.entrySlowSite + il::kLoopCountOffset);
+            }
+        }
     }
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
@@ -564,7 +579,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // tables, the descriptors and pc tables, the data cells and the import
     // table (brass_backend_sections.cpp).
     codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
-                                         globalCacheCount, methodIcSites, slowArmed_.get()};
+                                         globalCacheCount, methodIcSites,
+                                         slowArmed_ ? &slowArmed_->words : nullptr};
     codegen::translateDebugLocations(obj, module, uniqueNames, entrySymbol_);
     codegen::emitBronzeSections(obj, target, sectionInputs, timer);
     codegen::emitNativeDebugSections(obj, module, uniqueNames, entrySymbol_, emitDebugInfo_);
@@ -580,8 +596,11 @@ brass::object::ObjectFile BrassBackend::buildDataImage(const il::Module& module,
     brass::object::ObjectFile obj;
     obj.target = target_;
     obj.module_name = module.name;
+    // The armed bitmap as lowering has left it so far (lazy bodies arm the
+    // rest into the loaded image: SlowArmedBits::attach).
     codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
-                                         globalCacheCount, methodIcSites};
+                                         globalCacheCount, methodIcSites,
+                                         slowArmed_ ? &slowArmed_->words : nullptr};
     codegen::emitBronzeSections(obj, target_, sectionInputs, timer);
     return obj;
 }

@@ -55,6 +55,11 @@ struct TieredEngineConfig {
     // the runtime, as an image's do (BrassBackend::setDirectJsCalls). A
     // program the process may free gets direct call sites only.
     bool livesForProcess = false;
+    // The program is an app's first run, compiled to be harvested
+    // (eval::EvalOptions::harvestOutPath; BrassBackend::setHarvestEvidence):
+    // its MIR counts what an ahead-of-time module made to be harvested
+    // counts, in every tier, and its IC identity names it for the harvest.
+    bool harvestEvidence = false;
 };
 
 class BrassTieredProgram {
@@ -108,6 +113,9 @@ public:
     // The cell naming the module's per-thread data slot (bronze_abi.h,
     // `bronze_module_instance`); null when !perThreadData().
     const uint64_t* moduleSlotCell() const;
+    // The program's IC identity record (bronze_abi_layout.h), what
+    // embed::harvestInlineCaches takes; null under Tier2_Optimized.
+    const void* icIdentity() const;
 
     // Drops the optimizations queued for this program and waits out the one
     // being compiled; later tier-ups queue again. For a host about to exit.

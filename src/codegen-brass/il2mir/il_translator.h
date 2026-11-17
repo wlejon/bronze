@@ -3,6 +3,8 @@
 #include <brass/mir/module.hpp>
 #include <brass/core/diagnostics.hpp>
 #include "il_ast.h"
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -19,6 +21,34 @@ struct RangeAnalysisStats;
 } // namespace brass
 
 namespace il2mir {
+
+// The ARMED bitmap of an image whose code counts its slow sites (one bit per
+// site lowering gave a counter: TranslatorOptions::slow_armed), laid out
+// before the counters, where a harvest reads it. Lowering may run on several
+// threads, and for an image built in process with lazy bodies after the
+// image is loaded: `live`, once set, is that image's own copy of the words,
+// which every later mark sets too.
+struct SlowArmedBits {
+    explicit SlowArmedBits(size_t words) : words(words, 0) {}
+    std::vector<uint64_t> words;
+    std::atomic<uint64_t*> live{nullptr};
+    void mark(uint32_t index) {
+        if (index / 64 >= words.size()) return;
+        const uint64_t bit = uint64_t{1} << (index % 64);
+        std::atomic_ref<uint64_t>(words[index / 64]).fetch_or(bit, std::memory_order_relaxed);
+        if (uint64_t* image = live.load(std::memory_order_acquire)) {
+            std::atomic_ref<uint64_t>(image[index / 64]).fetch_or(bit, std::memory_order_relaxed);
+        }
+    }
+    // The image's words from now on: what was marked so far is copied in.
+    void attach(uint64_t* image) {
+        live.store(image, std::memory_order_release);
+        for (size_t w = 0; w < words.size(); ++w) {
+            const uint64_t bits = std::atomic_ref<uint64_t>(words[w]).load(std::memory_order_relaxed);
+            if (bits != 0) std::atomic_ref<uint64_t>(image[w]).fetch_or(bits, std::memory_order_relaxed);
+        }
+    }
+};
 
 struct FunctionMeta {
     bool needs_env = false;
@@ -242,15 +272,19 @@ struct TranslatorOptions {
     // (il_abi.h ic_slow_count_offset). With `count_slow_sites` (an image
     // that may be harvested: one built on no profile) each slow arm bumps its
     // instruction's counter, and lowering sets the site's bit in
-    // `slow_armed` (sized (count + 63) / 64 words by the caller, which lays
-    // it out before the counters).
+    // `slow_armed` (SlowArmedBits, sized by the caller, which lays it out
+    // before the counters).
     uint32_t slow_site_count = 0;
     bool count_slow_sites = false;
     // The image is built to be harvested (il::Module::harvestOutPath): its
     // named reads and writes count their off-way receivers too
     // (il/feedback_site.h kShapeTurnArm).
     bool cache_evidence = false;
-    std::shared_ptr<std::vector<uint64_t>> slow_armed;
+    std::shared_ptr<SlowArmedBits> slow_armed;
+    // COLD ENTRIES: words of the image's `__bronze_cold_entries` table (0:
+    // none), one a function by its IL index; each cold function
+    // (BronzeFunction::cold_entry) adds one to its word on entry.
+    uint32_t cold_entry_count = 0;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

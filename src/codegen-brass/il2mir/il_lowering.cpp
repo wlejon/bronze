@@ -79,10 +79,7 @@ Value* IlLowering::alloc_memento(Builder& b, uint32_t site) {
         return nullptr;
     }
     const auto word = [&](uint32_t index) {
-        if (options_.slow_armed && index / 64 < options_.slow_armed->size()) {
-            std::atomic_ref<uint64_t>((*options_.slow_armed)[index / 64])
-                .fetch_or(uint64_t{1} << (index % 64), std::memory_order_relaxed);
-        }
+        if (options_.slow_armed) options_.slow_armed->mark(index);
         return b.build_add(b.build_func_addr(module_sym("__bronze_ic_table")),
                            b.build_iconst_i64(ic_slow_count_offset(index, options_.slow_site_count)));
     };
@@ -466,6 +463,14 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         // Function::entrySlowSite); a coroutine body's entry block runs again
         // at every resume, which counts each stretch it runs.
         if (fn_ast.entry_slow_site != UINT32_MAX) prop_lowering_.count_index(b, fn_ast.entry_slow_site);
+        // A cold function's entries (TranslatorOptions::cold_entry_count).
+        if (fn_ast.cold_entry < options_.cold_entry_count) {
+            Value* at = b.build_add(module_data_addr(b, std::string(kColdEntriesSymbol)),
+                                    b.build_iconst_i64(static_cast<int64_t>(fn_ast.cold_entry) * 8));
+            Value* n = with_alias_class(b.build_load(Type::i64(), at, 0), kSlowCountAliasClass);
+            with_alias_class(b.build_store(Type::i64(), at, 0, b.build_add(n, b.build_iconst_i64(1))),
+                             kSlowCountAliasClass);
+        }
     }
 
     // 3. Set up non-entry block parameters

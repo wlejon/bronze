@@ -8,6 +8,7 @@
 #include <brass/target/aot_linker.hpp>
 
 #include "abi/bronze_abi.h"
+#include "codegen-brass/brass_backend_sections.h"
 
 namespace bronze::codegen {
 namespace {
@@ -90,6 +91,9 @@ std::vector<std::string> moduleExports(const brass::object::ObjectFile& obj,
         // The inline-cache identity (bronze_abi_layout.h), which a host hands
         // embed::harvestInlineCaches.
         prefix + "_ic_identity",
+        // The cold functions' entry counts of a module built on a harvest
+        // (brass_backend_sections.h coldEntriesSymbol), eval::LoadedModule's.
+        coldEntriesSymbol(entry),
     };
     std::vector<std::string> present;
     for (const std::string& name : wanted) {

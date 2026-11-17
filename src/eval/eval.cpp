@@ -269,8 +269,13 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     // whole-program optimizing tier is the exception and stays serialized.
     std::unique_lock<std::mutex> compileLock(g_jitCompileMutex);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
+    // An app's first run, compiled to be harvested (EvalOptions::
+    // harvestOutPath): lowered as a module build of the program lowers, so
+    // the harvest names its sites as that build numbers them, and its code
+    // counts what a module made to be harvested counts.
+    const bool evidence = !options.harvestOutPath.empty();
 
-    const bool share = options.shareAcrossThreads && in.tier != ExecutionTier::Tier2_Optimized;
+    const bool share = options.shareAcrossThreads && in.tier != ExecutionTier::Tier2_Optimized && !evidence;
     std::string shareKey;
     // A shared program compiles once: a second thread asking for the same key
     // while the first compiles waits for that compile, not for every compile.
@@ -298,7 +303,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     if (in.tier != ExecutionTier::Tier2_Optimized) compileLock.unlock();
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
     if (!ilModule) {
-        ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources);
+        ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources, /*aheadOfTime=*/evidence);
         if (!ilModule) return nullptr;
 
         if (store) {
@@ -322,6 +327,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     // The programs runProgramAndCollectResult retains: what a host loads as a
     // module, or shares across threads, or asks to keep.
     config.livesForProcess = options.moduleHandleOut != nullptr || share || options.livesForProcess;
+    config.harvestEvidence = evidence;
 
     std::unique_ptr<BrassTieredProgram> compiled = BrassTieredEngine(config).compile(*ilModule, diags);
     if (!compiled) return nullptr;
@@ -332,6 +338,10 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
             delete p;
         });
     timer.mark("codegen");
+    if (evidence) {
+        res.harvestIdentity = program->icIdentity();
+        res.harvestOutPath = options.harvestOutPath;
+    }
     // Bind the program's import table from the registry it was compiled
     // against, before anything runs. The entry rebinds on its own first
     // instruction and would be FATAL on a gap; doing it here first turns a
@@ -581,8 +591,14 @@ std::unique_ptr<CompiledScript> compileEntry(std::string_view entryText, bool en
     }
     modules::ModuleOptions modOpts = moduleOptionsFor(options);
     modules::DependencyLog deps;
+    // A compile to be harvested is neither served from the code cache nor
+    // stored in it: its IL is a module build's (compileUnit), not the IL a
+    // compile with the same inputs keeps there. Its result is named as that
+    // build names it.
+    const bool evidence = !options.harvestOutPath.empty();
+    if (evidence && entryKnown) res->resName = detail::moduleResName(options, modOpts, in, entryText);
     const std::optional<cache::Digest> key =
-        entryKnown ? codeCacheKey(options, modOpts, in, entryText) : std::nullopt;
+        entryKnown && !evidence ? codeCacheKey(options, modOpts, in, entryText) : std::nullopt;
     if (key) {
         // Deterministic, so the name the stored IL carries is the name this
         // compile would have chosen.
@@ -635,7 +651,7 @@ std::unique_ptr<CompiledScript> compileScript(std::string_view source, const Eva
 std::unique_ptr<CompiledScript> compileFile(const std::string& filePath, const EvalOptions& options) {
     std::string text;
     bool known = false;
-    if (!options.codeCacheDir.empty()) {
+    if (!options.codeCacheDir.empty() || !options.harvestOutPath.empty()) {
         std::ifstream in(filePath, std::ios::binary);
         if (in) {
             std::ostringstream ss;
@@ -678,6 +694,8 @@ embed::CallResult runCompiledScript(std::unique_ptr<CompiledScript> script, cons
             return embed::CallResult{err, /*thrown=*/true};
         }
     }
+    // Before the entry, whose init registers the caches the harvest reads.
+    if (script->harvestIdentity) embed::harvestInlineCaches(script->harvestIdentity, script->harvestOutPath);
     return runProgramAndCollectResult(std::move(script->program), script->resName, options.moduleHandleOut);
 }
 

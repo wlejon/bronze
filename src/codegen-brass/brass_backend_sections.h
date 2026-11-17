@@ -29,6 +29,14 @@ std::string icIdentitySymbol(const std::string& entrySymbol);
 // (BRONZE_ABI_IC_IDENTITY_PROFILED), and its slow arms count nothing.
 bool spentHarvest(const il::Module& module);
 
+// The words of a module's cold-entry table (il2mir::kColdEntriesSymbol): one
+// per function when the build's harvest made any of them cold, else 0.
+uint32_t coldEntryCount(const il::Module& module);
+
+// The exported name of that table, behind its word count (bronze_abi.h has
+// none: only the host that loaded the module reads it, eval::loadModule).
+std::string coldEntriesSymbol(const std::string& entrySymbol);
+
 // Everything the object carries beside brass's code that the runtime reads by
 // name (bronze_abi.h has each layout); what BrassBackend::buildObjectFile
 // appends after brass has compiled the module.

@@ -5,6 +5,7 @@
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
 #include "codegen-brass/il2mir/il_pipeline.h"
+#include "codegen-brass/il2mir/il_translator.h"
 #include "embed/embed.h"
 
 #include "support/diagnostics.h"
@@ -225,6 +226,11 @@ const uint64_t* BrassTieredProgram::moduleSlotCell() const {
     return static_cast<const uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_module_slot")));
 }
 
+const void* BrassTieredProgram::icIdentity() const {
+    if (tier_ == ExecutionTier::Tier2_Optimized) return nullptr;
+    return symbolAddress(codegen::icIdentitySymbol(entrySymbol_));
+}
+
 BrassTieredEngine::BrassTieredEngine(const TieredEngineConfig& config)
     : config_(config) {}
 
@@ -264,6 +270,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // needs, not every function it has. Tier 1 compiles everything before
     // running anyway.
     backend.setLazyBodies(tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter);
+    backend.setHarvestEvidence(config_.harvestEvidence);
 
     bool hasEscapable = !module.censusSites.empty() && !module.censusOutPath.empty();
     if (!hasEscapable) {
@@ -326,6 +333,14 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
                                             pipeline, diags);
     if (!prog->image_) return nullptr;
     ptimer.mark("image load");
+    // A body built after this (lazy bodies, a tier-up's) arms its slow sites
+    // in the image's own bitmap, the words right before the counters, which
+    // the harvest reads.
+    if (const auto& armed = backend.slowArmed()) {
+        auto* counts = static_cast<uint64_t*>(
+            prog->image_->symbolAddress(codegen::moduleSymbolName(entrySymbol, "__bronze_slow_counts")));
+        if (counts) armed->attach(counts - armed->words.size());
+    }
 
     prog->codeTokens_.reserve(prog->mirModule_->functions().size() + 1);
     prog->codeTokens_.push_back(&prog->dispatchTable());

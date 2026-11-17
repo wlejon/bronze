@@ -748,6 +748,9 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         // negligible either way. Without a harvest every function is
         // optimized.
         bfn.cold = fn.heat == il::Function::Heat::Never || fn.heat == il::Function::Heat::Entered;
+        // Counted by its index (BrassBackend::coldEntryCount), the table one
+        // word a function of the module.
+        if (bfn.cold && !fn.blocks.empty()) bfn.cold_entry = static_cast<uint32_t>(fnIdx);
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

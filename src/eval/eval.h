@@ -106,17 +106,23 @@ struct EvalOptions {
     uint64_t codeCacheMaxBytes = uint64_t{256} << 20;
     // Called on the compiling thread at each phase boundary.
     std::function<void(const CompileProgress&)> onProgress = {};
-    // Ahead-of-time modules only (buildModule / loadModule / runModule;
-    // docs/type-feedback.md, "Harvest"). `feedbackInPath`: a type-feedback
+    // docs/type-feedback.md, "Harvest". `feedbackInPath` (ahead-of-time
+    // modules only: buildModule / loadModule): a type-feedback
     // file, a `--feedback-out` profile or an inline-cache harvest, that the
     // build specializes on as `bronze build --feedback-in` does; its bytes are
     // part of the module key, so a new file is a new module. A missing file
-    // is no profile, and so is one the build did not use
-    // (ModuleBuildResult::feedbackApplied false): that module is recorded
-    // under the key of a build without the file, and loads without it. `harvestOutPath`: runModule has the runtime read the
-    // module's inline caches back into this file (embed::harvestInlineCaches;
-    // written by embed::writeInlineCacheHarvests and at exit), unless the
-    // module was built on a profile it used. Running a module, not building it.
+    // is no profile; one that is not this program's stops buildModule before
+    // code generation (ModuleBuildResult::profileStale).
+    // `harvestOutPath`: the run's inline caches and counters are read back
+    // into this file (embed::harvestInlineCaches; written by
+    // embed::writeInlineCacheHarvests and at exit), the profile a buildModule
+    // of the same text and options specializes on. For compileScript /
+    // compileFile it makes the compile one TO BE HARVESTED, an app's first
+    // run: lowered as buildModule lowers (so the harvest numbers its sites as
+    // that build does), its code counting function entries, loops, calls and
+    // slow arms in every tier, not served from or stored in the code cache;
+    // runCompiledScript arms the harvest. For runModule, a module built on no
+    // profile is harvested so (one built on a profile it used never is).
     std::string feedbackInPath = {};
     std::string harvestOutPath = {};
     // buildModule only: threads for the per-function work of code generation
@@ -139,6 +145,10 @@ struct CompiledScript {
     // The native import table runCompiledScript binds before the entry runs,
     // when the compile used a captured manifest; empty otherwise.
     std::string deferredNativeTable;
+    // A compile to be harvested (EvalOptions::harvestOutPath): the program's
+    // IC identity and the file runCompiledScript arms the harvest with.
+    const void* harvestIdentity = nullptr;
+    std::string harvestOutPath;
 };
 
 // Everything a compile reads from the CALLING thread's runtime state — its
@@ -236,6 +246,10 @@ struct ModuleBuildResult {
     // specialized a function (a harvest of another build, or a profile naming
     // nothing here, is not used); such a module is not harvested again.
     bool feedbackApplied = false;
+    // EvalOptions::feedbackInPath named a file that is not this module's
+    // (the harvest of another text, options or compiler): nothing was built
+    // (success false), and the file is the host's to drop.
+    bool profileStale = false;
     // On a harvest: the module's functions, and those the harvested run never
     // entered or entered only a few times, which compile COLD
     // (il::Function::heat Never and Entered; docs/type-feedback.md).
@@ -260,6 +274,12 @@ struct LoadedModule {
     // The image's IC identity record (`<entry>_ic_identity`,
     // bronze_abi_layout.h): what embed::harvestInlineCaches takes.
     const void* icIdentity = nullptr;
+    // A module built on a harvest that made functions cold: how often the
+    // run entered each of them so far, one word a function of the module
+    // (`coldEntryCount` words; null for none). A cold function entered often
+    // says the harvest missed what this run does.
+    const uint64_t* coldEntries = nullptr;
+    uint32_t coldEntryCount = 0;
 };
 
 // Checks the record at `recordPath` against `source` and `options`, then maps

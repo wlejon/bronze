@@ -701,6 +701,27 @@ given in three ways:
   `eval::runModule`. That call passes the loaded module's identity to
   `embed::harvestInlineCaches(identity, path)`, which returns false for a
   profiled module.
+- An embedding host sets `eval::EvalOptions::harvestOutPath` for
+  `eval::compileScript` / `compileFile`: the program's FIRST RUN, compiled in
+  process to be harvested, with no module built on nothing (bro's installed
+  apps, bro docs/apps.md). It is lowered as `buildModule` lowers it (the
+  ahead-of-time front end, `lower::lowerAheadOfTime`, and the module's result
+  name, `detail::moduleResName`), so `numberSlowSites` and `icLayoutDigest`
+  give the IL of the build that reads the harvest: the same sites and the
+  same digest. The pipeline that build then runs (`opt::optimizeModule`)
+  renumbers nothing. The tiered engine compiles it with harvest evidence
+  (`TieredEngineConfig::harvestEvidence`, `BrassBackend::setHarvestEvidence`
+  in process): the counters, shape and callee turns, arms and allocation
+  mementos are MIR, so the interpreter, baseline and optimized tiers and OSR
+  entries all run them, and a function keeps counting when it gets hot. A
+  body lowered lazily arms its sites when it is built, into the loaded
+  image's own bitmap (`il2mir::SlowArmedBits::attach`); every function's
+  entry and loop counts are armed up front, so a function the run never
+  entered reads as never entered (`Evidence::counted`), as in a module. The
+  compile is not served from or stored in the code cache, and
+  `runCompiledScript` arms the harvest (`CompiledScript::harvestIdentity`).
+  On ai-arena (6k lines, headless) the counting run starts and runs frames
+  as the plain JIT does, within noise.
 - A host calls `embed::harvestInlineCaches` itself.
 
 `embed::writeInlineCacheHarvests()` folds the live instances on the calling
@@ -713,6 +734,19 @@ has the same property keys, and therefore the same digest, as the build the
 harvest came from. `ModuleBuildResult::feedbackApplied` says whether the
 file is this module's (a harvest from a build of the same text, even one
 in which nothing ran often enough to specialize on).
+A file that is not (another text's, options' or compiler's harvest) stops
+the build before code generation: `ModuleBuildResult::profileStale`, and
+nothing is written.
+
+**Cold entries.** A build on a harvest that made functions cold
+(`Function::heat` Never or Entered) gives the image one word per function,
+`__bronze_cold_entries` (exported behind its word count as
+`<entry>_cold_entries`, `eval::LoadedModule::coldEntries`), and each cold
+function adds one to its word on entry. Cold functions are entered seldom by
+the harvest's own measure, so this costs nothing that shows; a host reads it
+after a run to see whether the run entered often what the harvest saw seldom
+or never: the harvest was too thin a run, and the host harvests again (bro
+docs/apps.md).
 
 **Format.** A harvest is a version 9 file with these rows (any `fn` rows
 come first):

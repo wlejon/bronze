@@ -35,6 +35,15 @@ bool spentHarvest(const il::Module& module) {
                        [](const il::Function& fn) { return fn.isSpeculated(); });
 }
 
+uint32_t coldEntryCount(const il::Module& module) {
+    const bool any = std::any_of(module.functions.begin(), module.functions.end(), [](const il::Function& fn) {
+        return fn.heat == il::Function::Heat::Never || fn.heat == il::Function::Heat::Entered;
+    });
+    return any ? static_cast<uint32_t>(module.functions.size()) : 0u;
+}
+
+std::string coldEntriesSymbol(const std::string& entrySymbol) { return entrySymbol + "_cold_entries"; }
+
 std::string icIdentitySymbol(const std::string& entrySymbol) {
     return entrySymbol.empty() || entrySymbol == "main" || entrySymbol == "bronze_main"
                ? "bronze_object_ic_identity"
@@ -603,6 +612,21 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
                      cellsOffset, cellsBytes, SymbolBinding::Local);
     }
 
+    // The cold entries (il2mir::kColdEntriesSymbol): the word count, then a
+    // zero word per function, which a cold one bumps on entry. Exported at
+    // the count for the host that runs the module.
+    if (const uint32_t cold = coldEntryCount(module); cold != 0) {
+        dataSec.align_to(8);
+        const size_t countOffset = dataSec.data.size();
+        dataSec.data.resize(countOffset + (size_t{1} + cold) * sizeof(uint64_t), 0);
+        const uint64_t words = cold;
+        std::memcpy(dataSec.data.data() + countOffset, &words, sizeof(words));
+        defineSymbol(obj, moduleSymbolName(entrySymbol, std::string(il2mir::kColdEntriesSymbol)), dataIdx,
+                     countOffset + sizeof(uint64_t), cold * sizeof(uint64_t), SymbolBinding::Local);
+        defineSymbol(obj, coldEntriesSymbol(entrySymbol), dataIdx, countOffset,
+                     (size_t{1} + cold) * sizeof(uint64_t), SymbolBinding::Global);
+    }
+
     // The literal shapes (il2mir::kLiteralShapesSymbol): zero, per thread.
     if (!module.objectLiterals.empty()) {
         dataSec.align_to(8);
@@ -669,9 +693,11 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     // the identity record carries. Right before them the ARMED bitmap: bit i
     // of word i / 64 set when the code counts site i (`slowArmed`, from
     // lowering; all clear in a build that counts nothing), which the harvest
-    // writes beside the counts. An image whose code counts nothing (built on
-    // a harvest, which is never harvested again, or in process: `slowArmed`
-    // null) has neither, and its identity record says so.
+    // writes beside the counts (an in-process image's lazy bodies arm theirs
+    // into the loaded words: il2mir::SlowArmedBits). An image whose code
+    // counts nothing (built on a harvest, which is never harvested again, or
+    // in process and not to be harvested: `slowArmed` null) has neither, and
+    // its identity record says so.
     if (module.slowSiteCount != 0 && slowArmed != nullptr) {
         const size_t armedWords = (static_cast<size_t>(module.slowSiteCount) + 63) / 64;
         const size_t bytes = (armedWords + module.slowSiteCount) * sizeof(uint64_t);
@@ -777,7 +803,8 @@ void demoteInternalSymbols(ObjectFile& obj, const std::string& entrySymbol) {
                 sym.name != importsSymbol &&
                 sym.name != codeRangesSymbol &&
                 sym.name != codeRangeCountSymbol &&
-                sym.name != icIdentitySymbol(entrySymbol)) {
+                sym.name != icIdentitySymbol(entrySymbol) &&
+                sym.name != coldEntriesSymbol(entrySymbol)) {
                 sym.binding = SymbolBinding::Local;
             }
         }

@@ -69,12 +69,23 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
                          std::string_view entryText, bool withFeedback = true,
                          std::vector<cache::KeyPart>* parts = nullptr);
 
+// The name a module's trailing expression's value is kept under: a function
+// of its key without the profile (programKey, `withFeedback` false, under the
+// module material), so a build on a harvest, the build it was harvested from
+// and a first run compiled in process to be harvested (EvalOptions::
+// harvestOutPath) all name it alike.
+std::string moduleResName(const EvalOptions& options, const modules::ModuleOptions& modOpts,
+                          const CompileInputs& in, std::string_view entryText);
+
 // The front end after the graph is loaded: the eval transform (a trailing
 // expression's value kept under `resName`, top-level declarations made
 // global), inference and lowering. Null with `diags` holding why.
 // `aheadOfTime` is a module build (aot_module.cpp): the ahead-of-time front
 // end, as `bronze build` lowers; buildModule then runs the optimiser pipeline
-// (opt/pipeline/pipeline.h). A tiered compile (compileScript) runs no
+// (opt/pipeline/pipeline.h). A compile to be harvested (EvalOptions::
+// harvestOutPath) lowers so too, since its harvest is read by a module build
+// of the same program, by site numbers that lowering hands out. A tiered
+// compile (compileScript) runs no
 // optimiser over its IL: generic IL is mostly calls the redundancy pass cannot
 // see through, and brass's own optimizer runs on each function it tiers up.
 std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptions& options,

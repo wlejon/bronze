@@ -251,6 +251,13 @@ inline constexpr uint32_t kLastCalleeBit = 62;
 // `__bronze_shape_cell_keys`, read-only, each cell's key as a u32 byte length
 // and its bytes, one after another (brass_backend_sections.cpp).
 inline constexpr std::string_view kShapeCellsSymbol = "__bronze_shape_cells";
+// THE COLD ENTRIES (TranslatorOptions::cold_entry_count): `__bronze_cold_entries`,
+// one u64 per function of the module by its IL index, in the module's data:
+// a cold function (one its build's harvest saw seldom or never) adds one on
+// entry. Exported as `<entry>_cold_entries`, with its word count as the u32
+// `<entry>_cold_entry_count` (brass_backend_sections.cpp), for the host
+// that ran the module (eval::LoadedModule::coldEntries).
+inline constexpr std::string_view kColdEntriesSymbol = "__bronze_cold_entries";
 inline constexpr std::string_view kShapeCellKeysSymbol = "__bronze_shape_cell_keys";
 // `__bronze_number_slot_keys`, read-only: the module's double-slot keys
 // (il.h Module::numberSlotKeys) as u32 key constant indices, which the entry

@@ -15,6 +15,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/module_image.h"
 #include "embed/embed.h"
 #include "embed/embed_native.h"
@@ -57,11 +58,6 @@ std::string rendered(DiagnosticSink& diags, const SourceSet& sources, const char
     std::string msg = diags.render(sources);
     return msg.empty() ? std::string(fallback) : msg;
 }
-
-// The name a stored program keeps its trailing expression's value under: a
-// function of the key, as a cached entry's is, so a rebuild with the same
-// inputs writes the same module.
-std::string resNameFor(const cache::Digest& key) { return "__bronze_eval_res_m" + key.hex().substr(0, 16); }
 
 // The two platform primitives, and nothing else.
 void* openImage(const fs::path& path, std::string& error) {
@@ -139,9 +135,8 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     std::vector<cache::KeyPart> keyParts;
     const cache::Digest profiledKey =
         detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, true, &keyParts);
-    const cache::Digest plainKey =
-        detail::programKey(cache::moduleKeyMaterial(), options, modOpts, in, source, /*withFeedback=*/false);
-    const std::string resName = resNameFor(plainKey);
+    // As a rebuild with the same inputs writes the same module.
+    const std::string resName = detail::moduleResName(options, modOpts, in, source);
 
     auto astModule = modules::loadProgramSource(std::string(source), options.filename, sources, diags, modOpts);
     if (diags.hasErrors() || !astModule) {
@@ -169,6 +164,15 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
             return out;
         }
         out.feedbackApplied = optimized.profileFits();
+    }
+    // A profile that is not this module's (another build's harvest: the text,
+    // the options or the compiler changed since) stops the build here, before
+    // code generation: the host is after the module built on a run of this
+    // program, and a module built on nothing is not that.
+    if (!out.feedbackApplied && !options.feedbackInPath.empty()) {
+        out.profileStale = true;
+        out.errorMessage = "the profile " + options.feedbackInPath + " is not this program's";
+        return out;
     }
     for (const il::Function& fn : ilModule->functions) {
         if (fn.isExternal || fn.blocks.empty()) continue;
@@ -217,19 +221,9 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
     }
 #endif
 
-    // A profile the build did not use (another build's harvest, a file naming
-    // nothing here) left no mark on the module: it is the module a build
-    // without the file makes, and is recorded as that one, so the host can
-    // drop the stale file and still load what it just built.
-    cache::Digest key = profiledKey;
-    if (!out.feedbackApplied && !options.feedbackInPath.empty()) {
-        detail::CompileInputs unfed = in;
-        unfed.feedbackText.clear();
-        key = detail::programKey(cache::moduleKeyMaterial(), options, modOpts, unfed, source, true, &keyParts);
-    }
     cache::ModuleRecord record{resName, kEntrySymbol, fs::path(modulePath).filename().string()};
     std::string err;
-    if (!cache::writeModuleRecord(fs::path(recordPath), key, keyParts, record, sources, deps, err)) {
+    if (!cache::writeModuleRecord(fs::path(recordPath), profiledKey, keyParts, record, sources, deps, err)) {
         out.errorMessage = err;
         return out;
     }
@@ -294,6 +288,10 @@ LoadedModule loadModule(std::string_view source, const EvalOptions& options, con
     out.resName = record.resName;
     out.entry = entry;
     out.icIdentity = imageSymbol(image, record.entrySymbol + "_ic_identity");
+    if (const auto* cold = static_cast<const uint64_t*>(imageSymbol(image, codegen::coldEntriesSymbol(record.entrySymbol)))) {
+        out.coldEntryCount = static_cast<uint32_t>(cold[0]);
+        out.coldEntries = cold + 1;
+    }
     out.ok = true;
     return out;
 }
