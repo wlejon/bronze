@@ -132,6 +132,10 @@ HeapPressure heapPressure() {
 
 size_t releaseIdleCompiledBodies() { return brass::Module::release_idle_bodies(); }
 
+size_t releaseIdleCompiledBodies(size_t budgetBytes, bool* finished) {
+    return brass::Module::release_idle_bodies(budgetBytes, finished);
+}
+
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
 
 void bindThreadHeap() { (void)runtime::rtHeap(); }
