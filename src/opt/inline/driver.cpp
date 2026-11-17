@@ -19,6 +19,19 @@
 //     of at least kHotGrowth more;
 //   - a call the harvested run never made takes a small callee only: a body
 //     no one ran is code size and live ranges for nothing;
+//   - so does a RARE call, one the run made on fewer than one in kRareShare
+//     of its caller's entries: its body saves a call now and then, and is
+//     paid for in the caller's size, which decides whether the caller's own
+//     callers can take it. Without this, speculating a function that only
+//     runs on such a path made the scene slower: pixi's `_getGpuSprite`
+//     makes a sprite's batch record on its first call (10,000 of 3.6M);
+//     once `visualBounds` (run only there) had an S copy, that path inlined
+//     its constructor, `visualBounds` and `updateQuadBounds`,
+//     `RenderGroup.updateRenderable` grew past kHotCallee and stayed a call
+//     in the per-sprite loop: 16.07M instructions a frame against 15.12M.
+//     Entries, not work: a call made once an entry of a function that loops
+//     is no rarer for the loop (pixi's `triangulateWithHoles` calls `earcut`
+//     once, which inlined saves 1M instructions a frame on pixi_graphics);
 //   - nothing bigger.
 // A callee's size is its body's once cleaned up (InlineOptions::cleanup).
 // "The caller is hot" is no separate test: only a function hot enough to be
@@ -85,6 +98,7 @@ constexpr uint32_t kSmallCallee = 24;
 constexpr uint32_t kLargeCallee = 400;
 constexpr uint32_t kHotCallee = 1000;
 constexpr uint64_t kHotShare = 1000;
+constexpr uint64_t kRareShare = 16;
 constexpr uint32_t kGrowthFactor = 4;
 constexpr uint32_t kMinGrowth = 800;
 constexpr uint32_t kHotGrowth = 3000;
@@ -205,6 +219,7 @@ struct Candidate {
     uint32_t loopDepth = 0;
     const AfterCall* after = nullptr;
     std::optional<uint64_t> count;  // the call's weight (callWeight), from InlineOptions::harvestCount
+    bool rare = false;              // made on fewer than one in kRareShare of the caller's entries
 };
 
 // The calls of `caller` (module function `c`) that may take their callee's
@@ -215,6 +230,11 @@ std::vector<Candidate> candidatesOf(const il::Module& module, const il::Function
     const Cfg cfg(caller);
     const DomTree dom(cfg);
     const LoopForest loops(cfg, dom);
+    // The caller's entries in the harvested run, every copy of it sharing G's.
+    std::optional<uint64_t> entries;
+    if (options.harvestCount && caller.entrySlowSite != il::Instruction::kNoSlowSite) {
+        entries = options.harvestCount(caller.entrySlowSite);
+    }
     std::vector<Candidate> out;
     for (BlockId b = 0; b < caller.blocks.size(); ++b) {
         // A call no path reaches, or one on a path lowering expects not to
@@ -248,6 +268,7 @@ std::vector<Candidate> candidatesOf(const il::Module& module, const il::Function
             const uint32_t depth = construct ? std::max<uint32_t>(loops.depth(b), 1) : loops.depth(b);
             Candidate cand{b, i, body, bodySize(callee), depth, after, std::nullopt};
             cand.count = callWeight(module, caller, options, call);
+            cand.rare = cand.count && entries && *cand.count * kRareShare < *entries;
             out.push_back(cand);
         }
     }
@@ -295,6 +316,11 @@ std::vector<Candidate> choose(const il::Module& module, uint32_t c, std::vector<
         const bool small = cand.size <= kSmallCallee;
         const bool hot = cand.count && total != 0 && *cand.count * kHotShare >= total;
         const bool neverRan = cand.count && *cand.count == 0;
+        if (!small && !neverRan && cand.rare) {
+            ++stats.refusedRare;
+            trace(module, c, size, cand, "rare");
+            continue;
+        }
         if (!small && (neverRan || cand.size > (hot ? kHotCallee : kLargeCallee))) {
             ++stats.refusedSize;
             trace(module, c, size, cand, neverRan ? "never-ran" : "size");
@@ -495,6 +521,7 @@ void inlineInto(Run& run, uint32_t c) {
     run.stats.refusedCallee += probeStats.refusedCallee;
     run.stats.refusedSite += probeStats.refusedSite;
     run.stats.refusedSize += probeStats.refusedSize;
+    run.stats.refusedRare += probeStats.refusedRare;
     run.stats.refusedBudget += probeStats.refusedBudget;
     run.stats.inlinedHot += probeStats.inlinedHot;
     spliceChosen(run, copyIndex, probeChosen);

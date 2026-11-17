@@ -65,7 +65,8 @@
 // size before the pass, at least kMinGrowth more). With a harvest's call
 // counts (InlineOptions::harvestCount), a HOT call (a large enough share of
 // all the calls counted) takes a callee of up to kHotCallee within a larger
-// budget, and a call the harvested run never made takes only a small one.
+// budget, and a call the harvested run never made takes only a small one, as
+// does a RARE call (made on fewer than 1/kRareShare of its caller's entries).
 // Sizes count instructions outside exit blocks (blocks ending in `leave`) of
 // the callee once cleaned up (InlineOptions::cleanup). BRONZE_INLINE_TRACE=
 // <file> appends one line per candidate and what was decided (a diagnostic).
@@ -113,6 +114,7 @@ struct InlineStats {
     uint32_t refusedCallee = 0;       // the callee can never be inlined
     uint32_t refusedSite = 0;         // this call cannot take it (env hops, no resume-after, types)
     uint32_t refusedSize = 0;         // too big for where the call is
+    uint32_t refusedRare = 0;         // not small, and the call is rare (driver.cpp kRareShare)
     uint32_t refusedBudget = 0;       // the caller's growth budget was spent
     uint32_t leavesRewritten = 0;     // leave -> resume.call + leave
     uint32_t instructionsAdded = 0;   // copied instructions, exits included

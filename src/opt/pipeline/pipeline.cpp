@@ -205,7 +205,7 @@ std::string formatOptimizeStats(const OptimizeResult& r) {
     out += "inline: " + n(in.inlined) + "/" + n(in.sitesConsidered) + " calls (speculated " +
            n(in.inlinedSpeculated) + ", hot " + n(in.inlinedHot) + ", optimistic " + n(in.inlinedOptimistic) +
            "); optimistic copies " + n(in.optimisticCopies) + "; refused callee " + n(in.refusedCallee) + ", site " + n(in.refusedSite) +
-           ", size " + n(in.refusedSize) + ", budget " + n(in.refusedBudget) + "; leaves rewritten " +
+           ", size " + n(in.refusedSize) + ", rare " + n(in.refusedRare) + ", budget " + n(in.refusedBudget) + "; leaves rewritten " +
            n(in.leavesRewritten) + "\n";
     auto redundancyLine = [&](const char* name, const RedundancyStats& d) {
         out += std::string(name) + ": rounds " + n(d.rounds) + "; numbered " + n(d.valuesNumbered) +

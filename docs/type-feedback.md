@@ -616,7 +616,17 @@ rows like any other counter. A direct call the speculation step makes from a
 generic call keeps that call's slow site (`opt/speculate/direct_call.cpp`), so
 the inliner (`opt/inline/driver.cpp`) knows how often each call it may take
 ran, and shares a polymorphic site's count over its arms by their callees'
-entry counts. A method call's slot way (a function an own slot held) records
+entry counts. A call made on fewer than 1 in 16 of its caller's entries
+(`kRareShare`) is RARE and takes a small callee only: inlined, a first-use
+path (`cache[k] || init(o)`) saves a call now and then and is paid for in
+the caller's size, which decides whether the caller's own callers take it.
+This is what makes speculating a function no worse than leaving it generic
+when it runs only on such a path: pixi_sprites' `Sprite.visualBounds` runs only while a sprite's
+batch record is made, and its S copy (with `updateQuadBounds` inlined) grew
+`_getGpuSprite`'s rare path until `RenderGroup.updateRenderable` passed the
+hot-callee limit and stayed a call in the per-sprite loop (16.07M
+instructions a frame; 15.12M with the rule, as with `visualBounds` not
+speculated). A method call's slot way (a function an own slot held) records
 its callee turns too, as a `call.dynamic` does.
 
 **Loop counts.** Each function with a body has a second index of its own
