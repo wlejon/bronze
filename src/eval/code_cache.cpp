@@ -866,13 +866,21 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
         return false;
     }
     timer.mark("decode wait");
-    if (module->sourceFiles.size() != files.size()) {
+    // A program lowered ahead of time (a compile to be harvested) carries
+    // the self-hosted library it compiled in as one more source file after
+    // its own (selfhost_merge.cpp), which no provenance names: its text is
+    // this binary's library, which the entry's key covers (moduleKeyMaterial).
+    const lower::SelfHostLibrary* lib = selfhost::library();
+    const bool withLibrary = lib && module->sourceFiles.size() == files.size() + 1 &&
+                             module->sourceFiles.back() == lib->sourceName;
+    if (module->sourceFiles.size() != files.size() && !withLibrary) {
         why = "malformed entry";
         return false;
     }
     std::vector<std::string_view> texts;
-    texts.reserve(out.sources.size());
+    texts.reserve(out.sources.size() + 1);
     for (size_t i = 0; i < out.sources.size(); ++i) texts.push_back(out.sources.at(static_cast<uint16_t>(i)).text());
+    if (withLibrary) texts.push_back(lib->sourceText);
     il::attachSources(*module, texts, retainSource);
     out.module = std::move(module);
     out.resName = resName;

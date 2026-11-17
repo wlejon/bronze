@@ -227,13 +227,20 @@ std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
 }
 
 // The code-cache key of a compile (code_cache.h says what goes in), or none
-// when the options ask for no cache or this binary cannot be identified.
+// when the options ask for no cache or this binary cannot be identified. A
+// compile to be harvested (`harvest`) keeps IL a module build lowers (the
+// ahead-of-time front end, the self-hosted library, the module's result
+// name), so its entry is keyed apart: the environment part adds "harvest"
+// and the module material (code_cache.h moduleKeyMaterial), and the two
+// kinds of entry never serve each other.
 std::optional<cache::Digest> codeCacheKey(const EvalOptions& options, const modules::ModuleOptions& modOpts,
-                                          const CompileInputs& in, std::string_view entryText) {
+                                          const CompileInputs& in, std::string_view entryText, bool harvest) {
     if (options.codeCacheDir.empty()) return std::nullopt;
     const std::string& process = cache::processKeyMaterial();
     if (process.empty()) return std::nullopt;
-    return detail::programKey(process, options, modOpts, in, entryText);
+    if (!harvest) return detail::programKey(process, options, modOpts, in, entryText);
+    const std::string material = process + "|harvest|" + cache::moduleKeyMaterial();
+    return detail::programKey(material, options, modOpts, in, entryText);
 }
 
 // Where a compile that missed the cache stores what it lowered.
@@ -591,18 +598,18 @@ std::unique_ptr<CompiledScript> compileEntry(std::string_view entryText, bool en
     }
     modules::ModuleOptions modOpts = moduleOptionsFor(options);
     modules::DependencyLog deps;
-    // A compile to be harvested is neither served from the code cache nor
-    // stored in it: its IL is a module build's (compileUnit), not the IL a
-    // compile with the same inputs keeps there. Its result is named as that
-    // build names it.
+    // A compile to be harvested lowers as a module build does (compileUnit)
+    // and names its result as that build names it; its cache entry is keyed
+    // apart (codeCacheKey), and what it stores is IL only, so a hit is armed
+    // and counted by the compile that follows exactly as a miss is.
     const bool evidence = !options.harvestOutPath.empty();
     if (evidence && entryKnown) res->resName = detail::moduleResName(options, modOpts, in, entryText);
     const std::optional<cache::Digest> key =
-        entryKnown && !evidence ? codeCacheKey(options, modOpts, in, entryText) : std::nullopt;
+        entryKnown ? codeCacheKey(options, modOpts, in, entryText, evidence) : std::nullopt;
     if (key) {
         // Deterministic, so the name the stored IL carries is the name this
         // compile would have chosen.
-        res->resName = "__bronze_eval_res_c" + key->hex().substr(0, 16);
+        if (!evidence) res->resName = "__bronze_eval_res_c" + key->hex().substr(0, 16);
         cache::Hit hit;
         std::string why;
         if (cache::load(options.codeCacheDir, *key, entryText, modOpts.moduleRoots, options.retainSource, hit, why)) {
