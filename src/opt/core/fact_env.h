@@ -88,6 +88,10 @@ public:
     // Whether a holding InRange fact puts base + c in [0, length) for every
     // c in lo..hi (any length when `length` is kNoValue).
     bool inRange(ValueId base, ValueId length, int32_t lo, int32_t hi) const;
+    // Whether a holding InRange fact about `base` (offsets lo..hi below its
+    // length, an int32) has lo <= k <= hi + 1: then base + k is an int32 at
+    // least zero, since base + k <= base + hi + 1 <= length <= INT32_MAX.
+    bool sumFits(ValueId base, int32_t k) const;
 
     // Every live fact, oldest first (for dumps and tests).
     std::vector<Fact> live() const;

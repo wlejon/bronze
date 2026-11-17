@@ -40,6 +40,7 @@
 #include "opt/redundancy/dom_walk.h"
 #include "opt/redundancy/expr_table.h"
 #include "opt/redundancy/fold.h"
+#include "opt/redundancy/index_facts.h"
 #include "opt/redundancy/jobs.h"
 #include "opt/redundancy/location.h"
 #include "opt/redundancy/tests.h"
@@ -61,7 +62,7 @@ bool reusable(const il::Instruction& inst, const il::Effects& e) {
 class ValueWalk {
 public:
     ValueWalk(JobContext& ctx, const Cfg& cfg, const DefUse& defs, const AliasInfo& alias, FactEnv& facts,
-              ExprTable& exprs)
+              ExprTable& exprs, const IndexFacts& index)
         : ctx_(ctx),
           fn_(ctx.fn),
           cfg_(cfg),
@@ -70,6 +71,7 @@ public:
           alias_(alias),
           facts_(facts),
           exprs_(exprs),
+          index_(index),
           repl_(ctx.fn.valueCount, kNoValue),
           dead_(ctx.fn.blocks.size()),
           folded_(ctx.fn.blocks.size(), -1),
@@ -104,6 +106,7 @@ private:
     const AliasInfo& alias_;
     FactEnv& facts_;
     ExprTable& exprs_;
+    const IndexFacts& index_;
     std::vector<ValueId> repl_;
     std::vector<std::vector<uint8_t>> dead_;
     std::vector<std::pair<BlockId, bool>> branchFolds_;
@@ -143,6 +146,14 @@ void ValueWalk::replace(BlockId b, size_t i, ValueId by) {
 }
 
 void ValueWalk::visitBlock(BlockId b) {
+    // What `x < n` proves of a non-negative index (index_facts.h): scoped,
+    // like the edge's own facts, to b's subtree. Named by the values standing
+    // for x and n now, which the tests' resolved operands are.
+    for (Fact fact : index_.onEntry(b)) {
+        fact.value = resolve(fact.value);
+        fact.other = resolve(fact.other);
+        facts_.add(fact);
+    }
     const size_t n = fn_.blocks[b].instructions.size();
     for (size_t i = 0; i < n; ++i) visitInstruction(b, i);
 }
@@ -439,9 +450,10 @@ bool runValueWalk(JobContext& ctx) {
     const DomTree dom(cfg, resumed);
     const DefUse defs(fn);
     const AliasInfo alias(fn, &dom);
+    const IndexFacts index(fn, cfg, dom, defs);
     FactEnv facts;
     ExprTable exprs;
-    ValueWalk walk(ctx, cfg, defs, alias, facts, exprs);
+    ValueWalk walk(ctx, cfg, defs, alias, facts, exprs, index);
     walkDominatorTree(
         fn, cfg, dom, defs, alias, facts, exprs, [&](BlockId b) { walk.visitBlock(b); },
         [&](BlockId from, BlockId to) { return walk.edgeDead(from, to); });

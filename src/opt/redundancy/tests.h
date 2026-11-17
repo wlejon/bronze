@@ -7,8 +7,9 @@
 //
 // Answers come from three places, each exact:
 //   - the FactEnv at the test's position (opt/core fact_env.h), which holds
-//     what dominating branch edges proved and has already dropped memory facts
-//     killed since;
+//     what dominating branch edges proved (and what a loop index's `i < n`
+//     proves, index_facts.h) and has already dropped memory facts killed
+//     since;
 //   - the test's subject's own definition (a `box` of a typed value is never
 //     an object, a hole or nullish; a fresh allocation is an object);
 //   - for `ptr.eq (load.shape x), (shape.cell n)`, the shape fact about x

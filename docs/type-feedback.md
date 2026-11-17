@@ -919,6 +919,37 @@ build did not arm (it lowered the instruction another way: a cache call, a
 proven representation, no hint) stays a branch, and a stale or older harvest
 leaves none.
 
+**Loop index facts.** A counted loop over an Array speculates to an int32
+header parameter, its `cmp.lt i, n`, and per iteration `in.bounds i, n` in
+front of the element read and `add.would_ovf i, 1` in front of the
+increment. The redundancy pass's value walk answers both from the compare
+(`opt/redundancy/index_facts.h`): an i32 value is NON-NEGATIVE when every
+definition of it makes one from non-negative operands (a constant >= 0, an
+`add` that cannot wrap, a block parameter every edge passes such a value),
+the greatest fixed point of that, which is the induction over the loop's
+iterations; and the arm of an integer compare that says x < n, with x
+non-negative, proves `in.bounds x, n` and (x + 1 <= n <= INT32_MAX) that
+x + 1 is an int32 (FactEnv::sumFits). Nothing of the profile is used, so a
+wrong one cannot make it wrong. Instructions a frame: three_skinned 32.30M
+to 32.16M, three_meshes 51.77M to 51.54M, pixi_text 23.63M to 23.58M,
+pixi_graphics 308.7M to 307.8M, pixi_sprites 14.87M to 14.82M, the other
+two unchanged; the same guard exits, three_meshes' module 21.62 MB to
+21.58 MB.
+
+Before this, facts lost at rare joins were measured, and were not worth
+building: re-checking on the rare edge of a join what the frequent edge
+proves, so the tests after the join go. With every write in a block that
+holds a call the harvest made on under 1/16 of the function's entries and
+loop runs (and every write of a never-entered block) dropped from the
+pass's kills, an unsound upper bound, pixi_text ran 23.57M instructions a
+frame against 23.63M, and three_skinned's run failed: rare paths there do
+change the shapes the facts are about, so the re-checks would leave.
+Treating `instanceof`, generic element and property reads, and every
+direct call's Shapes, Protos and ElemKinds as written by nothing, all
+unsound too, gave 23.49-23.59M and 32.21M against 32.30M: the guards the
+census found repeated behind a call are repeated at the machine level, in
+the inline paths whose fallback rejoins, not in the IL.
+
 Every fallback that can leave must count in the harvested build, or an exit
 the harvest never saw runs often and gives the function up for its generic
 entry (il_speculation.h, "FAILURE POLICY"): a constant-index read on a typed

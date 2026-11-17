@@ -223,14 +223,15 @@ std::optional<bool> inBoundsTest(const il::Instruction& inst, const FactEnv& fac
     return std::nullopt;
 }
 
-// `add.would_ovf x, k` with k a non-negative constant: an InRange fact that
-// puts x + k below some length (an int32) and x + 0.. at or above zero says
-// the sum is an int32.
+// `add.would_ovf x, k` with k a non-negative constant: an InRange fact
+// putting x + lo .. x + hi in [0, n), n an int32 length, with lo <= k <=
+// hi + 1 says the sum is an int32 (FactEnv::sumFits). The hi + 1 is the
+// increment of a loop index under its i < n (index_facts.h).
 std::optional<bool> addOverflowTest(const il::Instruction& inst, const FactEnv& facts, const ValueView& values) {
     for (int side = 0; side < 2; ++side) {
         const il::Instruction* k = values.defIs(inst.operands[side], Op::ConstI32);
         if (k == nullptr || k->immI32 < 0) continue;
-        if (facts.inRange(inst.operands[1 - side], kNoValue, k->immI32, k->immI32)) return false;
+        if (facts.sumFits(inst.operands[1 - side], k->immI32)) return false;
     }
     return std::nullopt;
 }

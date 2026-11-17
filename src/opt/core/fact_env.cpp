@@ -189,6 +189,17 @@ bool FactEnv::inRange(ValueId base, ValueId length, int32_t lo, int32_t hi) cons
     return false;
 }
 
+bool FactEnv::sumFits(ValueId base, int32_t k) const {
+    const auto it = byValue_.find(base);
+    if (it == byValue_.end()) return false;
+    for (const uint32_t i : it->second) {
+        const Fact& f = facts_[i];
+        if (!alive_[i] || f.kind != FactKind::InRange || !f.holds || f.value != base || f.other == kNoValue) continue;
+        if (rangeLo(f.imm) <= k && static_cast<int64_t>(k) <= static_cast<int64_t>(rangeHi(f.imm)) + 1) return true;
+    }
+    return false;
+}
+
 std::optional<bool> FactEnv::boolValue(ValueId v) const {
     if (known(FactKind::BoolValue, v, 1) == true) return true;
     if (known(FactKind::BoolValue, v, 0) == true) return false;
