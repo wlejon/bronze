@@ -17,6 +17,20 @@ namespace bronze::support {
 bool timingsEnabled();
 void setTimingsEnabled(bool on);
 
+// While one lives, timingsEnabled() is false on the calling thread: work a
+// build runs beside its main line (the cold companion's lowering) does not
+// print its phases into the middle of the main line's.
+class TimingsMuted {
+public:
+    TimingsMuted();
+    ~TimingsMuted();
+    TimingsMuted(const TimingsMuted&) = delete;
+    TimingsMuted& operator=(const TimingsMuted&) = delete;
+
+private:
+    bool was_;
+};
+
 // Wall time per phase, printed to stderr as each `mark` lands. The CLI reports
 // the five top-level phases with it and the backend reports the inside of its
 // own, indented one level deeper, so a 47 s "codegen" line says which of

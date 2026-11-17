@@ -14,6 +14,7 @@
 #include "il/feedback_site.h"
 #include "il/print.h"
 #include "il/verifier.h"
+#include "support/timings.h"
 
 namespace bronze::opt {
 
@@ -23,7 +24,7 @@ bool verified(const il::Module& module, const OptimizeOptions& options, const ch
     if (!options.verify) return true;
     DiagnosticSink local;
     DiagnosticSink& diags = options.diags ? *options.diags : local;
-    if (il::verify(module, diags)) return true;
+    if (il::verify(module, diags, options.threads)) return true;
     // The verifier's own messages say what; this says where in the pipeline.
     diags.error(Span{}, std::string("IL verification failed ") + when);
     // BRONZE_OPT_FAIL_DUMP=<file>: the module as the failing stage left it.
@@ -118,15 +119,19 @@ void planPretenure(il::Module& module, const spec::Harvest& h) {
 OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profile,
                               const OptimizeOptions& options) {
     OptimizeResult result;
+    // Each step's wall time, under `bronze build --timings`.
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
     if (!verified(module, options, "on the module as lowered")) {
         result.ok = false;
         return result;
     }
+    timer.mark("verify");
 
     if (profile != nullptr) {
         result.profileRead = true;
         result.speculate = speculate::speculateModule(module, *profile, options.speculate);
     }
+    timer.mark("speculate");
     const bool anySpeculated = result.speculate.functionsSpeculated != 0;
     if (const spec::Harvest* h = profile != nullptr ? profile->harvest() : nullptr;
         h != nullptr && result.speculate.harvestIgnored == 0 && h->slowSites == module.slowSiteCount) {
@@ -139,6 +144,7 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
         result.ok = false;
         return result;
     }
+    timer.mark("verify");
     // The inliner sizes a callee by a copy the redundancy pass cleaned up,
     // which is what the body costs once its caller is cleaned up.
     RedundancyOptions sizing;
@@ -159,10 +165,12 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
         };
     }
     result.inlined = inliner::inlineModule(module, inlining);
+    timer.mark("inline");
     if (!verified(module, options, "after inlining")) {
         result.ok = false;
         return result;
     }
+    timer.mark("verify");
 
     RedundancyOptions redundancy;
     redundancy.maxRounds = options.maxRounds;
@@ -173,14 +181,18 @@ OptimizeResult optimizeModule(il::Module& module, const spec::TypeProfile* profi
     redundancy.removeUnnamedResumePoints = true;
     if (anySpeculated) redundancy.preheaderResume = loopEntryResumes(module);
     result.redundancy = runRedundancyModule(module, redundancy);
+    timer.mark("redundancy");
     if (!verified(module, options, "after the redundancy pass")) {
         result.ok = false;
         return result;
     }
+    timer.mark("verify");
 
     if (anySpeculated) result.repr = selectRepresentationsModule(module, redundancy);
+    timer.mark("repr");
 
     if (!verified(module, options, "after representation selection")) result.ok = false;
+    timer.mark("verify");
     return result;
 }
 

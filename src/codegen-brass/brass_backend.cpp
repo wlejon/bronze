@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -587,6 +588,35 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();
     const bool optimize = this->optimize();
 
+    // The cold companion's lowering reads only the IL and these inputs, so it
+    // runs on a thread of its own while brass compiles the image, whose
+    // largest functions leave most threads idle at the end.
+    codegen::ColdCompanionInputs coldInputs;
+    std::future<codegen::ColdCompanionPlan> coldPlan;
+    if (!interpreted_.empty()) {
+        coldInputs.interpreted = interpreted_;
+        coldInputs.globalReadKeys = globalReadKeys;
+        coldInputs.elemCellSites = codegen::elemCellSites(module);
+        coldInputs.methodIcSites = methodIcSites;
+        coldInputs.fnFlags.reserve(module.functions.size());
+        for (const il::Function& fn : module.functions) {
+            coldInputs.fnFlags.push_back(fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
+                                         (directCallees_ && il::functionEntersDirectly(module, fn)
+                                              ? BRONZE_ABI_FN_FLAG_DIRECT_CALL
+                                              : 0u));
+        }
+        for (const uint32_t sIdx : codegen::collectDeoptSites(module, uniqueNames).retirable) {
+            const il::Function& sFn = module.functions[sIdx];
+            coldInputs.speculated.emplace_back(sIdx, sFn.speculatedFrom);
+            if (sFn.isOptimistic()) coldInputs.fallbacks.emplace_back(sIdx, sFn.fallback);
+        }
+        coldInputs.perThreadData = perThreadModuleData_;
+        coldPlan = std::async(std::launch::async, [this, &module, &coldInputs] {
+            const support::TimingsMuted muted;
+            return codegen::planColdCompanion(*this, module, coldInputs);
+        });
+    }
+
     const brass::Target target = target_;
     brass::object::ModuleCompiler compiler(target);
     brass::codegen::SchedOptions schedOpts;
@@ -618,27 +648,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
                                          interpreted_.empty() ? nullptr : &interpreted_};
     codegen::translateDebugLocations(obj, module, uniqueNames, entrySymbol_);
     codegen::emitBronzeSections(obj, target, sectionInputs, timer);
-    if (!interpreted_.empty()) {
-        codegen::ColdCompanionInputs inputs;
-        inputs.interpreted = interpreted_;
-        inputs.globalReadKeys = std::move(globalReadKeys);
-        inputs.elemCellSites = codegen::elemCellSites(module);
-        inputs.methodIcSites = methodIcSites;
-        inputs.fnFlags.reserve(module.functions.size());
-        for (const il::Function& fn : module.functions) {
-            inputs.fnFlags.push_back(fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
-                                     (directCallees_ && il::functionEntersDirectly(module, fn)
-                                          ? BRONZE_ABI_FN_FLAG_DIRECT_CALL
-                                          : 0u));
-        }
-        for (const uint32_t sIdx : codegen::collectDeoptSites(module, uniqueNames).retirable) {
-            const il::Function& sFn = module.functions[sIdx];
-            inputs.speculated.emplace_back(sIdx, sFn.speculatedFrom);
-            if (sFn.isOptimistic()) inputs.fallbacks.emplace_back(sIdx, sFn.fallback);
-        }
-        inputs.perThreadData = perThreadModuleData_;
+    if (coldPlan.valid()) {
         std::string why;
-        if (!codegen::emitColdCompanion(obj, *this, module, uniqueNames, inputs, why)) {
+        if (!codegen::emitColdCompanion(obj, *this, module, uniqueNames, coldInputs, coldPlan.get(), why)) {
             diags.error(Span{}, "the module's cold functions cannot be interpreted: " + why);
             return std::nullopt;
         }

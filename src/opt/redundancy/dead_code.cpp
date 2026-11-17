@@ -197,83 +197,132 @@ bool sweepDeadValues(JobContext& ctx) {
     return changed;
 }
 
-// Whether a parameter of `f` is read anywhere but in f's own jump: by an
-// instruction or an edge of a block f dominates. Bypassing f would leave such
-// a use without a definition.
-bool paramsUsedBeyondJump(const il::Function& fn, BlockId f) {
-    const il::Block& block = fn.blocks[f];
-    if (block.params.empty()) return false;
-    auto isParam = [&](ValueId v) {
+// FORWARDERS go one at a time, the first in block order each time, every
+// bypass made on the function as the one before left it, at most as many as
+// the function then has blocks: the result is that order's. What a bypass
+// changes is kept up to date rather than read again, and blocks stay where
+// they are until the end, where the bypassed ones (unreachable by then) go:
+//   - the in-edges of each block: f's move to its target T;
+//   - how often each value is passed on an edge, for "a parameter of f is
+//     read beyond f's jump" (operand reads never change);
+//   - dominance does not change among the blocks left: every path through f
+//     still runs from its predecessor to T, so the tree of the start serves;
+//   - where to look next: blocks before f were no forwarders, and only what
+//     the bypass touched can have become one (T; f's predecessors and their
+//     other successors, an in-edge's other arm; T's predecessors, the
+//     loop-header test; the blocks whose parameters f's in-edges passed, which
+//     f may not pass on). The walk goes on from the first of those.
+class Forwarders {
+public:
+    explicit Forwarders(il::Function& fn)
+        : fn_(fn),
+          cfg_(fn),
+          dom_(cfg_),
+          isHandler_(fn.blocks.size(), 0),
+          gone_(fn.blocks.size(), 0),
+          in_(fn.blocks.size()),
+          asOperand_(fn.valueCount, 0),
+          edgeReads_(fn.valueCount, 0),
+          paramOf_(fn.valueCount, kNoBlock) {
+        for (size_t b = 0; b < fn.blocks.size(); ++b) {
+            const il::Block& block = fn.blocks[b];
+            if (block.handler != kNoBlock && block.handler < isHandler_.size()) isHandler_[block.handler] = 1;
+            in_[b] = cfg_.inEdges(static_cast<BlockId>(b));
+            if (cfg_.reachable(static_cast<BlockId>(b))) ++live_;
+            for (const il::BlockParam& p : block.params) {
+                if (p.id < paramOf_.size()) paramOf_[p.id] = static_cast<BlockId>(b);
+            }
+            for (const il::Instruction& inst : block.instructions) {
+                for (ValueId v : inst.operands) {
+                    if (v < asOperand_.size()) asOperand_[v] = 1;
+                }
+                count(inst.target.args, 1);
+                count(inst.elseTarget.args, 1);
+            }
+        }
+    }
+
+    // Bypasses the forwarders; how many.
+    size_t run() {
+        size_t removed = 0;
+        size_t blocks = fn_.blocks.size();  // as the first round counts them
+        BlockId from = 1;
+        while (removed < blocks) {
+            BlockId f = from;
+            while (f < fn_.blocks.size() && !isForwarder(f)) ++f;
+            if (f >= fn_.blocks.size()) break;
+            from = bypass(f);
+            ++removed;
+            blocks = live_;
+        }
+        return removed;
+    }
+
+private:
+    void count(const std::vector<ValueId>& args, int by) {
+        for (ValueId v : args) {
+            if (v < edgeReads_.size()) edgeReads_[v] += by;
+        }
+    }
+
+    // Whether a parameter of `f` is read anywhere but in f's own jump: by an
+    // instruction or an edge of a block f dominates. Bypassing f would leave
+    // such a use without a definition.
+    bool paramsUsedBeyondJump(BlockId f) const {
+        const il::Block& block = fn_.blocks[f];
         for (const il::BlockParam& p : block.params) {
-            if (p.id == v) return true;
+            if (p.id >= asOperand_.size() || asOperand_[p.id]) return true;
+            int32_t own = 0;
+            for (ValueId v : block.instructions.back().target.args) own += v == p.id;
+            if (edgeReads_[p.id] != own) return true;
         }
         return false;
-    };
-    for (size_t b = 0; b < fn.blocks.size(); ++b) {
-        for (const il::Instruction& inst : fn.blocks[b].instructions) {
-            for (ValueId v : inst.operands) {
-                if (isParam(v)) return true;
-            }
-            if (b == f) continue;
-            for (ValueId v : inst.target.args) {
-                if (isParam(v)) return true;
-            }
-            for (ValueId v : inst.elseTarget.args) {
-                if (isParam(v)) return true;
-            }
-        }
     }
-    return false;
-}
 
-// A block that only jumps on, and may be bypassed (see the header); kNoBlock
-// when there is none.
-BlockId findForwarder(const il::Function& fn, const Cfg& cfg, const DomTree& dom,
-                      const std::vector<uint8_t>& isHandler) {
-    for (size_t b = 1; b < fn.blocks.size(); ++b) {
-        const BlockId f = static_cast<BlockId>(b);
-        const il::Block& block = fn.blocks[b];
-        if (!cfg.reachable(f) || isHandler[b] || block.instructions.size() != 1) continue;
+    bool isForwarder(BlockId f) const {
+        const il::Block& block = fn_.blocks[f];
+        if (gone_[f] || !cfg_.reachable(f) || isHandler_[f] || block.instructions.size() != 1) return false;
         const il::Instruction& jump = block.instructions.back();
-        if (jump.op != Op::Jump) continue;
+        if (jump.op != Op::Jump) return false;
         const BlockId t = jump.target.block;
-        if (t == f || cfg.inEdges(f).empty()) continue;
-        if (paramsUsedBeyondJump(fn, f)) continue;
-        bool header = false;
-        for (BlockId p : cfg.preds(t)) header |= dom.dominates(t, p);
-        if (header) continue;
-        bool ok = true;
-        for (const Edge& e : cfg.inEdges(f)) {
-            if (e.kind == EdgeKind::Throw) ok = false;
-            const il::Instruction& term = fn.blocks[e.from].instructions.back();
+        if (t == f || in_[f].empty()) return false;
+        if (paramsUsedBeyondJump(f)) return false;
+        for (const Edge& e : in_[t]) {
+            if (dom_.dominates(t, e.from)) return false;
+        }
+        for (const Edge& e : in_[f]) {
+            if (e.kind == EdgeKind::Throw) return false;
+            const il::Instruction& term = fn_.blocks[e.from].instructions.back();
             if (term.op == Op::Branch) {
                 const BlockId other = e.kind == EdgeKind::BranchThen ? term.elseTarget.block : term.target.block;
-                if (other == t || other == f) ok = false;
+                if (other == t || other == f) return false;
             }
         }
-        if (ok) return f;
+        return true;
     }
-    return kNoBlock;
-}
 
-bool removeForwarders(JobContext& ctx) {
-    il::Function& fn = ctx.fn;
-    bool changed = false;
-    // One forwarder per CFG snapshot: retargeting edits the edges the next
-    // one would be found by. Bounded by the block count.
-    for (size_t round = 0; round < fn.blocks.size(); ++round) {
-        const Cfg cfg(fn);
-        const DomTree dom(cfg);
-        std::vector<uint8_t> isHandler(fn.blocks.size(), 0);
-        for (const il::Block& block : fn.blocks) {
-            if (block.handler != kNoBlock && block.handler < isHandler.size()) isHandler[block.handler] = 1;
-        }
-        const BlockId f = findForwarder(fn, cfg, dom, isHandler);
-        if (f == kNoBlock) break;
-        const il::Instruction jump = fn.blocks[f].instructions.back();
-        const std::vector<il::BlockParam> params = fn.blocks[f].params;
-        for (const Edge& e : cfg.inEdges(f)) {
-            const std::vector<ValueId> incoming = edgeArgs(fn, e);
+    // Each edge into `f` goes to its target, with f's parameters replaced by
+    // what the edge passed. Returns where the next search starts.
+    BlockId bypass(BlockId f) {
+        const il::Instruction jump = fn_.blocks[f].instructions.back();
+        const BlockId t = jump.target.block;
+        const std::vector<il::BlockParam> params = fn_.blocks[f].params;
+        BlockId next = f + 1;
+        const auto touch = [&next](BlockId b) { next = std::min(next, b); };
+        touch(t);
+        for (const Edge& e : in_[t]) touch(e.from);
+        std::vector<Edge>& into = in_[t];
+        into.erase(std::remove_if(into.begin(), into.end(), [f](const Edge& e) { return e.from == f; }), into.end());
+        count(jump.target.args, -1);
+        for (const Edge& e : in_[f]) {
+            const il::Instruction& term = fn_.blocks[e.from].instructions.back();
+            touch(e.from);
+            touch(term.target.block);
+            if (term.op == Op::Branch) touch(term.elseTarget.block);
+            const std::vector<ValueId>& incoming = edgeArgs(fn_, e);
+            for (ValueId v : incoming) {
+                if (v < paramOf_.size() && paramOf_[v] != kNoBlock) touch(paramOf_[v]);
+            }
             std::vector<ValueId> args;
             args.reserve(jump.target.args.size());
             for (ValueId a : jump.target.args) {
@@ -283,13 +332,35 @@ bool removeForwarders(JobContext& ctx) {
                 }
                 args.push_back(v);
             }
-            retargetEdge(fn, e, jump.target.block, std::move(args));
+            count(incoming, -1);
+            count(args, 1);
+            retargetEdge(fn_, e, t, std::move(args));
+            into.push_back({e.from, t, e.kind});
         }
-        ++ctx.stats.forwardersRemoved;
-        ctx.stats.blocksRemoved += removeUnreachableBlocks(fn);
-        changed = true;
+        in_[f].clear();
+        gone_[f] = 1;
+        --live_;
+        return next;
     }
-    return changed;
+
+    il::Function& fn_;
+    const Cfg cfg_;
+    const DomTree dom_;
+    std::vector<uint8_t> isHandler_;
+    std::vector<uint8_t> gone_;
+    std::vector<std::vector<Edge>> in_;
+    std::vector<uint8_t> asOperand_;
+    std::vector<int32_t> edgeReads_;
+    std::vector<BlockId> paramOf_;
+    size_t live_ = 0;
+};
+
+bool removeForwarders(JobContext& ctx) {
+    const size_t removed = Forwarders(ctx.fn).run();
+    if (removed == 0) return false;
+    ctx.stats.forwardersRemoved += removed;
+    ctx.stats.blocksRemoved += removeUnreachableBlocks(ctx.fn);
+    return true;
 }
 
 }  // namespace

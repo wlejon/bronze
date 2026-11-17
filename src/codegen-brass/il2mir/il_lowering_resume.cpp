@@ -44,8 +44,10 @@
 #include "il_lowering_calls.h"
 #include "il_lowering_ops.h"
 
+#include <brass/core/parallel_for.hpp>
 #include <brass/mir/resume_twin.hpp>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,6 +70,10 @@ const std::unordered_map<uint32_t, BronzeType>& IlLowering::il_types() {
 }
 
 namespace {
+
+// A thread per this many blocks of the twins finished: below it, starting a
+// thread costs more than it saves (brass's own pipeline uses the same).
+constexpr size_t kMinTwinBlocksPerThread = 2000;
 
 // Whether `t`, a resume point's state value of IL type `il`, has the MIR type
 // a leave's word (store_state_word) reads back as.
@@ -289,6 +295,11 @@ bool IlLowering::build_resume_twins(Module& mod) {
     // Nothing of the last lowered function's entry is in a twin: the deopt
     // counters' address loads the delta afresh.
     current_module_delta_ = nullptr;
+    // Each twin is drafted here, one at a time (a draft adds to the module),
+    // and finished below, the twins in parallel (a finish touches only its
+    // own twin: brass resume_twin.hpp).
+    std::vector<brass::ResumeTwinDraft> drafts;
+    std::vector<const Function*> drafted_from;
     for (Function* fn : generic) {
         std::string why;
         // THE DEOPT COUNTERS (TranslatorOptions::deopt_generic): each entry a
@@ -352,7 +363,9 @@ bool IlLowering::build_resume_twins(Module& mod) {
                 b.position_at_end(counted);
             };
         }
-        if (brass::build_resume_twin(*fn, mod, brass::resume_twin_name(fn->name()), twin_options, &why) == nullptr) {
+        std::optional<brass::ResumeTwinDraft> draft =
+            brass::draft_resume_twin(*fn, mod, brass::resume_twin_name(fn->name()), twin_options, &why);
+        if (!draft) {
             has_error_ = true;
             if (diag_) {
                 diag_->error(SourceLocation("", 0, 0),
@@ -374,6 +387,25 @@ bool IlLowering::build_resume_twins(Module& mod) {
         std::vector<uint32_t> ids;
         for (const auto& [id, target] : fn->resume_points()) ids.push_back(id);
         for (uint32_t id : ids) fn->remove_resume_point(id);
+        drafts.push_back(*draft);
+        drafted_from.push_back(fn);
+    }
+    std::vector<size_t> weights(drafts.size());
+    size_t total = 0;
+    for (size_t i = 0; i < drafts.size(); ++i) total += weights[i] = drafts[i].twin->block_count() + 1;
+    std::vector<std::string> failed(drafts.size());
+    std::vector<uint8_t> ok(drafts.size(), 0);
+    brass::parallel_for_each(brass::heaviest_first(weights),
+                             brass::threads_for_work(options_.build_threads, drafts.size(), total, kMinTwinBlocksPerThread),
+                             [&](size_t i) { ok[i] = brass::finish_resume_twin(drafts[i], &failed[i]) ? 1 : 0; });
+    for (size_t i = 0; i < drafts.size(); ++i) {
+        if (ok[i]) continue;
+        has_error_ = true;
+        if (diag_) {
+            diag_->error(SourceLocation("", 0, 0),
+                         "il2mir: no resume twin for " + std::string(drafted_from[i]->name()) + ": " + failed[i]);
+        }
+        return false;
     }
     return match_twin_state_types(mod);
 }

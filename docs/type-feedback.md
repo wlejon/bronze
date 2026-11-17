@@ -694,7 +694,10 @@ number again: global-read keys, element-cell sites, method sites, descriptor
 flags, the retirable speculated functions, the line tables) and a LINK TABLE
 of every image symbol their code refers to: compiled functions, descriptors,
 data tables, module stubs, thunks. The build lowers that IL once as the run
-will, which is how it knows the table and that the IL lowers at all. The first
+will, which is how it knows the table and that the IL lowers at all; it does
+so on a thread of its own while brass compiles the image
+(`codegen::planColdCompanion`), whose largest functions leave most threads
+idle at the end, and writes the table once the image's symbols exist. The first
 call through an empty cell calls `bronze_cold_resolve`, which builds the
 image's COMPANION once per process (the IL lowered to MIR as a program of the
 tiered pipeline, its every reference bound to the link table, attached for
@@ -724,12 +727,33 @@ where it comes at 26 ms); and every cold function of an image for another
 target, or built in process. On three_meshes 2429 never-entered functions are
 interpreted; bench.so goes from 23.4 MB to 21.6 MB (the IL is 1.71 MB, the
 link table 0.12 MB), pixi_text's from 31.3 to 28.6 MB (3737 interpreted).
-The build is about as fast as with the native cold tier: most of a profiled
-build is inference and the IL optimizer, which run before heat decides anything.
+Never-entered functions cost a profiled build little wall time beyond
+inference (which must read them: a never-entered function can still run, and
+what it does to properties and shapes is part of every closed-world fact): on
+three_meshes the redundancy pass spends 0.18 s of CPU on its 2482
+never-entered functions, 0.03 s of wall time with the build's threads, and
+leaving their IL as lowered would grow the companion's IL by 0.15 MB, so they
+are optimized as before. The build's time was in steps superlinear in a
+function's size, run on the largest hot functions (three.js's
+`setProgram$spec`, 1930 IL blocks after inlining), and in steps run on one
+thread: the redundancy pass bypassed one forwarding block per CFG snapshot
+(0.8 s on that function alone, and again in the inliner's sizing copies), the
+IL verifier and the resume twins' SROA ran one function at a time, and the
+companion's lowering waited for the image. With those gone a profiled build
+of three_meshes takes 6.5 s where it took 9.7 s, pixi_text's 6.6 s where it
+took 9.0 s, the modules byte for byte the same. What is left: inference, one
+thread (1.8 s and 2.3 s), and brass's passes and register allocation on the
+largest function, about 2.4 s of the 3.6 s codegen of three_meshes.
 Frames and start-up are unchanged (first output of three_meshes at 26 ms,
 of pixi_text at 45 ms): a run like the harvested one calls no interpreted
 function. The first call of one builds the companion (30 to 45 ms on these
-modules, the whole IL decoded at once). A wrong profile (every function never
+modules). The bodies' MIR is built lazily, a function's on its first call;
+what the first call pays for is the rest, for every cold function at once:
+decoding the IL (a fifth of it: 6 to 10 ms against 50 to 60 ms for the whole
+when the build times the same steps under its own load), then the proofs,
+each body's brass AST and the module's declarations. Doing that
+per function too needs the blob indexed by function, and the brass AST and
+proofs made per body on demand. A wrong profile (every function never
 entered) costs what it did with the native cold tier: three_meshes runs
 18.1 ms a frame on it either way, against 2.8 ms on its own harvest, until
 bro's cold-entry count drops the profile.

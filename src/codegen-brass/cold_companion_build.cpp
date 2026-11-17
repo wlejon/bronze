@@ -271,17 +271,16 @@ bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionIn
     return true;
 }
 
-bool emitColdCompanion(ObjectFile& obj, const BrassBackend& backend, const il::Module& module,
-                       const std::vector<std::string>& uniqueNames, const ColdCompanionInputs& inputs,
-                       std::string& why) {
-    const std::string& entry = backend.entrySymbol();
-    const std::string blob = encodeCompanion(module, inputs);
+ColdCompanionPlan planColdCompanion(const BrassBackend& backend, const il::Module& module,
+                                    const ColdCompanionInputs& inputs) {
+    ColdCompanionPlan plan;
+    plan.blob = encodeCompanion(module, inputs);
 
     // The companion as the resolver will build it, from the blob, every body
     // at once: what it references, and that it lowers at all.
     il::Module companionIl;
     ColdCompanionInputs decoded;
-    if (!decodeCompanion(blob, companionIl, decoded, why)) return false;
+    if (!decodeCompanion(plan.blob, companionIl, decoded, plan.why)) return plan;
     BrassBackend cb = backend;
     cb.setColdCompanion(&decoded);
     cb.setOptimize(false);
@@ -291,11 +290,24 @@ bool emitColdCompanion(ObjectFile& obj, const BrassBackend& backend, const il::M
     DiagnosticSink sink;
     std::unique_ptr<brass::Module> mir = cb.buildMirModule(companionIl, sink);
     if (!mir) {
-        why = sink.all().empty() ? "its MIR did not build" : sink.all().front().message;
+        plan.why = sink.all().empty() ? "its MIR did not build" : sink.all().front().message;
+        return plan;
+    }
+    plan.names = referencedNames(*mir);
+    plan.ok = true;
+    return plan;
+}
+
+bool emitColdCompanion(ObjectFile& obj, const BrassBackend& backend, const il::Module& module,
+                       const std::vector<std::string>& uniqueNames, const ColdCompanionInputs& inputs,
+                       ColdCompanionPlan plan, std::string& why) {
+    if (!plan.ok) {
+        why = plan.why;
         return false;
     }
-    std::set<std::string> names = referencedNames(*mir);
-    mir.reset();
+    const std::string& entry = backend.entrySymbol();
+    const std::string& blob = plan.blob;
+    std::set<std::string>& names = plan.names;
     // What the resolver itself reads: each interpreted function's descriptor
     // and every inlined callee's (TieredProgramImage::descriptorOf), and the
     // file table.

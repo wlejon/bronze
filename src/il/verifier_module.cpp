@@ -9,12 +9,17 @@
 #include "il/verifier_proofs.h"
 #include "abi/bronze_abi.h"
 #include "il/feedback_site.h"
+#include "support/parallel.h"
 
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 namespace bronze::il {
+
+// A thread per this many instructions of the bodies checked: below it,
+// starting a thread costs more than it saves.
+constexpr size_t kMinInstructionsPerThread = 20000;
 
 // Every value's type, by id: parameters, block parameters and results.
 static std::vector<Type> valueTypes(const Function& fn) {
@@ -101,19 +106,41 @@ static bool checkResumeState(const Module& module, const Function& fn, const Ins
     return true;
 }
 
-bool verify(const Module& module, DiagnosticSink& diags) {
-    for (const auto& fn : module.functions) {
-        // A declaration has no body to check; its calls are checked from the
-        // caller's side like any other direct call.
-        if (fn.isExternal) {
-            if (!fn.blocks.empty()) {
-                diags.error(Span{}, "External function " + fn.name + " has blocks");
-                return false;
-            }
-            continue;
+bool verify(const Module& module, DiagnosticSink& diags, size_t threads) {
+    // Each body on its own, the functions in parallel; the first function in
+    // module order that fails is the one reported, as a walk in order would.
+    {
+        const size_t n = module.functions.size();
+        std::vector<size_t> weights(n, 0);
+        size_t total = 0;
+        for (size_t i = 0; i < n; ++i) {
+            for (const auto& block : module.functions[i].blocks) weights[i] += block.instructions.size() + 1;
+            total += weights[i];
         }
-        if (!verifyFunction(fn, diags) || !verifyFeedbackRecords(fn, diags)) {
-            return false;
+        std::vector<DiagnosticSink> found(n);
+        std::vector<uint8_t> failed(n, 0);
+        parallelForEach(heaviestFirst(weights), threadsForWork(threads, n, total, kMinInstructionsPerThread), [&](size_t i) {
+            const Function& fn = module.functions[i];
+            // A declaration has no body to check; its calls are checked from
+            // the caller's side like any other direct call.
+            if (fn.isExternal) {
+                if (!fn.blocks.empty()) {
+                    found[i].error(Span{}, "External function " + fn.name + " has blocks");
+                    failed[i] = 1;
+                }
+                return;
+            }
+            failed[i] = !verifyFunction(fn, found[i]) || !verifyFeedbackRecords(fn, found[i]);
+        });
+        for (size_t i = 0; i < n; ++i) {
+            for (const Diagnostic& d : found[i].all()) {
+                if (d.severity == Severity::Error) {
+                    diags.error(d.span, d.message);
+                } else {
+                    diags.warning(d.span, d.message);
+                }
+            }
+            if (failed[i]) return false;
         }
     }
 

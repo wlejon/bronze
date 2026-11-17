@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -98,14 +99,27 @@ struct ColdLink {
 };
 inline constexpr uint64_t kColdLinkMagic = 0x314B4E494C444C43ull;  // "CLDLINK1"
 
+// The companion's blob and the symbols its code refers to, found by building
+// its MIR once as the resolver will (which also shows it lowers at all). It
+// reads only `module` and `inputs`, so the build runs it beside the image's
+// own compile. `ok` false: `why` says why it did not build.
+struct ColdCompanionPlan {
+    bool ok = false;
+    std::string why;
+    std::string blob;
+    std::set<std::string> names;
+};
+ColdCompanionPlan planColdCompanion(const BrassBackend& backend, const il::Module& module,
+                                    const ColdCompanionInputs& inputs);
+
 // Appends the cells, the blob, the link table and the link record to `obj`,
-// the image `backend` just built with `inputs.interpreted`. Builds the
-// companion's MIR once to find what it references; false (the image must
-// then be built again without interpreted functions) when it references a
-// symbol neither the image nor the runtime defines.
+// the image `backend` just built with `inputs.interpreted`, from `plan`;
+// false (the image must then be built again without interpreted functions)
+// when the plan failed or the companion references a symbol neither the
+// image nor the runtime defines.
 bool emitColdCompanion(brass::object::ObjectFile& obj, const BrassBackend& backend, const il::Module& module,
                        const std::vector<std::string>& uniqueNames, const ColdCompanionInputs& inputs,
-                       std::string& why);
+                       ColdCompanionPlan plan, std::string& why);
 
 // bronze_cold_resolve's work: builds the link's companion (once per link, any
 // thread) and fills cell `cell`.
