@@ -156,6 +156,7 @@ enum class SiteKind : uint8_t {
     MemberData,    // prop.get of a data property above the receiver, beside own and absent ways (member_data.cpp)
     TdzRead,       // env.get.tdz of a binding fixed once initialized (tdz.cpp)
     ArrayPush,     // method.call "push" of one value on an array the function made (array_push.cpp)
+    CollectionCall,  // method.call of a Map / Set / WeakMap / WeakSet `get` or `has` (collection_call.cpp)
 };
 
 // Int: every operand an int32 and the operation computed on i32 (add, sub,
@@ -225,8 +226,10 @@ struct SitePlan {
     // A dense read whose every Array held only Numbers (NUMBERS bit set or
     // claimed, kElemArmNoNumbers never ran): tested with kDenseNumbers.
     bool numbers = false;
-    // MathCall: the il::Intrinsic.
+    // MathCall: the il::Intrinsic. CollectionCall: the BRONZE_ABI_COLLECTION_
+    // op, and in `collectionClass` the class its receiver is tested for.
     int32_t intrinsic = -1;
+    int32_t collectionClass = -1;
     // MathCall on the pinned global Math (il::Module::mathPinned): the callee
     // is the intrinsic by lockdown, so no read and no identity test.
     bool pinned = false;
@@ -324,6 +327,9 @@ private:
     void shareShapeSets(const il::Function& fn, FunctionPlan& plan) const;
     std::optional<SitePlan> planIntrinsic(const spec::HarvestSite& h, size_t argc, BlockId block,
                                           uint32_t index) const;
+    // collection_call.cpp.
+    std::optional<SitePlan> planCollection(const spec::HarvestSite& h, const std::string& key, size_t argc,
+                                           BlockId block, uint32_t index) const;
     std::optional<SitePlan> planLength(const il::Instruction& inst, BlockId block, uint32_t index) const;
 
     const spec::SiteFeedback* recorded(uint32_t fn, uint32_t ordinal) const;

@@ -308,6 +308,8 @@
     X(bronze_array_push,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     /* array.push's slow path (il_op.h): `arr.push(v)`, arr a plain Array. */ \
     X(bronze_array_push1,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* collection.op (il_op.h): `recv.get(key)` / `recv.has(key)` behind is.collection. */ \
+    X(bronze_collection_op,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_fast_array_index_of, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_includes, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_join,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

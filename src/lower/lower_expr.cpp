@@ -471,6 +471,12 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         if (!ident->name.empty() && ident->name[0] == '#') {
             return emitPrivateSlotRead(ident->name, ident->span, ilFn);
         }
+        // A counted function's `arguments` (il.h `argumentsIsCount`) read as
+        // a value: the list, made here when the wrapper passed the count. Its
+        // `.length`, `[i]` and `apply` mentions are answered without it.
+        if (const std::optional<Value> args = countedArguments(*ident, ilFn)) {
+            return lazyArgumentsList(*args, ilFn);
+        }
         auto it = activeVarMap_.find(ident->name);
         if (it == activeVarMap_.end()) {
             // Global value properties (shadowable by local declarations,

@@ -471,7 +471,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::NumTruthy: case Op::RelLt:
         case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber: case Op::TypeOfIs:
         case Op::IsDenseArray: case Op::InstanceOf: case Op::In: case Op::IterStep:
-        case Op::IsTypedArray: case Op::IsPlainArray: case Op::PrivateHas:
+        case Op::IsTypedArray: case Op::IsPlainArray: case Op::IsCollection: case Op::PrivateHas:
             primResult(kBool);
             break;
         case Op::CoroMode: primResult(kI32); break;

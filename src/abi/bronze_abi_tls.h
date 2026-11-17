@@ -162,7 +162,29 @@ typedef struct bronze_tls_block {
      * tenured counter, which the collector bumps when it promotes the
      * object. Set when the thread binds to a heap, like gc_cell_header. */
     uint64_t gc_memento_header;
+    /* The instance shape of each collection kind, by BRONZE_ABI_COLLECTION_
+     * class (Map, Set, WeakMap, WeakSet): the root over the kind's
+     * prototype that `new Map()` and the others make their instances at
+     * (runtime/builtin_map.cpp, builtin_weak_map.cpp), or 0 until the runtime
+     * has built the kind. What `is.collection` compares a receiver's shape
+     * word with (il_op.h): the prototypes are frozen by lockdown, so at that
+     * shape `get`, `has`, `set` can only be the kind's own natives. */
+    uint64_t collection_shapes[4];
 } bronze_tls_block;
+
+/* The collection classes `collection_shapes` is indexed by, and the
+ * operations `collection.op` performs (il_op.h; runtime/builtin_map.cpp
+ * bronze_collection_op): `get` / `has` of one key. */
+#define BRONZE_ABI_COLLECTION_MAP      0
+#define BRONZE_ABI_COLLECTION_SET      1
+#define BRONZE_ABI_COLLECTION_WEAKMAP  2
+#define BRONZE_ABI_COLLECTION_WEAKSET  3
+#define BRONZE_ABI_COLLECTION_MAP_GET      0
+#define BRONZE_ABI_COLLECTION_MAP_HAS      1
+#define BRONZE_ABI_COLLECTION_SET_HAS      2
+#define BRONZE_ABI_COLLECTION_WEAKMAP_GET  3
+#define BRONZE_ABI_COLLECTION_WEAK_HAS     4  /* one native for WeakMap and WeakSet */
+#define BRONZE_ABI_COLLECTION_OP_COUNT     5
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
 #define BRONZE_TLS_ALLOC_CURSOR_OFF                8
@@ -189,6 +211,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_ARRAY_SHAPE_OFF               (BRONZE_TLS_PLAIN_SHAPES_OFF + \
     8 * (BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1))
 #define BRONZE_TLS_GC_MEMENTO_HEADER_OFF         (BRONZE_TLS_ARRAY_SHAPE_OFF + 8)
+#define BRONZE_TLS_COLLECTION_SHAPES_OFF         (BRONZE_TLS_GC_MEMENTO_HEADER_OFF + 8)
 
 /*
  * ---- the constants below the block ---------------------------------------

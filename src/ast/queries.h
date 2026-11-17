@@ -229,12 +229,17 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
 bool readsArgumentsAsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
 
 // `readsArgumentsAsList`, with every mention in the function's own body (no
-// arrow reads `arguments`), none of them an `apply`'s list, and no rest
-// parameter. Such a function needs the
+// arrow reads `arguments`) and no rest parameter. Such a function needs the
 // list only when the caller passed more arguments than it has parameters:
-// with no more, `arguments.length` is the count and `arguments[i]` is the
-// value parameter i arrived with (il.h `argumentsIsCount`).
+// with no more, `arguments.length` is the count, `arguments[i]` is the value
+// parameter i arrived with, and `f.apply(t, arguments)` calls `f` with those
+// values (il.h `argumentsIsCount`).
 bool readsArgumentsInBodyOnly(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
+
+// `readsArgumentsInBodyOnly`, and at least one mention is the list of an
+// `f.apply(t, arguments)`: the function forwards its arguments (il.h
+// `kForwardedArguments`).
+bool forwardsArgumentsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
 
 // Does this function body contain a `return <expr>;`? Like `usesThis`, it
 // does NOT descend into nested functions: an inner `return` returns from

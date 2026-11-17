@@ -100,7 +100,7 @@ bool namesFunction(il::Op op) { return op == il::Op::Call || op == il::Op::Funct
 
 bool carriesIcSite(il::Op op) {
     return op == il::Op::PropGet || op == il::Op::PropSet || op == il::Op::MethodCall ||
-           op == il::Op::MethodCallSpread;
+           op == il::Op::MethodCallSpread || op == il::Op::ApplyArgs;
 }
 
 using il::FastEntry;

@@ -66,13 +66,17 @@ Value* tls(Builder& b) {
 
 // `code(env, this, argc, argv)`: through a register, or in a protected block
 // through the module's trampoline (il_call_entry.h).
-Value* enter_code(IlLowering* lowering, Builder& b, Value* code, Value* env, Value* this_val, uint32_t argc,
+Value* enter_code(IlLowering* lowering, Builder& b, Value* code, Value* env, Value* this_val, Value* n,
                   Value* argv) {
-    Value* n = b.build_iconst_i32(static_cast<int32_t>(argc));
     if (lowering->in_protected_block()) {
         return b.build_call(lowering->module_sym(kEnterCodeTrampoline), Type::i64(), {code, env, this_val, n, argv});
     }
     return b.build_call_indirect(code, Type::i64(), {env, this_val, n, argv});
+}
+
+Value* enter_code(IlLowering* lowering, Builder& b, Value* code, Value* env, Value* this_val, uint32_t argc,
+                  Value* argv) {
+    return enter_code(lowering, b, code, env, this_val, b.build_iconst_i32(static_cast<int32_t>(argc)), argv);
 }
 
 // The callee test as branches: `callee` an object, its header a function's,
@@ -115,11 +119,15 @@ Value* function_entry_test(Builder& b, Value* callee, uint64_t mask, uint64_t bi
 // A function payload's code and env, entered.
 // In a build made to be harvested, a call or `new` with a slow site of its own
 // keeps the callee it entered (il_property.h count_callee_turn).
-Value* enter_function(IlLowering* lowering, Builder& b, Value* fn, Value* this_val, uint32_t argc, Value* argv) {
+Value* enter_function(IlLowering* lowering, Builder& b, Value* fn, Value* this_val, Value* argc, Value* argv) {
     Value* code = b.build_load(Type::ptr(), fn, BRONZE_ABI_FN_CODE_OFFSET);
     lowering->prop_lowering().count_callee_turn(b, b.build_load(Type::i64(), fn, BRONZE_ABI_FN_CODE_OFFSET));
     Value* env = b.build_load(Type::i64(), fn, BRONZE_ABI_FN_ENV_OFFSET);
     return enter_code(lowering, b, code, env, this_val, argc, argv);
+}
+
+Value* enter_function(IlLowering* lowering, Builder& b, Value* fn, Value* this_val, uint32_t argc, Value* argv) {
+    return enter_function(lowering, b, fn, this_val, b.build_iconst_i32(static_cast<int32_t>(argc)), argv);
 }
 
 }  // namespace
@@ -373,6 +381,62 @@ Value* lower_construct_inline(IlLowering* lowering, Builder& b, Value* ctor, con
     lowering->prop_lowering().slow_arm(b);
     b.build_br(merge, {b.build_call("bronze_construct", Type::i64(),
                                     {ctor, b.build_iconst_i32(static_cast<int32_t>(argc)), argv})});
+    b.position_at_end(merge);
+    return result;
+}
+
+// `recv.apply(this, list)` with the list the first `count` of `args`: a
+// function at the shape the site latched for %Function.prototype.apply% (as
+// `call`'s inline path tests it) is entered with the values as its
+// arguments, `count` of them, staged in the argv block; every other receiver,
+// and a callee compiled code may not enter, gets the list made from the
+// staged block (rooted) and the method stub called with (this, list). The
+// receiver and `this` arrive tagged: the list's allocation may collect.
+Value* lower_apply_args_inline(IlLowering* lowering, Builder& b, Value* recv, Value* this_val, Value* count,
+                               Value* key_id, const std::vector<Value*>& args, uint32_t ic_index) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    const IcSite site = pl.ic_site_ref(b, ic_index);
+    Value* argv = lowering->stage_argv(b, args);
+    // The count is a boxed Number no larger than args.size(): its double's integer.
+    Value* argc = b.build_fptosi_i32(b.build_bitcast_f64_i64(lowering->ensure_type(count, Type::i64(), b)));
+    const std::string p = prefix_of(b, "apply");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* helper = b.append_block(p + "_helper");
+    BasicBlock* merge = b.append_block(p + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    helper->set_cold();
+    if (!pl.cold_code()) {
+        BasicBlock* object = b.append_block(p + "_object");
+        BasicBlock* fn_test = b.append_block(p + "_fn");
+        auto word = [&](int32_t w) { return b.build_load(Type::i64(), site.base, site.off + w * kWord); };
+        b.position_at_end(cur);
+        Value* raw = lowering->ensure_type(recv, Type::i64(), b);
+        Value* ptr = b.build_xor(raw, imm(b, static_cast<int64_t>(kObjectTagBits)));
+        b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, helper);
+        b.position_at_end(object);
+        Value* header = b.build_load(Type::i32(), ptr, 0);
+        Value* latched = b.build_and(b.build_eq(word(0), imm(b, static_cast<int64_t>(kFunctionShapeLatch))),
+                                     b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                                word(BRONZE_ABI_METHOD_IC_AUX_WORD)));
+        b.build_br_if(b.build_and(b.build_eq(header, b.build_iconst_i32(kFunctionHeaderLow)), latched), fn_test,
+                      helper);
+        b.position_at_end(fn_test);
+        Value* fn = function_entry_test(b, raw, kCallMask, kCallBits, helper, argc);
+        b.build_br(merge, {enter_function(lowering, b, fn, lowering->ensure_type(this_val, Type::i64(), b), argc,
+                                          argv)});
+    } else {
+        b.position_at_end(cur);
+        b.build_br(helper, {});
+    }
+
+    b.position_at_end(helper);
+    pl.slow_arm(b);
+    Value* list = lowering->ensure_type(
+        b.build_call("bronze_rest_args", Type::i64(), {argc, argv, b.build_iconst_i32(0)}), Type::tagged(), b);
+    Value* call_argv = lowering->stage_argv(b, {this_val, list});
+    b.build_br(merge, {b.build_call(lowering->module_sym(kMethodCallStub), Type::i64(),
+                                    {lowering->ensure_type(recv, Type::i64(), b), key_id, b.build_iconst_i32(2),
+                                     call_argv, pl.site_ptr(b, site)})});
     b.position_at_end(merge);
     return result;
 }

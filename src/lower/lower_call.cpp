@@ -397,6 +397,14 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.type = il::Type::Dynamic;
             inst.result = callRes;
 
+            // `f.apply(t, arguments)` in a counted function: the values
+            // the parameters arrived with, when the wrapper passed the count.
+            if (!spreadArgs && mem->property == "apply" && call->args.size() == 2 &&
+                ilFn.params.size() - ilFn.firstSourceParam() <= 16) {
+                if (const std::optional<Value> args = countedArguments(*call->args[1], ilFn)) {
+                    return lowerForwardedApply(thisArgVal, *call->args[0], *args, inst, ilFn);
+                }
+            }
             if (spreadArgs) {
                 auto argsArr = lowerListToArray(call->args, ilFn);
                 if (!argsArr) return std::nullopt;
@@ -497,6 +505,55 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     inst.span = call->callee ? call->callee->span : call->span;
     emitInst(ilFn, inst);
     return Value{callRes, il::Type::Dynamic};
+}
+
+// `recv.apply(this, arguments)` in a counted function (il.h
+// `argumentsIsCount`): where `arguments` is the count, an `apply.args` of the
+// values the parameters arrived with, and where it is the list, the method
+// call. `site` is the method call's instruction as far as it was made (its
+// key, site, span and result).
+std::optional<Lowerer::Value> Lowerer::lowerForwardedApply(Value recv, const ast::Expr& thisExpr, Value args,
+                                                          const il::Instruction& site, il::Function& ilFn) {
+    auto thisVal = lowerExpr(thisExpr, ilFn);
+    if (!thisVal) return std::nullopt;
+    const Value thisBoxed = boxValueIfNeeded(*thisVal, ilFn);
+    const il::BlockId bCount = createBlock(ilFn);
+    const il::BlockId bList = createBlock(ilFn);
+    const il::BlockId bJoin = createBlock(ilFn);
+    const il::ValueId count = ilFn.valueCount++;
+    ilFn.blocks[bCount].params.push_back({count, il::Type::Dynamic});
+    ilFn.blocks[bJoin].params.push_back({site.result, il::Type::Dynamic});
+    emitArgumentsIsCountBranch(args, bCount, bList, ilFn);
+
+    const auto emitCall = [&](il::Op op, uint32_t icIndex, std::vector<il::ValueId> operands) {
+        il::Instruction inst;
+        inst.op = op;
+        inst.type = il::Type::Dynamic;
+        inst.result = ilFn.valueCount++;
+        inst.operands = std::move(operands);
+        inst.keyIndex = site.keyIndex;
+        inst.icIndex = icIndex;
+        inst.span = site.span;
+        emitInst(ilFn, inst);
+        il::Instruction jmp;
+        jmp.op = il::Op::Jump;
+        jmp.type = il::Type::Void;
+        jmp.target = il::BlockTarget{.block = bJoin, .args = {inst.result}};
+        emitInst(ilFn, jmp);
+    };
+
+    setCurrentBlock(bCount);
+    std::vector<il::ValueId> operands{recv.id, thisBoxed.id, count};
+    for (size_t p = ilFn.firstSourceParam(); p < ilFn.params.size(); ++p) {
+        operands.push_back(boxValueIfNeeded(Value{static_cast<il::ValueId>(p), ilFn.params[p].type}, ilFn).id);
+    }
+    emitCall(il::Op::ApplyArgs, site.icIndex, std::move(operands));
+
+    setCurrentBlock(bList);
+    emitCall(il::Op::MethodCall, icSiteCounter_++, {recv.id, thisBoxed.id, args.id});
+
+    setCurrentBlock(bJoin);
+    return Value{site.result, il::Type::Dynamic};
 }
 
 }  // namespace bronze::lower

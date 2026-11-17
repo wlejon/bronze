@@ -33,6 +33,11 @@ Value* lower_call_dynamic_inline(IlLowering* lowering, Builder& b, Value* callee
 Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t key_index,
                                 const std::vector<Value*>& args, uint32_t ic_index);
 
+// `recv.apply(this_val, list)`, the list the first `count` (a boxed Number)
+// of `args` (il_op.h apply.args), through method site `ic_index`.
+Value* lower_apply_args_inline(IlLowering* lowering, Builder& b, Value* recv, Value* this_val, Value* count,
+                               Value* key_id, const std::vector<Value*>& args, uint32_t ic_index);
+
 // A callee compiled code may call without the runtime (the call form of the
 // flags-word test, a native's arity checked against the i32 `argc`): leaves
 // the builder where it may and returns the function's payload; any other value

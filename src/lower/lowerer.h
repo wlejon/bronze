@@ -377,6 +377,10 @@ private:
     bool lowerParamBindings(const std::vector<ast::Param>& params, uint32_t paramBase,
                             il::Function& ilFn);
     static void applyParamShape(const std::vector<ast::Param>& params, il::Function& fn);
+    // A counted function that forwards its arguments gets `__fwd<i>`
+    // parameters up to il::Function::kForwardedArguments (il.h).
+    static void addForwardedParams(const std::vector<ast::Param>& params, const std::vector<ast::StmtPtr>& body,
+                                   il::Function& fn);
     static bool listHasSpread(const std::vector<ast::ExprPtr>& list);
     static constexpr size_t kFixedArgOperandLimit = 16;
     static bool argsTakeArrayPath(const std::vector<ast::ExprPtr>& args);
@@ -603,6 +607,8 @@ private:
     std::optional<Value> countedArguments(const ast::Expr& object, const il::Function& ilFn) const;
     void emitArgumentsIsCountBranch(Value args, il::BlockId onCount, il::BlockId onList, il::Function& ilFn);
     Value lazyArgumentsList(Value args, il::Function& ilFn);
+    std::optional<Value> lowerForwardedApply(Value recv, const ast::Expr& thisExpr, Value args,
+                                             const il::Instruction& site, il::Function& ilFn);
     std::optional<Value> emitIndexRead(const ast::IndexAccess& idxAccess, Value objBoxed,
                                        il::Function& ilFn);
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,

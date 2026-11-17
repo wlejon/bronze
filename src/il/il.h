@@ -276,7 +276,16 @@ struct Function {
     // Number, and builds no Array. The body tests which it holds: the length
     // is the count, and an element is read off an Array of the values the
     // parameters arrived with (lower_object.cpp `lazyArgumentsList`).
+    //
+    // A counted function that FORWARDS its arguments (`f.apply(t, arguments)`,
+    // ast::forwardsArgumentsList) has parameters past its source ones,
+    // `__fwd<i>`, up to kForwardedArguments in all: the wrapper fills them as
+    // it fills the source ones, so a call of up to that many arguments arrives
+    // as the count and the values, and the forward is an `apply.args` of them
+    // (no Array made). They are no source parameters: `length` is
+    // `requiredArgs`, and nothing calls such a function directly.
     bool argumentsIsCount = false;
+    static constexpr size_t kForwardedArguments = 12;
     bool isStrict = false;
     bool isGenerator = false;
     // The BODY of a generator, async function or async generator: a coroutine
@@ -594,7 +603,7 @@ struct Module {
     std::vector<LineTable> lineTables;
 
     // The inline-cache sites that belong to METHOD CALLS, in ascending order:
-    // the `icIndex` of every MethodCall / MethodCallSpread, each once. A
+    // the `icIndex` of every MethodCall / MethodCallSpread / ApplyArgs, each once. A
     // method site's words mean something different from a property site's
     // (bronze_abi.h, "the METHOD-CALL site"), and its env words can hold heap
     // Values, so the backend hands exactly this list to
@@ -607,7 +616,7 @@ struct Module {
         for (const auto& fn : functions) {
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block.instructions) {
-                    if (inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
+                    if (inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread || inst.op == Op::ApplyArgs) {
                         sites.push_back(inst.icIndex);
                     }
                 }

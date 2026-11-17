@@ -233,6 +233,8 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::IsDenseArray:
         case BronzeOp::IsTypedArray:
         case BronzeOp::IsPlainArray:
+        case BronzeOp::IsCollection:
+        case BronzeOp::CollectionOp:
         case BronzeOp::IsNullish:
         case BronzeOp::TypeOf:
         case BronzeOp::TypeOfIs:
@@ -636,6 +638,21 @@ bool lower_ops_instruction(
         case BronzeOp::IsPlainArray: {
             res_val = lowering->prop_lowering().lower_is_plain_array(
                 b, lowering->ensure_type(get_opd(0), Type::i64(), b));
+            return true;
+        }
+
+        case BronzeOp::IsCollection: {
+            res_val = lowering->prop_lowering().lower_is_collection(
+                b, lowering->ensure_type(get_opd(0), Type::i64(), b), static_cast<int32_t>(inst_ast.imm_i64));
+            return true;
+        }
+
+        // collection.op (il_op.h): the native, called with its key alone.
+        case BronzeOp::CollectionOp: {
+            Value* recv = lowering->ensure_type(get_opd(0), Type::i64(), b);
+            Value* key = lowering->ensure_type(get_opd(1), Type::i64(), b);
+            res_val = b.build_call("bronze_collection_op", Type::i64(),
+                                   {recv, key, b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64))});
             return true;
         }
 

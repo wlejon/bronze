@@ -640,6 +640,18 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                         "speculated function may");
                 return false;
             }
+            if (inst.op == Op::IsCollection &&
+                (inst.operands.size() != 1 || inst.type != Type::Bool || inst.immI32 < 0 ||
+                 inst.immI32 > BRONZE_ABI_COLLECTION_WEAKSET)) {
+                diags.error(Span{}, "Function " + fn.name + ": is.collection takes one operand and a class");
+                return false;
+            }
+            if (inst.op == Op::CollectionOp &&
+                (inst.operands.size() != 2 || inst.type != Type::Dynamic || inst.immI32 < 0 ||
+                 inst.immI32 >= BRONZE_ABI_COLLECTION_OP_COUNT)) {
+                diags.error(Span{}, "Function " + fn.name + ": collection.op takes a receiver, a key and an op");
+                return false;
+            }
             if (inst.op == Op::IsPlainArray && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
                 diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " takes one operand and is a bool");
                 return false;
@@ -670,6 +682,7 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                     case Op::SuperCall: fixedPrefix = 2; break;    // base, this
                     case Op::MethodCall: fixedPrefix = 1; break;   // receiver
                     case Op::Construct: fixedPrefix = 1; break;    // constructor
+                    case Op::ApplyArgs: fixedPrefix = 3; break;    // receiver, this, count
                     default: fixedForm = false; break;
                 }
                 if (fixedForm && inst.operands.size() > fixedPrefix + 16) {
@@ -677,6 +690,19 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                             " passes " +
                                             std::to_string(inst.operands.size() - fixedPrefix) +
                                             " arguments; past 16 the spread form carries them");
+                    return false;
+                }
+            }
+
+            if (inst.op == Op::ApplyArgs) {
+                bool ok = inst.operands.size() >= 3 && inst.type == Type::Dynamic && inst.result != kNoValue;
+                for (size_t i = 0; ok && i < inst.operands.size(); ++i) {
+                    ok = definedTypes[inst.operands[i]] == Type::Dynamic;
+                }
+                if (!ok) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": apply.args takes a receiver, a this, a count and values, all "
+                                            "dynamic, and is dynamic");
                     return false;
                 }
             }

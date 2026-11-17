@@ -71,6 +71,7 @@ void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
         case SiteKind::MemberData: rewriteMemberData(ctx, site); return;
         case SiteKind::TdzRead: rewriteTdzRead(ctx, site); return;
         case SiteKind::ArrayPush: rewriteArrayPush(ctx, site); return;
+        case SiteKind::CollectionCall: rewriteCollectionCall(ctx, site); return;
     }
 }
 

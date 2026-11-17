@@ -396,6 +396,14 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         }
                         break;
                     }
+                    case Op::ApplyArgs: {
+                        out += "apply.args";
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            out += (i == 0 ? " %" : ", %") + std::to_string(inst.operands[i]);
+                        }
+                        out += ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
+                        break;
+                    }
                     case Op::MethodCallSpread: {
                         out += "method.call.spread";
                         if (!inst.operands.empty()) {

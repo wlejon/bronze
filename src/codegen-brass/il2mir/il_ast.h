@@ -154,12 +154,15 @@ enum class BronzeOp {
     ObjectRest,
     DynamicCallSpread,
     MethodCallSpread,
+    ApplyArgs,
     ConstructSpread,
     PrintSpread,
     PrintSpreadErr,
     KeepAlive,
     IsTypedArray,
     IsPlainArray,
+    IsCollection,   // is.collection (il_op.h): imm_i64 the class
+    CollectionOp,   // collection.op (il_op.h): imm_i64 the op
     // `prop.set` / `elem.set` in kWriteDefine mode (il.h): CreateDataPropertyOrThrow.
     PropDefine,
     ElemDefine,

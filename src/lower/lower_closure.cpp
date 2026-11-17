@@ -166,6 +166,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
              il::Type::Dynamic});
     }
     applyParamShape(params, newFn);
+    addForwardedParams(params, body, newFn);
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
     // `span` is the SITE's, and for a class that is the whole `class C {...}`
     // rather than the constructor's own text — which is exactly what

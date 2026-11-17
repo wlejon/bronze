@@ -411,7 +411,17 @@ bool readsArgumentsInBodyOnly(const std::vector<Param>& params, const std::vecto
     for (const auto& s : body) {
         if (s) s->accept(v);
     }
-    return !v.written && v.mentions == v.reads && v.arrowMentions == 0 && v.forwards == 0;
+    return !v.written && v.mentions == v.reads && v.arrowMentions == 0;
+}
+
+bool forwardsArgumentsList(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
+    if (!readsArgumentsInBodyOnly(params, body)) return false;
+    ArgumentsListVisitor v;
+    visitParamExprs(params, v);
+    for (const auto& s : body) {
+        if (s) s->accept(v);
+    }
+    return v.forwards > 0;
 }
 
 bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {

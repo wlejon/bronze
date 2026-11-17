@@ -27,6 +27,7 @@
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/map_probe.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
@@ -38,6 +39,7 @@
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -308,6 +310,9 @@ void buildKind(CollectionIntrinsics& out, bool isSet) {
     // through the shape `extends` minted for its own prototype.
     fn->instance_shape = rtNewRootShape(proto.get());
     out.instanceShape = fn->instance_shape;
+    // What `is.collection` compares with (bronze_abi_tls.h collection_shapes).
+    bronze_tls_block_addr()->collection_shapes[isSet ? BRONZE_ABI_COLLECTION_SET : BRONZE_ABI_COLLECTION_MAP] =
+        reinterpret_cast<uint64_t>(out.instanceShape);
 }
 
 void ensureCollectionIntrinsics() {
@@ -375,4 +380,49 @@ const char* rtMapConstructorName(Value fn) {
     return nullptr;
 }
 
+const char* rtCollectionNativeName(const void* code) {
+    if (code == reinterpret_cast<const void*>(rtMapGetBody)) return "Map.get";
+    if (code == reinterpret_cast<const void*>(rtMapHasBody)) return "Map.has";
+    if (code == reinterpret_cast<const void*>(rtSetHasBody)) return "Set.has";
+    return rtWeakCollectionNativeName(code);
+}
+
 }  // namespace bronze::runtime
+
+namespace bronze::runtime {
+namespace {
+
+// The natives themselves, for every answer the probe below does not give.
+[[gnu::noinline]] uint64_t collectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
+    switch (op) {
+        case BRONZE_ABI_COLLECTION_MAP_GET: return rtMapGetBody(0, recv, 1, &key);
+        case BRONZE_ABI_COLLECTION_MAP_HAS: return rtMapHasBody(0, recv, 1, &key);
+        default: return rtSetHasBody(0, recv, 1, &key);
+    }
+}
+
+}  // namespace
+}  // namespace bronze::runtime
+
+// `collection.op` (il_op.h): the native `op` names, called as `recv.<method>(key)`
+// calls it. Generated code calls this only behind `is.collection`, so `recv`
+// was at its class's instance shape and the method it read was this native.
+// The brand is still tested (an object made with Object.create of the
+// prototype has the shape and not the slots, and Reflect.construct can give a
+// Set the Map's instance shape); the native answers whatever the probe does
+// not, its TypeError the generic call's.
+extern "C" uint64_t bronze_collection_op(uint64_t recv, uint64_t key, uint32_t op) {
+    using namespace bronze;
+    using namespace bronze::runtime;
+    if (op > BRONZE_ABI_COLLECTION_SET_HAS) return rtWeakCollectionOp(recv, key, op);
+    const Value self{Value(recv)};
+    const Value brand = op == BRONZE_ABI_COLLECTION_SET_HAS ? g_set.brand : g_map.brand;
+    uint32_t slot;
+    if (map_probe::branded(self.asObject<ObjectHeader>(), brand) &&
+        map_probe::probe<false>(rtHeap(), self.asObject<MapHeader>(), Value(key), slot)) {
+        if (op != BRONZE_ABI_COLLECTION_MAP_GET) return Value::fromBool(slot != UINT32_MAX).rawBits();
+        return slot == UINT32_MAX ? Value::fromUndefined().rawBits()
+                                  : self.asObject<MapHeader>()->valueAt(slot).rawBits();
+    }
+    return collectionOpByNative(recv, key, op);
+}

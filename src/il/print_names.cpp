@@ -132,6 +132,9 @@ const char* opName(Op op) {
         case Op::DynamicCallSpread: return "call.dynamic.spread";
         case Op::MethodCall: return "method.call";
         case Op::MethodCallSpread: return "method.call.spread";
+        case Op::ApplyArgs: return "apply.args";
+        case Op::IsCollection: return "is.collection";
+        case Op::CollectionOp: return "collection.op";
         case Op::ConstructSpread: return "new.spread";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";

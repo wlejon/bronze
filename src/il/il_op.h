@@ -819,6 +819,32 @@ enum class Op : uint8_t {
     // past 2^32 - 1. Speculation's form of a `push` on an array the function
     // made (speculate/array_push.cpp). immI32 kStoreNumber as `elem.store`'s.
     ArrayPush,
+    // a = apply.args recv, thisArg, count, v0, ..., vN-1 <key "apply">,
+    // <ic_site_index>: `recv.apply(thisArg, list)` where the list is the
+    // first `count` (a Number, at most N) of the values, which is how a
+    // counted function forwards its arguments (il.h argumentsIsCount,
+    // kForwardedArguments). Exactly that method call: a function at the
+    // bare function shape whose site latched %Function.prototype.apply% is
+    // entered with the values as its arguments and no Array made; any other
+    // receiver gets the list made and the call made through the site's
+    // method cache, a method site like `method.call`'s. Calls anything.
+    ApplyArgs,
+    // a: bool = is.collection v, <class>. Whether `v` is an object at the
+    // instance shape `new Map()` (`Set`, `WeakMap`, `WeakSet`: immI32 a
+    // BRONZE_ABI_COLLECTION_ class) makes its instances at: no own property
+    // and the class's prototype, which lockdown froze, so `v.get` / `v.has`
+    // read that prototype's natives. NOT a fact about the value (a property
+    // added moves it off the shape), like is.plain_array. Header loads only.
+    IsCollection,
+    // a: dynamic = collection.op recv, key, <op>. `recv.get(key)` /
+    // `recv.has(key)` (immI32 a BRONZE_ABI_COLLECTION_ op) where a
+    // dominating is.collection held for the op's class: the native's call,
+    // made without the method read (runtime bronze_collection_op). Reads the
+    // table (Loc::Heap), may rebuild its index (allocates), runs no user
+    // code; throws the native's TypeError for an object with the shape and
+    // not the internal slots. Speculation's form of a harvested
+    // `get` / `has` (speculate/collection_call.cpp).
+    CollectionOp,
 };
 
 // typeof.is's immI32: which answer of `typeof` it tests for. kTypeOfNone
@@ -841,7 +867,7 @@ enum TypeOfKind : int32_t {
 inline constexpr int32_t kToStrKeepNumber = 1;
 
 // The last op, for the serializer's range check.
-inline constexpr Op kLastOp = Op::ArrayPush;
+inline constexpr Op kLastOp = Op::CollectionOp;
 
 // The intrinsics `fn.native_is` and `math.*` name (immI32): Math functions
 // whose native's code pointer the runtime exports, so a test can compare a

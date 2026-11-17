@@ -30,6 +30,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/map.h"
+#include "runtime/map_probe.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
@@ -277,6 +278,10 @@ void buildKind(WeakIntrinsics& out, bool isWeakSet) {
     fn->prototype = proto.get();
     fn->instance_shape = rtNewRootShape(proto.get());
     out.instanceShape = fn->instance_shape;
+    // What `is.collection` compares with (bronze_abi_tls.h collection_shapes).
+    bronze_tls_block_addr()->collection_shapes[isWeakSet ? BRONZE_ABI_COLLECTION_WEAKSET
+                                                         : BRONZE_ABI_COLLECTION_WEAKMAP] =
+        reinterpret_cast<uint64_t>(out.instanceShape);
 }
 
 void ensureWeakIntrinsics() {
@@ -322,6 +327,38 @@ const char* rtWeakCollectionConstructorName(Value fn) {
     if (code == weakMapConstructor) return "WeakMap";
     if (code == weakSetConstructor) return "WeakSet";
     return nullptr;
+}
+
+const char* rtWeakCollectionNativeName(const void* code) {
+    if (code == reinterpret_cast<const void*>(weakMapGet)) return "WeakMap.get";
+    // WeakSet.prototype.has is the same native (the brand test takes both).
+    if (code == reinterpret_cast<const void*>(weakMapHas)) return "Weak.has";
+    return nullptr;
+}
+
+namespace {
+
+[[gnu::noinline]] uint64_t weakCollectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
+    return op == BRONZE_ABI_COLLECTION_WEAKMAP_GET ? weakMapGet(0, recv, 1, &key) : weakMapHas(0, recv, 1, &key);
+}
+
+}  // namespace
+
+// bronze_collection_op's weak half: an object key probed in place (the
+// natives' own prologue, without their argument block), the natives for the
+// rest.
+uint64_t rtWeakCollectionOp(uint64_t recv, uint64_t key, uint32_t op) {
+    const Value self{Value(recv)};
+    const Value k{Value(key)};
+    uint32_t slot;
+    const auto* obj = self.asObject<ObjectHeader>();
+    if (k.isObject() && (map_probe::branded(obj, g_weakMap.brand) || map_probe::branded(obj, g_weakSet.brand)) &&
+        map_probe::probe<true>(rtHeap(), self.asObject<MapHeader>(), k, slot)) {
+        if (op != BRONZE_ABI_COLLECTION_WEAKMAP_GET) return Value::fromBool(slot != UINT32_MAX).rawBits();
+        return slot == UINT32_MAX ? Value::fromUndefined().rawBits()
+                                  : self.asObject<MapHeader>()->valueAt(slot).rawBits();
+    }
+    return weakCollectionOpByNative(recv, key, op);
 }
 
 }  // namespace bronze::runtime

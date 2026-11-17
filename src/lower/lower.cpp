@@ -76,6 +76,7 @@ std::optional<il::Module> Lowerer::lower() {
                                      il::Type::Dynamic});
             }
             applyParamShape(fnDecl->params, fn);
+            addForwardedParams(fnDecl->params, fnDecl->body, fn);
             // 10.2.9: a declaration's `name` is the name it declares. The
             // `length` is `requiredArgs`, which `applyParamShape` has just set
             // to 15.1.5's ExpectedArgumentCount.

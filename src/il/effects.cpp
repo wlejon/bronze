@@ -165,7 +165,17 @@ Effects rawEffects(const Instruction& inst) {
         // The array's shape word (bare or not) is what the
         // test reads; a write that changes it is a transition.
         case Op::IsPlainArray:
+        case Op::IsCollection:
             return reading(Loc::Shapes);
+        // A collection's table (Loc::Heap), behind a dominating
+        // is.collection: its index may be rebuilt (allocates, writes only the
+        // table's own words), the native's TypeError (il_op.h).
+        case Op::CollectionOp: {
+            Effects e = throwing(Loc::Heap, Loc::Heap);
+            e.allocates = true;
+            e.guarded = true;
+            return e;
+        }
         // One array's header words and elements (its block grows, which
         // allocates), behind a dominating is.plain_array; the length limit's
         // RangeError (il_op.h).

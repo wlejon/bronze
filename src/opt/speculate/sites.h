@@ -35,6 +35,7 @@ void rewriteMember(RewriteContext& ctx, const SitePlan& plan);       // member_c
 void rewriteMemberData(RewriteContext& ctx, const SitePlan& plan);   // member_data.cpp
 void rewriteTdzRead(RewriteContext& ctx, const SitePlan& plan);      // tdz.cpp
 void rewriteArrayPush(RewriteContext& ctx, const SitePlan& plan);    // array_push.cpp
+void rewriteCollectionCall(RewriteContext& ctx, const SitePlan& plan);  // collection_call.cpp
 
 // arith.cpp: whether `inst` is an operation the arithmetic rewrite knows;
 // whether its generic lowering marks the numeric arms (evidence.h

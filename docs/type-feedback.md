@@ -386,6 +386,19 @@ A method site's two ways give `<form> <receiver> <callee>`:
   (`rtMathNativeName`), which `planIntrinsic` reads as a `math.*` call;
 - `native`: an exotic receiver, named by kind.
 
+Either form names a collection's `get` or `has` native `intrinsic:Map.get`,
+`intrinsic:Map.has`, `intrinsic:Set.has`, `intrinsic:WeakMap.get` or
+`intrinsic:Weak.has` (one native for WeakMap and WeakSet;
+`rtCollectionNativeName`). A method site of one `direct` way from a class's
+instance shape (`Map{}`, `Set{}`, `WeakMap{}`, `WeakSet{}`) whose callee is the
+native the site's key names there becomes `is.collection` + `collection.op`
+(`opt/speculate/collection_call.cpp`): the receiver's shape is compared with
+the class's instance shape (the TLS block's `collection_shapes`), and the
+call is the native's, made by `bronze_collection_op` without the method
+read or the argument block. Lockdown froze the prototypes, so at that shape
+the key can only read the native; a receiver at any other shape leaves in
+front of the site.
+
 A read site all of whose ways are `accessor` with named getters, a write site
 whose ways name setters, and a method site whose ways are all `direct` become
 MEMBER CELL sites in speculation (`opt/speculate/member_call.cpp`,

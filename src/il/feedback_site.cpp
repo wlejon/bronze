@@ -348,7 +348,7 @@ uint64_t icLayoutDigest(const Module& module) {
         for (const Block& block : fn.blocks) {
             for (const Instruction& inst : block.instructions) {
                 if (inst.op != Op::PropGet && inst.op != Op::PropSet && inst.op != Op::MethodCall &&
-                    inst.op != Op::MethodCallSpread) {
+                    inst.op != Op::MethodCallSpread && inst.op != Op::ApplyArgs) {
                     continue;
                 }
                 named.emplace(inst.icIndex, std::make_pair(static_cast<uint32_t>(inst.op), inst.keyIndex));

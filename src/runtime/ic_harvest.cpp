@@ -260,11 +260,13 @@ void measureRepresentation(State& s) {
     }
 }
 
-// A source function by its text; a Math function as `intrinsic:Math.<name>`.
+// A source function by its text; a Math function as `intrinsic:Math.<name>`;
+// a collection's `get` or `has` as `intrinsic:Map.get`, ... (rtCollectionNativeName).
 std::string calleeOf(const void* code) {
     std::string name = typeFeedbackCodeName(code);
     if (!name.empty()) return name;
     if (const char* math = rtMathNativeName(code)) return std::string("intrinsic:Math.") + math;
+    if (const char* coll = rtCollectionNativeName(code)) return std::string("intrinsic:") + coll;
     return "*other*";
 }
 

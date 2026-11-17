@@ -586,6 +586,13 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
         math.pinned = true;
         return math;
     }
+    // A collection's get / has takes its key boxed (collection_call.cpp), so
+    // it is planned whatever the key's type.
+    if (const spec::HarvestSite* h = harvested(inst.icIndex); h != nullptr && h->method && !h->mega) {
+        if (std::optional<SitePlan> coll = planCollection(*h, module_.keyConstants[inst.keyIndex], inst.operands.size() - 1, block, index)) {
+            return coll;
+        }
+    }
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }

@@ -33,7 +33,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_register_value_cells", "bronze_register_template_cells", "bronze_register_fn_sources",
         "bronze_register_code_ranges",
         "bronze_concat_begin", "bronze_concat_append", "bronze_concat_template",
-        "bronze_concat_end", "bronze_global_get_name", "bronze_global_get", "bronze_typeof", "bronze_is_callable", "bronze_array_push1", "bronze_construct", "bronze_class_extends", "bronze_super_call",
+        "bronze_concat_end", "bronze_global_get_name", "bronze_global_get", "bronze_typeof", "bronze_is_callable", "bronze_array_push1", "bronze_collection_op", "bronze_construct", "bronze_class_extends", "bronze_super_call",
         "bronze_super_call_0", "bronze_super_call_1", "bronze_super_call_2", "bronze_super_call_3",
         "bronze_super_call_4", "bronze_super_call_5", "bronze_super_call_6", "bronze_super_call_7",
         "bronze_super_call_8", "bronze_super_call_9", "bronze_super_call_10", "bronze_super_call_11",

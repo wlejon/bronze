@@ -773,6 +773,15 @@ Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int6
 
 // `is.plain_array` (il_op.h): an Array still at the thread's bare array shape
 // (no named property, no subclass prototype, no integrity level).
+Value* PropertyLoweringHelper::lower_is_collection(Builder& b, Value* obj, int32_t cls) {
+    Value* is_object = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, is_object, ptr, shape);
+    Value* want = tls_block_word(b, BRONZE_TLS_COLLECTION_SHAPES_OFF + 8 * cls);
+    return b.build_and(is_object, b.build_eq(shape, want));
+}
+
 Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();

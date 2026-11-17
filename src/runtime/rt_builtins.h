@@ -517,6 +517,12 @@ bool rtIsWeakSetObject(Value v);
 Value rtNewWeakMap();
 Value rtNewWeakSet();
 Value rtNewWeakCollectionWithShape(class Shape* shape, bool isWeakSet);
+// The `get` / `has` natives a harvest names by code (ic_harvest.cpp calleeOf:
+// `intrinsic:Map.get`, ...), nullptr for any other code; and the weak half of
+// `collection.op` (builtin_map.cpp bronze_collection_op).
+const char* rtCollectionNativeName(const void* code);
+const char* rtWeakCollectionNativeName(const void* code);
+uint64_t rtWeakCollectionOp(uint64_t recv, uint64_t key, uint32_t op);
 
 // One typed-array element as a JS value, and one store into one
 // (builtin_typed_array.cpp). They exist as a pair because the two BigInt views

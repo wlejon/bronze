@@ -195,6 +195,9 @@ public:
     Value* lower_is_typed_array(Builder& b, Value* obj, int64_t imm);
     // `is.plain_array`: an Array whose props word holds no object.
     Value* lower_is_plain_array(Builder& b, Value* obj);
+    // `is.collection`: an object at the instance shape of collection class
+    // `cls` (bronze_abi_tls.h collection_shapes), as an i32.
+    Value* lower_is_collection(Builder& b, Value* obj, int32_t cls);
     // Whether the view at `ptr`, of element kind `kind` (an i64), answers
     // `length` from its header the way the runtime's read would
     // (rtTypedArrayChainPristine). An i32.

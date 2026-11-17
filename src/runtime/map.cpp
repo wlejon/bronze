@@ -1,4 +1,5 @@
 #include "runtime/map.h"
+#include "runtime/map_probe.h"
 
 #include <cmath>
 #include <cstring>
@@ -10,6 +11,9 @@
 #include "runtime/string.h"
 
 namespace bronze {
+
+using map_probe::kStableIndex;
+using map_probe::mix64;
 
 namespace {
 
@@ -25,22 +29,14 @@ uint32_t bucketCountFor(uint32_t capacity) noexcept {
     return n;
 }
 
-uint32_t mix64(uint64_t x) noexcept {
-    // splitmix64's finalizer: cheap, and it moves every input bit into the low
-    // ones, which is what a power-of-two bucket mask reads.
-    x ^= x >> 30;
-    x *= 0xBF58476D1CE4E5B9ULL;
-    x ^= x >> 27;
-    x *= 0x94D049BB133111EBULL;
-    x ^= x >> 31;
-    return static_cast<uint32_t>(x);
-}
 
 // The hash SameValueZero implies. Two keys that compare equal must hash equal,
 // so `-0` is normalized to `+0` and every NaN to the canonical one before the
 // bits are read, and a string hashes by its CHARACTERS rather than by its
 // address — two string objects with the same characters are one key.
-uint32_t hashKey(Value v) noexcept {
+}  // namespace
+
+uint32_t mapHashKey(Value v) noexcept {
     if (v.isNumber()) {
         double d = v.asNumber();
         if (d == 0.0) d = 0.0;                       // -0 and +0 are one key
@@ -65,10 +61,8 @@ uint32_t hashKey(Value v) noexcept {
     return mix64(v.rawBits());
 }
 
-// `indexEpoch` when no key the index hashes by address can move: every such
-// key is old, and an old object never moves, so no collection invalidates the
-// index. Inserting a movable key sets the real epoch.
-constexpr double kStableIndex = -2.0;
+namespace {
+
 
 // Whether `key` is hashed by an address a collection may change.
 bool keyMayMove(const Heap& heap, Value key) noexcept {
@@ -116,7 +110,7 @@ void reindex(Heap& heap, Rooted<Value>& self) {
         ++live;
         const Value key = map->keyAt(slot);
         movable = movable || keyMayMove(heap, key);
-        uint32_t b = hashKey(key) & mask;
+        uint32_t b = mapHashKey(key) & mask;
         while (buckets[b] != 0) b = (b + 1) & mask;
         buckets[b] = slot + 1;
     }
@@ -263,69 +257,11 @@ MapHeader* MapHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape, Va
 }
 
 bool MapHeader::findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
-    // The same first answer `find` gives: an empty collection misses without
-    // ever consulting — or building — the index.
-    if (map->liveSize() == 0) {
-        slot = UINT32_MAX;
-        return true;
-    }
-    // ensureIndex's validity test, verbatim: index present, epoch unmoved,
-    // anchor unmoved. Any disagreement means a rebuild — an allocation — so
-    // the rooted path must run instead.
-    if (!map->index.isPointer() || !epochCurrent(heap, map) ||
-        map->indexAnchor.asNumber() !=
-            static_cast<double>(reinterpret_cast<uintptr_t>(map))) {
-        return false;
-    }
-    const uint32_t count = bucketCountOf(map);
-    if (count == 0) {
-        return false;
-    }
-    const uint32_t mask = count - 1;
-    const uint32_t* buckets = bucketsOf(map);
-    uint32_t b = hashKey(key) & mask;
-    while (buckets[b] != 0) {
-        const uint32_t s = buckets[b] - 1;
-        if (map->liveAt(s) && sameValueZero(map->keyAt(s), key)) {
-            slot = s;
-            return true;
-        }
-        b = (b + 1) & mask;
-    }
-    slot = UINT32_MAX;
-    return true;
+    return map_probe::probe<false>(heap, map, key, slot);
 }
 
 bool MapHeader::findFastIdentity(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
-    // findFast's validity test, verbatim.
-    if (map->liveSize() == 0) {
-        slot = UINT32_MAX;
-        return true;
-    }
-    if (!map->index.isPointer() || !epochCurrent(heap, map) ||
-        map->indexAnchor.asNumber() !=
-            static_cast<double>(reinterpret_cast<uintptr_t>(map))) {
-        return false;
-    }
-    const uint32_t count = bucketCountOf(map);
-    if (count == 0) return false;
-    const uint32_t mask = count - 1;
-    const uint32_t* buckets = bucketsOf(map);
-    const Value* entries = static_cast<const MapHeader*>(map)->entryData();
-    // An object or symbol key is SameValueZero-equal only to itself, and a
-    // tombstone (a hole) is never one, so one compare of the bits is the
-    // whole test, with the hash and the compare inline rather than two calls
-    // a bucket.
-    const uint64_t want = key.rawBits();
-    for (uint32_t b = mix64(want) & mask; buckets[b] != 0; b = (b + 1) & mask) {
-        const uint32_t s = buckets[b] - 1;
-        if (entries[s * 2].rawBits() == want) {
-            slot = s;
-            return true;
-        }
-    }
-    slot = UINT32_MAX;
-    return true;
+    return map_probe::probe<true>(heap, map, key, slot);
 }
 
 uint32_t MapHeader::find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {
@@ -336,7 +272,7 @@ uint32_t MapHeader::find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {
     if (count == 0) return UINT32_MAX;
     const uint32_t mask = count - 1;
     const uint32_t* buckets = bucketsOf(map);
-    uint32_t b = hashKey(key.get()) & mask;
+    uint32_t b = mapHashKey(key.get()) & mask;
     // Terminates because the table is never more than half full — tombstoned
     // buckets included, since a slot is handed out once — and every probe
     // either finds an empty bucket or moves on.
@@ -372,7 +308,7 @@ void MapHeader::set(Heap& heap, Rooted<Value>& self, Rooted<Value>& key, Rooted<
 
     uint32_t* buckets = bucketsOf(map);
     const uint32_t mask = bucketCountOf(map) - 1;
-    uint32_t b = hashKey(key.get()) & mask;
+    uint32_t b = mapHashKey(key.get()) & mask;
     while (buckets[b] != 0) b = (b + 1) & mask;
     buckets[b] = slot + 1;
 }

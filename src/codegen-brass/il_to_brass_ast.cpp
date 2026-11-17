@@ -435,6 +435,12 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             out.param_count = inst.operands.size() > 1 ? static_cast<uint32_t>(inst.operands.size() - 1) : 0;
             break;
+        case il::Op::ApplyArgs:
+            out.op = il2mir::BronzeOp::ApplyArgs;
+            out.index = inst.keyIndex;
+            out.ic_index = inst.icIndex;
+            out.param_count = inst.operands.size() > 3 ? static_cast<uint32_t>(inst.operands.size() - 3) : 0;
+            break;
         case il::Op::MethodCallSpread:
             out.op = il2mir::BronzeOp::MethodCallSpread;
             out.index = inst.keyIndex;
@@ -609,6 +615,14 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::ConcatN: out.op = il2mir::BronzeOp::ConcatN; break;
         case il::Op::ArrayPush:
             out.op = il2mir::BronzeOp::ArrayPush;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::IsCollection:
+            out.op = il2mir::BronzeOp::IsCollection;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::CollectionOp:
+            out.op = il2mir::BronzeOp::CollectionOp;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::TypeOfIs:

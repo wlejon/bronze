@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "ast/queries.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -661,6 +662,14 @@ void Lowerer::applyParamShape(const std::vector<ast::Param>& params, il::Functio
         required++;
     }
     fn.requiredArgs = required;
+}
+
+void Lowerer::addForwardedParams(const std::vector<ast::Param>& params, const std::vector<ast::StmtPtr>& body,
+                                 il::Function& fn) {
+    if (!fn.argumentsIsCount || !ast::forwardsArgumentsList(params, body)) return;
+    for (size_t i = params.size(); i < il::Function::kForwardedArguments; ++i) {
+        fn.params.push_back({"__fwd" + std::to_string(i), il::Type::Dynamic});
+    }
 }
 
 bool Lowerer::listHasSpread(const std::vector<ast::ExprPtr>& list) {

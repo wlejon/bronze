@@ -1,0 +1,17 @@
+t0[] t1[x0] t2[x0,1.5] t3[x0,1.5,null] t4[x0,1.5,null,x3] t5[x0,1.5,null,x3,6] t6[x0,1.5,null,x3,6,null] t7[x0,1.5,null,x3,6,null,x6] t8[x0,1.5,null,x3,6,null,x6,10.5] t9[x0,1.5,null,x3,6,null,x6,10.5,null] t10[x0,1.5,null,x3,6,null,x6,10.5,null,x9] t11[x0,1.5,null,x3,6,null,x6,10.5,null,x9,15] t12[x0,1.5,null,x3,6,null,x6,10.5,null,x9,15,null] t13[x0,1.5,null,x3,6,null,x6,10.5,null,x9,15,null,x12] t14[x0,1.5,null,x3,6,null,x6,10.5,null,x9,15,null,x12,19.5] t15[x0,1.5,null,x3,6,null,x6,10.5,null,x9,15,null,x12,19.5,null]
+p0[]:A:undefined:0 p1[1]:A:undefined:1 p3[1,2,3]:A:2:3 p13[1,2,3,4,5,6,7,8,9,10,11,12,13]:A:2:13
+null undefined:undefined number:5 string:s
+own apply:2:2 b3[pre,1,2] -Infinity 3 8 3:9,1,2
+class: true
+undefined true
+object true
+number true
+string true
+object true
+proxied3 4
+later2 later2 replaced replaced
+boom2 boom0
+out boom1
+7 6
+o1[1] fn,this
+47249

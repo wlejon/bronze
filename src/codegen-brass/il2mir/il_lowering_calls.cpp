@@ -17,6 +17,7 @@ bool is_call_il_op(BronzeOp op) {
         case BronzeOp::ConstructSpread:
         case BronzeOp::MethodCall:
         case BronzeOp::MethodCallSpread:
+        case BronzeOp::ApplyArgs:
         case BronzeOp::SuperCall:
         case BronzeOp::SuperCallSpread:
         case BronzeOp::SuperGet:
@@ -45,6 +46,9 @@ uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& 
                                 inst.op == BronzeOp::CallDynamic ||
                                 (inst.op == BronzeOp::SuperCall && inst.param_count > 16);
             if (stages && inst.param_count > widest) widest = inst.param_count;
+            // apply.args stages its values, and on its helper path the
+            // method call's two arguments.
+            if (inst.op == BronzeOp::ApplyArgs) widest = std::max<uint32_t>(widest, std::max(inst.param_count, 2u));
             if (inst.op == BronzeOp::ConcatN) {
                 widest = std::max<uint32_t>(widest, static_cast<uint32_t>(inst.operands.size()));
             }
@@ -109,6 +113,17 @@ bool lower_call_instruction(
                 Value* method = b.build_call("bronze_prop_get", Type::i64(), {recv, key_id, b.build_iconst_i64(0)});
                 res_val = lower_call_dynamic_inline(lowering, b, method, ensure_type(get_opd(0), Type::i64()), args);
             }
+            break;
+        }
+
+        case BronzeOp::ApplyArgs: {
+            Value* recv = ensure_type(get_opd(0), Type::tagged());
+            Value* this_val = ensure_type(get_opd(1), Type::tagged());
+            Value* count = get_opd(2);
+            std::vector<Value*> args;
+            for (size_t a = 0; a < inst_ast.param_count; ++a) args.push_back(get_opd(3 + a));
+            res_val = lower_apply_args_inline(lowering, b, recv, this_val, count,
+                                              lowering->get_key_id(b, inst_ast.index), args, inst_ast.ic_index);
             break;
         }
 
