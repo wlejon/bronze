@@ -296,6 +296,42 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         // An object separator lacking [Symbol.split] falls through to
         // ToString(separator) below per 22.1.3.23.
     }
+    // A string receiver split by a string separator, where every ToString is
+    // the value itself: each piece a slice of the receiver, found by
+    // searching the two headers in place, with no copy of either to units.
+    if (receiver.get().isString() && args[0].isString()) {
+        const uint32_t limit = args[1].isUndefined() ? 0xFFFFFFFFu : toUint32(args[1]);
+        Rooted<Value> sep{args[0]};
+        ArrayHeader* raw = ArrayHeader::create(rtHeap(), 4);
+        raw->length = 0;
+        Rooted<Value> out{Value::fromObject(raw)};
+        auto push = [&](uint32_t from, uint32_t to) {
+            if (out.get().asObject<ArrayHeader>()->length >= limit) return false;
+            Rooted<Value> piece{Value::fromString(StringHeader::slice(rtHeap(), rtArena(), receiver, from, to))};
+            ArrayHeader* arr = out.get().asObject<ArrayHeader>();
+            arr->setElem(rtHeap(), arr->length, piece);
+            return true;
+        };
+        if (limit == 0) return out.get().rawBits();
+        const uint32_t len = receiver.get().asString<StringHeader>()->getLength();
+        const uint32_t sepLen = sep.get().asString<StringHeader>()->getLength();
+        if (sepLen == 0) {
+            for (uint32_t i = 0; i < len; ++i) {
+                if (!push(i, i + 1)) break;
+            }
+            return out.get().rawBits();
+        }
+        uint32_t at = 0;
+        for (;;) {
+            const int64_t found = string_detail::indexOfHeaders(receiver.get().asString<StringHeader>(),
+                                                                sep.get().asString<StringHeader>(), at);
+            if (found < 0) break;
+            if (!push(at, static_cast<uint32_t>(found))) return out.get().rawBits();
+            at = static_cast<uint32_t>(found) + sepLen;
+        }
+        push(at, len);
+        return out.get().rawBits();
+    }
     Units self = thisUnits(receiver.get(), "split");
 
     // Step 4, and it runs BEFORE the separator is looked at — which is the
@@ -546,6 +582,18 @@ const NativeMethod kStringMethods[] = {
 };
 
 }  // namespace
+
+// Fast entries (native_fast.h) of the members whose common case is already
+// their builtin's first test: the door saves the site the method cache and
+// the argument array, and the builtin answers.
+extern "C" uint64_t bronze_fast_string_split(uint64_t thisBits, uint64_t sepBits, uint64_t limitBits) {
+    const uint64_t argv[2] = {sepBits, limitBits};
+    return stringSplit(0, thisBits, 2, argv);
+}
+
+extern "C" uint64_t bronze_fast_string_trim(uint64_t thisBits) {
+    return stringTrimImpl<true, true>(0, thisBits, 0, nullptr);
+}
 
 std::vector<uint16_t> rtStringUnits(const StringHeader* s) {
     std::vector<uint16_t> out;

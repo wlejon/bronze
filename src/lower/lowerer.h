@@ -112,11 +112,14 @@ private:
     bool libraryOnly_ = false;
     const SelfHostLibrary* selfHostLibrary_ = nullptr;
     // selfhost_merge.cpp: the library's reachable functions appended to this
-    // module, and each Array method call site that can reach one split on
-    // `is.plain_array` into a direct call of it and the original call.
+    // module, and each method call site that can reach one or a fast entry
+    // split on a receiver test (`is.plain_array`, `typeof.is` string or
+    // number: `guardOp`, `guardImm`) into a direct call of it and the
+    // original call. Answers the block that holds the original call.
     bool mergeSelfHostLibrary();
-    void splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, uint32_t target, size_t forwarded,
-                           bool counted, bool voidEntry, bool boxedCount = false);
+    il::BlockId splitOnReceiver(il::Function& fn, il::BlockId b, size_t index, il::Op guardOp, int32_t guardImm,
+                                uint32_t target, size_t forwarded, bool counted, bool voidEntry,
+                                bool boxedCount = false);
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
 
 

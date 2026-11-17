@@ -388,8 +388,10 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     };
     if (limit == 0) return out.get();
 
-    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
-    const regex::Pattern& pattern = *patternPtr;
+    // Read in place, like [@@search]'s: from here on nothing runs user code
+    // (the limit is converted above, the pieces are slices pushed onto a
+    // fresh array), so no pattern can be compiled and evict this one.
+    const regex::Pattern& pattern = rtRegExpPattern(re.get());
     const uint32_t groups = regex::captureCount(pattern);
     ScopedStableRegexUnits haystack(str.get().asString<StringHeader>());
     ScratchMatchResult scratch;

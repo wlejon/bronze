@@ -12,7 +12,16 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace bronze {
+struct StringHeader;
+}
+
 namespace bronze::runtime::string_detail {
+
+// Whether `needle` occurs in `hay` at `at`, and the first index at or after
+// `from` where it does (-1 for none), read on the two headers in place.
+bool matchAtHeaders(const StringHeader* hay, const StringHeader* needle, uint32_t at);
+int64_t indexOfHeaders(const StringHeader* hay, const StringHeader* needle, uint32_t from);
 
 // 7.1.5 ToIntegerOrInfinity of a Number already converted.
 inline double toInteger(double d) {

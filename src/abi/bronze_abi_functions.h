@@ -308,6 +308,7 @@
     X(bronze_array_push1,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_index_of, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_array_includes, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_array_join,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_array_shift,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     /* `recv.sort(comparefn)` on an Array a site's guard found with no\
      * properties object (so `sort` is the intrinsic): the builtin, with its\
@@ -726,6 +727,9 @@
     X(bronze_fast_string_starts_with,  BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_string_slice,        BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_fast_string_substring,    BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_split,        BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_fast_string_trim,         BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
+    X(bronze_fast_number_to_string,    BRONZE_ABI_U64, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_math_round_f64,      BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_exp_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_log_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \

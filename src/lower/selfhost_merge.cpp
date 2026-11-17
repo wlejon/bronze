@@ -38,10 +38,17 @@
 // nothing, not even a source file.
 //
 // A C++ builtin with a FAST ENTRY (runtime/native_fast.h) gets the same split
-// at a site passing it exactly the entry's arguments: D calls the entry with
-// the receiver and the arguments in registers, which answers the plain case
-// and hands the rest to the builtin. The guard is the same invariant: on a
-// plain array the method is the intrinsic.
+// at a site passing it at most the entry's arguments: D calls the entry with
+// the receiver and the arguments in registers (padded with undefined, which
+// each entry's builtin reads as the absent argument), which answers the
+// common case and hands the rest to the builtin. The guard is the same
+// invariant for the entry's receiver kind: on a plain array an Array.prototype
+// method is the intrinsic, and so is a String.prototype method on a string
+// primitive (`typeof.is string`) and a Number.prototype one on a number
+// (`typeof.is number`), whose [[Get]] reaches the frozen prototype with
+// nothing in between (runtime/lockdown.h). A method name with entries for
+// several kinds (`indexOf`) is split once per kind, each test on the
+// previous one's other edge.
 
 #include <algorithm>
 #include <string>
@@ -49,6 +56,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "il/fast_entries.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -95,26 +103,31 @@ bool carriesIcSite(il::Op op) {
            op == il::Op::MethodCallSpread;
 }
 
-// The Array builtins with a fast entry, by method name, and the arguments
-// the entry takes after the receiver.
-struct FastEntry {
-    const char* method;
-    const char* symbol;
-    uint32_t argc;
-};
+using il::FastEntry;
+using il::FastReceiver;
+using il::kFastEntries;
+
 struct Site {
     uint32_t function = 0;
     il::BlockId block = 0;
     size_t index = 0;
     const SelfHostLibrary::Builtin* builtin = nullptr;
-    // Else a fast entry's row.
-    const FastEntry* fast = nullptr;
+    // Else the fast entries' rows for the site's method, in split order.
+    std::vector<const FastEntry*> fast;
 };
 
-constexpr FastEntry kFastEntries[] = {
-    {"indexOf", "bronze_fast_array_index_of", 1},
-    {"includes", "bronze_fast_array_includes", 1},
-};
+// The receiver test of a kind: its op and immediate.
+std::pair<il::Op, int32_t> receiverGuard(FastReceiver r) {
+    switch (r) {
+        case FastReceiver::PlainArray:
+            return {il::Op::IsPlainArray, 0};
+        case FastReceiver::String:
+            return {il::Op::TypeOfIs, il::kTypeOfString};
+        case FastReceiver::Number:
+            return {il::Op::TypeOfIs, il::kTypeOfNumber};
+    }
+    return {il::Op::IsPlainArray, 0};
+}
 
 }  // namespace
 
@@ -208,20 +221,20 @@ bool Lowerer::mergeSelfHostLibrary() {
                 }
                 const std::string& method = mod.keyConstants[inst.keyIndex];
                 const auto it = byMethod.find(method);
-                const FastEntry* fast = nullptr;
+                std::vector<const FastEntry*> fast;
                 for (const FastEntry& e : kFastEntries) {
-                    if (method == e.method && inst.operands.size() == 1 + e.argc) fast = &e;
+                    if (method == e.method && inst.operands.size() <= 1 + e.argc) fast.push_back(&e);
                 }
-                if (it == byMethod.end() && fast == nullptr) continue;
+                if (it == byMethod.end() && fast.empty()) continue;
                 if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) continue;
                 bool boxed = true;
                 for (il::ValueId v : inst.operands) boxed = boxed && v < types.size() && types[v] == il::Type::Dynamic;
                 if (!boxed) continue;
                 if (it == byMethod.end()) {
-                    sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, nullptr, fast});
+                    sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, nullptr, std::move(fast)});
                     continue;
                 }
-                sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, it->second});
+                sites.push_back({static_cast<uint32_t>(f), static_cast<il::BlockId>(b), i, it->second, {}});
                 for (uint32_t g : reach[it->second->direct]) used[g] = 1;
             }
         }
@@ -305,29 +318,39 @@ bool Lowerer::mergeSelfHostLibrary() {
         return a.index > b.index;
     });
     for (const Site& site : sites) {
-        if (site.fast != nullptr) {
-            const std::vector<il::Type> params(1 + site.fast->argc, il::Type::Dynamic);
-            const uint32_t target = registerExternalFunction(site.fast->symbol, il::Type::Dynamic, params);
-            splitOnPlainArray(mod.functions[site.function], site.block, site.index, target, site.fast->argc,
-                              false, false);
+        if (!site.fast.empty()) {
+            // Each further kind's test sits on the previous one's other edge,
+            // where the original call now is, alone at the head of its block.
+            il::BlockId block = site.block;
+            size_t index = site.index;
+            for (const FastEntry* fast : site.fast) {
+                const std::vector<il::Type> params(1 + fast->argc, il::Type::Dynamic);
+                const uint32_t target = registerExternalFunction(fast->symbol, il::Type::Dynamic, params);
+                const auto [op, imm] = receiverGuard(fast->receiver);
+                block = splitOnReceiver(mod.functions[site.function], block, index, op, imm, target, fast->argc,
+                                        false, false);
+                index = 0;
+            }
             continue;
         }
         const uint32_t target = fnMap[site.builtin->direct];
         const il::Function& entry = mod.functions[target];
-        splitOnPlainArray(mod.functions[site.function], site.block, site.index, target,
-                          entry.params.size() - entry.firstSourceParam() - (site.builtin->counted ? 2 : 0),
-                          site.builtin->counted, entry.returnType == il::Type::Void,
-                          entry.params.back().type == il::Type::Dynamic);
+        splitOnReceiver(mod.functions[site.function], site.block, site.index, il::Op::IsPlainArray, 0, target,
+                        entry.params.size() - entry.firstSourceParam() - (site.builtin->counted ? 2 : 0),
+                        site.builtin->counted, entry.returnType == il::Type::Void,
+                        entry.params.back().type == il::Type::Dynamic);
     }
     return true;
 }
 
-// The split of one site (the file's comment): `target` is entered with the
-// receiver, `forwarded` of the call's arguments (padded with undefined,
-// extra ones dropped) and, `counted`, the argument count (boxed when
-// `boxedCount`).
-void Lowerer::splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, uint32_t target,
-                                size_t forwarded, bool counted, bool voidEntry, bool boxedCount) {
+// The split of one site (the file's comment): on `guardOp` of the receiver,
+// `target` is entered with the receiver, `forwarded` of the call's arguments
+// (padded with undefined, extra ones dropped) and, `counted`, the argument
+// count (boxed when `boxedCount`). Answers the block the original call moved
+// to, where it is the first instruction.
+il::BlockId Lowerer::splitOnReceiver(il::Function& fn, il::BlockId b, size_t index, il::Op guardOp,
+                                     int32_t guardImm, uint32_t target, size_t forwarded, bool counted,
+                                     bool voidEntry, bool boxedCount) {
     const il::Instruction call = fn.blocks[b].instructions[index];
     const auto newBlock = [&]() -> il::BlockId {
         il::Block blk;
@@ -353,7 +376,8 @@ void Lowerer::splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, u
         fn.blocks[tail].instructions = std::move(rest);
         if (call.result != il::kNoValue) fn.blocks[tail].params.push_back({call.result, il::Type::Dynamic});
     }
-    il::Instruction guard = at(il::Op::IsPlainArray, il::Type::Bool);
+    il::Instruction guard = at(guardOp, il::Type::Bool);
+    guard.immI32 = guardImm;
     guard.result = fn.valueCount++;
     guard.operands = {call.operands[0]};
     il::Instruction br = at(il::Op::Branch, il::Type::Void);
@@ -421,6 +445,7 @@ void Lowerer::splitOnPlainArray(il::Function& fn, il::BlockId b, size_t index, u
     }
     fn.blocks[slow].instructions.push_back(std::move(again));
     fn.blocks[slow].instructions.push_back(std::move(join));
+    return slow;
 }
 
 }  // namespace bronze::lower

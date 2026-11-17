@@ -1,0 +1,54 @@
+["a","b","","c"] ["a","b"] ["a","b"]
+[""] [] ["a","b",""]
+["x","y",""] [] ["a","c"]
+["a","b","","c"] ["a","c"] ["a","b2c"]
+["p","q"] ["whole"] "own 3"
+["a","b"]
+"pad" "none" "x" "o"
+ff -ff 0 1.1 z 255 255
+20000000000002 ff NaN Infinity 1010
+RangeError
+RangeError
+0.1 1e+21 -7 true 1,2 own
+3 2 1 undefined [] own pop
+undefined 1
+1--x- 1,2 1,2,3 own +
+2 3 2 2 1
+2 0 own 4
+bcd cdef ab yz
+["a","b","","c"] ["a","b"] ["a","b"]
+[""] [] ["a","b",""]
+["x","y",""] [] ["a","c"]
+["a","b","","c"] ["a","c"] ["a","b2c"]
+["p","q"] ["whole"] "own 3"
+["a","b"]
+"pad" "none" "x" "o"
+ff -ff 0 1.1 z 255 255
+20000000000002 ff NaN Infinity 1010
+RangeError
+RangeError
+0.1 1e+21 -7 true 1,2 own
+3 2 1 undefined [] own pop
+undefined 1
+1--x- 1,2 1,2,3 own +
+2 3 2 2 1
+2 0 own 4
+bcd cdef ab yz
+["a","b","","c"] ["a","b"] ["a","b"]
+[""] [] ["a","b",""]
+["x","y",""] [] ["a","c"]
+["a","b","","c"] ["a","c"] ["a","b2c"]
+["p","q"] ["whole"] "own 3"
+["a","b"]
+"pad" "none" "x" "o"
+ff -ff 0 1.1 z 255 255
+20000000000002 ff NaN Infinity 1010
+RangeError
+RangeError
+0.1 1e+21 -7 true 1,2 own
+3 2 1 undefined [] own pop
+undefined 1
+1--x- 1,2 1,2,3 own +
+2 3 2 2 1
+2 0 own 4
+bcd cdef ab yz

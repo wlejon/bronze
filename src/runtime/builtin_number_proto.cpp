@@ -30,11 +30,13 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/locale_hooks.h"
+#include "runtime/native_fast.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -278,6 +280,24 @@ std::string radixFractionDigits(double x, int radix, bool& carry) {
     return out;
 }
 
+bool isSafeInteger(double x) { return x == std::trunc(x) && std::fabs(x) <= 9007199254740991.0; }
+
+// A safe integer is its digits by division, with no exact arithmetic to set
+// up: a colour written in hex, a hash in base 36.
+Value safeIntegerDigits(double x, int radix) {
+    char buf[64];
+    char* const end = buf + sizeof(buf);
+    char* p = end;
+    auto n = static_cast<uint64_t>(std::fabs(x));
+    const auto base = static_cast<uint64_t>(radix);
+    do {
+        *--p = "0123456789abcdefghijklmnopqrstuvwxyz"[n % base];
+        n /= base;
+    } while (n != 0);
+    if (x < 0) *--p = '-';
+    return Value::fromString(StringHeader::createLatin1(rtHeap(), p, static_cast<uint32_t>(end - p)));
+}
+
 // 21.1.3.6 Number.prototype.toString(radix).
 //
 // Radix 10 is Number::toString and shares its one implementation. Any other
@@ -298,21 +318,7 @@ uint64_t numberToString(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     const int radix = static_cast<int>(radixRaw);
     if (radix == 10 || !std::isfinite(x)) return stringResult(toStringOfNumber(x)).rawBits();
 
-    // A safe integer is its digits by division, with no exact arithmetic to
-    // set up: a colour written in hex, a hash in base 36.
-    if (x == std::trunc(x) && std::fabs(x) <= 9007199254740991.0) {
-        char buf[64];
-        char* const end = buf + sizeof(buf);
-        char* p = end;
-        auto n = static_cast<uint64_t>(std::fabs(x));
-        const auto base = static_cast<uint64_t>(radix);
-        do {
-            *--p = "0123456789abcdefghijklmnopqrstuvwxyz"[n % base];
-            n /= base;
-        } while (n != 0);
-        if (x < 0) *--p = '-';
-        return rtMakeString(std::string_view(p, static_cast<size_t>(end - p))).rawBits();
-    }
+    if (isSafeInteger(x)) return safeIntegerDigits(x, radix).rawBits();
 
     std::string s;
     if (x < 0) {
@@ -367,6 +373,22 @@ void rtInstallNumberMethods(Rooted<Value>& proto) {
 void rtCheckNumberProtoMember(const std::string& key) {
     rtCheckUnimplementedMember("Number.prototype", kNumberProtoMembers,
                                sizeof(kNumberProtoMembers) / sizeof(const char*), key);
+}
+
+// The fast entry (native_fast.h): a number receiver with no radix or an
+// integral one other than 10, and a safe integer, is its digits; the rest is
+// the builtin's.
+extern "C" uint64_t bronze_fast_number_to_string(uint64_t thisBits, uint64_t radixBits) {
+    const Value self(thisBits);
+    const Value radix(radixBits);
+    if (self.isNumber() && radix.isNumber()) {
+        const double r = radix.asNumber();
+        const double x = self.asNumber();
+        if (r >= 2 && r <= 36 && r != 10 && r == std::trunc(r) && isSafeInteger(x)) {
+            return safeIntegerDigits(x, static_cast<int>(r)).rawBits();
+        }
+    }
+    return numberToString(0, thisBits, 1, &radixBits);
 }
 
 }  // namespace bronze::runtime

@@ -13,6 +13,7 @@
 #include <iterator>
 #include <unordered_map>
 
+#include "il/fast_entries.h"
 #include "opt/wpo/solver.h"
 #include "opt/wpo/solver_tags.h"
 
@@ -283,6 +284,18 @@ AVal Solver::directCall(const il::Instruction& inst) {
         const AVal& home = op(inst, 0);
         for (ObjId o : home.objs) depend(o, kKeyProto);
         return prototypesOf(home);
+    }
+    if (const il::FastEntry* entry = fn.isExternal ? il::fastEntryNamed(fn.name) : nullptr) {
+        // A builtin's fast entry, which a method site's split calls with the
+        // receiver its guard established: the builtin itself, called with
+        // the first operand as `this`, as the method call it replaced.
+        if (const ObjId builtin = builtinObj(entry->builtin); builtin != kNoObj) {
+            AVal callee;
+            callee.addObj(builtin);
+            CallArgs args;
+            for (size_t i = 1; i < inst.operands.size(); ++i) args.args.push_back(op(inst, i));
+            return callValue(callee, op(inst, 0), args);
+        }
     }
     if (fn.isExternal) {
         const uint32_t why = internReason("passed to runtime helper " + fn.name);

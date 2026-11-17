@@ -24,8 +24,6 @@
 
 namespace bronze::runtime::string_detail {
 
-namespace {
-
 bool matchAtHeaders(const StringHeader* hay, const StringHeader* needle, uint32_t at) {
     const uint32_t hayLen = hay->getLength();
     const uint32_t needleLen = needle->getLength();
@@ -83,6 +81,8 @@ int64_t indexOfHeaders(const StringHeader* hay, const StringHeader* needle, uint
     }
     return -1;
 }
+
+namespace {
 
 Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
     return Value::fromString(StringHeader::slice(rtHeap(), rtArena(), strRoot, start, end));

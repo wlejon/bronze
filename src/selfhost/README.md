@@ -114,10 +114,15 @@ dialect, up to but not including the final passes) and
   answer the intrinsic, and the copy runs exactly where the registered builtin
   would have, with the same arguments (padded with `undefined`, extra ones
   dropped, `reduce`'s argument count passed to its direct entry);
-- a site of an Array builtin that stays C++ but has a FAST ENTRY
-  (`runtime/native_fast.h`: `indexOf` and `includes` with one argument) is
-  split the same way, D calling the entry with the receiver and argument in
-  registers;
+- a site of a builtin that stays C++ but has a FAST ENTRY
+  (`runtime/native_fast.h`: Array `indexOf`, `includes`, `join`;
+  String `charCodeAt`, `charAt`, `indexOf`, `startsWith`, `slice`,
+  `substring`, `split`, `trim`; Number `toString`) is split the same way on
+  its receiver kind (`is.plain_array`, or `typeof.is` string / number, whose
+  prototypes are frozen too), D calling the entry with the receiver and
+  arguments in registers; a name with entries for two kinds (`indexOf`) gets
+  one test per kind. The table is `il/fast_entries.h`, which the whole-program
+  optimiser also reads, so a call of an entry is to it the builtin called;
 - the library functions those sites reach are copied into the module as
   ordinary functions named `selfhost.<name>`, with the library text as one more
   source file so their positions stay correct.

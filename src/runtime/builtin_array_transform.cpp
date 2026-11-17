@@ -6,6 +6,7 @@
 #include "runtime/native_base.h"
 #include "runtime/builtin_array_internal.h"
 #include "runtime/fatal.h"
+#include "runtime/native_fast.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -334,6 +335,12 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         direct = selfIsArray && !rtArrayChainHoldsIndex(self.get());
     }
     return result.finish().rawBits();
+}
+
+// The fast entry (native_fast.h): the door saves the site the method cache
+// and the argument array; arrayJoin reads an undefined separator as absent.
+extern "C" uint64_t bronze_fast_array_join(uint64_t thisBits, uint64_t sepBits) {
+    return arrayJoin(0, thisBits, 1, &sepBits);
 }
 
 uint64_t arrayFlat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
