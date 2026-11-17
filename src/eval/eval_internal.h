@@ -48,7 +48,10 @@ struct CompileInputs {
     std::optional<spec::TypeProfile> feedback;
 };
 
-bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags);
+// `keyOnly`: the inputs a key hashes and no more (a module's load checks its
+// record against them): the profile's bytes are read and not parsed, which
+// for a large harvest was most of what the check cost on the page thread.
+bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags, bool keyOnly = false);
 
 // The module options a compile loads its graph with, the realm's registry
 // applied (EvalOptions::moduleRegistry).

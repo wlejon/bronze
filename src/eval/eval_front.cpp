@@ -151,7 +151,7 @@ void reportProgress(const EvalOptions& options, const char* phase, double fracti
     if (options.onProgress) options.onProgress(CompileProgress{phase, fraction});
 }
 
-bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags) {
+bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags, bool keyOnly) {
     in.hostGlobals = options.hostGlobals;
     if (in.hostGlobals.empty()) {
         for (const auto& entry : runtime::rtHostGlobalEntries()) {
@@ -191,7 +191,7 @@ bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink&
     }
     in.tier = options.tier.value_or(defaultTier());
     in.feedbackText = readPins(options.feedbackInPath);
-    if (!in.feedbackText.empty()) in.feedback = spec::TypeProfile::parse(in.feedbackText, nullptr);
+    if (!keyOnly && !in.feedbackText.empty()) in.feedback = spec::TypeProfile::parse(in.feedbackText, nullptr);
     return true;
 }
 

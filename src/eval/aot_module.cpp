@@ -194,6 +194,19 @@ ModuleBuildResult buildModule(std::string_view source, const EvalOptions& option
         out.errorMessage = rendered(diags, sources, "the module could not be written");
         return out;
     }
+#ifdef __APPLE__
+    // macOS checks a newly written executable image the first time any
+    // process maps it, and remembers the answer for the file: 1.5 s for
+    // smallworlds' 250 MB module, 3 ms on every later open. Opened once here
+    // (the build runs off the page, an installed app's in the background),
+    // so the launch that loads it does not pay that on its page thread. None
+    // of its code runs; a module that cannot be opened in this process (no
+    // runtime here to bind it against) is simply not warmed.
+    {
+        std::string ignored;
+        if (void* warm = openImage(fs::path(modulePath), ignored)) closeImage(warm);
+    }
+#endif
 
     // A profile the build did not use (another build's harvest, a file naming
     // nothing here) left no mark on the module: it is the module a build
@@ -220,7 +233,7 @@ LoadedModule loadModule(std::string_view source, const EvalOptions& options, con
     LoadedModule out;
     DiagnosticSink diags;
     detail::CompileInputs in;
-    if (!detail::gatherInputs(options, in, diags)) {
+    if (!detail::gatherInputs(options, in, diags, /*keyOnly=*/true)) {
         out.why = rendered(diags, SourceSet{}, "the compile's inputs could not be read");
         return out;
     }
