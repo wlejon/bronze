@@ -113,9 +113,9 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
                                 }
                                 if (const auto it = mod_.indexByName.find(id->name);
                                     it != mod_.indexByName.end()) {
-                                    auto& vec = mod_.objectLitMethods[{cls, p.key}];
-                                    if (std::find(vec.begin(), vec.end(), it->second) == vec.end()) {
-                                        vec.push_back(it->second);
+                                    if (ModuleContext::addObjectLitEntry(mod_.objectLitMethods,
+                                                                         mod_.objectLitMethodNames, cls, p.key,
+                                                                         it->second)) {
                                         ++mod_.objectLitTableVersion;
                                         ++mod_.persistentWrites;
                                     }
@@ -136,9 +136,8 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
             if (p.accessor != ast::AccessorKind::None) continue;
             if (const auto* id = ast::exactAs<const ast::Ident*>(p.value.get())) {
                 if (const auto it = mod_.indexByName.find(id->name); it != mod_.indexByName.end()) {
-                    auto& vec = mod_.objectLitMethods[{cls, p.key}];
-                    if (std::find(vec.begin(), vec.end(), it->second) == vec.end()) {
-                        vec.push_back(it->second);
+                    if (ModuleContext::addObjectLitEntry(mod_.objectLitMethods, mod_.objectLitMethodNames, cls,
+                                                         p.key, it->second)) {
                         ++mod_.objectLitTableVersion;
                         ++mod_.persistentWrites;
                     }
@@ -146,9 +145,8 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
             } else if (const auto* f = ast::exactAs<const ast::FunctionExpr*>(p.value.get())) {
                 const uint32_t sIdx = mod_.methods.setterIndexOfNode(f);
                 if (sIdx != kNoMethod) {
-                    auto& vec = mod_.objectLitSetters[{cls, p.key}];
-                    if (std::find(vec.begin(), vec.end(), sIdx) == vec.end()) {
-                        vec.push_back(sIdx);
+                    if (ModuleContext::addObjectLitEntry(mod_.objectLitSetters, mod_.objectLitSetterNames, cls,
+                                                         p.key, sIdx)) {
                         ++mod_.objectLitTableVersion;
                         ++mod_.persistentWrites;
                     }
@@ -379,8 +377,8 @@ void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver,
         if (cl != nullptr && !dispatchBounded(receiver, form, cl)) cl = nullptr;
     }
     const auto& setters = mod_.methods.setters();
-    for (uint32_t i = 0; i < setters.size(); ++i) {
-        if (setters[i].isStatic || setters[i].propName != propName) continue;
+    for (const uint32_t i : mod_.methods.settersNamed(propName)) {
+        if (setters[i].isStatic) continue;
         if (cl != nullptr && !mod_.methods.areClassesRelated(setters[i].className, cl->name)) {
             continue;
         }
@@ -424,21 +422,19 @@ void FlowAnalyzer::noteStaticMethodAccess(const ast::MemberAccess& m, Type base)
     }
     if (base.is(TypeKind::Dynamic) && !mod_.methods.isMethodName(m.property)) {
         if (InferMemo* memo = mod_.rec()) memo->noteObjectLitTable(mod_.objectLitTableVersion);
-        for (const auto& [key, vec] : mod_.objectLitMethods) {
-            if (key.second == m.property) {
+        ModuleContext::forEachObjectLitEntry(
+            mod_.objectLitMethods, mod_.objectLitMethodNames, m.property, [&](const std::vector<uint32_t>& vec) {
                 for (const uint32_t fnIdx : vec) {
                     mod_.contribute(InferMemo::Contrib::FnReached, fnIdx, 0, Type::never());
                 }
-            }
-        }
+            });
         if (!suppressObjectLitSetterReach_) {
-            for (const auto& [key, vec] : mod_.objectLitSetters) {
-                if (key.second == m.property) {
+            ModuleContext::forEachObjectLitEntry(
+                mod_.objectLitSetters, mod_.objectLitSetterNames, m.property, [&](const std::vector<uint32_t>& vec) {
                     for (const uint32_t sIdx : vec) {
                         mod_.contribute(InferMemo::Contrib::SetterReached, sIdx, 0, Type::dynamic());
                     }
-                }
-            }
+                });
         }
     }
     if (ast::exactAs<const ast::ThisExpr*>(m.object.get()) != nullptr &&
@@ -455,9 +451,9 @@ void FlowAnalyzer::noteStaticMethodAccess(const ast::MemberAccess& m, Type base)
         if (inner->property == "constructor") isCtorProp = true;
     }
     const auto& setters = mod_.methods.setters();
-    for (uint32_t i = 0; i < setters.size(); ++i) {
+    for (const uint32_t i : mod_.methods.settersNamed(m.property)) {
         const auto& s = setters[i];
-        if (!s.isStatic || s.className.empty() || s.propName != m.property) continue;
+        if (!s.isStatic || s.className.empty()) continue;
         if (isKnownClass) {
             if (!mod_.methods.areClassesRelated(s.className, id->name)) continue;
         } else if (!isThisStatic && !isCtorProp && !base.is(TypeKind::Function)) {
@@ -491,11 +487,9 @@ std::optional<Type> FlowAnalyzer::callObjectLitSetter(
             }
         } else if (receiver.is(TypeKind::Dynamic) && !mod_.methods.isMethodName(member->property)) {
             if (InferMemo* memo = mod_.rec()) memo->noteObjectLitTable(mod_.objectLitTableVersion);
-            for (const auto& [key, vec] : mod_.objectLitSetters) {
-                if (key.second == member->property) {
-                    targets.insert(targets.end(), vec.begin(), vec.end());
-                }
-            }
+            ModuleContext::forEachObjectLitEntry(
+                mod_.objectLitSetters, mod_.objectLitSetterNames, member->property,
+                [&](const std::vector<uint32_t>& vec) { targets.insert(targets.end(), vec.begin(), vec.end()); });
         }
     } else if (member == nullptr) {
         if (const auto* id = ast::exactAs<const ast::Ident*>(c.callee.get())) {
@@ -505,11 +499,9 @@ std::optional<Type> FlowAnalyzer::callObjectLitSetter(
                     if (InferMemo* memo = mod_.rec()) {
                         memo->noteObjectLitTable(mod_.objectLitTableVersion);
                     }
-                    for (const auto& [key, vec] : mod_.objectLitSetters) {
-                        if (key.second == it->second) {
-                            targets.insert(targets.end(), vec.begin(), vec.end());
-                        }
-                    }
+                    ModuleContext::forEachObjectLitEntry(
+                        mod_.objectLitSetters, mod_.objectLitSetterNames, it->second,
+                        [&](const std::vector<uint32_t>& vec) { targets.insert(targets.end(), vec.begin(), vec.end()); });
                 }
             }
         }

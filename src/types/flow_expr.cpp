@@ -98,14 +98,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 if (InferMemo* memo = mod_.rec()) {
                     memo->noteObjectLitTable(mod_.objectLitTableVersion);
                 }
-                for (const auto& [key, vec] : mod_.objectLitSetters) {
-                    if (key.second == it->second) {
+                ModuleContext::forEachObjectLitEntry(
+                    mod_.objectLitSetters, mod_.objectLitSetterNames, it->second,
+                    [&](const std::vector<uint32_t>& vec) {
                         for (const uint32_t sIdx : vec) {
-                            mod_.contribute(InferMemo::Contrib::SetterReached, sIdx, 0,
-                                            Type::dynamic());
+                            mod_.contribute(InferMemo::Contrib::SetterReached, sIdx, 0, Type::dynamic());
                         }
-                    }
-                }
+                    });
             }
         }
         const Type t = lookup(id->name);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -262,18 +263,53 @@ struct ModuleContext {
     // answered from here — a `number` would be an unguarded claim about a value,
     // and this table has no program order to justify one with.
     std::unordered_map<std::string, Type> moduleBindings;
-    std::set<std::string> lazyModuleVars;
-    std::set<std::string> reachedModuleVars;
-    std::set<std::string> walkedModuleVars;
+    // Membership only (every identifier the analysis reads asks the first),
+    // never iterated: hashed.
+    std::unordered_set<std::string> lazyModuleVars;
+    std::unordered_set<std::string> reachedModuleVars;
+    std::unordered_set<std::string> walkedModuleVars;
 
     // ---- closed object-literal array elements -------------------------------
 
     std::map<ShapeClassId, std::map<std::string, Type>> objectLitFields;
     std::set<ShapeClassId> objectLitUnclosed;
     std::set<ShapeClassId> arrayElemShapeClasses;
-    std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitMethods;
-    std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitSetters;
+    using ObjectLitTable = std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>>;
+    using ObjectLitNames = std::unordered_map<std::string, std::vector<ShapeClassId>>;
+    ObjectLitTable objectLitMethods;
+    ObjectLitTable objectLitSetters;
+    // The two tables by property name: the shape classes, ascending, with an
+    // entry for the name. A member read or a call through a dynamic value
+    // names no shape class, so it reaches every entry of its name; visiting
+    // only those (forEachObjectLitEntry) instead of scanning the whole table
+    // at every such site was half of smallworlds' inference time. Written
+    // only through addObjectLitEntry.
+    ObjectLitNames objectLitMethodNames;
+    ObjectLitNames objectLitSetterNames;
     std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitModuleVars;
+
+    // Adds `value` to the (cls, key) entry of `table` (and the entry's name to
+    // `names`); true when it was not there.
+    static bool addObjectLitEntry(ObjectLitTable& table, ObjectLitNames& names, ShapeClassId cls,
+                                  const std::string& key, uint32_t value) {
+        std::vector<uint32_t>& vec = table[{cls, key}];
+        if (std::find(vec.begin(), vec.end(), value) != vec.end()) return false;
+        if (vec.empty()) {
+            std::vector<ShapeClassId>& classes = names[key];
+            classes.insert(std::lower_bound(classes.begin(), classes.end(), cls), cls);
+        }
+        vec.push_back(value);
+        return true;
+    }
+    // `f(values)` for each entry of `table` named `name`, in the table's
+    // order (ascending shape class), as a scan of the whole table would.
+    template <class F>
+    static void forEachObjectLitEntry(const ObjectLitTable& table, const ObjectLitNames& names,
+                                      const std::string& name, F&& f) {
+        const auto it = names.find(name);
+        if (it == names.end()) return;
+        for (const ShapeClassId cls : it->second) f(table.find({cls, name})->second);
+    }
     // A module namespace's getter that returns a class or a module function:
     // the name `new ns.<key>()` constructs (FlowAnalyzer::newExpr).
     std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitCtorNames;

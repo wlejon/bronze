@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ast/ast.h"
@@ -104,6 +105,10 @@ public:
     const std::vector<MethodInfo>& methods() const { return methods_; }
     std::vector<SetterInfo>& setters() { return setters_; }
     const std::vector<SetterInfo>& setters() const { return setters_; }
+    // The indices into setters(), ascending, of the setters of `propName`,
+    // static or not: a property write or read visits these instead of every
+    // setter in the program.
+    const std::vector<uint32_t>& settersNamed(const std::string& propName) const;
 
     // Parameter names the field-type harvest may answer for:
     // className -> methodName -> paramName -> Type
@@ -121,6 +126,7 @@ private:
 
     std::vector<MethodInfo> methods_;
     std::vector<SetterInfo> setters_;
+    std::unordered_map<std::string, std::vector<uint32_t>> settersByName_;
     std::map<const ast::FunctionExpr*, uint32_t> byNode_;
     std::map<const ast::FunctionExpr*, uint32_t> setterByNode_;
     std::map<std::pair<std::string, std::string>, std::string> getterBackingField_;

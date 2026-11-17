@@ -750,6 +750,14 @@ void MethodTable::build(const ast::Module& module) {
         setters_.push_back(std::move(s));
         setterByNode_[fn] = sIdx;
     }
+    settersByName_.clear();
+    for (uint32_t i = 0; i < setters_.size(); ++i) settersByName_[setters_[i].propName].push_back(i);
+}
+
+const std::vector<uint32_t>& MethodTable::settersNamed(const std::string& propName) const {
+    static const std::vector<uint32_t> kNone;
+    const auto it = settersByName_.find(propName);
+    return it == settersByName_.end() ? kNone : it->second;
 }
 
 uint32_t MethodTable::indexOfNode(const ast::FunctionExpr* fn) const {

@@ -346,14 +346,16 @@ void FlowAnalyzer::closeStmt(size_t slot, const Env& before) {
     if (slot == kNoSlot) return;
     const Env& after = visible();
     std::vector<BindingChange> changes;
+    // Both are sorted by name (Env): one walk over the two.
+    auto it = before.begin();
     for (const auto& entry : after) {
         const Type afterT = normalizeForRecord(entry.second);
-        const auto it = before.find(entry.first);
-        if (it == before.end() || normalizeForRecord(it->second) != afterT) {
+        while (it != before.end() && it->first < entry.first) ++it;
+        if (it == before.end() || it->first != entry.first || normalizeForRecord(it->second) != afterT) {
             changes.push_back(BindingChange{entry.first, afterT});
         }
     }
-    // `after` is an ordered map, so `changes` is already sorted by name.
+    // `after` is sorted by name, so `changes` is too.
     facts_.statements[slot].changes = std::move(changes);
 }
 
