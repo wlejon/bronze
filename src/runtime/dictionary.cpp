@@ -87,11 +87,15 @@ uint32_t capacityFor(uint32_t live) noexcept {
 
 // Not a standard-layout class (its index is private), so offsetof is only
 // conditionally supported; GCC and Clang both answer it for this layout.
+#if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
 static_assert(offsetof(Dictionary, generation) == BRONZE_ABI_DICT_GENERATION_OFFSET,
               "generated code reads a dictionary's generation at this offset");
+#if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
 
 uint64_t Dictionary::nextGeneration() noexcept {
     // Per thread, as the tables are; never 0, which an unfilled cell holds.

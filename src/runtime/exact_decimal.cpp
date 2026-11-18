@@ -250,6 +250,7 @@ std::string exactScaledDigits(double x, int k) {
     int exponent = 0;
     decompose(mag, mantissa, exponent);
 
+#if defined(__SIZEOF_INT128__)
     // The same quotient in 128 bits where it fits, which is every double
     // with up to 22 digits asked for whose scaled value is below 2^127:
     // m < 2^53 and 10^22 < 2^74, so m * 10^k cannot overflow, and a shift
@@ -281,6 +282,7 @@ std::string exactScaledDigits(double x, int k) {
             return std::string(digits + at, static_cast<size_t>(40 - at));
         }
     }
+#endif
 
     // n = round(m * 2^exponent * 10^k) = round(A / B), with every negative
     // power moved into the denominator so both sides stay integers.

@@ -33,6 +33,7 @@
 #include "runtime/map_probe.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -338,7 +339,7 @@ const char* rtWeakCollectionNativeName(const void* code) {
 
 namespace {
 
-[[gnu::noinline]] uint64_t weakCollectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
+BRONZE_NOINLINE uint64_t weakCollectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
     return op == BRONZE_ABI_COLLECTION_WEAKMAP_GET ? weakMapGet(0, recv, 1, &key) : weakMapHas(0, recv, 1, &key);
 }
 

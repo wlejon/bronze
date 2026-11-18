@@ -78,9 +78,15 @@ void* openImage(const fs::path& path, std::string& error) {
     // absolute path (a relative one silently drops the flag).
     std::error_code ec;
     const fs::path abs = fs::absolute(path, ec);
+    DWORD prevMode = 0;
+    const BOOL modeSet = ::SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &prevMode);
     HMODULE h = ::LoadLibraryExW((ec ? path : abs).wstring().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    const DWORD err = h ? 0 : ::GetLastError();
+    if (modeSet) {
+        ::SetThreadErrorMode(prevMode, nullptr);
+    }
     if (!h) {
-        error = "Windows error " + std::to_string(static_cast<unsigned long>(::GetLastError()));
+        error = "Windows error " + std::to_string(static_cast<unsigned long>(err));
         return nullptr;
     }
     return reinterpret_cast<void*>(h);

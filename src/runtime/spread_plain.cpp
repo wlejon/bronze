@@ -72,7 +72,7 @@ thread_local ShapeHint t_hints[kHintCount];
 ShapeHint& hintFor(const Shape* source, const Shape* before, uint64_t kept, bool assign) noexcept {
     const uint64_t a = reinterpret_cast<uintptr_t>(source);
     const uint64_t b = reinterpret_cast<uintptr_t>(before);
-    const uint64_t h = (a ^ (b * 0x9E3779B97F4A7C15ull) ^ kept ^ assign) * 0xD6E8FEB86659FD93ull;
+    const uint64_t h = (a ^ (b * 0x9E3779B97F4A7C15ull) ^ kept ^ static_cast<uint64_t>(assign)) * 0xD6E8FEB86659FD93ull;
     return t_hints[(h >> 40) % kHintCount];
 }
 

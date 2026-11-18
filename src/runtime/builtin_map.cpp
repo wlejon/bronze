@@ -30,6 +30,7 @@
 #include "runtime/map_probe.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -393,7 +394,7 @@ namespace bronze::runtime {
 namespace {
 
 // The natives themselves, for every answer the probe below does not give.
-[[gnu::noinline]] uint64_t collectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
+BRONZE_NOINLINE uint64_t collectionOpByNative(uint64_t recv, uint64_t key, uint32_t op) {
     switch (op) {
         case BRONZE_ABI_COLLECTION_MAP_GET: return rtMapGetBody(0, recv, 1, &key);
         case BRONZE_ABI_COLLECTION_MAP_HAS: return rtMapHasBody(0, recv, 1, &key);

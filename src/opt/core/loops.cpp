@@ -31,7 +31,7 @@ LoopForest::LoopForest(const Cfg& cfg, const DomTree& dom) {
         // The body: everything that reaches a latch backwards without passing
         // the header. Every such block is dominated by the header, so the walk
         // never leaves the loop.
-        std::fill(inLoop.begin(), inLoop.end(), 0);
+        std::fill(inLoop.begin(), inLoop.end(), uint8_t{0});
         inLoop[header] = 1;
         std::vector<BlockId> work;
         for (BlockId l : latches) {

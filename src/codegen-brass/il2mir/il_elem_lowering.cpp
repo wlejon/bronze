@@ -444,13 +444,13 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
         // the read is, lower_elem_get); everything else is the module's stub.
         b.position_at_end(bb_view);
         mark_view_arm(*this, b, ptr, ei.idx, prefix);
-        BasicBlock* at = b.current_block();
+        BasicBlock* view_bb = b.current_block();
         BasicBlock* f32 = b.append_block(prefix + "_f32");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
-        b.position_at_end(at);
+        b.position_at_end(view_bb);
         Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
         Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
-        Value* number = b.build_ule(val, iconst(b, static_cast<int64_t>(kBronzeNumberMaxBits)));
+        Value* number = b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
         b.build_br_if(b.build_and(b.build_and(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)),
                                               b.build_ult(ei.idx, vlen)),
                                   number),
