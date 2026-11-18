@@ -20,6 +20,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -135,17 +136,20 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         protoRoot.set(rtObjectPrototype());
     } else {
         if (!rtIsCallableValue(ctorRoot.get())) return false;
+        // An array is an Array and a function a Function. Any other object
+        // may still inherit from one (`Object.create([])`, an object whose
+        // chain holds a function: rt_exotic_link.cpp), so it walks its chain
+        // for the intrinsic prototype below.
         if (rtIsArrayConstructor(ctorRoot.get())) {
-            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
-        }
-        // The byte-store family and a RegExp need no arm: each carries a
-        // shape, so the chain walk below answers `instanceof` for the
-        // intrinsic constructors and a subclass alike (7.3.22 step 4).
-        if (rtIsFunctionConstructor(ctorRoot.get())) {
-            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-        }
-
-        if (ctorRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            if (objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) return true;
+            protoRoot.set(rtArrayPrototypeObject());
+        } else if (rtIsFunctionConstructor(ctorRoot.get())) {
+            // The byte-store family and a RegExp need no arm: each carries a
+            // shape, so the chain walk below answers `instanceof` for the
+            // intrinsic constructors and a subclass alike (7.3.22 step 4).
+            if (objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) return true;
+            protoRoot.set(rtFunctionPrototypeObject());
+        } else if (ctorRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
             // 7.3.22 step 3: `Get(C, "prototype")` — through the proxy's own
             // [[Get]] (10.5.8), so a `get` trap sees the read; step 4 makes a
             // non-object answer a TypeError rather than a false.
@@ -207,7 +211,11 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         } else if (kind == HeapKind::Proxy) {
             next = rtProxyGetPrototypeOf(cur.get());
         } else {
-            return false;
+            // An exotic link (an array, a function made a prototype:
+            // rt_exotic_link.cpp), whose [[GetPrototypeOf]] is the ordinary
+            // one, answered for its kind.
+            const uint64_t call[1] = {cur.get().rawBits()};
+            next = Value(objectGetPrototypeOf(0, 0, 1, call));
         }
         if (!next.isObject()) return false;
         if (protoRoot.get().rawBits() == next.rawBits()) return true;

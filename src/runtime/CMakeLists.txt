@@ -138,6 +138,8 @@ bronze_add_module(runtime
         rt_prop_array.cpp
         rt_array_holes.cpp
         rt_array_exotic.cpp
+        rt_exotic_link.cpp
+        rt_prop_super.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
         rt_elem_write.cpp

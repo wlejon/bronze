@@ -521,6 +521,39 @@ before it returns.
 - an uncaught error is reported and the compartment lives on;
 - sixteen suspended compartments keep their objects through collections.
 
+## Exotic objects as prototypes
+
+Any object can be a prototype: `Object.create`, `Object.setPrototypeOf` and
+`__proto__` take an array, a typed array, a String wrapper, an `arguments`
+object, an Array subclass's instance or a function, with the inherited
+members node gives (`Object.create([7, 8])[0]` is 7, `length` 2, `0 in`
+true, for-in `0,1`). An ordinary object's read, write, `in` and for-in walk
+its chain link by link off each link's shape. These kinds keep members a
+shape does not hold (an array its elements and `length`, a typed array every
+numeric key, a String wrapper its indices and `length`, a function `name`,
+`length` and `prototype`), so a walk that reaches one hands the rest of the
+operation to that object's internal method with the walk's receiver, as it
+does at a proxy (`runtime/rt_exotic_link.cpp`):
+- a read finds the link's own element or property, runs an inherited getter
+  with the heir as `this`, and goes on up the link's own chain (a hole reaches
+  `Array.prototype`);
+- a write runs an inherited setter with the heir as `this`, is refused by an
+  inherited non-writable element or a String wrapper's index (a TypeError in
+  strict code), is a successful no-op at a typed array's invalid index
+  (10.4.5.5), and otherwise defines the heir's own property;
+- `in` and for-in ask the link's own keys and descriptors;
+- instanceof and the cycle check of `setPrototypeOf` walk through the link.
+
+The link is never copied or cached, so a push, a truncation or an element
+write on it shows through the chain at once. What keeps the fast paths as
+they were: putting one of these on a chain trips the array-index hazard (a
+TLS word generated code already tests on holes and appends), the cache fills
+(`cachedProtoHolder`, `chainIsCacheable`) refuse a link that is not an
+ordinary object, and once the hazard is set also a typed array or a String
+wrapper (the two such kinds that carry a shape), and an add through such a
+chain is never cached. A program that makes none a prototype pays one branch
+per cached chain walk.
+
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
 Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code, and hot loops moved into optimized code mid-loop (OSR), all compiled on brass's process-wide compile pool while the program runs. The optimizer runs per function as it tiers up, not over the whole program before it starts. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.

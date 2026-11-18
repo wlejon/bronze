@@ -124,6 +124,16 @@ bool ordinaryLink(uint16_t kind) {
     return HeapKind::shapeNamesPrototype(kind) || kind == HeapKind::Function;
 }
 
+// A level whose own keys its shape does not hold (rt_exotic_link.cpp): an
+// array, a typed array, a String wrapper, a namespace. Its keys and their
+// enumerability are asked of its internal methods, as a proxy's are. A
+// function is not one here: its enumerable own keys are all statics, which
+// its shape holds.
+bool exoticLevel(Value level) {
+    return level.isObject() && level.asObject<HeapObjectHeader>()->flags != HeapKind::Function &&
+           rtAnswersOffShape(level);
+}
+
 // Is this key already in the first `count` elements of `list`? The string
 // comparison the arena-key walk below does with `alreadySeen`, over HEAP
 // strings instead — which is what a proxy level forces: a trap's key list is
@@ -149,6 +159,9 @@ bool chainHasProxyLink(const ObjectHeader* holder) {
         if (!proto.isObject()) return false;
         const auto* hdr = proto.asObject<HeapObjectHeader>();
         if (hdr->flags == ProxyHeader::kFlags) return true;
+        // So does an exotic link: the shape walk would miss its elements.
+        // (The gated test: this runs ahead of the enumeration cache.)
+        if (hdr->flags != HeapKind::Function && rtIsExoticLink(proto)) return true;
         if (!ordinaryLink(hdr->flags)) return false;
         holder = reinterpret_cast<const ObjectHeader*>(hdr);
     }
@@ -161,7 +174,7 @@ Value nextLinkOf(ObjectHeader* holder) {
     const Value proto = rawNextLink(holder);
     if (!proto.isObject()) return Value::fromNull();
     const uint16_t kind = proto.asObject<HeapObjectHeader>()->flags;
-    if (kind == ProxyHeader::kFlags || ordinaryLink(kind)) return proto;
+    if (kind == ProxyHeader::kFlags || ordinaryLink(kind) || exoticLevel(proto)) return proto;
     return Value::fromNull();
 }
 
@@ -201,7 +214,7 @@ void collectChainStringKeys(ObjectHeader* holder, StringKeyList& keys) {
 }
 
 // 14.7.5.6 EnumerateObjectProperties spelled out over the INTERNAL METHODS,
-// for a chain that has a Proxy somewhere in it.
+// for a chain that has a Proxy or an exotic link somewhere in it.
 //
 // The ordinary walk in `bronze_for_in_keys` reads shape keys directly, which
 // is both faster and impossible here: a proxy's own keys are the `ownKeys`
@@ -232,9 +245,12 @@ uint64_t proxyChainForInKeys(Value receiver) {
     // enumerability of an ORDINARY level rides alongside, read off the shape
     // at the same moment as the key. A proxy level's entry is empty: its
     // answer is the `getOwnPropertyDescriptor` trap's, asked per iteration.
+    // An exotic level's (an array, a typed array, a String wrapper:
+    // rt_exotic_link.cpp) is read off its own descriptors as the keys are
+    // listed, which runs no user code.
     Rooted<Value> levelKeyLists{Value(bronze_create_array(0))};
     std::vector<std::vector<bool>> levelEnumerability;
-    std::vector<bool> levelIsProxy;
+    std::vector<bool> levelAsked;
     uint32_t levelCount = 0;
     Rooted<Value> out{Value(bronze_create_array(0))};
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
@@ -245,10 +261,31 @@ uint64_t proxyChainForInKeys(Value receiver) {
             Rooted<Value> keys{rtProxyOwnKeys(level.get())};
             levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
             levelEnumerability.emplace_back();
-            levelIsProxy.push_back(true);
+            levelAsked.push_back(true);
             ++levelCount;
             Value proto = rtProxyGetPrototypeOf(level.get());
             level.set(proto);
+            continue;
+        }
+        // An exotic level (an array, a typed array, a String wrapper): its
+        // own names, indices first (6.1.7.1), each one's enumerability read
+        // off its own descriptor.
+        if (exoticLevel(level.get())) {
+            const uint64_t call[1] = {level.get().rawBits()};
+            Rooted<Value> keys{Value(rtObjectGetOwnPropertyNames(0, 0, 1, call))};
+            const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
+            std::vector<bool> levelEnumerable(keyCount, false);
+            for (uint32_t ki = 0; ki < keyCount; ++ki) {
+                OwnPropertyDetail found;
+                levelEnumerable[ki] = rtOwnPropertyOf(level, keys.get().asObject<ArrayHeader>()->getElem(ki), found) &&
+                                      found.enumerable;
+            }
+            levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
+            levelEnumerability.push_back(std::move(levelEnumerable));
+            levelAsked.push_back(false);
+            ++levelCount;
+            const uint64_t protoCall[1] = {level.get().rawBits()};
+            level.set(Value(objectGetPrototypeOf(0, 0, 1, protoCall)));
             continue;
         }
         // An ordinary level. Its keys are read straight off the shapes, which
@@ -278,7 +315,7 @@ uint64_t proxyChainForInKeys(Value receiver) {
         }
         levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
         levelEnumerability.push_back(std::move(levelEnumerable));
-        levelIsProxy.push_back(false);
+        levelAsked.push_back(false);
         ++levelCount;
         level.set(next.get());
     }
@@ -300,7 +337,7 @@ uint64_t proxyChainForInKeys(Value receiver) {
             // asked when the loop reaches the key (bronze_for_in_live), not
             // here — V8 asks it then, between one iteration's body and the
             // next, and a handler that logs sees that order.
-            if (!levelIsProxy[li] && !levelEnumerability[li][ki]) continue;
+            if (!levelAsked[li] && !levelEnumerability[li][ki]) continue;
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
     }
@@ -573,6 +610,15 @@ uint64_t forInKeys(uint64_t objBits, bool& askEachKey) {
             {
                 const uint64_t call[1] = {src.get().rawBits()};
                 const Value proto(objectGetPrototypeOf(0, 0, 1, call));
+                // A proxy or an exotic object above the array (an array made
+                // its prototype): the internal-method walk takes the whole
+                // enumeration, the array's own level included.
+                if (proto.isObject() &&
+                    (proto.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags || exoticLevel(proto) ||
+                     (HeapKind::shapeNamesPrototype(proto.asObject<HeapObjectHeader>()->flags) &&
+                      chainHasProxyLink(proto.asObject<ObjectHeader>())))) {
+                    return proxyChainForInKeys(src.get());
+                }
                 if (proto.isObject() && HeapKind::shapeNamesPrototype(proto.asObject<HeapObjectHeader>()->flags) &&
                     !chainHasProxyLink(proto.asObject<ObjectHeader>()) &&
                     proto.asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags) {

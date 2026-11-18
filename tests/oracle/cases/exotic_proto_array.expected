@@ -1,0 +1,23 @@
+read 7 8 u 2 8 u
+kind false true true function
+in true true false true true
+own false [] {} u
+for-in ["0","1"]
+spread [7,8] 7-8 [14,16]
+after push 9 3 true
+after truncate 7 u 1 false
+after write 70
+heir writes own 70 10 1 ["0","length"]
+after delete 70 true 70
+hole AP true 2 true
+hole gone u false
+accessor get T get undefined
+setter 5 false u
+read-only sloppy 1 false
+read-only strict TypeError
+writable w 2
+setPrototypeOf 5 1 true
+super [42,2] 41
+array on array A b C 2 true
+two links up 4 2 true
+named nm symval true true

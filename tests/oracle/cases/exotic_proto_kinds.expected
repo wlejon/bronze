@@ -1,0 +1,18 @@
+typed read 3 4 u u u
+typed in true true false false true
+typed for-in ["0","1"]
+typed after write 30
+typed heir write 99 30 true
+typed invalid index u false false
+typed length TypeError
+string read a b u 2 true
+string in true true false true
+string for-in ["0","1"]
+string sloppy write a false
+string strict write TypeError
+string past end c true
+arguments 4 5 2 true ["0","1"]
+subclass 3 6 2 true false ["0","1"]
+subclass after pop u 1
+function f0 ex 2 f true true function
+function heir write mine ex

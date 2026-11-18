@@ -309,6 +309,11 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
 // behind. One pointer load per link rules both out, on the proto-hit path only.
 ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept {
     crossedDictionary = false;
+    // A typed array or a String wrapper on the chain carries a shape but
+    // answers its numeric keys beside it (rt_exotic_link.cpp), so no entry
+    // crosses one; either on a chain set the hazard, and while it is clear
+    // that costs this one test.
+    const bool hazard = runtime::rtTls()->array_index_hazard != 0;
     ObjectHeader* cur = this;
     for (uint32_t i = 0; i < depth; ++i) {
         if (!cur->shape) return nullptr;
@@ -316,6 +321,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (!HeapKind::shapeNamesPrototype(hdr->flags)) return nullptr;
+        if (hazard && runtime::rtIsExoticLink(proto)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
         if (cur->shape && !cur->shape->protoLinkCacheable()) {
             crossedDictionary = true;
@@ -327,12 +333,15 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
 
 bool ObjectHeader::chainIsCacheable() const noexcept {
     if (!shape || !shape->readCacheable()) return false;
+    // cachedProtoHolder's rule for a typed array or a String wrapper link.
+    const bool hazard = runtime::rtTls()->array_index_hazard != 0;
     const ObjectHeader* cur = this;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
         const Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return true;  // the chain ENDS here
         const auto* hdr = proto.asObject<HeapObjectHeader>();
         if (!HeapKind::shapeNamesPrototype(hdr->flags)) return false;
+        if (hazard && runtime::rtIsExoticLink(proto)) return false;
         cur = reinterpret_cast<const ObjectHeader*>(hdr);
         if (!cur->shape || !cur->shape->readCacheable()) return false;
         // A frozen dictionary is exempt from the mark: the mark exists so an
@@ -481,6 +490,16 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             // a trap's answer is not a slot.
             const Value self = receiver ? *receiver : Value::fromObject(this);
             return runtime::rtProxyGet(proto, key.get(), self);
+        }
+        // A function's shape root is its statics chain (the base class),
+        // which its own ladder walks (rt_prop_function.cpp).
+        if (holder->header.flags != HeapKind::Function && runtime::rtIsExoticLink(proto)) {
+            // The same step at a link whose members its shape does not hold:
+            // an array's elements, a String wrapper's indices, ...
+            // (rt_exotic_link.cpp). Nothing is cached past it.
+            Rooted<Value> link{proto};
+            Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
+            return runtime::rtLinkGet(link, key, self);
         }
         if (!HeapKind::shapeNamesPrototype(protoHdr->flags)) return Value::fromUndefined();
         holder = reinterpret_cast<ObjectHeader*>(protoHdr);
@@ -667,6 +686,26 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                         *refused = SetRefusal::TrapRefused;
                     }
                     return live.get().asObject<ObjectHeader>();
+                }
+                // The same step at a link whose members its shape does not
+                // hold (rt_exotic_link.cpp): its setter runs, its read-only
+                // property refuses, or the write becomes this object's own
+                // property — defined with no cache, since a cached add would
+                // not see the link's elements change.
+                if (parent.isObject() && holder->header.flags != HeapKind::Function &&
+                    runtime::rtIsExoticLink(parent)) {
+                    Rooted<Value> live{Value::fromObject(this)};
+                    Rooted<Value> recv{receiver ? *receiver : live.get()};
+                    Rooted<Value> link{parent};
+                    bool addOwn = false;
+                    const SetRefusal why = runtime::rtLinkSet(link, key, val, recv, addOwn);
+                    if (!addOwn) {
+                        if (why != SetRefusal::None && refused) *refused = why;
+                        return live.get().asObject<ObjectHeader>();
+                    }
+                    return live.get().asObject<ObjectHeader>()->setProp(
+                        heap, arena, key, val, /*ic=*/nullptr, enumerable, /*defineOwn=*/true,
+                        receiver, refused, writable, configurable, /*setSite=*/nullptr);
                 }
             }
             holder = holder->protoAncestor(1);

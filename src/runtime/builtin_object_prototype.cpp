@@ -268,16 +268,22 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
         if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) return true;
     }
     if (!rtIsExtensible(self.get())) return false;
-    // Step 8: a chain that would loop back to the object is refused, walked
-    // over ordinary links only — step 8.c.i stops the walk at a link whose
-    // [[GetPrototypeOf]] is not the ordinary one, a proxy being the case.
+    // Step 8: a chain that would loop back to the object is refused. Step
+    // 8.c.i stops the walk only at a link whose [[GetPrototypeOf]] is not the
+    // ordinary one, a proxy being the case; an exotic link (an array, a
+    // function, a typed array) is ordinary there and walked through.
     {
         Value link = proto.get();
         for (uint32_t depth = 0; link.isObject() && depth <= 1000; ++depth) {
             if (link.rawBits() == self.get().rawBits()) return false;
-            if (!isPlainObject(link)) break;
-            Shape* shape = link.asObject<ObjectHeader>()->shape;
-            link = shape ? shape->prototypeValue() : Value::fromNull();
+            if (isPlainObject(link)) {
+                Shape* shape = link.asObject<ObjectHeader>()->shape;
+                link = shape ? shape->prototypeValue() : Value::fromNull();
+                continue;
+            }
+            if (link.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) break;
+            const uint64_t call[1] = {link.rawBits()};
+            link = Value(objectGetPrototypeOf(0, 0, 1, call));
         }
     }
     Shape* newRoot = rtRootShapeForPrototype(proto.get());
@@ -311,21 +317,13 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (!args[0].isObject() && !args[0].isNull()) {
         return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
     }
-    // A PROXY may be the prototype: every walk that misses stops at the link
-    // and hands the rest of the operation to the proxy's internal method with
-    // the receiver it had (object.cpp's read and write walks, rt_operator.cpp's
-    // `in`, rt_enumerate.cpp's for-in), which is what 10.1.8.1 step 3 and its
-    // siblings say happens at a link whose [[Get]] is not the ordinary one.
-    if (args[0].isObject() && !isPlainObject(args[0]) &&
-        args[0].asObject<HeapObjectHeader>()->flags != HeapKind::Proxy) {
-        return rtThrowTypeError(
-                   std::string("Object.create with ") + rtObjectKindName(args[0]) +
-                   " as the prototype is unsupported (a prototype is walked by every read "
-                   "that misses, and this kind answers its members from a table beside the "
-                   "value rather than from a shape a walk can step through; only a plain "
-                   "object may be one)")
-            .rawBits();
-    }
+    // Any object may be the prototype. At a PROXY or an exotic object (an
+    // array, a typed array, a String wrapper, a function) every walk that
+    // misses stops at the link and hands the rest of the operation to that
+    // object's internal method with the receiver it had (object.cpp's read
+    // and write walks, rt_operator.cpp's `in`, rt_enumerate.cpp's for-in;
+    // rt_exotic_link.cpp), which is what 10.1.8.1 step 3 and its siblings say
+    // happens at a link whose [[Get]] is not the ordinary one.
     Rooted<Value> proto{args[0]};
     Rooted<Value> out{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(proto.get())))};

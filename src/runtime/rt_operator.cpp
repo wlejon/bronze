@@ -135,6 +135,14 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
             const Value key = name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string());
             return rtProxyHas(proto, key);
         }
+        // The same step at a link whose members its shape does not hold
+        // (rt_exotic_link.cpp). A function's links are its statics chain,
+        // walked below.
+        if (holder->header.flags != HeapKind::Function && rtIsExoticLink(proto)) {
+            Rooted<Value> link{proto};
+            Rooted<Value> key{name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string())};
+            return rtLinkHas(link, key);
+        }
         // A function's links are its statics chain (base classes); every
         // other holder's are its shape's prototype links.
         ObjectHeader* next = holder->header.flags == HeapKind::Function

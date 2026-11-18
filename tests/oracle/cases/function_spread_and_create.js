@@ -9,12 +9,8 @@
 // (`Object.assign({}, Component)`), so this was a `fatal` a program reached by
 // writing correct JavaScript.
 //
-// `Object.create(fn)` is still a gap — a prototype is walked by every read that
-// misses, and bronze answers a function's members from a table beside the value
-// rather than from a shape a walk can step through. What changed is that it is
-// a catchable TypeError instead of a process abort: the receiver is a value the
-// program was holding, so a reflective walk that meets one must be able to
-// report it and carry on.
+// `Object.create(fn)` and `Object.create(array)` make an heir that inherits
+// the function's statics and header members, and the array's elements.
 function Widget(a, b) {
   return a + b;
 }
@@ -35,15 +31,10 @@ class Box {
 }
 console.log(JSON.stringify(Object.keys({ ...Box })));
 
-// Catchable, with the reason in the message.
-for (const proto of [Widget, [1, 2]]) {
-  try {
-    Object.create(proto);
-    console.log("no throw");
-  } catch (e) {
-    console.log(e instanceof TypeError, e.message.indexOf("Object.create with") === 0);
-  }
-}
+const heirFn = Object.create(Widget);
+console.log(heirFn.VERSION, heirFn.length, heirFn.name, typeof heirFn.create, "prototype" in heirFn);
+const heirArr = Object.create([1, 2]);
+console.log(heirArr[1], heirArr.length, 0 in heirArr);
 // The two that DO work are pinned beside them, so a fix for the above cannot
 // quietly change what a plain prototype and `null` do.
 console.log(Object.getPrototypeOf(Object.create(Widget.prototype)) === Widget.prototype);

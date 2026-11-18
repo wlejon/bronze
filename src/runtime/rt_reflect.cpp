@@ -232,6 +232,56 @@ static SetRefusal defineOntoProxyReceiver(Rooted<Value>& receiver, Rooted<Value>
     return ok ? SetRefusal::None : SetRefusal::NotWritable;
 }
 
+// 10.1.9.2 step 2: the chain has decided the write is a DATA write, and it
+// lands on the RECEIVER as its own property (or refuses there).
+SetRefusal rtSetDataOnReceiver(Rooted<Value>& receiver, Rooted<Value>& key, Rooted<Value>& val) {
+    bool existed = false;
+    const SetRefusal why = receiverRefusalForData(receiver, key, existed);
+    if (why != SetRefusal::None) return why;
+    if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        return defineOntoProxyReceiver(receiver, key, val, existed);
+    }
+    // Step 2.c: the write lands on the RECEIVER, as its own property. Writing
+    // it onto the holder instead is what made `super.k = v` store into the
+    // base prototype, where the next instance of the class read back the
+    // previous one's value.
+    //
+    // Step 2.c.ii is CreateDataProperty — a [[DefineOwnProperty]] on the
+    // receiver, NOT a [[Set]] — so a plain receiver takes the define-own
+    // write. A [[Set]] would walk the receiver's chain again, and when that
+    // chain holds the proxy whose forward brought the write here, the walk
+    // arrives back here forever.
+    if (rtObjectIsPlain(receiver.get())) {
+        // The key has been through ToPropertyKey by every caller; what is
+        // left is the ToString of a primitive that is not yet a string (an
+        // index), which `setProp` wants as one.
+        Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get() : rtElemKeyAsString(key.get())};
+        SetRefusal refusal = SetRefusal::None;
+        receiver.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyAsKey, val, /*ic=*/nullptr,
+                                                         /*enumerable=*/true, /*defineOwn=*/true,
+                                                         /*receiver=*/nullptr, &refusal, /*writable=*/true,
+                                                         /*configurable=*/true);
+        return refusal;
+    }
+    // An ARRAY receiver's index is defined as its own element, not written
+    // with [[Set]]: the chain has already been asked (this is where an
+    // array's own chain walk, rtArrayInheritedSet, lands through a proxy's
+    // forward), and asking it again would arrive back here.
+    uint32_t index = 0;
+    if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        if (rtValueToElementIndex(key.get(), index)) return rtArrayOwnIndexWrite(receiver, index, val);
+        // A named key the same way: its own property, the chain
+        // (rtInheritedNamedSet) not asked again.
+        Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get() : rtElemKeyAsString(key.get())};
+        if (!keyAsKey.get().isSymbol() && rtUtf8Chars(keyAsKey.get().asString<StringHeader>()) == "length") {
+            return rtArraySetLength(receiver, val.get());
+        }
+        return rtArrayNamedSet(receiver, keyAsKey, val, /*askChain=*/false);
+    }
+    bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/false);
+    return SetRefusal::None;
+}
+
 // 10.1.9.2 OrdinarySetWithOwnDescriptor where the RECEIVER is not the object
 // the chain walk starts at. Two spellings need exactly this and must not hold
 // two opinions about where the write lands: `Reflect.set(target, k, v,
@@ -249,57 +299,8 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
         case SetDestination::Refused:
             // A non-writable data property on the chain (step 2.a).
             return SetRefusal::NotWritable;
-        case SetDestination::DataOntoReceiver: {
-            bool existed = false;
-            const SetRefusal why = receiverRefusalForData(receiver, key, existed);
-            if (why != SetRefusal::None) return why;
-            if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
-                return defineOntoProxyReceiver(receiver, key, val, existed);
-            }
-            // Step 2.c: the write lands on the RECEIVER, as its own property.
-            // Writing it onto the holder instead is what made `super.k = v`
-            // store into the base prototype, where the next instance of the
-            // class read back the previous one's value.
-            //
-            // Step 2.c.ii is CreateDataProperty — a [[DefineOwnProperty]] on
-            // the receiver, NOT a [[Set]] — so a plain receiver takes the
-            // define-own write. A [[Set]] would walk the receiver's chain
-            // again, and when that chain holds the proxy whose forward
-            // brought the write here, the walk arrives back here forever.
-            if (rtObjectIsPlain(receiver.get())) {
-                // The key has been through ToPropertyKey by every caller;
-                // what is left is the ToString of a primitive that is not
-                // yet a string (an index), which `setProp` wants as one.
-                Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get()
-                                                            : rtElemKeyAsString(key.get())};
-                SetRefusal refusal = SetRefusal::None;
-                receiver.get().asObject<ObjectHeader>()->setProp(
-                    rtHeap(), rtArena(), keyAsKey, val, /*ic=*/nullptr, /*enumerable=*/true,
-                    /*defineOwn=*/true, /*receiver=*/nullptr, &refusal, /*writable=*/true,
-                    /*configurable=*/true);
-                return refusal;
-            }
-            // An ARRAY receiver's index is defined as its own element, not
-            // written with [[Set]]: the chain has already been asked (this
-            // is where an array's own chain walk, rtArrayInheritedSet, lands
-            // through a proxy's forward), and asking it again would arrive
-            // back here.
-            uint32_t index = 0;
-            if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-                if (rtValueToElementIndex(key.get(), index)) return rtArrayOwnIndexWrite(receiver, index, val);
-                // A named key the same way: its own property, the chain
-                // (rtInheritedNamedSet) not asked again.
-                Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get() : rtElemKeyAsString(key.get())};
-                if (!keyAsKey.get().isSymbol() &&
-                    rtUtf8Chars(keyAsKey.get().asString<StringHeader>()) == "length") {
-                    return rtArraySetLength(receiver, val.get());
-                }
-                return rtArrayNamedSet(receiver, keyAsKey, val, /*askChain=*/false);
-            }
-            bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(),
-                            val.get().rawBits(), /*strict=*/false);
-            return SetRefusal::None;
-        }
+        case SetDestination::DataOntoReceiver:
+            return rtSetDataOnReceiver(receiver, key, val);
         case SetDestination::Accessor:
             break;
     }
@@ -334,6 +335,13 @@ static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     // An element read has no accessor for a receiver to matter to.
     if (typedArrayNumericKey(target.get(), key.get())) {
         return bronze_elem_get(target.get().rawBits(), key.get().rawBits());
+    }
+    // An exotic target other than a function (below): its own [[Get]] with
+    // the receiver, which an array's accessor element and a String wrapper's
+    // indices need (rt_exotic_link.cpp).
+    if (rtAnswersOffShape(target.get()) && target.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        key.set(rtToPropertyKey(key));
+        return rtLinkGet(target, key, receiver).rawBits();
     }
     switch (receiverRoute(target.get())) {
         case ReceiverRoute::Proxy:

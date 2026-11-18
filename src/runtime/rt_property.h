@@ -319,6 +319,50 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
 // `target` with `receiver` as the `this` an accessor runs against.
 Value rtGetWithReceiver(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& receiver);
 
+// 10.1.9.2 step 2 alone: a DATA write the chain has let through, defined on
+// `receiver` as its own property (or refused there: an own accessor or
+// read-only property, a receiver that is not extensible).
+SetRefusal rtSetDataOnReceiver(Rooted<Value>& receiver, Rooted<Value>& key, Rooted<Value>& val);
+
+// ---- an exotic object as a prototype (rt_exotic_link.cpp) ----
+//
+// An array, a typed array, a String wrapper, a function or a module
+// namespace keeps members a shape does not hold, so a chain walk that
+// reaches one as a LINK hands it the rest of the operation with the walk's
+// receiver, as at a proxy. The file's head says what keeps the caches sound.
+
+// Does this object keep own members its shape does not hold? Exact, for any
+// object; a walk asks rtIsExoticLink instead.
+bool rtAnswersOffShape(Value obj) noexcept;
+
+// The same of a LINK a walk has reached, cheap where it is asked on every
+// step of an ordinary walk: a kind test, and for a plain object (a String
+// wrapper is one) only once the array-index hazard is set, which putting a
+// String wrapper on a chain trips. A proxy is not one: every walk takes its
+// trap before asking.
+bool rtIsExoticLinkSlow(Value link) noexcept;
+inline bool rtIsExoticLink(Value link) noexcept {
+    const uint16_t kind = link.asObject<HeapObjectHeader>()->flags;
+    if (kind == HeapKind::Plain) return rtTls()->array_index_hazard != 0 && rtIsExoticLinkSlow(link);
+    return kind == HeapKind::Array || kind == HeapKind::Function || kind == HeapKind::TypedArray ||
+           kind == HeapKind::ModuleNamespace;
+}
+
+// From `link` up the chain's end: [[Get]] of `key` with `receiver` as an
+// accessor's `this` (10.1.8.1), and [[HasProperty]] (10.1.7.1). `key` is a
+// property key (a string or a symbol, or a Number index). Both may run user
+// code.
+Value rtLinkGet(Rooted<Value>& link, Rooted<Value>& key, Rooted<Value>& receiver);
+bool rtLinkHas(Rooted<Value>& link, Rooted<Value>& key);
+
+// 10.1.9.2 from `link` up, for a receiver that does not own `key`: runs an
+// inherited setter, refuses for a read-only property, or sets `addOwn` when
+// the write must become the receiver's own data property, which the caller
+// then defines (a typed array's invalid index answers None with no add:
+// 10.4.5.5's no-op).
+SetRefusal rtLinkSet(Rooted<Value>& link, Rooted<Value>& key, Rooted<Value>& val, Rooted<Value>& receiver,
+                     bool& addOwn);
+
 // ---- an array's own properties that are not elements (rt_prop_array.cpp) ----
 //
 // `length` and the named ones. Six paths ask — a read, a write, `in`, `delete`,

@@ -32,6 +32,7 @@
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/realm.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/shape_census.h"
@@ -58,6 +59,11 @@ bool chainAdmitsAdd(ObjectHeader* receiver, PropertyKey key) {
         if (!holder->shape) return false;
         const Value parent = holder->shape->prototypeValue();
         if (parent.isObject() && parent.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) return false;
+        // Nor an exotic link's elements (rt_exotic_link.cpp), which no shape
+        // shows: the write takes setProp's walk.
+        if (parent.isObject() && holder->header.flags != HeapKind::Function && rtIsExoticLink(parent)) {
+            return false;
+        }
         holder = holder->protoAncestor(1);
         if (!holder) return true;
         PropertyInfo info;
