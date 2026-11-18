@@ -446,6 +446,7 @@ static ThreadModuleState* moduleStateForGcHeap(const brass::gc::Heap& gcHeap) no
 }
 
 void rtInvalidateGlobalCaches() {
+    rtBumpGlobalReadEpoch();
     if (!g_threadModules) return;
     for (const auto& span : g_threadModules->globalCacheSpans) {
         for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value::fromHole();

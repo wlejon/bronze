@@ -192,6 +192,10 @@ void rtNoteGlobalObjectWrite(const ObjectHeader* obj, PropertyKey key) {
     const StringHeader* str = key.string();
     if (!str->isLatin1()) return;
     const std::string_view name(str->latin1Data(), str->getLength());
+    // A host global the page wrote or defined is read from the global object
+    // in this realm from now on (host_globals.h) — `performance` and `Intl`,
+    // which are builtin names too, included.
+    rtNoteHostGlobalOverridden(Value::fromObject(const_cast<ObjectHeader*>(obj)), name);
     for (const char* builtin : rtBuiltinGlobalNames()) {
         if (name == builtin) {
             t_builtinBindingWritten = true;
@@ -199,9 +203,6 @@ void rtNoteGlobalObjectWrite(const ObjectHeader* obj, PropertyKey key) {
             return;
         }
     }
-    // A host global the page wrote or defined is read from the global object
-    // in this realm from now on (host_globals.h).
-    rtNoteHostGlobalOverridden(Value::fromObject(const_cast<ObjectHeader*>(obj)), name);
 }
 
 extern "C" uint64_t bronze_global_get_name(const char* name) {
@@ -232,6 +233,7 @@ extern "C" uint64_t bronze_global_get_name(const char* name) {
 // and deletable like any property a Set adds — and is 6.2.5.6 PutValue
 // step 3's ReferenceError in strict code.
 extern "C" void bronze_put_unresolved(uint64_t nameBits, uint64_t valBits, bool strict) {
+    if (rtCachedGlobalWrite(Value(nameBits), Value(valBits))) return;
     Rooted<Value> name{Value(nameBits)};
     Rooted<Value> val{Value(valBits)};
     Rooted<Value> glob{rtGlobalThisObject()};
@@ -244,6 +246,9 @@ extern "C" void bronze_put_unresolved(uint64_t nameBits, uint64_t valBits, bool 
         }
     }
     bronze_elem_set(glob.get().rawBits(), name.get().rawBits(), val.get().rawBits(), strict);
+    // Where the property now lives, when it is an own writable data property
+    // (a throw or a setter leaves none to record).
+    rtRememberGlobalWrite(name.get());
 }
 
 // 10.2.1.2 OrdinaryCallBindThis steps 5-6 for a sloppy function whose

@@ -40,9 +40,10 @@ namespace bronze::runtime {
 // The KIND says what a page's write to the name does (WebIDL's attributes on
 // the Window). Replaceable, the default: the write makes it an ordinary own
 // data property of the global object, and the realm reads the name from the
-// global object from then on. Readonly (`document`, `history`, `window`): a
-// non-writable property, so the write is a sloppy no-op and a strict
-// TypeError and the registry keeps answering. Accessor kinds are registered
+// global object from then on. Readonly (`document`, `window`, `top`): a
+// non-writable, non-configurable property, so the write is a sloppy no-op and
+// a strict TypeError, delete and defineProperty are refused, and the registry
+// keeps answering. Accessor kinds are registered
 // with rtRegisterHostGlobalAccessor.
 enum class HostGlobalKind : uint8_t { Replaceable = 0, Readonly = 1, Accessor = 2 };
 void rtRegisterHostGlobal(const std::string& name, Value value,

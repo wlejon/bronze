@@ -142,6 +142,22 @@ void rtResetForInArrayCache();
 // read of each resolves again: a program wrote a builtin's binding on the
 // global object (rtNoteGlobalObjectWrite).
 void rtInvalidateGlobalReadCells();
+// Retires every realm's cached global-read answers (Realm::globalReads):
+// called wherever the cells above are emptied.
+void rtBumpGlobalReadEpoch() noexcept;
+// The current realm's cached answer for a bare-name read of `keyIndex`, and
+// the two ways a resolved read records one: a value (a builtin, a host
+// global) or the global object's own data property it read.
+bool rtCachedGlobalRead(uint32_t keyIndex, uint64_t& out);
+void rtRememberGlobalValue(uint32_t keyIndex, Value v);
+void rtRememberGlobalSlot(uint32_t keyIndex);
+// A bare-name write (bronze_put_unresolved) through the cached slot of the
+// global object's own writable data property `name`, when the entry still
+// describes it; false sends the write down the full path. `name` must be a
+// key header for either to act. After a full-path write, rtRememberGlobalWrite
+// records where the property lives.
+bool rtCachedGlobalWrite(Value name, Value val);
+void rtRememberGlobalWrite(Value name);
 
 // Module load epochs: the unregister half of the module root spans. A host
 // (embed.h's beginModuleLoad/unloadModule) brackets a module's entry with an

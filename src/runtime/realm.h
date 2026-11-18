@@ -88,6 +88,26 @@ public:
     Value replacedBuiltin(size_t which) const noexcept { return replacedBuiltins_[which]; }
     void setReplacedBuiltin(size_t which, Value v) noexcept { replacedBuiltins_[which] = v; }
 
+    // The answers to bare-name global reads, indexed by key id
+    // (rt_global_cache.cpp): a value (a builtin, a host global), or where an
+    // own data property of the global object lives. An entry holds while its
+    // epoch is the thread's global-read epoch, and a slot entry while the
+    // global object still has the shape, and the table generation, it was
+    // filled at.
+    struct GlobalReadEntry {
+        uint64_t epoch = 0;
+        const void* shape = nullptr;
+        uint64_t generation = 0;
+        uint32_t slot = 0;
+        uint8_t kind = 0;  // 0 none, 1 value, 2 global-object slot
+        // A slot entry a bare-name WRITE may store through: a writable data
+        // property whose name is neither a builtin's nor a host global's (a
+        // write to either has to reach rtNoteGlobalObjectWrite).
+        bool writable = false;
+        Value value = Value::fromUndefined();
+    };
+    std::vector<GlobalReadEntry>& globalReads() noexcept { return globalReads_; }
+
     // GC root tracing for this realm's held heap values.
     void visitRoots(const Heap::RootVisitor& visit);
 
@@ -122,6 +142,7 @@ private:
     std::unordered_set<std::string> hostGlobalNames_;
     bool hostGlobalsSpecial_ = false;
     Value replacedBuiltins_[kReplaceableBuiltins] = {Value::fromHole(), Value::fromHole()};
+    std::vector<GlobalReadEntry> globalReads_;
 };
 
 // The builtin names every realm's global object is populated with, each one a

@@ -500,10 +500,11 @@ BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 // Window. `Replaceable` (registerGlobal's): the write makes the name an
 // ordinary own data property of the global object, and that realm reads it
 // from the global object from then on. `Readonly` (`document`, `history`,
-// `window`, `navigator`): the global object's property is non-writable, so
-// the write is a no-op in sloppy code and a TypeError in strict code, and the
-// registry keeps answering. A `Object.defineProperty` of the name by the page
-// overrides either kind.
+// `window`, `navigator`): the global object's property is non-writable and
+// non-configurable, so the write is a no-op in sloppy code and a TypeError in
+// strict code, `delete` and `defineProperty` are refused, and the registry
+// keeps answering. A page's `Object.defineProperty` of a Replaceable name
+// overrides it. Host globals are enumerable properties of the global object.
 enum class GlobalKind : uint8_t { Replaceable, Readonly };
 BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value, GlobalKind kind);
 

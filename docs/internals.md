@@ -450,18 +450,34 @@ page's write does, as WebIDL's attributes on the Window do:
   on the realm reads the name from the global object. Writes made by a
   registration, or inside a lazy global's init, are the host's and mark
   nothing.
-- **Readonly** (`document`, `history`): a non-writable, configurable
-  property, so a page's assignment is a no-op in sloppy code and a TypeError
-  in strict code, and the registry keeps answering. `Object.defineProperty`
-  can still override it.
+- **Readonly** (`window`, `document`, `top`): a non-writable,
+  non-configurable property, as WebIDL's [LegacyUnforgeable] members are, so a
+  page's assignment is a no-op in sloppy code and a TypeError in strict code,
+  `delete` and `Object.defineProperty` are refused, and the registry keeps
+  answering. A host registering the name again writes the property's slot.
 - **Accessor** (`registerGlobalAccessor`: `location`, the `on*` handlers): an
   accessor property whose getter answers every read, never cached, and whose
   setter takes every write; with no setter it is read-only.
 
-Registering a name again sets its kind afresh and clears the mark. Until a
-realm has an accessor or an overridden name, the registry read costs one flag
-test more than before, and a write to the global object costs one hash-set
-lookup (`Realm::hostGlobalNames`).
+Registering a name again sets its kind afresh and clears the mark. Host
+globals are enumerable properties of the global object, as a browser's Window
+members are. `performance` and `Intl`, which a host's registration shadows
+over the builtin, read the global object's property once the page overrides
+them, never the builtin. A bare read of a provided name the page deleted is a
+ReferenceError.
+
+A bare-name read or write of a global is cached per realm and key
+(`Realm::globalReads`, `runtime/rt_global_cache.cpp`): a builtin's or host
+global's value, or the slot of the global object's own data property. A slot
+entry holds while the global object keeps the shape and dictionary generation
+it was filled at, so adding a property keeps it and deleting or moving one
+retires it. Every entry holds only while its epoch is the thread's global-read
+epoch, which moves when a host registers, forces or a page overrides a host
+global, a builtin's binding is written, or anything defines a property on a
+global object. A cached write also needs a writable property whose name is no
+builtin's or host global's, and a global object that is not frozen. Measured
+on arm64: a read of a `globalThis` property 11 ns (78 before), a write 19 ns
+(220).
 
 A host that needs a builtin to answer differently (an `Intl`-backed
 `toLocaleString`) cannot patch the frozen prototype, so the locale methods

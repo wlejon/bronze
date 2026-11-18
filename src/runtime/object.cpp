@@ -11,6 +11,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/realm.h"
 #include "runtime/rt_replaceable_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
@@ -374,6 +375,12 @@ void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shap
     // shape belongs to exactly one object — so repointing its root moves this
     // object's prototype and nobody else's.
     self.get().asObject<ObjectHeader>()->shape->root = newRoot;
+    // A realm's global object given a prototype (a host's Window) keeps its
+    // writes noted (rtNoteGlobalObjectWrite): the write paths find it by root.
+    if (rtRealmOfGlobal(self.get())) {
+        self.get().asObject<ObjectHeader>()->shape->used_as_prototype = true;
+        runtime::rtWatchGlobalObjectRoot(newRoot);
+    }
 }
 
 Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* site,
@@ -529,7 +536,12 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         runtime::rtThrowTypeError("property key must be a string or a symbol");
         return this;
     }
-    if (shape && runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, prop_name);
+    if (shape && runtime::rtMaybeGlobalObjectShape(shape)) {
+        runtime::rtNoteGlobalObjectWrite(this, prop_name);
+        // A definition may change a property's attributes in place, which
+        // the cached bare-name writes (rt_global_cache.cpp) do not see.
+        if (defineOwn) runtime::rtBumpGlobalReadEpoch();
+    }
 
     InlineCache* hitIc = setSite ? setSite->findForSet(shape) : ic;
 

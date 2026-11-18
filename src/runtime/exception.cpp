@@ -549,12 +549,15 @@ extern "C" {
 // can change under a running program, which is the whole reason the question
 // survives to run time.
 uint64_t bronze_resolve_name(uint32_t keyIndex, bool soft) {
+    if (uint64_t cached = 0; rtCachedGlobalRead(keyIndex, cached)) return cached;
     const std::string& name = rtKeyString(keyIndex);
     if (Value host = Value::fromUndefined(); rtHostGlobalLookup(name, host)) {
+        rtRememberGlobalValue(keyIndex, host);
         return host.rawBits();
     }
     if (Value fromGlobalObject = Value::fromUndefined();
         rtGlobalThisOwnLookup(name, fromGlobalObject)) {
+        rtRememberGlobalSlot(keyIndex);
         return fromGlobalObject.rawBits();
     }
     if (soft) return Value::fromUndefined().rawBits();

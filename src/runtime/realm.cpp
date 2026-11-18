@@ -318,6 +318,9 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
     }
     for (auto& entry : hostGlobals_) visit(entry.second);
     for (Value& replaced : replacedBuiltins_) visit(replaced);
+    for (GlobalReadEntry& e : globalReads_) {
+        if (e.kind == 1) visit(e.value);
+    }
 }
 
 Realm* rtDefaultRealm() {
@@ -492,18 +495,31 @@ void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value, b
             const PropertyKey pkey = PropertyKey::fromValue(key.get());
             auto* obj = glob.get().asObject<ObjectHeader>();
             PropertyInfo own;
+            const bool has = obj->shape && obj->shape->lookupProperty(pkey, own);
+            // A Readonly name registered again: its property is
+            // non-configurable, so the page cannot delete or redefine it and
+            // neither can a delete here. The host's new value goes into its
+            // slot.
+            if (has && !own.accessor && !own.configurable && own.repr == SlotRepr::Boxed) {
+                obj->setSlot(own.slot, val.get());
+                runtime::rtBumpGlobalReadEpoch();
+                return;
+            }
             // A read-only property, or one becoming read-only, is redefined
             // from scratch for the same reason: setProp keeps the attributes
             // of a property it finds.
-            if (obj->shape && obj->shape->lookupProperty(pkey, own) &&
-                (own.accessor || !own.writable || readOnly)) {
+            if (has && (own.accessor || !own.writable || readOnly)) {
                 bronze_elem_delete(glob.get().rawBits(), key.get().rawBits(), /*strict=*/false);
             }
         }
+        // Enumerable, as a browser's Window members are. A Readonly one is
+        // also non-configurable, as WebIDL's [LegacyUnforgeable] members
+        // (`window`, `document`, `top`) are.
         glob.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), key,
                                                      val, nullptr,
-                                                     /*enumerable=*/false, /*defineOwn=*/true,
-                                                     nullptr, nullptr, /*writable=*/!readOnly);
+                                                     /*enumerable=*/true, /*defineOwn=*/true,
+                                                     nullptr, nullptr, /*writable=*/!readOnly,
+                                                     /*configurable=*/!readOnly);
         // setProp can transition the shape and the write allocates, so the
         // realm's handle is refreshed from the rooted copy rather than left
         // pointing at whatever the collector moved out from under it.

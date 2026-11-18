@@ -133,6 +133,16 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
 
     auto* obj = target.get().asObject<ObjectHeader>();
 
+    // A definition on a global object: a builtin's or a host global's binding
+    // redefined is the program's from now on, and the cached bare-name reads
+    // and writes (rt_global_cache.cpp) are retired, since the paths below may
+    // change a property's attributes in place.
+    if (obj->shape && rtMaybeGlobalObjectShape(obj->shape)) {
+        rtNoteGlobalObjectWrite(obj, name);
+        rtBumpGlobalReadEpoch();
+        obj = target.get().asObject<ObjectHeader>();
+    }
+
     // 10.1.6.3 step 4: "For each field of Desc, set the corresponding attribute
     // of the property named P to the value of the field." A field the
     // descriptor does NOT mention is left alone on an EXISTING property, and
