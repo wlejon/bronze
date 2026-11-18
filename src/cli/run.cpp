@@ -62,6 +62,10 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
                           .hostGlobals = hostGlobals,
                           .classicScript = classic.has_value(),
                           .classicScriptMarker = classic.value_or(std::string()),
+                          // A program run from the command line is a Script:
+                          // what it declares is on the global object when it
+                          // has run (`--classic` instantiates it properly).
+                          .publishTopLevel = !classic.has_value(),
                           .livesForProcess = true,
                           .emitDebugInfo = emitDebugInfo,
                           .tier = tier});

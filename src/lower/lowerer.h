@@ -175,6 +175,10 @@ private:
     static const char* const kNewTargetSlot;
     bool strictCode_ = false;
     int32_t strictFlag() const { return strictCode_ ? 1 : 0; }
+    // A joined unit of classic scripts: each script's marker statement and the
+    // script's mode, which the top-level code takes from the marker on
+    // (ast::Module::scriptStrictness; lowerStmt).
+    std::unordered_map<const ast::Stmt*, bool> scriptStrictAt_;
     std::unordered_set<std::string> capturedNames_;
     std::unordered_set<std::string> memoryNames_;
     size_t functionEnvBase_ = 0;

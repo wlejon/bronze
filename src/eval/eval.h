@@ -53,8 +53,18 @@ struct EvalOptions {
     // the unit's own. In a joined unit each script after the first starts with
     // a statement `globalThis.<classicScriptMarker> = <n>;`, and the scripts
     // are what lies between them; without a marker the program is one script.
+    // A Directive Prologue right after a marker is that script's own: a
+    // `"use strict"` there makes that script strict and no other.
     bool classicScript = false;
     std::string classicScriptMarker = {};
+    // When the unit's top level has run, each of its top-level `var`s and
+    // function declarations is assigned to the global object property of
+    // its name, so a later unit, or a page, sees what this one declared. The
+    // unit keeps its own bindings (a later write to the property does not
+    // change them). For a host's driver script, which outlives the pages it
+    // drives and defines helpers they call; a page's module script or a
+    // program leaves nothing on the global object.
+    bool publishTopLevel = false;
     // No native-manifest option: the evaluator reads the natives this thread's
     // host registered (embed::registerNative) directly, and binds the program
     // to them before it runs.

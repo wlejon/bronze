@@ -542,6 +542,7 @@ bool Linker::run(ast::Module& out) {
     // discards a top-level write where it should throw. A tripwire, not a
     // diagnosis of the source.
     out.strict = graph_.modules[0]->ast->strict;
+    out.scriptStrictness = graph_.modules[0]->ast->scriptStrictness;
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         if (file.ast->strict == out.strict) continue;

@@ -220,8 +220,9 @@ public:
         auto parse = [&](bool forceStrict, DiagnosticSink& sink) {
             auto tokens = Lexer(buffer, sink).lex();
             if (sink.hasErrors()) return std::unique_ptr<ast::Module>();
-            return Parser(std::move(tokens), sink, file->id)
-                .parseModule(file->displayName, forceStrict);
+            Parser parser(std::move(tokens), sink, file->id);
+            if (file->id == 0) parser.setClassicScriptMarker(options_.classicScriptMarker);
+            return parser.parseModule(file->displayName, forceStrict);
         };
 
         const bool nonEntryFile = buffer.fileId() != 0;

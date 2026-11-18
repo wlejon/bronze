@@ -59,6 +59,14 @@ public:
         return *this;
     }
 
+    // Parses the file as a joined unit of classic scripts, each after a
+    // top-level `globalThis.<marker> = <n>;`: each script's Directive
+    // Prologue decides its own strictness (ast::Module::scriptStrictness).
+    Parser& setClassicScriptMarker(std::string marker) {
+        classicScriptMarker_ = std::move(marker);
+        return *this;
+    }
+
 private:
     std::vector<Token> tokens_;
     DiagnosticSink& diags_;
@@ -130,6 +138,7 @@ private:
     // declared inside strict code is strict" means. Nothing later can ask the
     // question, which is why the answer is written onto the AST nodes here.
     bool strict_ = false;
+    std::string classicScriptMarker_;
     // Whether the file binds a name `undefined` anywhere (Parser::expect),
     // so parseModule runs ts_rewrite::bindUndefinedReferences on it.
     bool bindsUndefined_ = false;
@@ -503,6 +512,9 @@ private:
     // to be read BEFORE the body, because it decides which early errors the
     // body's own statements are subject to.
     bool prologueSelectsStrict() const;
+    // `globalThis.<classicScriptMarker_> = ...;`, the statement bro puts
+    // before each script of a joined unit.
+    bool isClassicScriptMarker(const ast::Stmt* s) const;
     // A function BODY: a braced StatementList that has a Directive Prologue,
     // which is the one thing an ordinary block does not have. `outStrict` is
     // the strictness of the body — the enclosing code's, raised by the

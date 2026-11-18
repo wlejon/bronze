@@ -33,6 +33,7 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
 std::optional<il::Module> Lowerer::lower() {
     ilModule_.name = astModule_.name;
     if (selfHost_ && !planSelfHostBuiltins()) return std::nullopt;
+    for (const auto& [marker, strict] : astModule_.scriptStrictness) scriptStrictAt_[marker] = strict;
 
     std::vector<const ast::Stmt*> topLevelStmts;
     for (const auto& stmtPtr : astModule_.body) {

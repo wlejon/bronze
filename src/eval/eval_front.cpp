@@ -62,14 +62,19 @@ std::vector<ast::FunctionDecl*> prepareEvalAstForInference(ast::Module& astModul
     return temporarilyExported;
 }
 
+// The trailing expression's value always goes to the global object, under
+// `resName`, where the host reads it; the unit's other top-level `var`s and
+// function declarations only with EvalOptions::publishTopLevel.
 void exportEvalDeclarations(ast::Module& astModule,
-                            const std::vector<ast::FunctionDecl*>& temporarilyExported) {
+                            const std::vector<ast::FunctionDecl*>& temporarilyExported,
+                            const std::string& resName, bool publishTopLevel) {
     for (auto* fd : temporarilyExported) {
         fd->isExported = false;
     }
     std::vector<ast::StmtPtr> exports;
     for (const auto& stmt : astModule.body) {
         if (auto* vd = dynamic_cast<ast::VarDecl*>(stmt.get())) {
+            if (!publishTopLevel && (resName.empty() || vd->name != resName)) continue;
             if (vd->isVar && !vd->name.empty() && vd->name.find('.') == std::string::npos) {
                 auto globalThisIdent = std::make_unique<ast::Ident>();
                 globalThisIdent->name = "globalThis";
@@ -87,7 +92,7 @@ void exportEvalDeclarations(ast::Module& astModule,
                 exports.push_back(std::move(exportStmt));
             }
         } else if (auto* fd = dynamic_cast<ast::FunctionDecl*>(stmt.get())) {
-            if (!fd->name.empty() && fd->name.find('.') == std::string::npos) {
+            if (publishTopLevel && !fd->name.empty() && fd->name.find('.') == std::string::npos) {
                 auto globalThisIdent = std::make_unique<ast::Ident>();
                 globalThisIdent->name = "globalThis";
                 auto member = std::make_unique<ast::MemberAccess>();
@@ -199,6 +204,7 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
     modules::ModuleOptions modOpts;
     modOpts.moduleRoots = options.moduleRoots;
     modOpts.entryResolvesAs = options.entryResolvesAs;
+    if (options.classicScript) modOpts.classicScriptMarker = options.classicScriptMarker;
     applyModuleRegistry(options, modOpts);
     return modOpts;
 }
@@ -216,6 +222,7 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field(options.retainSource ? "src" : "nosrc");
     k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
     k.field(options.classicScript ? "classic:" + options.classicScriptMarker : "unit");
+    k.field(options.publishTopLevel ? "publish-top" : "own-top");
     k.part("module roots");
     k.field("|roots");
     for (const auto& root : modOpts.moduleRoots) {
@@ -271,7 +278,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       in.pins.empty() ? nullptr : &in.pins);
         if (diags.hasErrors() || !inferred) return nullptr;
     }
-    exportEvalDeclarations(astModule, temporarilyExported);
+    exportEvalDeclarations(astModule, temporarilyExported, resName, options.publishTopLevel);
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
 

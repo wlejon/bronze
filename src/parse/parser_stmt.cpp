@@ -107,7 +107,16 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         // The flag is cleared by parseStatement itself, so every nested
         // production this reaches sees false.
         atModuleTopLevel_ = true;
+        const size_t before = mod->body.size();
         if (!parseStatement(mod->body)) break;
+        // A classic script's marker: the next script starts here, sloppy
+        // unless its own prologue (or the unit being module code) says
+        // otherwise, and that is decided before its first statement.
+        if (!classicScriptMarker_.empty() && mod->body.size() == before + 1 &&
+            isClassicScriptMarker(mod->body.back().get())) {
+            strict_ = forceStrict || prologueSelectsStrict();
+            mod->scriptStrictness.emplace_back(mod->body.back().get(), strict_);
+        }
     }
     currentModule_ = nullptr;
     typeScopes_.clear();
@@ -119,6 +128,17 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
     if (bindsUndefined_ && !ts_rewrite::bindUndefinedReferences(mod->body, diags_)) return nullptr;
     rebindableFunctionsToVars(mod->body);
     return mod;
+}
+
+bool Parser::isClassicScriptMarker(const ast::Stmt* s) const {
+    const auto* es = dynamic_cast<const ast::ExprStmt*>(s);
+    if (!es) return false;
+    const auto* b = dynamic_cast<const ast::Binary*>(es->expr.get());
+    if (!b || b->op != ast::BinaryOp::Assign) return false;
+    const auto* m = dynamic_cast<const ast::MemberAccess*>(b->lhs.get());
+    if (!m || m->property != classicScriptMarker_) return false;
+    const auto* g = dynamic_cast<const ast::Ident*>(m->object.get());
+    return g && g->name == "globalThis";
 }
 
 // A top-level function declaration is a MUTABLE binding (9.1.1.1.5 for a

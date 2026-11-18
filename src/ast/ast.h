@@ -892,6 +892,11 @@ struct Module final : Node {
     // one that declares an `import` or an `export` — which 16.2.1.6 makes
     // strict whether or not anything said so.
     bool strict = false;
+    // A joined unit of classic scripts (Parser::setClassicScriptMarker): each
+    // script's marker statement and whether the script after it is strict.
+    // Top-level code from a marker on is lowered in that script's mode; its
+    // functions were parsed in it.
+    std::vector<std::pair<const Stmt*, bool>> scriptStrictness;
     // TypeScript's type declarations, by lexical scope (see ast/type.h).
     // `typeScopes[0]` is the module's top level; every other scope the parser
     // opened is here too, because a reference holds a pointer to the scope it

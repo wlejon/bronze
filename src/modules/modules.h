@@ -77,6 +77,12 @@ struct ModuleOptions {
     // is affected — a module it imports is a real file and resolves from where
     // it is.
     std::filesystem::path entryResolvesAs;
+    // The entry is a joined unit of classic scripts, each after a statement
+    // `globalThis.<marker> = <n>;` (EvalOptions::classicScriptMarker): the
+    // Directive Prologue right after each marker is that script's own, so a
+    // `"use strict"` there makes that script strict and no other
+    // (ast::Module::scriptStrictness). Empty: one Script.
+    std::string classicScriptMarker;
     // The REALM's module registry, when the host wants this unit to share
     // module instances with the units compiled beside it
     // (runtime/module_registry.h says why that is a thing at all).

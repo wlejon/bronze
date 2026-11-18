@@ -718,6 +718,22 @@ level stay the unit's own bindings. The cost is those cells: a loop of
 top-level function calls reading and writing top-level vars runs 231 ms as a
 classic script against 71 ms as a module on arm64 (node: 17 ms).
 
+Each script of a joined unit has its own mode. The parser is given the marker
+(`ModuleOptions::classicScriptMarker`, `Parser::setClassicScriptMarker`); after
+each marker statement it reads the next script's Directive Prologue, so a
+`"use strict"` there makes that script's functions strict and leaves the other
+scripts sloppy. It records each marker and the mode
+(`ast::Module::scriptStrictness`), and lowering lowers the top-level code from
+a marker on in that mode (`Lowerer::lowerStmt`).
+
+A unit that is not a classic script keeps its top-level `var`s and function
+declarations as its own bindings. With `EvalOptions::publishTopLevel` (a
+host's driver script, whose helpers its pages call; `bronze run` without
+`--classic`), each is also assigned to the global object property of its name
+once the top level has run (`exportEvalDeclarations`, eval_front.cpp). The
+unit's trailing expression's value always goes to the global object, under the
+name the host reads it back by.
+
 The same engine runs an ahead-of-time module's COLD functions, the ones its
 harvest saw run seldom or never: the module carries their IL instead of their
 code, and the first call of one builds the module's companion program in the

@@ -54,6 +54,11 @@ bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Func
 }
 
 bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
+    // A classic script's marker: the top-level code after it is in that
+    // script's mode.
+    if (!scriptStrictAt_.empty()) {
+        if (auto it = scriptStrictAt_.find(&stmt); it != scriptStrictAt_.end()) strictCode_ = it->second;
+    }
     if (const auto* blockStmt = dynamic_cast<const ast::BlockStmt*>(&stmt)) {
         enterScope(blockStmt->stmts, ilFn);
         std::vector<const ast::Stmt*> stmts;
