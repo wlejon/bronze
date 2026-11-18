@@ -410,6 +410,9 @@ costs about 175 ns on an M-series Mac (8 ns before the first replacement).
 `Symbol.metadata` (the decorator-metadata key) is a well-known symbol of the
 thread: TypeScript's and Lit's decorator helpers define it on `Symbol` when it
 is missing, which the frozen `Symbol` would refuse (Babylon, model-viewer).
+`Symbol.dispose` and `Symbol.asyncDispose` are well-known symbols too, for
+libraries that name them (a `[Symbol.dispose]()` method); there is no `using`
+declaration.
 
 Lockdown also pins the global BINDINGS `Math` and `Number` in every realm of
 the thread (`rtPinLockedGlobals`, realm.cpp): read-only and not configurable,

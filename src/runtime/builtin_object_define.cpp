@@ -680,8 +680,30 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         rtThrowTypeError("Property descriptors must be an object");
         return false;
     }
+    // Step 3 is OwnPropertyKeys, the enumerable ones: the string keys
+    // (Object.keys' answer) and then the enumerable symbol keys, in that
+    // order (6.1.7.1). A symbol-keyed descriptor (a class's `[Symbol.x]`
+    // method put on by hand) is defined like any other.
     Rooted<Value> keys{Value(bronze_object_keys(descriptors.get().rawBits()))};
-    const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
+    const uint32_t stringCount = keys.get().asObject<ArrayHeader>()->length;
+    const uint64_t descriptorsBits = descriptors.get().rawBits();
+    Rooted<Value> symbols{Value(rtObjectGetOwnPropertySymbols(0, 0, 1, &descriptorsBits))};
+    std::vector<uint32_t> enumerableSymbols;
+    if (symbols.get().isObject()) {
+        const uint32_t n = symbols.get().asObject<ArrayHeader>()->length;
+        for (uint32_t j = 0; j < n; ++j) {
+            bool enumerable = false;
+            if (rtOwnPropertyOf(descriptors, symbols.get().asObject<ArrayHeader>()->getElem(j), enumerable) &&
+                enumerable) {
+                enumerableSymbols.push_back(j);
+            }
+        }
+    }
+    const uint32_t count = stringCount + static_cast<uint32_t>(enumerableSymbols.size());
+    auto keyAt = [&](uint32_t i) -> Value {
+        return i < stringCount ? keys.get().asObject<ArrayHeader>()->getElem(i)
+                               : symbols.get().asObject<ArrayHeader>()->getElem(enumerableSymbols[i - stringCount]);
+    };
 
     // 20.1.2.3.1 is TWO loops, and the split is observable: step 4 decodes
     // every descriptor (each field may be a getter, and any of them may
@@ -696,7 +718,7 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
     // back from there, since a vector of them would be no root.
     RootedBlock payloads(count * 3);
     for (uint32_t i = 0; i < count; ++i) {
-        Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
+        Rooted<Value> key{keyAt(i)};
         Rooted<Value> desc{
             Value(bronze_elem_get(descriptors.get().rawBits(), key.get().rawBits()))};
         Rooted<Value> value{Value::fromUndefined()};
@@ -713,7 +735,7 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         Rooted<Value> value{Value(payloads.data()[i * 3])};
         Rooted<Value> getter{Value(payloads.data()[i * 3 + 1])};
         Rooted<Value> setter{Value(payloads.data()[i * 3 + 2])};
-        Rooted<Value> key{rtPropertyKeyValue(keys.get().asObject<ArrayHeader>()->getElem(i))};
+        Rooted<Value> key{rtPropertyKeyValue(keyAt(i))};
         // DefinePropertyOrThrow: 20.1.2.3.1 step 5.b.
         if (!applyToReceiver(target, PropertyKey::fromValue(key.get()), decoded[i], value, getter,
                              setter,

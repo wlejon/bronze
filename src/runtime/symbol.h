@@ -87,6 +87,13 @@ SymbolHeader* rtSymbolUnscopables();
 // helpers define it on `Symbol` when it is missing, which the frozen `Symbol`
 // refuses (Babylon, model-viewer).
 SymbolHeader* rtSymbolMetadata();
+// `Symbol.dispose` and `Symbol.asyncDispose`, explicit resource management's
+// keys. Only the symbols: nothing in the runtime reads them (there is no
+// `using` declaration), and a library's FileHandle defines its own
+// `[Symbol.dispose]()` for a caller to name, which the frozen `Symbol`
+// would refuse if it had to add them itself.
+SymbolHeader* rtSymbolDispose();
+SymbolHeader* rtSymbolAsyncDispose();
 
 // The STRING/REGEXP protocol of 22.1.3 and 22.2.6: `"s".match(x)`,
 // `.matchAll`, `.replace`, `.replaceAll`, `.search` and `.split` each look

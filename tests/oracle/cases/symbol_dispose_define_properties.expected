@@ -1,0 +1,11 @@
+symbol symbol
+Symbol.dispose Symbol.asyncDispose
+true true
+undefined
+false
+function 7 1
+3
+9 1
+1 undefined
+b,Symbol(z)
+async closed

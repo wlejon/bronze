@@ -128,6 +128,8 @@ const WellKnownSymbol kWellKnownSymbols[] = {
     {"split", rtSymbolSplit},
     {"unscopables", rtSymbolUnscopables},
     {"metadata", rtSymbolMetadata},
+    {"dispose", rtSymbolDispose},
+    {"asyncDispose", rtSymbolAsyncDispose},
 };
 
 // ---- Symbol.prototype (20.4.3) ---------------------------------------------
