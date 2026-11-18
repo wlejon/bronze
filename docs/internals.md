@@ -674,6 +674,27 @@ Key capabilities:
 
 For the complete architectural design and API specification, see [`docs/dynamic-eval.md`](docs/dynamic-eval.md).
 
+### Classic scripts
+
+A program evaluated with `EvalOptions::classicScript` (`bronze run
+--classic[=<marker>]`) is a classic script, or several joined into one unit,
+each after the first starting with a statement `globalThis.<marker> = <n>;`.
+Its top-level `var`s and function declarations are properties of the global
+object, as 16.1.7 GlobalDeclarationInstantiation makes them, not bindings of
+the unit (`eval/classic_script.cpp`). The tree is rewritten before inference
+sees it. At each script's start, its function declarations are defined on the
+global object (writable, enumerable, not configurable; named by a property
+definition, so the body's own name is the global and not a binding of its own),
+and then each of its `var` names the global object does not yet have is defined
+as undefined. Each `var` declarator becomes the assignment of its initializer.
+So a function of a later script does not exist while an earlier one runs, and
+another unit, an `eval` or `window.x` reads and writes the same property. Every
+reference to such a name is a bare global reference, answered by the realm's
+global read/write cache. `let`, `const` and `class` at top level stay the unit's
+own bindings. The cost is that cache: a loop of top-level function calls
+reading and writing top-level vars ran 15 times slower as a classic script
+(1122 ms) than as a module (72 ms) on arm64.
+
 The same engine runs an ahead-of-time module's COLD functions, the ones its
 harvest saw run seldom or never: the module carries their IL instead of their
 code, and the first call of one builds the module's companion program in the

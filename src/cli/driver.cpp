@@ -530,8 +530,9 @@ static int runEval(std::string_view code, std::optional<ExecutionTier> tier = st
 }
 
 static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals,
-                        std::optional<ExecutionTier> tier = std::nullopt, bool emitDebugInfo = false) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo);
+                        std::optional<ExecutionTier> tier, bool emitDebugInfo,
+                        const std::optional<std::string>& classic) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo, classic);
     return fail("error: run not supported in this build\n");
 }
 
@@ -603,11 +604,16 @@ int runDriver(int argc, char** argv) {
         std::string sourcePath;
         std::string hostGlobalsPath;
         std::optional<ExecutionTier> tier;
+        std::optional<std::string> classic;
         bool emitDebugInfo = false;
         for (int i = 2; i < argc; ++i) {
             std::string_view arg = argv[i];
             if (arg == "-g" || arg == "--debug") {
                 emitDebugInfo = true;
+            } else if (arg == "--classic") {
+                classic = std::string();
+            } else if (arg.rfind("--classic=", 0) == 0) {
+                classic = std::string(arg.substr(10));
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -640,7 +646,7 @@ int runDriver(int argc, char** argv) {
             std::string err;
             if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) return fail(err);
         }
-        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo);
+        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo, classic);
     }
 
 

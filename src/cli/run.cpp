@@ -46,7 +46,8 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
 }
 
 int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
-                     std::optional<ExecutionTier> tier, bool emitDebugInfo) {
+                     std::optional<ExecutionTier> tier, bool emitDebugInfo,
+                     const std::optional<std::string>& classic) {
     applyTier(tier);
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
@@ -59,6 +60,8 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
     embed::CallResult res = eval::evalFile(
         filePath, eval::EvalOptions{.filename = filePath,
                           .hostGlobals = hostGlobals,
+                          .classicScript = classic.has_value(),
+                          .classicScriptMarker = classic.value_or(std::string()),
                           .livesForProcess = true,
                           .emitDebugInfo = emitDebugInfo,
                           .tier = tier});

@@ -43,6 +43,18 @@ struct EvalOptions {
     std::vector<modules::ModuleRoot> moduleRoots = {};
     std::filesystem::path entryResolvesAs = {};
     std::string pinsPath = {};
+    // The program is a classic script, or a page's classic scripts joined into
+    // one unit: its top-level `var`s and function declarations are properties
+    // of the global object, as on the web, not bindings of the unit. Each
+    // script's are instantiated at its start — a function declared in a later
+    // script does not exist while an earlier one runs — and a `var` holds what
+    // the global object holds, so another unit, an `eval`, or `window.x` sees
+    // and changes the same thing. `let`, `const` and `class` at top level stay
+    // the unit's own. In a joined unit each script after the first starts with
+    // a statement `globalThis.<classicScriptMarker> = <n>;`, and the scripts
+    // are what lies between them; without a marker the program is one script.
+    bool classicScript = false;
+    std::string classicScriptMarker = {};
     // No native-manifest option: the evaluator reads the natives this thread's
     // host registered (embed::registerNative) directly, and binds the program
     // to them before it runs.

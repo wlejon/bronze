@@ -680,8 +680,16 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             // makes `typeof x` "number", and a constant folded at compile time
             // would be answering a question the program had not finished
             // asking. The soft flag is what keeps it a read and not a throw.
-            if (const auto* operandIdent = dynamic_cast<const ast::Ident*>(un->operand.get());
-                operandIdent && !resolvesName(operandIdent->name)) {
+            //
+            // A HOST global no binding of the program holds is asked the same
+            // way: the page can delete it (`delete window.screen`), after
+            // which it is as unresolvable as a name never provided, and
+            // `typeof screen` is "undefined" where a bare read throws.
+            const auto* operandIdent = dynamic_cast<const ast::Ident*>(un->operand.get());
+            const bool hostOnly = operandIdent && hostGlobals_.contains(operandIdent->name) &&
+                                  writesGlobalObject(operandIdent->name) &&
+                                  operandIdent->name != "undefined";
+            if (operandIdent && (hostOnly || !resolvesName(operandIdent->name))) {
                 il::ValueId probe = ilFn.valueCount++;
                 il::Instruction probeInst;
                 probeInst.op = il::Op::ResolveName;

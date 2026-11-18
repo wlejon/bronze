@@ -93,4 +93,9 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                          DiagnosticSink& diags, SourceSet& sources,
                                          bool aheadOfTime = false);
 
+// EvalOptions::classicScript, done to the parsed unit before anything reads it
+// (classic_script.cpp): the top-level `var`s and function declarations become
+// global object properties, instantiated at each script's start.
+void instantiateClassicScripts(ast::Module& astModule, const std::string& marker);
+
 }  // namespace bronze::eval::detail

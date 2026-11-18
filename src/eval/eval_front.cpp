@@ -215,6 +215,7 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.part("options");
     k.field(options.retainSource ? "src" : "nosrc");
     k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
+    k.field(options.classicScript ? "classic:" + options.classicScriptMarker : "unit");
     k.part("module roots");
     k.field("|roots");
     for (const auto& root : modOpts.moduleRoots) {
@@ -257,6 +258,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                          DiagnosticSink& diags, SourceSet& sources,
                                          bool aheadOfTime) {
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
+    if (options.classicScript) instantiateClassicScripts(astModule, options.classicScriptMarker);
     auto temporarilyExported = prepareEvalAstForInference(astModule, resName);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
 

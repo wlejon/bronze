@@ -2,6 +2,7 @@ bronze_add_module(eval
     SOURCES
         eval.cpp
         eval_front.cpp
+        classic_script.cpp
         aot_module.cpp
         code_cache.cpp
     DEPS
