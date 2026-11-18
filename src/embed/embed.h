@@ -496,6 +496,25 @@ BRONZE_EMBED_API void clearKeptObjects();
 // the value. The value is rooted for the life of the process.
 BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 
+// What a page's write to a host global does — WebIDL's attributes on the
+// Window. `Replaceable` (registerGlobal's): the write makes the name an
+// ordinary own data property of the global object, and that realm reads it
+// from the global object from then on. `Readonly` (`document`, `history`,
+// `window`, `navigator`): the global object's property is non-writable, so
+// the write is a no-op in sloppy code and a TypeError in strict code, and the
+// registry keeps answering. A `Object.defineProperty` of the name by the page
+// overrides either kind.
+enum class GlobalKind : uint8_t { Replaceable, Readonly };
+BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value, GlobalKind kind);
+
+// A host global that is an accessor (`location`, `name`, `status`, the `on*`
+// handlers): reads — bare or `window.x` — call `getter` with the global
+// object as `this`, and writes call `setter` with the value. `setter`
+// undefined makes it read-only. Never cached. The getter and setter are
+// function values made in the realm (createFunction); they are rooted by the
+// global object's property.
+BRONZE_EMBED_API void registerGlobalAccessor(std::string_view name, Value getter, Value setter);
+
 // Provide `name` now and its value later: the registry lists it at once (the
 // manifest, hasHostGlobal and `typeof name` see it), and the first read of it
 // (compiled bare read, globalValue, `globalThis.name`) runs `init` on this

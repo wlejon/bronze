@@ -3,6 +3,7 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include "runtime/value.h"
 
@@ -35,7 +36,29 @@ namespace bronze::runtime {
 // that collides with a builtin is unreachable: `bronze_global_get` asks the
 // builtins first, deliberately — a host must not be able to swap out `Math`
 // under compiled code that was optimized against it.
-void rtRegisterHostGlobal(const std::string& name, Value value);
+//
+// The KIND says what a page's write to the name does (WebIDL's attributes on
+// the Window). Replaceable, the default: the write makes it an ordinary own
+// data property of the global object, and the realm reads the name from the
+// global object from then on. Readonly (`document`, `history`, `window`): a
+// non-writable property, so the write is a sloppy no-op and a strict
+// TypeError and the registry keeps answering. Accessor kinds are registered
+// with rtRegisterHostGlobalAccessor.
+enum class HostGlobalKind : uint8_t { Replaceable = 0, Readonly = 1, Accessor = 2 };
+void rtRegisterHostGlobal(const std::string& name, Value value,
+                          HostGlobalKind kind = HostGlobalKind::Replaceable);
+
+// A host global that is an ACCESSOR on the global object (`location`, `name`,
+// `status`, the `on*` handlers): a bare read calls `getter` with the global
+// object as receiver, and a write — bare or through `window.x` — calls
+// `setter` with the value. `setter` undefined makes it read-only (a sloppy
+// no-op, a strict TypeError). Its reads are never cached.
+void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter);
+
+// A page wrote or defined `name` on `realmGlobal` (rtNoteGlobalObjectWrite):
+// a registry name of the Replaceable or Readonly kind is overridden in that
+// realm and read from the global object from then on.
+void rtNoteHostGlobalOverridden(Value realmGlobal, std::string_view name);
 
 // The registered value for `name`, through the out parameter. False when the
 // host never registered the name — which is not the same as a registered

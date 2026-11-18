@@ -417,9 +417,30 @@ registration and to no other, a fresh realm starts with none (those made
 before any realm existed are adopted by the default realm), and a
 `HostClass` has one constructor and prototype per realm, dropped when the realm
 is destroyed (`embed::addRealmDestroyHook` lets a host drop its own per-realm
-state the same way). `tests/embed/embed_global_object_test.cpp` and
-`embed_realm_test.cpp` check that two realms on one thread cannot see each
-other's.
+state the same way).
+
+A bare read of a host global asks the realm's registry before the global
+object, and its kind (`embed::GlobalKind`, `host_globals.h`) says what a
+page's write does, as WebIDL's attributes on the Window do:
+- **Replaceable** (`registerGlobal`'s default): the global object holds a
+  writable data property. The first time the page writes, defines or deletes
+  the name, `rtNoteGlobalObjectWrite` marks it overridden in that realm
+  (`Realm::hostGlobalMeta`) and drops the cached global reads, and from then
+  on the realm reads the name from the global object. Writes made by a
+  registration, or inside a lazy global's init, are the host's and mark
+  nothing.
+- **Readonly** (`document`, `history`): a non-writable, configurable
+  property, so a page's assignment is a no-op in sloppy code and a TypeError
+  in strict code, and the registry keeps answering. `Object.defineProperty`
+  can still override it.
+- **Accessor** (`registerGlobalAccessor`: `location`, the `on*` handlers): an
+  accessor property whose getter answers every read, never cached, and whose
+  setter takes every write; with no setter it is read-only.
+
+Registering a name again sets its kind afresh and clears the mark. Until a
+realm has an accessor or an overridden name, the registry read costs one flag
+test more than before, and a write to the global object costs one hash-set
+lookup (`Realm::hostGlobalNames`).
 
 A host that needs a builtin to answer differently (an `Intl`-backed
 `toLocaleString`) cannot patch the frozen prototype, so the locale methods

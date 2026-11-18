@@ -199,6 +199,9 @@ void rtNoteGlobalObjectWrite(const ObjectHeader* obj, PropertyKey key) {
             return;
         }
     }
+    // A host global the page wrote or defined is read from the global object
+    // in this realm from now on (host_globals.h).
+    rtNoteHostGlobalOverridden(Value::fromObject(const_cast<ObjectHeader*>(obj)), name);
 }
 
 extern "C" uint64_t bronze_global_get_name(const char* name) {

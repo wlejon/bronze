@@ -4,6 +4,8 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -54,6 +56,31 @@ public:
         return lazyHostGlobals_;
     }
 
+    // Host globals whose bare-name read is NOT the registry's value: an
+    // accessor-kind name (its getter on the global object answers) and a name
+    // the page has written or defined on the global object (`overridden`;
+    // from then on this realm reads the global object's property). Names of
+    // the default kind that no page has touched are not here, so the common
+    // registry read asks only `hostGlobalsSpecial`.
+    struct HostGlobalMeta {
+        uint8_t kind = 0;  // runtime::HostGlobalKind
+        bool overridden = false;
+    };
+    std::vector<std::pair<std::string, HostGlobalMeta>>& hostGlobalMeta() noexcept {
+        return hostGlobalMeta_;
+    }
+    HostGlobalMeta* findHostGlobalMeta(std::string_view name) noexcept {
+        for (auto& entry : hostGlobalMeta_) {
+            if (entry.first == name) return &entry.second;
+        }
+        return nullptr;
+    }
+    // Every name in `hostGlobals`, for the one question asked on each write to
+    // the global object: is this a registry name?
+    std::unordered_set<std::string>& hostGlobalNames() noexcept { return hostGlobalNames_; }
+    bool hostGlobalsSpecial() const noexcept { return hostGlobalsSpecial_; }
+    void setHostGlobalsSpecial() noexcept { hostGlobalsSpecial_ = true; }
+
     // GC root tracing for this realm's held heap values.
     void visitRoots(const Heap::RootVisitor& visit);
 
@@ -84,6 +111,9 @@ private:
     std::vector<std::pair<std::string, Value>> moduleRegistry_;
     std::vector<std::pair<std::string, Value>> hostGlobals_;
     std::vector<std::pair<std::string, std::function<void()>>> lazyHostGlobals_;
+    std::vector<std::pair<std::string, HostGlobalMeta>> hostGlobalMeta_;
+    std::unordered_set<std::string> hostGlobalNames_;
+    bool hostGlobalsSpecial_ = false;
 };
 
 // The builtin names every realm's global object is populated with, each one a
@@ -172,7 +202,13 @@ Realm* rtRealmOfGlobal(Value glob);
 // asked first (deliberately: a host must not swap out `Math` under compiled
 // code) and the property would then disagree with the bare name. `performance`
 // is the one name a host may shadow, so it is the one exception.
-void rtDefineHostGlobalOnRealm(Realm* realm, const std::string& name, Value value);
+// `readOnly` defines it non-writable (HostGlobalKind::Readonly).
+void rtDefineHostGlobalOnRealm(Realm* realm, const std::string& name, Value value,
+                               bool readOnly = false);
+// An accessor-kind host global (rtRegisterHostGlobalAccessor): `getter` and
+// `setter` (undefined for none) as an accessor property of the global object.
+void rtDefineHostGlobalAccessorOnRealm(Realm* realm, const std::string& name, Value getter,
+                                       Value setter);
 // A pending lazy host global (host_globals.h) as the accessor pair the embed
 // layer's hook builds, on `realm`'s global object.
 void rtDefineLazyHostGlobalOnRealm(Realm* realm, const std::string& name);

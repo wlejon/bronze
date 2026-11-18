@@ -41,6 +41,16 @@ void registerGlobal(std::string_view name, Value value) {
     runtime::rtRegisterHostGlobal(std::string(name), value);
 }
 
+void registerGlobal(std::string_view name, Value value, GlobalKind kind) {
+    runtime::rtRegisterHostGlobal(std::string(name), value,
+                                  kind == GlobalKind::Readonly ? runtime::HostGlobalKind::Readonly
+                                                               : runtime::HostGlobalKind::Replaceable);
+}
+
+void registerGlobalAccessor(std::string_view name, Value getter, Value setter) {
+    runtime::rtRegisterHostGlobalAccessor(std::string(name), getter, setter);
+}
+
 bool hasHostGlobal(std::string_view name) {
     return runtime::rtHostGlobalRegistered(std::string(name));
 }

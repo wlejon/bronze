@@ -431,7 +431,41 @@ void rtVisitRealmRoots(const Heap::RootVisitor& visit) {
     }
 }
 
-void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value) {
+namespace {
+
+// The builtins win over the registry (bronze_global_get's ladder), so a host
+// global spelled like one is not written to the global object.
+bool builtinOwnsName(const std::string& name) {
+    if (runtime::rtHostShadowsBuiltin(name)) return false;
+    Value builtin = Value::fromUndefined();
+    return runtime::rtResolveBuiltinGlobal(name, builtin);
+}
+
+}  // namespace
+
+void rtDefineHostGlobalAccessorOnRealm(Realm* r, const std::string& name, Value getter,
+                                       Value setter) {
+    if (!r || name == "globalThis" || builtinOwnsName(name)) return;
+    ShadowStackFrame frame;
+    Rooted<Value> get{getter};
+    Rooted<Value> set{setter};
+    Rooted<Value> key{runtime::rtMakeString(name)};
+    Rooted<Value> glob{r->globalObject()};
+    if (!glob.get().isObject()) return;
+    {
+        const PropertyKey pkey = PropertyKey::fromValue(key.get());
+        auto* obj = glob.get().asObject<ObjectHeader>();
+        PropertyInfo own;
+        if (obj->shape && obj->shape->lookupProperty(pkey, own)) {
+            bronze_elem_delete(glob.get().rawBits(), key.get().rawBits(), /*strict=*/false);
+        }
+    }
+    ObjectHeader::defineAccessor(runtime::rtHeap(), runtime::rtArena(), glob, key, get, set,
+                                 /*enumerable=*/true, /*configurable=*/true);
+    r->setGlobalObject(glob.get());
+}
+
+void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value, bool readOnly) {
     if (!r) return;
     if (name == "globalThis") return;
     // The bare-name ladder's order, mirrored exactly (rt_state.cpp
@@ -457,13 +491,18 @@ void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value) {
             const PropertyKey pkey = PropertyKey::fromValue(key.get());
             auto* obj = glob.get().asObject<ObjectHeader>();
             PropertyInfo own;
-            if (obj->shape && obj->shape->lookupProperty(pkey, own) && own.accessor) {
+            // A read-only property, or one becoming read-only, is redefined
+            // from scratch for the same reason: setProp keeps the attributes
+            // of a property it finds.
+            if (obj->shape && obj->shape->lookupProperty(pkey, own) &&
+                (own.accessor || !own.writable || readOnly)) {
                 bronze_elem_delete(glob.get().rawBits(), key.get().rawBits(), /*strict=*/false);
             }
         }
         glob.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), key,
                                                      val, nullptr,
-                                                     /*enumerable=*/false, /*defineOwn=*/true);
+                                                     /*enumerable=*/false, /*defineOwn=*/true,
+                                                     nullptr, nullptr, /*writable=*/!readOnly);
         // setProp can transition the shape and the write allocates, so the
         // realm's handle is refreshed from the rooted copy rather than left
         // pointing at whatever the collector moved out from under it.

@@ -27,6 +27,10 @@ namespace bronze::runtime {
 static thread_local std::vector<std::pair<std::string, Value>> g_preRealmHostGlobals;
 static thread_local std::vector<std::pair<std::string, std::function<void()>>>
     g_preRealmLazyHostGlobals;
+static thread_local std::vector<std::pair<std::string, HostGlobalKind>> g_preRealmHostGlobalKinds;
+// Up while a registration writes the global object's property itself, so
+// that write is not taken for a page overriding the name.
+static thread_local bool t_registeringHostGlobal = false;
 
 namespace {
 
@@ -48,19 +52,76 @@ HostGlobalTables hostGlobalTables() {
 }  // namespace
 
 void rtAdoptPreRealmHostGlobals(Realm& realm) {
-    for (auto& entry : g_preRealmHostGlobals) realm.hostGlobals().push_back(std::move(entry));
+    for (auto& entry : g_preRealmHostGlobals) {
+        realm.hostGlobalNames().insert(entry.first);
+        realm.hostGlobals().push_back(std::move(entry));
+    }
     for (auto& entry : g_preRealmLazyHostGlobals) {
         realm.lazyHostGlobals().push_back(std::move(entry));
     }
+    for (const auto& [name, kind] : g_preRealmHostGlobalKinds) {
+        realm.hostGlobalMeta().emplace_back(name, Realm::HostGlobalMeta{static_cast<uint8_t>(kind), false});
+        realm.setHostGlobalsSpecial();
+    }
     g_preRealmHostGlobals.clear();
     g_preRealmLazyHostGlobals.clear();
+    g_preRealmHostGlobalKinds.clear();
+}
+
+namespace {
+
+// Records a name's kind, and clears any override: a host registering a name
+// again is the host's answer for it from now on.
+void noteKind(Realm* realm, const std::string& name, HostGlobalKind kind) {
+    if (!realm) {
+        for (auto& entry : g_preRealmHostGlobalKinds) {
+            if (entry.first == name) {
+                entry.second = kind;
+                return;
+            }
+        }
+        if (kind != HostGlobalKind::Replaceable) g_preRealmHostGlobalKinds.emplace_back(name, kind);
+        return;
+    }
+    if (Realm::HostGlobalMeta* meta = realm->findHostGlobalMeta(name)) {
+        meta->kind = static_cast<uint8_t>(kind);
+        meta->overridden = false;
+        return;
+    }
+    if (kind == HostGlobalKind::Replaceable) return;
+    realm->hostGlobalMeta().emplace_back(name, Realm::HostGlobalMeta{static_cast<uint8_t>(kind), false});
+    realm->setHostGlobalsSpecial();
+}
+
+struct RegisteringScope {
+    bool saved = t_registeringHostGlobal;
+    RegisteringScope() { t_registeringHostGlobal = true; }
+    ~RegisteringScope() { t_registeringHostGlobal = saved; }
+};
+
+}  // namespace
+
+void rtNoteHostGlobalOverridden(Value realmGlobal, std::string_view name) {
+    if (t_registeringHostGlobal || rtInLazyGlobalInit()) return;
+    Realm* realm = bronze::rtRealmOfGlobal(realmGlobal);
+    if (!realm || realm->hostGlobalNames().empty()) return;
+    if (realm->hostGlobalNames().count(std::string(name)) == 0) return;
+    Realm::HostGlobalMeta* meta = realm->findHostGlobalMeta(name);
+    if (meta == nullptr) {
+        realm->hostGlobalMeta().emplace_back(std::string(name), Realm::HostGlobalMeta{});
+        meta = &realm->hostGlobalMeta().back().second;
+    }
+    if (meta->kind == static_cast<uint8_t>(HostGlobalKind::Accessor) || meta->overridden) return;
+    meta->overridden = true;
+    realm->setHostGlobalsSpecial();
+    rtInvalidateGlobalCaches();
 }
 
 void rtVisitPreRealmHostGlobals(const Heap::RootVisitor& visit) {
     for (auto& entry : g_preRealmHostGlobals) visit(entry.second);
 }
 
-void rtRegisterHostGlobal(const std::string& name, Value value) {
+void rtRegisterHostGlobal(const std::string& name, Value value, HostGlobalKind kind) {
     // A name is a native or a host global, never both: `f(1)` compiled as a
     // direct native call while `f` read as a host value would be two
     // different things under one name. Refused loudly here and in
@@ -77,6 +138,9 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     // builtin cached it.
     rtInvalidateGlobalCaches();
     HostGlobalTables t = hostGlobalTables();
+    RegisteringScope registering;
+    noteKind(t.realm, name, kind);
+    if (t.realm) t.realm->hostGlobalNames().insert(name);
     // A pending lazy name registered for real: its init has nothing left to
     // do for it (host_globals.h).
     for (auto it = t.lazy.begin(); it != t.lazy.end(); ++it) {
@@ -88,7 +152,7 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     for (auto& entry : t.values) {
         if (entry.first == name) {
             entry.second = value;
-            rtDefineHostGlobalOnRealm(t.realm, name, value);
+            rtDefineHostGlobalOnRealm(t.realm, name, value, kind == HostGlobalKind::Readonly);
             return;
         }
     }
@@ -97,11 +161,53 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     // `globalThis[name]`, `name in globalThis` and every reflective walk read.
     // Both, or a host global is invisible to feature detection (realm.h states
     // the rule and why a builtin name is not written).
-    rtDefineHostGlobalOnRealm(t.realm, name, value);
+    rtDefineHostGlobalOnRealm(t.realm, name, value, kind == HostGlobalKind::Readonly);
+}
+
+void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter) {
+    if (rtNativeBareNameRegistered(name)) {
+        fatal(("registerGlobalAccessor(\"" + name +
+               "\"): the name is a registered native (embed::registerNative)")
+                  .c_str());
+    }
+    rtInvalidateGlobalCaches();
+    HostGlobalTables t = hostGlobalTables();
+    if (!t.realm) {
+        fatal(("registerGlobalAccessor(\"" + name + "\"): no realm exists yet on this thread").c_str());
+    }
+    RegisteringScope registering;
+    noteKind(t.realm, name, HostGlobalKind::Accessor);
+    t.realm->hostGlobalNames().insert(name);
+    for (auto it = t.lazy.begin(); it != t.lazy.end(); ++it) {
+        if (it->first == name) {
+            t.lazy.erase(it);
+            break;
+        }
+    }
+    // The registry keeps the name (hasHostGlobal, the compile manifest) and
+    // no value: the accessor on the global object answers every read.
+    bool listed = false;
+    for (auto& entry : t.values) {
+        if (entry.first == name) {
+            entry.second = Value::fromUndefined();
+            listed = true;
+        }
+    }
+    if (!listed) t.values.emplace_back(name, Value::fromUndefined());
+    rtDefineHostGlobalAccessorOnRealm(t.realm, name, getter, setter);
 }
 
 bool rtHostGlobalLookup(const std::string& name, Value& out) {
     HostGlobalTables t = hostGlobalTables();
+    // An accessor-kind name, or one the page overrode, is the global object's
+    // to answer: the caller's next rung reads its property.
+    if (t.realm && t.realm->hostGlobalsSpecial()) {
+        if (const Realm::HostGlobalMeta* meta = t.realm->findHostGlobalMeta(name);
+            meta != nullptr &&
+            (meta->overridden || meta->kind == static_cast<uint8_t>(HostGlobalKind::Accessor))) {
+            return false;
+        }
+    }
     for (const auto& entry : t.values) {
         if (entry.first == name) {
             if (entry.second.isHole()) {
@@ -155,6 +261,7 @@ void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> ini
     if (!rtHostGlobalRegistered(name)) {
         rtInvalidateGlobalCaches();
         t.values.emplace_back(name, Value::fromHole());
+        if (t.realm) t.realm->hostGlobalNames().insert(name);
         rtDefineLazyHostGlobalOnRealm(t.realm, name);
     }
 }
