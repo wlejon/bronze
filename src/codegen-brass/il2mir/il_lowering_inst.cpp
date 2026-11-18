@@ -289,6 +289,33 @@ bool IlLowering::lower_instruction(
             break;
         }
 
+        // The TLS words of bronze_abi_tls.h (for_in_guard, for_in_epoch). They
+        // hold a double's bits: the guard is an F64 so it is an ordinary value
+        // wherever it lives (a resume point boxes it), and the per-key test
+        // compares the bits as integers, one load and one compare.
+        case BronzeOp::ForInGuard:
+        case BronzeOp::ForInSame: {
+            Module* mod = b.current_block()->parent()->parent();
+            Value* tls = (mod && mod->pinned_tls_register())
+                             ? b.build_pinned_tls_read()
+                             : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+            if (inst_ast.op == BronzeOp::ForInGuard) {
+                res_val = b.build_load(Type::f64(), tls, BRONZE_TLS_FOR_IN_GUARD_OFF);
+            } else {
+                Value* guard = b.build_bitcast_i64_f64(ensure_type(get_opd(0), Type::f64(), b));
+                res_val = b.build_eq(b.build_load(Type::i64(), tls, BRONZE_TLS_FOR_IN_EPOCH_OFF), guard);
+            }
+            break;
+        }
+
+        case BronzeOp::ForInLive: {
+            Value* obj = ensure_type(get_opd(0), Type::i64(), b);
+            Value* key = ensure_type(get_opd(1), Type::i64(), b);
+            res_val = b.build_and(b.build_call("bronze_for_in_live", Type::i32(), {obj, key}),
+                                  b.build_iconst_i32(1));
+            break;
+        }
+
         case BronzeOp::EnvCreate: {
             Value* parent_val = ensure_type(get_opd(0), Type::i64(), b);
             Value* size_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.param_count));

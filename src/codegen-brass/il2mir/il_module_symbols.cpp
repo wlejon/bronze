@@ -47,7 +47,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_register_deopt_counts",
         "bronze_register_ic_hot", "bronze_register_method_ic_rows", "__bronze_ic_identity",
         "bronze_construct_spread", "bronze_super_call_spread", "bronze_arg_at", "bronze_arguments_object",
-        "bronze_rest_args", "bronze_super_get", "bronze_super_set", "bronze_for_in_keys",
+        "bronze_rest_args", "bronze_super_get", "bronze_super_set", "bronze_for_in_keys", "bronze_for_in_live",
         "bronze_instanceof", "bronze_has_property", "bronze_is_nullish", "bronze_strict_eq", "bronze_loose_eq",
         "bronze_rel_lt", "bronze_rel_gt", "bronze_rel_le", "bronze_rel_ge", "bronze_pin_guard",
         "bronze_census_record", "bronze_to_int32", "bronze_to_int32_f64", "bronze_private_new", "bronze_private_has",

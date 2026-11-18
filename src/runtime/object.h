@@ -42,6 +42,14 @@ enum class SetRefusal {
 uint64_t protoMutationEpoch() noexcept;
 void bumpProtoMutationEpoch() noexcept;
 
+// A key may have left an object a running `for-in` snapshotted: moves the
+// thread's for_in_epoch (bronze_abi_tls.h), so every loop already running asks
+// for each key it has yet to visit (rt_enumerate.cpp). Called where a
+// dictionary entry is removed, which every named delete comes to, and by
+// bumpProtoMutationEpoch, which every prototype swap and every delete from a
+// prototype moves.
+void noteForInKeyRemoved() noexcept;
+
 // THE ARRAY INDEX HAZARD (bronze_abi_tls.h, array_index_hazard): set, for good,
 // the first time any object that is or becomes a prototype could answer an
 // array index — an index-like key added to a marked prototype, an object

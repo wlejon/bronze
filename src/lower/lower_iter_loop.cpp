@@ -38,7 +38,8 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 const std::string& headName,
                                 const ast::BindingPattern* headPattern, bool isConst, bool isLet,
                                 const std::vector<ast::StmtPtr>& body,
-                                il::Function& ilFn, bool isAwait) {
+                                il::Function& ilFn, bool isAwait, il::ValueId forInObj,
+                                il::ValueId forInGuard) {
     const std::string label = takePendingLabel();
 
     // AN ARRAY IS WALKED BY INDEX. A plain array (`is.plain_array`: the
@@ -290,6 +291,50 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
         setCurrentBlock(bValue);
     }
 
+    // for-in's deletion check (rt_enumerate.cpp): while the thread's removal
+    // count is the one the snapshot was taken at, nothing can have removed
+    // the key, and the body runs; otherwise `forin.live` asks, and a key no
+    // longer there goes on to the next as a `continue` would. The visiting
+    // side costs a TLS load, a compare and a branch.
+    if (forInObj != il::kNoValue) {
+        const il::BlockId bAsk = createBlock(ilFn);
+        const il::BlockId bVisit = createBlock(ilFn);
+        const il::ValueId same = ilFn.valueCount++;
+        il::Instruction eq;
+        eq.op = il::Op::ForInSame;
+        eq.type = il::Type::Bool;
+        eq.result = same;
+        eq.operands = {forInGuard};
+        emitInst(ilFn, eq);
+        il::Instruction br;
+        br.op = il::Op::Branch;
+        br.type = il::Type::Void;
+        br.result = il::kNoValue;
+        br.operands = {same};
+        br.target = il::BlockTarget{.block = bVisit, .args = {}};
+        br.elseTarget = il::BlockTarget{.block = bAsk, .args = {}};
+        emitInst(ilFn, br);
+
+        setCurrentBlock(bAsk);
+        const il::ValueId live = ilFn.valueCount++;
+        il::Instruction ask;
+        ask.op = il::Op::ForInLive;
+        ask.type = il::Type::Bool;
+        ask.result = live;
+        ask.operands = {forInObj, elemVal};
+        emitInst(ilFn, ask);
+        il::Instruction skip;
+        skip.op = il::Op::Branch;
+        skip.type = il::Type::Void;
+        skip.result = il::kNoValue;
+        skip.operands = {live};
+        skip.target = il::BlockTarget{.block = bVisit, .args = {}};
+        skip.elseTarget =
+            il::BlockTarget{.block = bUpdate, .args = collectEdgeArgs(loopVars, bUpdate, ilFn)};
+        emitInst(ilFn, skip);
+        setCurrentBlock(bVisit);
+    }
+
     // The jump target goes on FIRST and the cleanup second, so the cleanup's
     // recorded depth is inside this loop: a `break` here crosses it (and
     // closes the iterator) while a `continue` stops above it. That ordering
@@ -428,11 +473,20 @@ bool Lowerer::lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn) {
     keysInst.result = keysVal;
     keysInst.operands = {objVal.id};
     emitInst(ilFn, keysInst);
+    // The removal count the snapshot was taken at, which `forin.keys` has
+    // just left in the TLS block for this instruction to read.
+    const il::ValueId guardVal = ilFn.valueCount++;
+    il::Instruction guardInst;
+    guardInst.op = il::Op::ForInGuard;
+    guardInst.type = il::Type::F64;
+    guardInst.result = guardVal;
+    guardInst.operands = {keysVal};
+    emitInst(ilFn, guardInst);
 
     pendingLabel_ = label;
     if (!lowerIteratorLoop(*forIn, Value{keysVal, il::Type::Dynamic}, forIn->name,
                            forIn->pattern.get(), forIn->isConst, forIn->isLet,
-                           forIn->body, ilFn)) {
+                           forIn->body, ilFn, /*isAwait=*/false, objVal.id, guardVal)) {
         return false;
     }
     exitScope();

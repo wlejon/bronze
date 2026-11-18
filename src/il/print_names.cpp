@@ -90,6 +90,9 @@ const char* opName(Op op) {
         case Op::DynamicImport: return "dynamic_import";
         case Op::ModuleNamespace: return "module.namespace";
         case Op::ForInKeys: return "forin.keys";
+        case Op::ForInGuard: return "forin.guard";
+        case Op::ForInSame: return "forin.same";
+        case Op::ForInLive: return "forin.live";
         case Op::MethodDef: return "method.def";
         case Op::MethodDefComputed: return "method.def.computed";
         case Op::AccessorDef: return "accessor.def";

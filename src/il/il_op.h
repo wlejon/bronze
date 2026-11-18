@@ -207,9 +207,23 @@ enum class Op : uint8_t {
     // The keys a `for-in` will visit, as one array built before the first
     // iteration: own AND inherited enumerable string keys, each once.
     // Snapshotting is what lets the loop itself be for-of's index walk over the
-    // result, and it is a legal answer to the spec's open question about
-    // mutation during enumeration.
+    // result, and it is a legal answer to the spec's open question about keys
+    // ADDED during enumeration; a key deleted is `forin.same`'s question.
     ForInKeys,  // a = forin.keys b
+    // A key deleted before the loop reaches it is not visited (14.7.5.9), which
+    // the snapshot alone cannot know (runtime/rt_enumerate.cpp). The thread
+    // counts the ways a key can leave an object (bronze_abi_tls.h
+    // for_in_epoch). `forin.guard`, right after the `forin.keys` that is its
+    // operand, is the count that snapshot was taken at (a double, -1 for a
+    // receiver whose every key is asked); `forin.same` is whether the count
+    // is still that, a TLS load and an integer compare. The loop visits a key
+    // without asking while it is.
+    ForInGuard,  // a: f64 = forin.guard b
+    ForInSame,   // a: bool = forin.same b
+    // Whether the loop over b still visits key c, asked when the counts
+    // differ: V8's ForInFilter (rt_enumerate.cpp, bronze_for_in_live). Calls
+    // a proxy's traps.
+    ForInLive,   // a: bool = forin.live b, c
     // A class method: a property write with `enumerable: false`, which an
     // ordinary `prop.set` cannot express and which is what keeps a method out
     // of `Object.keys` and `for-in`. No IC index — a class body runs once.

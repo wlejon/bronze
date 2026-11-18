@@ -15,6 +15,7 @@
 #include "runtime/slot_repr.h"
 #include "runtime/shape_leave.h"
 
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -117,9 +118,18 @@ static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_ST
 void bumpProtoMutationEpoch() noexcept {
     if (BRONZE_UNLIKELY(runtime::g_shapeCensusEnabled)) runtime::censusNoteEpochBump(BRONZE_CENSUS_RET_ADDR());
     runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP;
+    noteForInKeyRemoved();
     // The accessor and method cells' guards compare no epoch
     // (accessor_cell.cpp): the cells are emptied here instead.
     runtime::rtForgetPublishedCells();
+}
+
+void noteForInKeyRemoved() noexcept {
+    bronze_tls_block* tls = runtime::rtTls();
+    double epoch;
+    std::memcpy(&epoch, &tls->for_in_epoch, sizeof epoch);
+    epoch += 1.0;
+    std::memcpy(&tls->for_in_epoch, &epoch, sizeof epoch);
 }
 
 void tripArrayIndexHazard(const char* why) noexcept {

@@ -86,15 +86,16 @@ function real() {
   const s1 = Symbol('k'), s2 = Symbol('k');
   set(w, s1, 'sym1');
   out.push(get(w, s1), get(w, s2), get(w, 'Symbol(k)'), del(w, s1), get(w, s1));
-  // Delete during for-in, of keys already visited (bronze still visits a key
-  // deleted before it is reached: its for-in walks a snapshot).
+  // Delete during for-in, of keys already visited and of keys not yet
+  // visited (which are then not visited), and a delete and re-add.
   const f = dict();
   for (let i = 0; i < 20; i++) set(f, key2('f', i), i);
   for (let i = 0; i < 20; i += 2) set(f, 3000 + i, i);
   const seen = [];
   for (const k in f) {
     seen.push(k);
-    if (k === 'f3') { del(f, 'f1'); del(f, 'f2'); del(f, 3010); set(f, 'late', 1); }
+    if (k === '3004') { del(f, 3008); del(f, 'f0'); del(f, 'f5'); set(f, 'f5', 5); }
+    if (k === 'f3') { del(f, 'f1'); del(f, 'f2'); del(f, 3010); del(f, 'f7'); del(f, key2('f', 11)); set(f, 'late', 1); }
   }
   out.push(seen.join(','), Object.keys(f).join(','));
   // Churn: tombstones, compaction and rehash.

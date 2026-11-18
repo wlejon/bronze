@@ -7,6 +7,16 @@
 // may or may not be visited (14.7.5.6 note), so bronze visits the keys that
 // existed when the loop began and says so.
 //
+// A key DELETED before the loop reaches it is not visited (14.7.5.9), and that
+// is the one thing a snapshot cannot know by itself. The loop compares the
+// thread's for_in_epoch, which moves on every removal of a dictionary entry
+// and every prototype-mutation bump (object.h, noteForInKeyRemoved), with the
+// epoch the snapshot was taken at (`forin.guard` / `forin.same`, lower_iter_loop.cpp): equal,
+// and nothing anywhere has lost a key since, so the key is visited without a
+// question — one load and one compare an iteration. Otherwise, and for every
+// key of a receiver whose keys can go without that count moving (arrays,
+// typed arrays, proxies), `bronze_for_in_live` asks the chain for the key.
+//
 // What the walk collects is own AND INHERITED enumerable string keys, level by
 // level from the receiver up its prototype chain, each key visited once even
 // where several levels define it. Per level the order is own-enumerable order:
@@ -38,6 +48,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -197,12 +208,14 @@ void collectChainStringKeys(ObjectHeader* holder, StringKeyList& keys) {
 // trap's answer and its enumerability is the `getOwnPropertyDescriptor`
 // trap's, so each level is calls into user code that allocate and can throw.
 //
-// The walk runs in TWO PHASES, and the split is the trap order a program can
-// observe. 14.7.5.6 leaves the order unspecified, and V8 collects the whole
-// chain's keys first — `ownKeys` then `getPrototypeOf`, level by level — and
-// only then asks `getOwnPropertyDescriptor` per key, so a handler that logs
-// its traps sees `ownKeys, getPrototypeOf, getOwnPropertyDescriptor...`.
-// bronze asks in that order so the same program logs the same thing.
+// The walk asks in the order a program can observe. 14.7.5.6 leaves it
+// unspecified, and V8 collects the whole chain's keys first — `ownKeys` then
+// `getPrototypeOf`, level by level — and asks `getOwnPropertyDescriptor` of a
+// proxy's key only when the loop reaches it (bronze_for_in_live below, which
+// every key of such a chain goes through), so a handler that logs its traps
+// sees `ownKeys, getPrototypeOf`, then one descriptor per iteration between
+// the bodies. bronze asks in that order so the same program logs the same
+// thing; a proxy level's keys are listed here unfiltered.
 //
 // Phase two keeps TWO lists. The specification's `visited` set records every
 // own string key a level reports, enumerable or not, and only the enumerable
@@ -218,8 +231,7 @@ uint64_t proxyChainForInKeys(Value receiver) {
     // so a vector of them could not be reallocated), and the per-key
     // enumerability of an ORDINARY level rides alongside, read off the shape
     // at the same moment as the key. A proxy level's entry is empty: its
-    // answer is the `getOwnPropertyDescriptor` trap's, asked in phase two.
-    Rooted<Value> levelObjects{Value(bronze_create_array(0))};
+    // answer is the `getOwnPropertyDescriptor` trap's, asked per iteration.
     Rooted<Value> levelKeyLists{Value(bronze_create_array(0))};
     std::vector<std::vector<bool>> levelEnumerability;
     std::vector<bool> levelIsProxy;
@@ -231,7 +243,6 @@ uint64_t proxyChainForInKeys(Value receiver) {
             level.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags;
         if (isProxy) {
             Rooted<Value> keys{rtProxyOwnKeys(level.get())};
-            levelObjects.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, level);
             levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
             levelEnumerability.emplace_back();
             levelIsProxy.push_back(true);
@@ -265,7 +276,6 @@ uint64_t proxyChainForInKeys(Value receiver) {
             Rooted<Value> copy{rtKeyAsValue(levelKeys[i])};
             keys.get().asObject<ArrayHeader>()->setElem(rtHeap(), static_cast<uint32_t>(i), copy);
         }
-        levelObjects.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, level);
         levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
         levelEnumerability.push_back(std::move(levelEnumerable));
         levelIsProxy.push_back(false);
@@ -277,7 +287,6 @@ uint64_t proxyChainForInKeys(Value receiver) {
     uint32_t seenCount = 0;
     uint32_t at = 0;
     for (uint32_t li = 0; li < levelCount; ++li) {
-        Rooted<Value> object{levelObjects.get().asObject<ArrayHeader>()->getElem(li)};
         Rooted<Value> keys{levelKeyLists.get().asObject<ArrayHeader>()->getElem(li)};
         const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
         for (uint32_t ki = 0; ki < keyCount; ++ki) {
@@ -286,15 +295,12 @@ uint64_t proxyChainForInKeys(Value receiver) {
             if (!key.get().isString()) continue;
             if (listHasKey(visited, seenCount, key.get())) continue;
             visited.get().asObject<ArrayHeader>()->setElem(rtHeap(), seenCount++, key);
-            bool enumerable = false;
-            if (levelIsProxy[li]) {
-                OwnPropertyDetail found;
-                const bool present = rtProxyGetOwnProperty(object.get(), key.get(), found);
-                enumerable = present && found.enumerable;
-            } else {
-                enumerable = levelEnumerability[li][ki];
-            }
-            if (!enumerable) continue;
+            // A proxy level's key is listed whatever it is: whether it is
+            // enumerable is the `getOwnPropertyDescriptor` trap's answer,
+            // asked when the loop reaches the key (bronze_for_in_live), not
+            // here — V8 asks it then, between one iteration's body and the
+            // next, and a handler that logs sees that order.
+            if (!levelIsProxy[li] && !levelEnumerability[li][ki]) continue;
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
     }
@@ -481,7 +487,12 @@ void rtResetForInArrayCache() {
 
 namespace {
 
-uint64_t forInKeys(uint64_t objBits) {
+// `askEachKey` is set for a receiver whose keys can go without a removal
+// noteForInKeyRemoved counts: an array (a hole, `pop`, a shorter `length`,
+// some of them inline in generated code), a typed array (its buffer shrinks)
+// and any chain with a proxy on it (its traps answer, and V8 asks them).
+uint64_t forInKeys(uint64_t objBits, bool& askEachKey) {
+    askEachKey = false;
     Value v(objBits);
     // The common receiver first: a BARE plain object (no internal slots, so
     // not a Map, a Set or a String wrapper, and its own named-property
@@ -523,6 +534,8 @@ uint64_t forInKeys(uint64_t objBits) {
         const bool isArray =
             src.get().isObject() &&
             src.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
+        askEachKey = isArray || (src.get().isObject() &&
+                                 src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags);
         Rooted<Value> out{Value::fromObject(
             ArrayHeader::create(rtHeap(), indexCount ? indexCount : 4))};
         uint32_t at = 0;
@@ -536,11 +549,8 @@ uint64_t forInKeys(uint64_t objBits) {
         }
         // An array's own named properties, AFTER its indices — 6.1.7.1's order,
         // which needs no sort here because an integer-like key names an element
-        // and can never have reached the named storage. A string has none, and
-        // the prototype step below is skipped for it and for the array:
-        // `Array.prototype`'s members are answered beside the value rather than
-        // by an object with enumerable properties, and 22.1.3 puts nothing
-        // enumerable on a string's.
+        // and can never have reached the named storage. (A string's and a
+        // typed array's named keys and chains are the branches after this one.)
         if (isArray) {
             // The list roots the keys, so it survives the allocations
             // `setElem` makes — and the array is handed the keys THEMSELVES
@@ -597,6 +607,33 @@ uint64_t forInKeys(uint64_t objBits) {
                 Rooted<Value> keyVal{rtKeyAsValue(key)};
                 out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
             }
+        } else if (!isArray) {
+            // A string, or a String wrapper: after its indices, the wrapper's
+            // named own properties and then the chain's (`String.prototype`
+            // and up) enumerable keys — 10.4.3.3 then 14.7.5.6, as for any
+            // object. The wrapper is its own named-property holder; a
+            // primitive's walk starts at its prototype. An integer-like key
+            // below the length names one of the string's own (non-configurable)
+            // indices, which shadow it. The walk reads arena keys and
+            // allocates nothing; the appends below do, through the roots.
+            StringKeyList named;
+            {
+                Value start = src.get();
+                if (!start.isObject()) {
+                    const uint64_t call[1] = {start.rawBits()};
+                    start = Value(objectGetPrototypeOf(0, 0, 1, call));
+                }
+                if (start.isObject() && HeapKind::shapeNamesPrototype(start.asObject<HeapObjectHeader>()->flags) &&
+                    !chainHasProxyLink(start.asObject<ObjectHeader>())) {
+                    collectChainStringKeys(start.asObject<ObjectHeader>(), named);
+                }
+            }
+            for (StringHeader* key : named) {
+                Rooted<Value> keyVal{rtKeyAsValue(key)};
+                uint32_t index = 0;
+                if (rtValueToElementIndex(keyVal.get(), index) && index < indexCount) continue;
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
+            }
         }
         return out.get().rawBits();
     }
@@ -613,6 +650,7 @@ uint64_t forInKeys(uint64_t objBits) {
     // trap-driven walk answers instead — and answers for the whole chain,
     // because a proxy's [[GetPrototypeOf]] is a trap too.
     if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        askEachKey = true;
         return proxyChainForInKeys(v);
     }
 
@@ -625,7 +663,10 @@ uint64_t forInKeys(uint64_t objBits) {
     // a Proxy, whose keys are its traps' to give (14.7.5.6 step 5's
     // `[[OwnPropertyKeys]]` on each object of the chain). The shape walk
     // below cannot cross it, so the trap-driven walk takes the whole chain.
-    if (chainHasProxyLink(holder)) return proxyChainForInKeys(v);
+    if (chainHasProxyLink(holder)) {
+        askEachKey = true;
+        return proxyChainForInKeys(v);
+    }
 
     // The enumeration cache, probed and (on the walk below) filled under one
     // decision: the holder's key list is a function of (shape, epoch) only for
@@ -683,9 +724,44 @@ extern "C" {
 
 uint64_t bronze_for_in_keys(uint64_t objBits) {
     recordHelperCall("bronze_for_in_keys");
-    const uint64_t array = forInKeys(objBits);
+    bool askEachKey = false;
+    const uint64_t array = forInKeys(objBits, askEachKey);
     t_forInFresh = Value(array);
+    // What the loop's `forin.guard` reads next (bronze_abi_tls.h): the
+    // epoch the keys were taken at, or -1.0, which no epoch is.
+    bronze_tls_block* tls = rtTls();
+    tls->for_in_guard = askEachKey ? 0xBFF0000000000000ull : tls->for_in_epoch;
     return array;
+}
+
+// Whether the loop still visits `key`, asked only once something may have
+// removed one since the snapshot (the epoch moved) or for a receiver whose
+// every key is asked (bronze_for_in_keys). The question is V8's ForInFilter
+// (HasEnumerableProperty), which node's answers are: the key is visited when
+// an object of the chain has it as an own property, enumerable or not, and
+// at a proxy level when the `getOwnPropertyDescriptor` trap reports it
+// enumerable — an absent answer goes on to the proxy's `getPrototypeOf`. A
+// key deleted and defined again before the loop reaches it is visited, in its
+// old place. A primitive's keys are a string's indices, which nothing removes.
+bool bronze_for_in_live(uint64_t objBits, uint64_t keyBits) {
+    recordHelperCall("bronze_for_in_live");
+    if (!Value(objBits).isObject()) return true;
+    Rooted<Value> level{Value(objBits)};
+    Rooted<Value> key{Value(keyBits)};
+    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
+        if (!level.get().isObject()) return false;
+        OwnPropertyDetail found;
+        if (level.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+            if (rtProxyGetOwnProperty(level.get(), key.get(), found)) return found.enumerable;
+            level.set(rtProxyGetPrototypeOf(level.get()));
+            continue;
+        }
+        if (rtOwnPropertyOf(level, key.get(), found)) return true;
+        const uint64_t call[1] = {level.get().rawBits()};
+        level.set(Value(objectGetPrototypeOf(0, 0, 1, call)));
+    }
+    fatal("prototype chain too deep (a cycle?)");
+    return false;
 }
 
 }  // extern "C"

@@ -173,6 +173,20 @@ typedef struct bronze_tls_block {
      * `set`, a RegExp's `exec` and `test`, can only be the kind's own
      * natives. */
     uint64_t collection_shapes[5];
+    /* `for-in`'s deletion check (runtime/rt_enumerate.cpp). for_in_epoch is
+     * a count of the ways a key can leave an object — a dictionary entry
+     * removed (runtime/dictionary.cpp, which every named delete reaches) and
+     * every prototype-mutation epoch bump, which a prototype swap is — held
+     * as the BITS OF A DOUBLE (1.0 at start, +1.0 a step) so the loop compares
+     * it with an F64 value as it is. for_in_guard is what the last
+     * `bronze_for_in_keys` left for its loop to compare against: the epoch at
+     * the snapshot, or -1.0 (no epoch) for a receiver whose keys can go
+     * without a removal counted here (an array, a typed array, any proxy on
+     * the chain), whose every key is therefore asked for again. While the
+     * two agree nothing has been removed since the snapshot, and the loop
+     * visits the key without asking. */
+    uint64_t for_in_epoch;
+    uint64_t for_in_guard;
 } bronze_tls_block;
 
 /* The collection classes `collection_shapes` is indexed by, and the
@@ -216,6 +230,8 @@ typedef struct bronze_tls_block {
     8 * (BRONZE_ABI_OBJ_OVERFLOW_SLOT + 1))
 #define BRONZE_TLS_GC_MEMENTO_HEADER_OFF         (BRONZE_TLS_ARRAY_SHAPE_OFF + 8)
 #define BRONZE_TLS_COLLECTION_SHAPES_OFF         (BRONZE_TLS_GC_MEMENTO_HEADER_OFF + 8)
+#define BRONZE_TLS_FOR_IN_EPOCH_OFF              (BRONZE_TLS_COLLECTION_SHAPES_OFF + 8 * 5)
+#define BRONZE_TLS_FOR_IN_GUARD_OFF              (BRONZE_TLS_FOR_IN_EPOCH_OFF + 8)
 
 /*
  * ---- the constants below the block ---------------------------------------

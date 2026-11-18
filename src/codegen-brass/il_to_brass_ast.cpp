@@ -306,6 +306,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::ModuleNamespace: out.op = il2mir::BronzeOp::ModuleNamespace; break;
         case il::Op::ForInKeys: out.op = il2mir::BronzeOp::ForInKeys; break;
+        case il::Op::ForInGuard: out.op = il2mir::BronzeOp::ForInGuard; break;
+        case il::Op::ForInSame: out.op = il2mir::BronzeOp::ForInSame; break;
+        case il::Op::ForInLive: out.op = il2mir::BronzeOp::ForInLive; break;
         case il::Op::MethodDef:
             out.op = il2mir::BronzeOp::MethodDef;
             out.index = inst.keyIndex;

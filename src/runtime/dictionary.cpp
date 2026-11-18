@@ -221,6 +221,8 @@ void Dictionary::removeEntry(DictEntry* e) noexcept {
     // is renumbered.
     e->key = PropertyKey();
     --live_;
+    // A key a running for-in snapshotted may be this one (rt_enumerate.cpp).
+    noteForInKeyRemoved();
     retireAnswers();
     // Once the dead have caught up with the living, the vector is half
     // tombstones and every enumeration walks twice what it needs.

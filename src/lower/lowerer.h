@@ -511,7 +511,9 @@ private:
     bool lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
                            const ast::BindingPattern* headPattern, bool isConst, bool isLet,
                            const std::vector<ast::StmtPtr>& body,
-                           il::Function& ilFn, bool isAwait = false);
+                           il::Function& ilFn, bool isAwait = false,
+                           il::ValueId forInObj = il::kNoValue,
+                           il::ValueId forInGuard = il::kNoValue);
 
     // --- lower_switch.cpp: selection and fallthrough ---
     bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);

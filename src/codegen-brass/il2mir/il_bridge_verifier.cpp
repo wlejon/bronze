@@ -166,16 +166,12 @@ bool is_sign_mask_use(const brass::Instruction* user, const brass::Value* raw_bi
            (user->operand(1) == raw_bits && is_const_i64(user->operand(0), 0x7FFFFFFFFFFFFFFFULL));
 }
 
-// An equality test of the bits against a constant (is.i32's -0 test): it reads
-// them, and no NaN in them reaches a box.
-bool is_const_compare_use(const brass::Instruction* user, const brass::Value* raw_bits) {
-    if (!user || (user->opcode() != brass::Opcode::eq && user->opcode() != brass::Opcode::ne) ||
-        user->operand_count() != 2) {
-        return false;
-    }
-    uint64_t c = 0;
-    return (user->operand(0) == raw_bits && is_const_i64_any(user->operand(1), c)) ||
-           (user->operand(1) == raw_bits && is_const_i64_any(user->operand(0), c));
+// An equality test of the bits (is.i32's -0 test against a constant,
+// forin.same's against a TLS word): it reads them, and its answer is a flag,
+// so no NaN in them reaches a box.
+bool is_equality_use(const brass::Instruction* user) {
+    return user && (user->opcode() == brass::Opcode::eq || user->opcode() == brass::Opcode::ne) &&
+           user->operand_count() == 2;
 }
 
 bool is_nan_box_boundary_const(uint64_t c) {
@@ -314,7 +310,7 @@ BridgeVerifyResult verify_bridge_rules(const brass::Function& fn) {
                     }
                 }
                 if (uses_raw) {
-                    if (!is_sign_mask_use(inst, raw_bits) && !is_const_compare_use(inst, raw_bits) &&
+                    if (!is_sign_mask_use(inst, raw_bits) && !is_equality_use(inst) &&
                         !is_canonical_nan_select_use(inst, raw_bits)) {
                         res.ok = false;
                         res.errors.push_back({

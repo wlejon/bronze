@@ -167,6 +167,11 @@ Effects rawEffects(const Instruction& inst) {
         case Op::IsPlainArray:
         case Op::IsCollection:
             return reading(Loc::Shapes);
+        // A TLS word that any delete, prototype change or `forin.keys` may
+        // write: a read of everything, so it is never moved past a call.
+        case Op::ForInGuard:
+        case Op::ForInSame:
+            return reading(LocSet::all());
         // A collection's table (Loc::Heap), behind a dominating
         // is.collection: its index may be rebuilt (allocates, writes only the
         // table's own words), the native's TypeError (il_op.h).
