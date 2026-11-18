@@ -227,6 +227,11 @@ bool rtCachedGlobalRead(uint32_t keyIndex, uint64_t& out) {
 }
 
 void rtRememberGlobalAbsent(uint32_t keyIndex) {
+    // A name the host provides (a lazy one among them, whose init runs on its
+    // first read) is never absent: the host answers it, and a host that has
+    // not yet (an accessor whose getter runs elsewhere, a lazy init that
+    // registers late) must be asked again.
+    if (rtHostGlobalRegistered(rtKeyString(keyIndex))) return;
     Realm* realm = rtCurrentRealm();
     const Value glob = realm->globalObject();
     if (!glob.isObject()) return;

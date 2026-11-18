@@ -259,10 +259,17 @@ void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> ini
         }
     }
     if (!replaced) t.lazy.emplace_back(name, std::move(init));
+    // Unconditionally: a read cached before this registration, absent or a
+    // value, is not the lazy name's answer.
+    rtInvalidateGlobalCaches();
     if (!rtHostGlobalRegistered(name)) {
-        rtInvalidateGlobalCaches();
         t.values.emplace_back(name, Value::fromHole());
         if (t.realm) t.realm->hostGlobalNames().insert(name);
+        // The accessor pair is the registration's own define, not a page
+        // overriding the name: marked overridden, the name's reads would go
+        // to the global object's property, whose getter asks the registry
+        // again and is refused.
+        RegisteringScope registering;
         rtDefineLazyHostGlobalOnRealm(t.realm, name);
     }
 }
@@ -287,6 +294,9 @@ void rtForceLazyHostGlobal(const std::string& name) {
     // init registers what it made.
     rtRegisterHostGlobal(name, Value::fromUndefined());
     rtRunAsLazyInit(init);
+    // What a read during the init cached (the placeholder `undefined`, or a
+    // name of the init's not yet made) is not the answer after it.
+    rtInvalidateGlobalCaches();
 }
 
 void rtRunAsLazyInit(const std::function<void()>& init) {
