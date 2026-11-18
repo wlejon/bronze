@@ -114,18 +114,7 @@ void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
                 return;
             }
             if (record_) ++mod_.unnamedNewAll;
-            for (uint32_t i = 0; i < mod_.ctors.ctors().size(); ++i) {
-                const auto& info = mod_.ctors.ctors()[i];
-                const uint32_t classIdx = mod_.ctors.classIndexOf(info.className);
-                if (InferMemo* memo = mod_.rec()) {
-                    memo->noteCtor(i, info.version, mod_.ctorPoison.poisons(info.className));
-                    if (classIdx != kNoCtor) {
-                        memo->noteClassReach(classIdx, mod_.ctors.classReach()[classIdx].version);
-                    }
-                }
-                if (!mod_.ctors.isClassReached(info.className)) continue;
-                contributeCtorArgs(i, args, /*spreadArgs=*/false);
-            }
+            contributeUnboundedArgs(args);
             return;
         }
     }
@@ -148,11 +137,9 @@ void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
             return;
         }
     }
-    for (const auto& cr : mod_.ctors.classReach()) {
-        if (mod_.ctorPoison.poisons(cr.className)) {
-            markClassReached(cr.className);
-        }
-    }
+    // Every poisoned class can be what this value is; marked when the pass
+    // ends, for all such sites at once.
+    mod_.contribute(InferMemo::Contrib::UnboundedNewPoisoned, 0, 0, Type::never());
     if (!mod_.ctorEscapes.valueEscapes) {
         if (record_) ++mod_.unnamedNewIgnored;
         return;
@@ -164,17 +151,49 @@ void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
         return;
     }
     if (record_) ++mod_.unnamedNewAll;
-    for (uint32_t i = 0; i < mod_.ctors.ctors().size(); ++i) {
-        const auto& info = mod_.ctors.ctors()[i];
-        const uint32_t classIdx = mod_.ctors.classIndexOf(info.className);
-        if (InferMemo* memo = mod_.rec()) {
-            memo->noteCtor(i, info.version, mod_.ctorPoison.poisons(info.className));
-            if (classIdx != kNoCtor) {
-                memo->noteClassReach(classIdx, mod_.ctors.classReach()[classIdx].version);
+    contributeUnboundedArgs(args);
+}
+
+// A site that can construct any reached class contributes its arguments to
+// the pass's join; `foldUnboundedNews` hands that join to every reached
+// constructor once. Reachedness is the previous round's folded answer for the
+// whole pass, so this is the same contribution each site made itself.
+void FlowAnalyzer::contributeUnboundedArgs(const std::vector<Type>& args) {
+    mod_.contribute(InferMemo::Contrib::UnboundedNewArity, 0, static_cast<uint32_t>(args.size()),
+                    Type::never());
+    for (size_t i = 0; i < args.size(); ++i) {
+        mod_.contribute(InferMemo::Contrib::UnboundedNewArg, 0, static_cast<uint32_t>(i), args[i]);
+    }
+}
+
+void foldUnboundedNews(ModuleContext& mod) {
+    const auto& u = mod.unboundedNews;
+    if (u.reachPoisoned) {
+        for (auto& cr : mod.ctors.classReach()) {
+            if (!mod.ctorPoison.poisons(cr.className)) continue;
+            std::vector<std::string> chain;
+            mod.ctors.ancestorsOf(cr.className, chain);
+            for (const auto& name : chain) {
+                const uint32_t idx = mod.ctors.classIndexOf(name);
+                if (idx != kNoCtor) mod.ctors.classReach()[idx].observedReached = true;
             }
         }
-        if (!mod_.ctors.isClassReached(info.className)) continue;
-        contributeCtorArgs(i, args, /*spreadArgs=*/false);
+    }
+    if (u.minArity == UINT32_MAX) return;  // no site reached every constructor
+    for (auto& info : mod.ctors.ctors()) {
+        if (!mod.ctors.isClassReached(info.className)) continue;
+        for (size_t i = 0; i < info.observedParams.size(); ++i) {
+            Type& slot = info.observedParams[i];
+            if (i < u.args.size() && !u.args[i].is(TypeKind::Never)) {
+                slot = joinParam(slot, u.args[i]);
+            }
+            // `undefined` at a defaulted position runs the default, and is not
+            // evidence; elsewhere it is bound, passed or missing alike.
+            if (info.hasDefault[i]) continue;
+            if ((i < u.undefinedAt.size() && u.undefinedAt[i]) || i >= u.minArity) {
+                slot = joinParam(slot, Type::undefined());
+            }
+        }
     }
 }
 

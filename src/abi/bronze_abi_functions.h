@@ -143,6 +143,9 @@
     /* A write to an unresolved name: the global object's property, created \
      * by sloppy code (rt_global.cpp). Name string, value, strict. */ \
     X(bronze_put_unresolved,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
+    /* A sloppy function's receiver that is not an object: the global \
+     * object for null/undefined, else its wrapper (rt_global.cpp). */ \
+    X(bronze_sloppy_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     /* A `--pins` claim CONTRADICTED by a value the program actually produced
      * (src/types/pins.h). The u32 is a registered key index holding the

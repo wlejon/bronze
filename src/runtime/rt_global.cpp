@@ -243,6 +243,16 @@ extern "C" void bronze_put_unresolved(uint64_t nameBits, uint64_t valBits, bool 
     bronze_elem_set(glob.get().rawBits(), name.get().rawBits(), val.get().rawBits(), strict);
 }
 
+// 10.2.1.2 OrdinaryCallBindThis steps 5-6 for a sloppy function whose
+// receiver is not an object (lower_function.cpp emitSloppyThis): null and
+// undefined are the global object, any other primitive its wrapper.
+extern "C" uint64_t bronze_sloppy_this(uint64_t thisBits) {
+    const Value received(thisBits);
+    if (received.isNull() || received.isUndefined()) return rtGlobalThisObject().rawBits();
+    if (received.isObject()) return thisBits;
+    return rtToObject(received).rawBits();
+}
+
 extern "C" uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
                                            uint32_t nameKey, uint32_t fnFlags, uint64_t envBits);
 extern "C" uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,

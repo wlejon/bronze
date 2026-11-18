@@ -221,6 +221,25 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
             slot = join(slot, c.t);
             break;
         }
+        case Contrib::UnboundedNewArg: {
+            auto& u = mod.unboundedNews;
+            if (u.args.size() <= c.param) {
+                u.args.resize(c.param + 1, Type::never());
+                u.undefinedAt.resize(c.param + 1, false);
+            }
+            if (c.t.is(TypeKind::Undefined)) {
+                u.undefinedAt[c.param] = true;
+            } else {
+                u.args[c.param] = joinParam(u.args[c.param], c.t);
+            }
+            break;
+        }
+        case Contrib::UnboundedNewArity:
+            mod.unboundedNews.minArity = std::min(mod.unboundedNews.minArity, c.param);
+            break;
+        case Contrib::UnboundedNewPoisoned:
+            mod.unboundedNews.reachPoisoned = true;
+            break;
     }
 }
 

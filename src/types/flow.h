@@ -230,6 +230,17 @@ struct ModuleContext {
     uint32_t unnamedNewSubtree = 0;
     uint32_t unnamedNewIgnored = 0;
     uint32_t unnamedNewAll = 0;
+    // What this pass's unbounded `new <a value>(...)` sites passed, joined
+    // across all of them, and given to every reached constructor once when
+    // the pass ends (`foldUnboundedNews`). A site that fanned out to every
+    // constructor itself made a pass cost sites x constructors: minutes on a
+    // bundle with thousands of classes and of `new e(...)`.
+    struct UnboundedNews {
+        std::vector<Type> args;         // position i, over arguments other than `undefined`
+        std::vector<bool> undefinedAt;  // some site passed `undefined` at position i
+        uint32_t minArity = UINT32_MAX;  // the fewest arguments any site passed
+        bool reachPoisoned = false;     // a site reaches every poisoned class
+    } unboundedNews;
 
     // ---- value flow through module-scope bindings ---------------------------
 
@@ -434,5 +445,10 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
 Env joinEnv(const Env& a, const Env& b);
 
 void buildNestedFnTable(const ast::Module& module, ModuleContext& mod);
+
+// Gives the pass's unbounded `new` sites' arguments to every reached
+// constructor, and marks every poisoned class reached if one such site ran
+// (flow_construct.cpp). Run once, after a pass has walked everything.
+void foldUnboundedNews(ModuleContext& mod);
 
 }  // namespace bronze::types

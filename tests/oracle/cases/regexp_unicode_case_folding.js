@@ -4,17 +4,15 @@
 // With `i` alone, step 3 uppercases and step 4 keeps a non-ASCII character
 // whose uppercase is ASCII. With `u` as well, step 1 applies SIMPLE CASE
 // FOLDING -- the C and S mappings of CaseFolding.txt, and deliberately not the
-// Turkic T ones -- which comes from the UCD by way of
-// tools/gen_unicode_tables.py and covers every code point rather than the
-// blocks bronze can state a rule for.
+// Turkic T ones. Both tables are generated from the UCD by
+// tools/gen_unicode_tables.
 //
 // The two tables agree about most of what they both cover, which is why the
 // disagreements below are the whole point of carrying a second one. U+017F
 // LATIN SMALL LETTER LONG S is the plainest: its uppercase is ASCII `S`, so
 // step 4 leaves it alone and `/<long s>/i` does not match "s"; its folding is
 // `s` with no such guard, so `/<long s>/ui` does. U+212A KELVIN SIGN is the
-// same disagreement in a block the uppercase table has no rule for at all, so
-// there `i` alone is a named error rather than a wrong answer.
+// same disagreement: its uppercase is itself, its folding `k`.
 //
 // U+1E9E and U+00DF are the pair that decides whether the fold table was
 // derived correctly. U+1E9E folds FULLY to "ss" and SIMPLY to U+00DF, and a
@@ -53,16 +51,15 @@ console.log(/^[\u03b1-\u03c9]+$/i.test("\u0393\u0394"),
 console.log(/\u017f/i.test("s"), /\u017f/ui.test("s"));
 console.log(/s/ui.test("\u017f"), /s/i.test("\u017f"));
 
-// U+212A, the same disagreement one block further out, where `i` alone cannot
-// be asked at all.
+// U+212A, the same disagreement one block further out: its uppercase is
+// itself, so `i` alone does not fold it to `k`.
 console.log(/\u212a/ui.test("k"), /k/ui.test("\u212a"));
-console.log(names(function () { return new RegExp("\\u212a", "i"); }, "U+212A"),
-            names(function () { return new RegExp("\\u212a", "ui"); }, "U+212A"));
+console.log(/\u212a/i.test("k"), names(function () { return new RegExp("\\u212a", "ui"); }, "U+212A"));
 
 // U+1E9E and U+00DF: one fold class, and a full folding that grows.
 console.log(/\u1e9e/ui.test("\u00df"), /\u00df/ui.test("\u1e9e"));
 console.log(/\u1e9e/ui.test("ss"), /\u00df/ui.test("SS"));
-console.log(names(function () { return new RegExp("\\u1e9e", "i"); }, "U+1E9E"));
+console.log(/ẞ/i.test("ß"));
 
 // The Turkic mappings are status T and ECMA-262 uses the non-Turkic table, so
 // the dotted and dotless capitals fold to nothing while `I` and `i` fold

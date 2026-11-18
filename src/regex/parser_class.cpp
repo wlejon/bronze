@@ -67,19 +67,6 @@ NodePtr PatternParser::parseCharacterClass() {
             if (lhs.code > rhs.code) {
                 return fail("a character class range whose start is after its end");
             }
-            // Every unit the range CONTAINS, not just the two it spells.
-            // Testing the endpoints alone let `[ÿ- ]` through, and
-            // the pattern then answered plain containment for U+1E9E — the
-            // fold skipped rather than diagnosed, which is the exact silent
-            // wrong answer this refusal exists to prevent. The offender is
-            // named, because a message that says only "somewhere in this
-            // range" cannot be acted on.
-            if (flags_.ignoreCase && !flags_.unicodeMode()) {
-                uint32_t offender = 0;
-                if (firstUnknownCasedUnitInRange(lhs.code, rhs.code, offender)) {
-                    return caseTableFailure(offender);
-                }
-            }
             // Under `u` the endpoints may be code POINTS, so this range can
             // span above U+FFFF and `[\u{1F600}-\u{1F64F}]` is one interval
             // rather than a set of surrogate halves that would also match
@@ -90,9 +77,6 @@ NodePtr PatternParser::parseCharacterClass() {
         if (lhs.isSet) {
             node->ranges.insert(node->ranges.end(), lhs.set.begin(), lhs.set.end());
         } else {
-            if (flags_.ignoreCase && !flags_.unicodeMode() && isUnknownCasedUnit(lhs.code)) {
-                return caseTableFailure(lhs.code);
-            }
             addRange(node->ranges, lhs.code, lhs.code);
         }
     }

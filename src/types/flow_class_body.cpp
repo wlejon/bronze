@@ -640,27 +640,35 @@ const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& fi
 
 namespace {
 
+// Every candidate declaration of one scope at once: a single walk of the scope
+// answers, for each candidate name, where it is called directly and whether it
+// is mentioned any other way. One walk per candidate was quadratic in a scope
+// with thousands of declarations (a bundle's module function).
 class NestedCalleeScan final : public ast::detail::IdentVisitor {
 public:
-    explicit NestedCalleeScan(const ast::FunctionDecl* target)
-        : target_(target), name_(target->name) {}
+    struct Candidate {
+        const ast::FunctionDecl* target = nullptr;
+        std::vector<const ast::Call*> sites;
+        bool escaped = false;
+        bool spread = false;
+    };
 
-    std::vector<const ast::Call*> sites;
-    bool escaped = false;
-    bool spread = false;
+    std::unordered_map<std::string, Candidate> candidates;
 
-    void mention(const std::string& name) override {
-        if (name == name_) escaped = true;
-    }
+    void mention(const std::string& name) override { escape(name); }
 
     void visit(const ast::Call& c) override {
         const auto* id = dynamic_cast<const ast::Ident*>(c.callee.get());
-        if (id != nullptr && id->name == name_) {
-            if (c.optional) escaped = true;
+        auto it = id != nullptr ? candidates.find(id->name) : candidates.end();
+        if (it != candidates.end()) {
+            Candidate& cand = it->second;
+            if (c.optional) cand.escaped = true;
             for (const auto& arg : c.args) {
-                if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) spread = true;
+                if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) {
+                    cand.spread = true;
+                }
             }
-            sites.push_back(&c);
+            cand.sites.push_back(&c);
         } else {
             c.callee->accept(*this);
         }
@@ -668,45 +676,39 @@ public:
     }
 
     void visit(const ast::FunctionDecl& f) override {
-        if (&f != target_ && f.name == name_) escaped = true;
-        for (const auto& p : f.params) {
-            if (p.name == name_) escaped = true;
-            if (p.pattern) {
-                for (const auto& bn : ast::patternBoundNames(*p.pattern)) {
-                    if (bn == name_) escaped = true;
-                }
-            }
-        }
-        ast::detail::visitParamExprs(f.params, *this);
-        for (const auto& s : f.body) {
-            if (s) s->accept(*this);
-        }
+        auto it = candidates.find(f.name);
+        if (it != candidates.end() && it->second.target != &f) it->second.escaped = true;
+        function(f.params, f.body);
     }
 
     void visit(const ast::FunctionExpr& f) override {
-        if (f.name == name_) escaped = true;
-        for (const auto& p : f.params) {
-            if (p.name == name_) escaped = true;
-            if (p.pattern) {
-                for (const auto& bn : ast::patternBoundNames(*p.pattern)) {
-                    if (bn == name_) escaped = true;
-                }
-            }
-        }
-        ast::detail::visitParamExprs(f.params, *this);
-        for (const auto& s : f.body) {
-            if (s) s->accept(*this);
-        }
+        escape(f.name);
+        function(f.params, f.body);
     }
 
     void visit(const ast::ClassExpr& c) override {
-        if (c.name == name_) escaped = true;
+        escape(c.name);
         ast::detail::IdentVisitor::visit(c);
     }
 
 private:
-    const ast::FunctionDecl* target_ = nullptr;
-    std::string name_;
+    void escape(const std::string& name) {
+        auto it = candidates.find(name);
+        if (it != candidates.end()) it->second.escaped = true;
+    }
+
+    void function(const std::vector<ast::Param>& params, const std::vector<ast::StmtPtr>& body) {
+        for (const auto& p : params) {
+            escape(p.name);
+            if (p.pattern) {
+                for (const auto& bn : ast::patternBoundNames(*p.pattern)) escape(bn);
+            }
+        }
+        ast::detail::visitParamExprs(params, *this);
+        for (const auto& s : body) {
+            if (s) s->accept(*this);
+        }
+    }
 };
 
 void scanNestedFunctionScope(const std::vector<ast::Param>& params,
@@ -736,6 +738,8 @@ void scanNestedFunctionScope(const std::vector<ast::Param>& params,
         }
     }
 
+    NestedCalleeScan scan;
+    std::vector<const ast::FunctionDecl*> order;
     for (const auto& stmt : stmts) {
         const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get());
         if (fnDecl == nullptr || fnDecl->isGenerator || fnDecl->isAsync || fnDecl->name.empty()) {
@@ -751,16 +755,22 @@ void scanNestedFunctionScope(const std::vector<ast::Param>& params,
             }
         }
         if (!shapeFits) continue;
+        scan.candidates[fnDecl->name].target = fnDecl;
+        order.push_back(fnDecl);
+    }
+    if (order.empty()) return;
 
-        NestedCalleeScan scan(fnDecl);
-        for (const auto& s : stmts) {
-            if (s) s->accept(scan);
-        }
-        for (const auto& p : params) {
-            if (p.defaultValue) p.defaultValue->accept(scan);
-            if (p.pattern) ast::detail::visitPatternExprs(p.pattern.get(), scan);
-        }
-        if (scan.escaped || scan.spread || scan.sites.empty()) continue;
+    for (const auto& s : stmts) {
+        if (s) s->accept(scan);
+    }
+    for (const auto& p : params) {
+        if (p.defaultValue) p.defaultValue->accept(scan);
+        if (p.pattern) ast::detail::visitPatternExprs(p.pattern.get(), scan);
+    }
+
+    for (const ast::FunctionDecl* fnDecl : order) {
+        const NestedCalleeScan::Candidate& cand = scan.candidates.at(fnDecl->name);
+        if (cand.escaped || cand.spread || cand.sites.empty()) continue;
 
         const auto idx = static_cast<uint32_t>(mod.nestedFns.size());
         NestedFnInfo info;
@@ -769,7 +779,7 @@ void scanNestedFunctionScope(const std::vector<ast::Param>& params,
         info.signature.returnType = Type::never();
         info.observedParams.assign(fnDecl->params.size(), Type::never());
         mod.nestedFnByDecl.emplace(fnDecl, idx);
-        for (const ast::Call* site : scan.sites) {
+        for (const ast::Call* site : cand.sites) {
             mod.nestedFnByCall.emplace(site, idx);
         }
         mod.nestedFns.push_back(std::move(info));

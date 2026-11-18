@@ -275,26 +275,9 @@ NodePtr PatternParser::parseAtom() {
 }
 
 NodePtr PatternParser::charNode(uint32_t code) {
-    // The uppercase table's holes are refused only in the mode that reads
-    // it. Under `u` or `v` with `i` the fold is generated from the UCD and has
-    // none, so asking here would refuse patterns bronze answers exactly.
-    if (flags_.ignoreCase && !flags_.unicodeMode() && isUnknownCasedUnit(code)) {
-        return caseTableFailure(code);
-    }
     NodePtr node = make(NodeKind::Char);
     node->ch = canonicalize(code, flags_.ignoreCase, flags_.unicodeMode());
     return node;
-}
-
-std::nullptr_t PatternParser::caseTableFailure(uint32_t unit) {
-    char buf[8];
-    static const char* kHex = "0123456789ABCDEF";
-    for (int i = 0; i < 4; ++i) buf[3 - i] = kHex[(unit >> (i * 4)) & 0xF];
-    buf[4] = '\0';
-    return fail("unsupported: case-insensitive matching of U+" + std::string(buf) +
-                " without the `u` flag (only ASCII, Latin-1, Latin Extended-A, Greek, "
-                "Cyrillic and Armenian fold under `i` alone; adding `u` switches "
-                "22.2.2.9 to simple case folding, which bronze carries in full)");
 }
 
 NodePtr PatternParser::parseGroup() {

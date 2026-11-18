@@ -232,6 +232,7 @@ private:
     Value emitReferenceError(const std::string& name, Span span, il::Function& ilFn);
     void emitUnresolvedPut(const std::string& name, Value value, Span span, il::Function& ilFn);
     bool writesGlobalObject(const std::string& name) const;
+    Value emitSloppyThis(Value received, il::Function& ilFn);
     std::vector<std::string> functionVarNames_;
     std::unordered_set<std::string> warnedUnresolved_;
 

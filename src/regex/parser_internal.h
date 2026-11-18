@@ -229,7 +229,6 @@ private:
 
     NodePtr parseAtom();
     NodePtr charNode(uint32_t code);
-    std::nullptr_t caseTableFailure(uint32_t unit);
     NodePtr parseGroup();
 
     // ---- Escapes (parser.cpp) ----------------------------------------------

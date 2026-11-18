@@ -125,23 +125,29 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
 // module, 9.1.1.4 for a script): `function Ni() { return (Ni = …), Ni(…) }`,
 // Babel's `_extends` helper, replaces itself on first call. Lowering compiles a
 // top-level declaration as a static function, whose name nothing can rebind,
-// so one the file rebinds anywhere (ast::getDeeplyReboundNames, which errs
-// toward finding one) becomes `var Ni = function () {…}` at the head of the
+// so one the file writes where no inner binding shadows it
+// (ts_rewrite::writesToTopLevelNames; a parameter or local of the same name
+// in some method is not a write) becomes `var Ni = function () {…}` at the head of the
 // body: initialized before any statement runs, as instantiation would, named
 // `Ni` by NamedEvaluation, and with no name binding of its own inside, so a
 // write in its body reaches the outer binding. An export of it is a live
 // binding as any exported variable is.
 void Parser::rebindableFunctionsToVars(std::vector<StmtPtr>& body) {
-    std::unordered_set<std::string> rebound;
-    bool any = false;
+    std::set<std::string> declared;
     for (const auto& s : body) {
-        if (dynamic_cast<const FunctionDecl*>(s.get())) {
-            any = true;
-            break;
+        if (const auto* fn = dynamic_cast<const FunctionDecl*>(s.get()); fn && !fn->name.empty()) {
+            declared.insert(fn->name);
         }
     }
-    if (!any) return;
-    rebound = ast::getDeeplyReboundNames(body);
+    if (declared.empty()) return;
+    std::set<std::string> rebound;
+    if (auto written = ts_rewrite::writesToTopLevelNames(body, declared)) {
+        rebound = std::move(*written);
+    } else {
+        for (auto& n : ast::getDeeplyReboundNames(body)) {
+            if (declared.count(n) != 0) rebound.insert(std::move(n));
+        }
+    }
     if (rebound.empty()) return;
     std::vector<StmtPtr> hoisted;
     for (auto& s : body) {

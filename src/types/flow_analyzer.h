@@ -218,6 +218,7 @@ private:
     void constructUnbounded(const ast::Expr& callee, Type calleeBase,
                             const std::vector<Type>& args, bool spreadArgs);
     void contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type>& args, bool spreadArgs);
+    void contributeUnboundedArgs(const std::vector<Type>& args);
     // The constructor parameter types this body may believe, when the body is a
     // constructor whose class still speaks for its own.
     std::vector<Type> ctorParamTypes(uint32_t ctorIndex, size_t count) const;

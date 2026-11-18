@@ -115,41 +115,12 @@ const RangeList& wordRanges(bool ignoreCase, bool unicode);
 // UCD by way of the generated tables — see `regex/unicode.h` — and covers the
 // whole code space, astral characters included.
 //
-// With `i` alone (step 3) it is `toUppercase` plus step 4's guard, and there
-// bronze has no data file: each block is written in `chars.cpp` as the RULE
-// that generated that part of the Default Case Conversion table plus the
-// members that break the rule, so every mapping can be read and checked
-// without one. The blocks are ASCII and Latin-1, Latin Extended-A, Greek and
-// Coptic, Cyrillic with its supplement, and the two Armenian letter runs;
-// everything else is returned unchanged, which is correct for every unit
-// `isUnknownCasedUnit` rejects and is the reason that refusal exists.
+// With `i` alone (steps 3 and 4) it is the Default Case Conversion's
+// toUppercase of the one code unit, from a table generated out of the same UCD
+// mappings `String.prototype.toUpperCase` uses (regex/unicode_data_upper.cpp):
+// a unit whose uppercase is longer than one unit (ß, ŉ, ΐ) or would be ASCII
+// from outside it (ı, ſ) is left alone. Every BMP unit is answered.
 uint32_t canonicalize(uint32_t code, bool ignoreCase, bool unicode);
-
-// Does this unit live in a block that carries case mappings bronze has no
-// UPPERCASE table for? A pattern that spells such a character under `i`
-// WITHOUT `u` is a named error, because answering "no match" for a capital
-// omega against a small one would be a silent wrong answer — and answering it
-// for CJK, Hebrew or an emoji would be a hard error for nothing, since none of
-// them has a case at all.
-//
-// It has nothing to say about `u` and `i` together. Simple case folding is
-// generated from the UCD and has no holes, so a caller that consulted this
-// there would refuse patterns bronze can answer exactly — which is why every
-// caller guards it with the flag rather than asking it about every mode.
-//
-// Shrinking this is what adding a block to the uppercase table means. The two
-// must move together: a unit that is folded but still refused is a hard error
-// for nothing, and a unit that is neither is the silent wrong answer.
-bool isUnknownCasedUnit(uint32_t unit);
-
-// The lowest unit in [lo, hi] that `isUnknownCasedUnit` refuses, or false when
-// the range holds none. A class RANGE has to ask this rather than test its two
-// endpoints: `[ÿ- ]` names every refused unit between them without
-// spelling one, and skipping the fold there is the silent wrong answer the
-// refusal exists to prevent. The refused set is a short sorted list of blocks,
-// so this is an interval overlap and not a walk over the range — `[\0-￿]`
-// costs the same as `[a-b]`, and is now correctly a named error.
-bool firstUnknownCasedUnitInRange(uint32_t lo, uint32_t hi, uint32_t& out);
 
 // Every character whose canonicalization is `cc` and is not `cc` itself.
 // CharacterSetMatcher asks whether the SET holds any member that canonicalizes

@@ -578,8 +578,15 @@ reference still parses as the `undefined` literal. In a file that binds the
 name, `ts_rewrite::bindUndefinedReferences` turns each reference that such a
 binding shadows into a reference to that binding.
 
+A sloppy function binds its receiver as 10.2.1.2 says: on entry, a receiver
+that is not an object goes through `bronze_sloppy_this`, which gives the
+global object for null and undefined and boxes a primitive
+(`lower_function.cpp` emitSloppyThis). An object receiver costs one tag test.
+Strict functions, class bodies and modules keep the receiver as passed.
+
 A top-level function declaration is compiled as a static function. When the
-file rebinds its name anywhere (`ast::getDeeplyReboundNames`), as Babel's
+file writes its name where no inner binding shadows it
+(`ts_rewrite::writesToTopLevelNames`), as Babel's
 self-replacing `_extends` helper does, the parser rewrites the declaration
 as `var f = function () {…}` at the head of the body
 (`Parser::rebindableFunctionsToVars`). The binding is then initialized

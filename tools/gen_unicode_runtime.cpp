@@ -347,6 +347,52 @@ std::string generateFullCaseCpp(const std::vector<FullCaseEntry>& upper,
     return ss.str();
 }
 
+// ECMA-262 22.2.2.9 Canonicalize WITHOUT `u` or `v`: toUppercase of the one
+// code unit, by the full mapping; a result that is not exactly one code unit
+// leaves the character alone, and so does one that would take a non-ASCII
+// character into ASCII. Only the units it moves are listed, ascending.
+std::string generateUppercaseUnitCpp(const std::vector<CaseEntry>& simpleUpper,
+                                     const std::vector<FullCaseEntry>& fullUpper) {
+    std::map<uint32_t, uint32_t> simple;
+    for (const auto& e : simpleUpper) simple.emplace(e.from, e.to);
+    std::set<uint32_t> longer;
+    for (const auto& e : fullUpper) {
+        if (e.to.size() != 1) longer.insert(e.from);
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> rows;
+    for (uint32_t ch = 0; ch <= 0xFFFF; ++ch) {
+        if (longer.count(ch) != 0) continue;
+        const auto it = simple.find(ch);
+        if (it == simple.end()) continue;
+        const uint32_t cu = it->second;
+        if (cu > 0xFFFF) continue;
+        if (ch >= 128 && cu < 128) continue;
+        if (cu != ch) rows.emplace_back(ch, cu);
+    }
+    std::ostringstream ss;
+    ss << kBanner << "\n";
+    ss << "#include <cstdint>\n\n";
+    ss << "namespace bronze::regex::data {\n\n";
+    ss << "// ECMA-262 22.2.2.9 Canonicalize without `u` or `v`: toUppercase of one\n";
+    ss << "// code unit, kept only when it is exactly one code unit and does not take a\n";
+    ss << "// non-ASCII unit into ASCII. The units it moves, ascending by `from`.\n";
+    ss << "struct UnitMapping {\n    uint16_t from;\n    uint16_t to;\n};\n\n";
+    ss << "extern const UnitMapping kUppercaseUnits[];\n";
+    ss << "extern const uint32_t kUppercaseUnitCount;\n\n";
+    ss << "const UnitMapping kUppercaseUnits[] = {\n";
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i % 6 == 0) ss << "    ";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "{0x%04X,0x%04X},", rows[i].first, rows[i].second);
+        ss << buf;
+        ss << ((i + 1 == rows.size() || (i + 1) % 6 == 0) ? "\n" : " ");
+    }
+    ss << "};\n\n";
+    ss << "const uint32_t kUppercaseUnitCount = " << rows.size() << ";\n\n";
+    ss << "}  // namespace bronze::regex::data\n";
+    return ss.str();
+}
+
 }  // namespace
 
 void generateRuntimeTables(const std::filesystem::path& ucdDir,
@@ -377,6 +423,10 @@ void generateRuntimeTables(const std::filesystem::path& ucdDir,
               generateSimpleCaseCpp(simpleUpper, simpleLower));
     writeFile(outDir / "runtime" / "unicode_case_data_full.cpp",
               generateFullCaseCpp(fullUpper, fullLower, cased, caseIgnorable));
+    // The regex's non-`u` Canonicalize is this same toUppercase, so it is
+    // generated from these tables rather than from CaseFolding.txt.
+    writeFile(outDir / "regex" / "unicode_data_upper.cpp",
+              generateUppercaseUnitCpp(simpleUpper, fullUpper));
 }
 
 }  // namespace gen

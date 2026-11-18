@@ -458,7 +458,45 @@ private:
     }
 };
 
+class FindTopLevelWrites final : public ScopedWalk {
+public:
+    FindTopLevelWrites(DiagnosticSink& diags, const std::set<std::string>& candidates)
+        : ScopedWalk(diags), candidates_(candidates) {}
+
+    std::set<std::string> written;
+
+private:
+    void note(const std::string& name) {
+        if (candidates_.count(name) != 0 && !shadowed(name)) written.insert(name);
+    }
+    bool visitSlot(ExprPtr& p) override {
+        if (const auto* bin = dynamic_cast<const Binary*>(p.get()); bin && isAssignOp(bin->op)) {
+            if (const auto* id = dynamic_cast<const Ident*>(bin->lhs.get())) note(id->name);
+        } else if (const auto* un = dynamic_cast<const Unary*>(p.get())) {
+            if (un->op == UnaryOp::PreInc || un->op == UnaryOp::PreDec ||
+                un->op == UnaryOp::PostInc || un->op == UnaryOp::PostDec) {
+                if (const auto* id = dynamic_cast<const Ident*>(un->operand.get())) note(id->name);
+            }
+        }
+        return false;
+    }
+    void assignTarget(PatternElement& elem) override {
+        if (!elem.name.empty()) note(elem.name);
+    }
+    void iterationTarget(const std::string& name, Span) override { note(name); }
+
+    const std::set<std::string>& candidates_;
+};
+
 }  // namespace
+
+std::optional<std::set<std::string>> writesToTopLevelNames(std::vector<StmtPtr>& body,
+                                                          const std::set<std::string>& names) {
+    DiagnosticSink scratch;
+    FindTopLevelWrites walk(scratch, names);
+    if (!walk.walkStmts(body)) return std::nullopt;
+    return std::move(walk.written);
+}
 
 bool bindUndefinedReferences(std::vector<StmtPtr>& body, DiagnosticSink& diags) {
     return BindUndefined(diags).walkStmts(body);

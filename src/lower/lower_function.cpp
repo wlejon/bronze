@@ -76,6 +76,13 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     // call, after the flag has already been taken.
     const bool derivedCtor = pendingDerivedCtor_ && currentThisValue_ != il::kNoValue;
     pendingDerivedCtor_ = false;
+    // 10.2.1.2 OrdinaryCallBindThis for SLOPPY code: a receiver that is null
+    // or undefined is the global object and a primitive is boxed
+    // (`!function () { this.document }()`, `f.call(5)`). An object receiver
+    // — every method call — takes one tag test and no call.
+    if (!strictCode_ && currentThisValue_ != il::kNoValue && !derivedCtor) {
+        currentThisValue_ = emitSloppyThis(Value{currentThisValue_, il::Type::Dynamic}, ilFn).id;
+    }
     derivedCtorThis_ = false;
     // The binding state's slot (lower_derived_ctor.cpp), for a constructor
     // whose plan left a site undecided.
@@ -287,6 +294,55 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
         savedEnvValues_.pop_back();
     }
     return true;
+}
+
+// A sloppy function's receiver as 10.2.1.2 binds it, emitted at the entry
+// before any binding exists: an object passes straight to the join, anything
+// else goes through bronze_sloppy_this (the global object for null and
+// undefined, ToObject otherwise).
+Lowerer::Value Lowerer::emitSloppyThis(Value received, il::Function& ilFn) {
+    il::ValueId isObj = ilFn.valueCount++;
+    il::Instruction test;
+    test.op = il::Op::IsObject;
+    test.type = il::Type::Bool;
+    test.result = isObj;
+    test.operands = {received.id};
+    emitInst(ilFn, test);
+
+    il::BlockId bBox = createBlock(ilFn);
+    il::BlockId bJoin = createBlock(ilFn);
+    il::ValueId bound = ilFn.valueCount++;
+    ilFn.blocks[bJoin].params.push_back({bound, il::Type::Dynamic});
+
+    il::Instruction br;
+    br.op = il::Op::Branch;
+    br.type = il::Type::Void;
+    br.result = il::kNoValue;
+    br.operands = {isObj};
+    br.target = il::BlockTarget{.block = bJoin, .args = {received.id}};
+    br.elseTarget = il::BlockTarget{.block = bBox, .args = {}};
+    emitInst(ilFn, br);
+
+    setCurrentBlock(bBox);
+    const uint32_t fnIdx =
+        registerExternalFunction("bronze_sloppy_this", il::Type::Dynamic, {il::Type::Dynamic});
+    il::ValueId boxed = ilFn.valueCount++;
+    il::Instruction call;
+    call.op = il::Op::Call;
+    call.type = il::Type::Dynamic;
+    call.result = boxed;
+    call.operands = {received.id};
+    call.calleeIndex = fnIdx;
+    emitInst(ilFn, call);
+    il::Instruction jmp;
+    jmp.op = il::Op::Jump;
+    jmp.type = il::Type::Void;
+    jmp.result = il::kNoValue;
+    jmp.target = il::BlockTarget{.block = bJoin, .args = {boxed}};
+    emitInst(ilFn, jmp);
+
+    setCurrentBlock(bJoin);
+    return Value{bound, il::Type::Dynamic};
 }
 
 // The return annotation is deliberately not passed down: it is a hint, and it

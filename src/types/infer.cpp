@@ -106,7 +106,9 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         }
     }
 
-    return runTopLevel(mod, split, record);
+    if (!runTopLevel(mod, split, record)) return false;
+    foldUnboundedNews(mod);
+    return true;
 }
 
 // Folds the pass's observations into the signatures. Returns whether anything
@@ -454,6 +456,7 @@ void resetObservations(ModuleContext& mod) {
     for (auto& cr : mod.ctors.classReach()) {
         cr.observedReached = false;
     }
+    mod.unboundedNews = ModuleContext::UnboundedNews{};
 }
 
 // The rounds that settle what NARROWS, run before anything that WIDENS starts

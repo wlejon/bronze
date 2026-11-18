@@ -11,6 +11,7 @@
 // is a diagnosed internal error rather than a subtree left alone.
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -118,6 +119,12 @@ private:
 // Run only for a file that binds the name (Parser::expect notes it); the top
 // level keeps the literal, the global `undefined` being read-only.
 bool bindUndefinedReferences(std::vector<ast::StmtPtr>& body, DiagnosticSink& diags);
+
+// Which of `names`, bound in the scope `body` is, are assigned, updated or
+// made a `for (x of …)` head where no inner binding shadows them. nullopt
+// when the walk meets a node it cannot read.
+std::optional<std::set<std::string>> writesToTopLevelNames(std::vector<ast::StmtPtr>& body,
+                                                          const std::set<std::string>& names);
 
 // Node builders for the JavaScript the TypeScript lowerings emit. Every node
 // gets the span of the declaration it stands for, so a diagnostic or a stack

@@ -1,7 +1,6 @@
 // Case folding, past the four lines regexp_case_fold_unicode.js pins. Those
 // two lines are the RULES — Greek and Cyrillic at +32. These are the members
-// that break them, which is the half of a hand-written case table that cannot
-// be derived from the rule and so has to be pinned one character at a time.
+// that break them, pinned one character at a time.
 
 // U+03C2 GREEK SMALL LETTER FINAL SIGMA is -31 and not -32: it shares the
 // capital U+03A3 with U+03C3, which is why the offset run cannot be one range.
@@ -43,11 +42,7 @@ console.log(/ա/i.test("Ա"), /[ա-ֆ]/i.test("Ֆ"));
 console.log(/^\w+$/i.test("ſk"), /^\w+$/.test("ſk"));
 console.log(/\w/i.test("K"), /\w/.test("K"));
 
-// A block bronze has no rule for is still a named error and never a guess, and
-// the name carries the code point that caused it.
-try {
-  new RegExp("ẞ", "i");
-  console.log("U+1E9E folded, which bronze has no table for");
-} catch (e) {
-  console.log(e instanceof SyntaxError, e.message.indexOf("U+1E9E") >= 0);
-}
+// Every other block folds by the same toUppercase table: U+1E9E CAPITAL SHARP
+// S is its own uppercase, and ß's uppercase is two units, so the two do not
+// match under `i` alone; Latin Extended-B and Georgian do.
+console.log(/ẞ/i.test("ß"), /ß/i.test("ẞ"), /ƀ/i.test("Ƀ"), /ა/i.test("Ა"));

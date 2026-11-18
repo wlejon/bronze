@@ -77,6 +77,12 @@ public:
         ClassReached,
         NestedFnParam,
         NestedFnReturn,
+        // An unbounded `new <a value>(...)` site: one argument (`param` is the
+        // position), its argument count (`param`), and that it reaches every
+        // poisoned class. Gathered in ModuleContext::unboundedNews.
+        UnboundedNewArg,
+        UnboundedNewArity,
+        UnboundedNewPoisoned,
     };
 
     struct FactValue {
