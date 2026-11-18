@@ -882,6 +882,25 @@ the copies are made (`unenteredBlocks`): a layout hint that puts it after
 the main line in every copy, and the inliner skips its calls; what the
 block does is unchanged.
 
+**Code layout.** Within a function, brass lays the main line out first and
+every cold block after it (brass `codegen/block_layout.cpp`), so a 248 KiB
+function's main line is its first 37 KiB; 1.3-2.6% of a module's samples
+land in cold blocks. Across functions the text is in module order, and that
+was measured against an order made from the harvest's call counts (stubs
+first, then the running copy of each hot function in C3 call chains, fallback
+copies and never-entered functions last): cycles a frame moved within the
+spread of the runs on all seven scenes (three_skinned 9.00M to 8.96M,
+pixi_text 7.56M to 7.60M), so no such order is made. What the front end
+loses to node on these scenes is the bytes the frames execute, not where
+they lie: 95% of three_skinned's module cycles fall on 60 KiB of lines, the
+blocks a frame executes fill 75% of the lines they touch, the process's
+instruction-TLB misses are 165 a frame (node's 2,631) and its L1 misses that
+also miss L2 fewer than node's, so neither a section of its own for the cold
+blocks nor huge pages for the text has anything to win. Jump targets nothing
+falls into stay 16-byte aligned (brass `emit_context.cpp`): without the
+padding the text was 2% smaller and three_skinned took 2.5% more cycles;
+32 bytes cost 1-2% on both scenes.
+
 **Slow paths.** An inline fast path with a generic fallback (an element read
 or write, a constant-index read or write and the runs of them il2mir lowers
 under one guard, a strict compare's contents call, a checked unbox and a
