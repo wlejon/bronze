@@ -18,8 +18,11 @@ bronze_add_module(regex
         matcher.cpp
         regex_jit.cpp
         unicode.cpp
+        unicode_data_binary.cpp
+        unicode_data_binary_1.cpp
+        unicode_data_binary_2.cpp
+        unicode_data_binary_3.cpp
         unicode_data_gc.cpp
-        unicode_data_id.cpp
         unicode_data_scf.cpp
         unicode_data_upper.cpp
         unicode_data_script.cpp

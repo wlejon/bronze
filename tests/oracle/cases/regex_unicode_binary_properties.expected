@@ -1,0 +1,76 @@
+ASCII ok ok
+ASCII_Hex_Digit ok ok AHex ok ok
+Alphabetic ok ok Alpha ok ok
+Any ok ok
+Assigned ok ok
+Bidi_Control ok ok Bidi_C ok ok
+Bidi_Mirrored ok ok Bidi_M ok ok
+Case_Ignorable ok ok CI ok ok
+Cased ok ok
+Changes_When_Casefolded ok ok CWCF ok ok
+Changes_When_Casemapped ok ok CWCM ok ok
+Changes_When_Lowercased ok ok CWL ok ok
+Changes_When_NFKC_Casefolded ok ok CWKCF ok ok
+Changes_When_Titlecased ok ok CWT ok ok
+Changes_When_Uppercased ok ok CWU ok ok
+Dash ok ok
+Default_Ignorable_Code_Point ok ok DI ok ok
+Deprecated ok ok Dep ok ok
+Diacritic ok ok Dia ok ok
+Emoji ok ok
+Emoji_Component ok ok EComp ok ok
+Emoji_Modifier ok ok EMod ok ok
+Emoji_Modifier_Base ok ok EBase ok ok
+Emoji_Presentation ok ok EPres ok ok
+Extended_Pictographic ok ok ExtPict ok ok
+Extender ok ok Ext ok ok
+Grapheme_Base ok ok Gr_Base ok ok
+Grapheme_Extend ok ok Gr_Ext ok ok
+Hex_Digit ok ok Hex ok ok
+IDS_Binary_Operator ok ok IDSB ok ok
+IDS_Trinary_Operator ok ok IDST ok ok
+ID_Continue ok ok IDC ok ok
+ID_Start ok ok IDS ok ok
+Ideographic ok ok Ideo ok ok
+Join_Control ok ok Join_C ok ok
+Logical_Order_Exception ok ok LOE ok ok
+Lowercase ok ok Lower ok ok
+Math ok ok
+Noncharacter_Code_Point ok ok NChar ok ok
+Pattern_Syntax ok ok Pat_Syn ok ok
+Pattern_White_Space ok ok Pat_WS ok ok
+Quotation_Mark ok ok QMark ok ok
+Radical ok ok
+Regional_Indicator ok ok RI ok ok
+Sentence_Terminal ok ok STerm ok ok
+Soft_Dotted ok ok SD ok ok
+Terminal_Punctuation ok ok Term ok ok
+Unified_Ideograph ok ok UIdeo ok ok
+Uppercase ok ok Upper ok ok
+Variation_Selector ok ok VS ok ok
+White_Space ok ok space ok ok
+XID_Continue ok ok XIDC ok ok
+XID_Start ok ok XIDS ok ok
+true false
+true false
+true false
+true true
+null 2
+true true false
+true true
+a*b
+\p{alpha} SyntaxError SyntaxError
+\p{ideographic} SyntaxError SyntaxError
+\p{Ideographic } SyntaxError SyntaxError
+\p{White Space} SyntaxError SyntaxError
+\p{WhiteSpace} SyntaxError SyntaxError
+\p{ID_START} SyntaxError SyntaxError
+\p{Script=Ideo} SyntaxError SyntaxError
+\p{gc=Alphabetic} SyntaxError SyntaxError
+\p{Alphabetic=Yes} SyntaxError SyntaxError
+\p{Hyphen} SyntaxError SyntaxError
+\p{Other_Alphabetic} SyntaxError SyntaxError
+\p{IDS_Unary_Operator} SyntaxError SyntaxError
+\p{Prepended_Concatenation_Mark} SyntaxError SyntaxError
+\p{Grapheme_Link} SyntaxError SyntaxError
+\p{Full_Composition_Exclusion} SyntaxError SyntaxError

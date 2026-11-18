@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "regex/unicode_data.h"
+#include "regex/unicode_data_binary.h"
 
 namespace bronze::regex {
 
@@ -168,9 +169,10 @@ RangeList rangesForMask(uint32_t mask) {
     return list;
 }
 
-// The three binary properties that follow from data bronze already has, and
-// therefore need no table of their own. Every other UAX #44 binary property is
-// an independent data file, which is exactly what this project does not carry.
+// The binary properties of ECMA-262 Table 69. `Any`, `ASCII` and `Assigned`
+// follow from data bronze already has; every other one is a generated table
+// (unicode_data_binary*.cpp), found by its canonical name or its alias, exactly
+// as 22.2.1 UnicodeMatchProperty requires.
 bool binaryPropertySet(std::string_view value, RangeList& out) {
     if (value == "Any") {
         out.clear();
@@ -191,23 +193,21 @@ bool binaryPropertySet(std::string_view value, RangeList& out) {
         out = rangesForMask(mask & ~bit(aliasIndex("Cn")));
         return true;
     }
-    if (value == "ID_Start" || value == "IDS") {
-        out.clear();
-        out.reserve(data::kIdStartRangeCount);
-        for (uint32_t i = 0; i < data::kIdStartRangeCount; ++i) {
-            out.push_back({data::kIdStartRanges[i].first, data::kIdStartRanges[i].last});
-        }
-        return true;
+    const data::BinaryPropertyName* begin = data::kBinaryPropertyNames;
+    const data::BinaryPropertyName* end = begin + data::kBinaryPropertyNameCount;
+    const data::BinaryPropertyName* it = std::lower_bound(
+        begin, end, value, [](const data::BinaryPropertyName& entry, std::string_view v) {
+            return std::string_view(entry.name) < v;
+        });
+    if (it == end || std::string_view(it->name) != value) return false;
+    const data::BinaryProperty& property = data::kBinaryProperties[it->property];
+    out.clear();
+    out.reserve(property.count);
+    // The table's ranges are merged and ascending already.
+    for (uint32_t i = 0; i < property.count; ++i) {
+        out.push_back({property.ranges[i].first, property.ranges[i].last});
     }
-    if (value == "ID_Continue" || value == "IDC") {
-        out.clear();
-        out.reserve(data::kIdContinueRangeCount);
-        for (uint32_t i = 0; i < data::kIdContinueRangeCount; ++i) {
-            out.push_back({data::kIdContinueRanges[i].first, data::kIdContinueRanges[i].last});
-        }
-        return true;
-    }
-    return false;
+    return true;
 }
 
 // ---- Script and Script_Extensions (UAX #24) ---------------------------------
@@ -285,8 +285,8 @@ std::string quoted(std::string_view name, std::string_view value) {
 const char* kSupported =
     "bronze carries General_Category and Script: General_Category's 30 values by "
     "alias or long name (`\\p{Lu}`, `\\p{Uppercase_Letter}`, "
-    "`\\p{General_Category=Lu}`), the unions `C L LC M N P S Z`, the binary "
-    "properties `ASCII`, `Any`, `Assigned`, `ID_Start` and `ID_Continue` (aliases `IDS`, `IDC`), "
+    "`\\p{General_Category=Lu}`), the unions `C L LC M N P S Z`, every binary "
+    "property of ECMA-262 Table 69 by name or alias (`\\p{Alphabetic}`, `\\p{Ideo}`), "
     "and `Script` / `Script_Extensions` by either spelling (`\\p{Script=Greek}`, "
     "`\\p{scx=Grek}`)";
 
@@ -384,10 +384,8 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
                     "commonly used with it";
             return false;
         }
-        // The properties of STRINGS, which are the one family of unknown
-        // property bronze can name exactly — 22.2.1's Table 67 is a closed list
-        // of seven, where the binary properties of Table 66 are a whole file of
-        // UAX #44. What is missing is the DATA and no longer the representation:
+        // The properties of STRINGS, 22.2.1's Table 67, a closed list of seven.
+        // What is missing is the DATA and no longer the representation:
         // a class set holds members that are sequences since `\q{...}` does, so
         // each of the seven needs its list of emoji sequences from UTS #51's
         // `emoji-sequences.txt` and `emoji-zwj-sequences.txt` — thousands of
@@ -402,15 +400,12 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
                     "of emoji sequences from UTS #51";
             return false;
         }
-        // One message for a misspelling and for a real property with no table,
-        // because bronze genuinely cannot tell those two apart — it has no list
-        // of every UAX #44 property, and inventing one to sort them would be a
-        // guess. What it can do is name the offender and say what it does have,
-        // which is what an unknown `\p{...}` most needs.
-        error = "unsupported: " + quoted(name, value) + " names no property value bronze "
-                "carries. It is either a misspelling or a UAX #44 binary property — such as "
-                "`Alphabetic` or `White_Space` — whose data bronze does not have. " +
-                kSupported;
+        // Everything ECMA-262 lets the lone form name is carried, so what is
+        // left is a misspelling or a UAX #44 property the specification does
+        // not list (`Hyphen`, `Other_Alphabetic`): a syntax error either way.
+        error = quoted(name, value) + " names no General_Category value or binary property "
+                "ECMA-262 lists (Tables 68 and 69), matched exactly since 22.2.1 is case "
+                "sensitive. " + kSupported;
         return false;
     }
     out = rangesForMask(mask);

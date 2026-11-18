@@ -6,10 +6,13 @@ conversion are different operations over different data:
 
 | Generated file | Module | What it holds |
 |---|---|---|
-| `src/regex/unicode_data.h` | regex | declarations for the two below |
+| `src/regex/unicode_data.h` | regex | declarations for the three below |
 | `src/regex/unicode_data_gc.cpp` | regex | General_Category runs, for `\p{...}` |
 | `src/regex/unicode_data_scf.cpp` | regex | simple case FOLDING, for `u`+`i` canonicalization |
 | `src/regex/unicode_data_script.cpp` | regex | Script runs, script name aliases and the Script_Extensions overrides, for `\p{Script=...}` / `\p{scx=...}` |
+| `src/regex/unicode_data_binary.h` | regex | declarations for the binary property tables below |
+| `src/regex/unicode_data_binary.cpp` | regex | the binary properties of ECMA-262 Table 69 and every spelling of each (canonical name and alias), for `\p{Alphabetic}` / `\p{Alpha}` |
+| `src/regex/unicode_data_binary_N.cpp` | regex | each binary property's code points as merged ranges, packed into files of under 1000 lines |
 | `src/runtime/unicode_case_data.h` | runtime | declarations for the two below |
 | `src/runtime/unicode_case_data_simple.cpp` | runtime | 1:1 case mappings |
 | `src/runtime/unicode_case_data_full.cpp` | runtime | 1:many case mappings, plus `Cased` / `Case_Ignorable` |
@@ -28,6 +31,10 @@ conversion are different operations over different data:
 | `ScriptExtensions.txt` | `https://www.unicode.org/Public/16.0.0/ucd/ScriptExtensions.txt` | `049117ce26b9769fe2749b06eef51a50a89faef4a97764dd2d81daa715980700` | 20,576 |
 | `PropertyValueAliases.txt` | `https://www.unicode.org/Public/16.0.0/ucd/PropertyValueAliases.txt` | `440fd3e5460b9bfe31da67b6f923992e1989d31fe2ed91e091c4b8f8e2620bf9` | 80,773 |
 | `CompositionExclusions.txt` | `https://www.unicode.org/Public/16.0.0/ucd/CompositionExclusions.txt` | `89e83cf9cc8bef6c1f8bf77e42cf6f0341dfa42e66261f4dbe9b492e7a23c8ee` | 9,007 |
+| `PropList.txt` | `https://www.unicode.org/Public/16.0.0/ucd/PropList.txt` | `53d614508e2a0b2305a8aa21cd60d993de9326cdf65993660dfcce4503548583` | 144,253 |
+| `emoji-data.txt` | `https://www.unicode.org/Public/16.0.0/ucd/emoji/emoji-data.txt` | `f1365a5173eee18e1f98b240cdc492e84a25f1ce7e0c9d1094eb29c41a22696a` | 113,024 |
+| `DerivedBinaryProperties.txt` | `https://www.unicode.org/Public/16.0.0/ucd/extracted/DerivedBinaryProperties.txt` | `1ed4d4791c0e34fcad4dfcb5dd4c4122e16428241b75452f05d780ffa661f89d` | 17,476 |
+| `DerivedNormalizationProps.txt` | `https://www.unicode.org/Public/16.0.0/ucd/DerivedNormalizationProps.txt` | `4d4c03892dea9146d674b686e495df2d55a28d071ac474041d73518f887abddc` | 1,372,269 |
 
 `SpecialCasing.txt` is what makes case conversion FULL rather than simple:
 `UnicodeData.txt` carries only the mappings that are one code point to one, so
@@ -37,9 +44,25 @@ excluded by Default Case Conversion itself and the generator drops them; the one
 language-independent condition in the file, `Final_Sigma`, is context rather
 than data and is applied by `src/runtime/unicode_case.cpp`.
 
-`DerivedCoreProperties.txt` is read for exactly two properties, `Cased` and
+The runtime reads `DerivedCoreProperties.txt` for two properties, `Cased` and
 `Case_Ignorable`, because SpecialCasing's own definition of `Final_Sigma` is
 written in terms of them.
+
+The regex module's binary properties are the rows of ECMA-262 Table 69
+("Binary Unicode property aliases and their canonical property names"), and
+that list, with each property's alias, is written out in
+`tools/gen_unicode_binary.cpp` because it is the specification's and not the
+UCD's: 22.2.1 accepts exactly those spellings, so `\p{Hyphen}`, a UAX #44
+binary property the table does not list, is a syntax error. Each property's
+code points come from the file that defines it: `PropList.txt` (`White_Space`,
+`Ideographic`, `Dash` and the other PropList properties),
+`DerivedCoreProperties.txt` (`Alphabetic`, `Lowercase`, `ID_Start`, the
+`Changes_When_*` casing properties, `Grapheme_Base` and the rest),
+`emoji-data.txt` (`Emoji`, `Emoji_Presentation`, `Extended_Pictographic` and the
+modifier and component properties), `DerivedBinaryProperties.txt`
+(`Bidi_Mirrored`) and `DerivedNormalizationProps.txt`
+(`Changes_When_NFKC_Casefolded`). `Any`, `ASCII` and `Assigned` need no file and
+are answered in `src/regex/unicode.cpp`.
 
 `Scripts.txt` and `ScriptExtensions.txt` are the two halves of UAX #24, and the
 second is vendored as the OVERRIDE LIST it is: its own header states that every

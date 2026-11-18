@@ -6,7 +6,8 @@
 //
 //   src/regex/    General_Category runs, simple case FOLDING (22.2.2.9's
 //                 Canonicalize under `u` and `i`), and the Script /
-//                 Script_Extensions tables of UAX #24.
+//                 Script_Extensions tables of UAX #24, and the binary
+//                 properties of ECMA-262 Table 69 (gen_unicode_binary.cpp).
 //   src/runtime/  DEFAULT CASE CONVERSION -- the simple and full case mappings
 //                 String.prototype.toUpperCase / toLowerCase apply (11.1.3),
 //                 plus the two derived properties the Final_Sigma condition is
@@ -64,7 +65,10 @@ int main(int argc, char** argv) {
     const char* const kInputs[] = {"UnicodeData.txt",   "CaseFolding.txt",
                                    "SpecialCasing.txt", "DerivedCoreProperties.txt",
                                    "Scripts.txt",       "ScriptExtensions.txt",
-                                   "PropertyValueAliases.txt", "CompositionExclusions.txt"};
+                                   "PropertyValueAliases.txt", "CompositionExclusions.txt",
+                                   "PropList.txt",      "emoji-data.txt",
+                                   "DerivedBinaryProperties.txt",
+                                   "DerivedNormalizationProps.txt"};
     bool haveInputs = !ucdDir.empty() && !outDir.empty();
     for (const char* name : kInputs) {
         if (!haveInputs) break;
@@ -80,6 +84,7 @@ int main(int argc, char** argv) {
     std::cout << "Reading UCD " << gen::kUcdVersion << " from " << ucdDir.string() << "...\n";
 
     gen::generateRegexTables(ucdDir, outDir);
+    gen::generateBinaryTables(ucdDir, outDir);
     gen::generateRuntimeTables(ucdDir, outDir);
     gen::generateNormTables(ucdDir, outDir);
 

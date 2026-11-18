@@ -96,9 +96,11 @@ struct PropRange {
     uint32_t last;
 };
 
-// One property of DerivedCoreProperties.txt, as merged ascending ranges. Both
-// halves read it: the runtime for Cased / Case_Ignorable (Final_Sigma), the
-// regex module for ID_Start / ID_Continue (identifier code points).
+// One binary property of a UCD property file (`range ; Property_Name`), as
+// merged ascending ranges. The runtime reads Cased / Case_Ignorable from
+// DerivedCoreProperties.txt for Final_Sigma; the regex module reads every
+// binary property of ECMA-262 Table 69 from the file that defines it
+// (gen_unicode_binary.cpp).
 inline std::vector<PropRange> parseDerivedProperty(const std::filesystem::path& path,
                                                    const std::string& property) {
     std::ifstream in(path, std::ios::binary);
@@ -119,7 +121,8 @@ inline std::vector<PropRange> parseDerivedProperty(const std::filesystem::path& 
         ranges.push_back({first, last});
     }
     if (ranges.empty()) {
-        std::cerr << "error: DerivedCoreProperties.txt carries no " << property << " ranges\n";
+        std::cerr << "error: " << path.filename().string() << " carries no " << property
+                  << " ranges\n";
         std::exit(1);
     }
     std::sort(ranges.begin(), ranges.end(),
@@ -153,6 +156,8 @@ inline void writeFile(const std::filesystem::path& path, const std::string& cont
 // writes only into the module directory those tables belong to.
 void generateRegexTables(const std::filesystem::path& ucdDir,
                          const std::filesystem::path& outDir);
+void generateBinaryTables(const std::filesystem::path& ucdDir,
+                          const std::filesystem::path& outDir);
 void generateRuntimeTables(const std::filesystem::path& ucdDir,
                            const std::filesystem::path& outDir);
 void generateNormTables(const std::filesystem::path& ucdDir, const std::filesystem::path& outDir);
