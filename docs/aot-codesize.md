@@ -78,7 +78,15 @@ had one cause each:
    Non-patchable, non-symbol `Movabs` LIR goes through it.
 8. **`BRASS_BLOCK_MAP=<file>`** (`object/object_writer.cpp`), a diagnostic:
    appends `function, offset, block name, cold` per emitted x64 block, for
-   naming LBR and IBS addresses by IR block.
+   naming LBR and IBS addresses by IR block, then `function, i, offset,
+   shuffle, opcode` per LIR instruction: `shuffle` is `LirInst::shuffle`
+   (brass `codegen/lir.hpp`), what made a data move (an isel copy, a call's
+   argument or result, block arguments, a split, edge or back-edge move, a
+   store at the definition, a reload or spill around a use, a GPR/XMM move)
+   in its low four bits and the moved value's standing (split freely, a GC
+   reference across calls, unsplittable) in the high ones, 0 for everything
+   else. Joined to an `instructions:u` profile it weighs the frame's moves,
+   loads and stores by cause.
 
 Tests: brass `tests/unit/test_layout_cold.cpp`, six cases: the cold
 trampoline kept (and a warm one still bypassed), a block only cold blocks
