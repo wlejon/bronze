@@ -183,6 +183,12 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         return lowerPattern(*varDecl->pattern, boxValueIfNeeded(*initVal, ilFn), target, ilFn);
     }
 
+    // 14.3.2.1: `var x;` with no initializer evaluates to nothing. The
+    // binding was made when the function (or script) was entered, and a
+    // write that ran before this statement (`if (!(m = re.exec(s))) throw…;
+    // var m;`, d3) keeps its value.
+    if (varDecl->isVar && !varDecl->init && activeVarMap_.contains(varDecl->name)) return true;
+
     std::string initNativeClass;
     if (varDecl->init) {
         // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a

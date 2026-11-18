@@ -49,13 +49,19 @@ bool Lowerer::resolvesName(const std::string& name) const {
     return isProvidedGlobal(name);
 }
 
-// Whether a WRITE to a name no scope of this module declares goes to the
-// global object (emitUnresolvedPut): any name the ladder cannot resolve, and
-// the three value properties reads fold to constants, whose global
-// properties are read-only — so the put is a sloppy no-op and a strict
-// TypeError, as the spec makes it.
+// Whether a WRITE to a name goes to the global object (emitUnresolvedPut):
+// every name no binding of this program holds, the host's globals and the
+// builtins included, and the three value properties reads fold to constants.
+// The put is the global object's [[Set]] with the property's own rules: a
+// read-only one (`undefined`, a host accessor with no setter such as
+// `history`) is a sloppy no-op and a strict TypeError, a writable or
+// replaceable one takes the value, a missing one is created in sloppy code.
 bool Lowerer::writesGlobalObject(const std::string& name) const {
-    return name == "NaN" || name == "Infinity" || name == "undefined" || !resolvesName(name);
+    if (name == "NaN" || name == "Infinity" || name == "undefined") return true;
+    if (activeVarMap_.contains(name) || functionIndices_.contains(name)) return false;
+    uint32_t depth = 0;
+    uint32_t index = 0;
+    return currentEnvValue_ == il::kNoValue || !findEnclosingEnvVar(name, depth, index);
 }
 
 // Once per NAME, not once per mention: `document` appears eleven times in

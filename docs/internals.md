@@ -560,10 +560,13 @@ A name that lowering cannot resolve to a binding of the program is a
 reference to the global environment, settled at run time
 (`lower/lower_unresolved.cpp`). A read asks the host's globals and then the
 global object, and is a ReferenceError when neither has the name. A write
-(`=`, a compound or logical assignment, `++`, a destructuring target) goes
-through `bronze_put_unresolved` (`runtime/rt_global.cpp`), which is
-9.1.1.4.5:
-- a name the global object has or inherits is set there;
+(`=`, a compound or logical assignment, `++`, a destructuring target) to any
+name no binding of the program holds, a builtin's or a host global's
+included, goes through `bronze_put_unresolved` (`runtime/rt_global.cpp`),
+which is 9.1.1.4.5:
+- a name the global object has or inherits is set there, by that property's
+  rules: a read-only one (`history`, a getter with no setter) is a no-op in
+  sloppy code and a TypeError in strict, a writable one takes the value;
 - sloppy code creates a missing name as an ordinary, deletable property
   (`Top = 1`, at top level or in a function);
 - strict code gets a ReferenceError for a missing name.
@@ -571,6 +574,11 @@ through `bronze_put_unresolved` (`runtime/rt_global.cpp`), which is
 Writes to `undefined`, `NaN` and `Infinity` take the same path and meet the
 global object's read-only properties: a no-op in sloppy code, a TypeError in
 strict.
+
+Every `var` of a function is bound, to `undefined`, when the function is
+entered. `var x;` with no initializer then does nothing where it is written,
+in lowering and in inference alike, so a write that ran before it keeps its
+value (`if (!(m = re.exec(s))) throw …; var m;`).
 
 `undefined` is an identifier. It can be a parameter, a variable, a catch
 binding or a pattern name, as in jQuery's `function (window, undefined)`. A

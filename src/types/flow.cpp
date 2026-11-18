@@ -462,6 +462,11 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
             declarePattern(*v->pattern);
             return;
         }
+        // `var x;` evaluates to nothing (14.3.2.1): a value written before it
+        // in this function stays, as lowering keeps it (lowerVarDecl).
+        if (v->isVar && !v->init && !scope_.isCell(v->name) && scope_.env.count(v->name) != 0) {
+            return;
+        }
         if (scope_.moduleTopLevel && mod_.lazyModuleVars.count(v->name) != 0) {
             if (!record_ && !mod_.auditSettled && mod_.reachedModuleVars.count(v->name) == 0) {
                 if (InferMemo* memo = mod_.rec()) {
