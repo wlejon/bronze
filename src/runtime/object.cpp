@@ -11,6 +11,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_replaceable_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
 #include "runtime/shape_leave.h"
@@ -643,6 +644,14 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // written here rather than inferred from that, because "the cache
         // happens to miss" is not a reason a write is discarded.
         if (!own.writable) {
+            // `Math.random` and `Date.now` take the write for the current
+            // realm (rt_replaceable_builtins.h).
+            {
+                Rooted<Value> live{Value::fromObject(this)};
+                if (runtime::rtReplaceBuiltinOnWrite(this, prop_name, val.get())) {
+                    return live.get().asObject<ObjectHeader>();
+                }
+            }
             if (refused) *refused = SetRefusal::NotWritable;
             return this;
         }

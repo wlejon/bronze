@@ -369,8 +369,9 @@ Lockdown (`runtime/lockdown.h`) closes it, SES-style, and it is the only mode:
 code, in a standalone `bronze` executable as in a host. It walks everything
 reachable from the builtin globals plus the intrinsics no global names
 (iterator, generator and async prototypes), through properties, accessors and
-prototypes, and freezes each object. No program can patch a builtin, which is
-where bronze leaves node's semantics on purpose.
+prototypes, and freezes each object. No program can patch a builtin (but for
+the two replaceable members below), which is where bronze leaves node's
+semantics on purpose.
 
 Frozen objects keep their inline caches: a frozen object's shape is a
 dictionary whose layout can never change again, so `Shape::readCacheable()`
@@ -388,7 +389,27 @@ frozen) is fixed in the engine rather than by SES's accessor conversion:
 lockdown marks each object it freezes `hardened`, and an inherited read-only
 data property on a hardened holder is shadowed by an own property on the
 receiver instead of refusing the write. The holder itself still refuses, as
-any frozen object does. `tests/eval/eval_lockdown_test.cpp` is the suite.
+any frozen object does.
+
+Two members take a write all the same: `Math.random` and `Date.now`, which a
+test harness or a recorder replaces with a seeded generator and a fixed clock
+so an animated scene draws the same frame twice
+(`runtime/rt_replaceable_builtins.h`). Each is the ordinary data property,
+read and called at full speed, until the first assignment to it reaches
+`setProp`'s refusal of a non-writable property. That write turns the
+property, for the rest of the thread, into an accessor whose getter answers
+what the CURRENT realm assigned (`Realm::replacedBuiltin`), or the builtin
+when it assigned nothing, and whose setter stores the value for the current
+realm alone. The holder moves to a fresh shape (`reshapeDictionary`), so no
+read cache keeps the old slot. A replacement in one realm is invisible to
+another. Once converted, the descriptor is a non-configurable get/set pair
+where the spec gives a writable data property, and `Object.defineProperty` of
+the name is refused as on any frozen builtin. A call through the accessor
+costs about 175 ns on an M-series Mac (8 ns before the first replacement).
+
+`Symbol.metadata` (the decorator-metadata key) is a well-known symbol of the
+thread: TypeScript's and Lit's decorator helpers define it on `Symbol` when it
+is missing, which the frozen `Symbol` would refuse (Babylon, model-viewer).
 
 Lockdown also pins the global BINDINGS `Math` and `Number` in every realm of
 the thread (`rtPinLockedGlobals`, realm.cpp): read-only and not configurable,

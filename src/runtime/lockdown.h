@@ -43,7 +43,8 @@
 // fresh per `arguments` object rather than sharing.
 //
 // Last, the `Math` and `Number` global bindings are pinned (realm.h,
-// rtPinLockedGlobals): no program can patch a builtin or rebind those names,
+// rtPinLockedGlobals): no program can patch a builtin (but for `Math.random`
+// and `Date.now`, replaceable per realm: rt_replaceable_builtins.h) or rebind those names,
 // which is where bronze departs from node on purpose.
 
 namespace bronze::runtime {

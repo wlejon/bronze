@@ -31,6 +31,7 @@
 #include "runtime/locale_hooks.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_replaceable_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
@@ -372,6 +373,11 @@ void ensureDateIntrinsics() {
         Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
+        // `now` is replaceable per realm (rt_replaceable_builtins.h).
+        if (s.code == dateNow) {
+            rtRegisterReplaceableBuiltin(props.get(), s.name, ReplaceableBuiltin::DateNow,
+                                         val.get());
+        }
     }
 
     // 21.4.4.1: the back-pointer, a DEFINITION so it does not write through.

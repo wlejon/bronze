@@ -317,6 +317,7 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
         if (entry.second.isObject()) visit(entry.second);
     }
     for (auto& entry : hostGlobals_) visit(entry.second);
+    for (Value& replaced : replacedBuiltins_) visit(replaced);
 }
 
 Realm* rtDefaultRealm() {

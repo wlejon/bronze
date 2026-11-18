@@ -227,8 +227,8 @@ BuiltinCatalog::BuiltinCatalog() {
 
     object("Symbol", "Function.prototype", false, Effect::SymbolFn, Effect::None);
     prims("Symbol", {"asyncIterator", "hasInstance", "isConcatSpreadable", "iterator", "match",
-                     "matchAll", "replace", "search", "species", "split", "toPrimitive",
-                     "toStringTag", "unscopables"},
+                     "matchAll", "metadata", "replace", "search", "species", "split",
+                     "toPrimitive", "toStringTag", "unscopables"},
           kSym);
     fn("Symbol.for", Effect::SymbolFn);
     fn("Symbol.keyFor", Effect::Prim, kStrP | kUndef);

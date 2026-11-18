@@ -28,6 +28,7 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_replaceable_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
@@ -561,6 +562,11 @@ Value rtMathObject() {
         // assignment's `enumerable: true`, and a reflective walk saw 44 keys.
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
+        // `random` is replaceable per realm (rt_replaceable_builtins.h).
+        if (fn.code == mathRandom) {
+            rtRegisterReplaceableBuiltin(obj.get(), fn.name, ReplaceableBuiltin::MathRandom,
+                                         val.get());
+        }
     }
     for (const MathConst& c : kMathConstants) {
         Rooted<Value> key{rtMakeString(c.name)};

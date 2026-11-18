@@ -575,6 +575,12 @@ struct ObjectHeader {
     // middle of, and a private shape naming it. Idempotent.
     static void toDictionary(NonMovingArena& arena, Rooted<Value>& self);
 
+    // A dictionary-mode object moved to a new private shape holding a copy of
+    // its table, so every inline cache that latched the old shape misses.
+    // For the one change made to a FROZEN object (rt_replaceable_builtins.h):
+    // a frozen table's shape is read-cacheable because nothing can change it.
+    static void reshapeDictionary(Rooted<Value>& self);
+
     // Define an own property on a DICTIONARY-mode object, returning the live
     // object and, through `out_slot`, where the property's value goes. A name
     // already present keeps its POSITION in the enumeration order even when

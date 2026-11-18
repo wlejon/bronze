@@ -99,6 +99,7 @@ bronze_add_module(runtime
         rt_global_cache.cpp
         inline_slots.cpp
         rt_host_globals.cpp
+        rt_replaceable_builtins.cpp
         root_remset.cpp
         rt_module_remset.cpp
         native_handle.cpp

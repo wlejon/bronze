@@ -81,6 +81,13 @@ public:
     bool hostGlobalsSpecial() const noexcept { return hostGlobalsSpecial_; }
     void setHostGlobalsSpecial() noexcept { hostGlobalsSpecial_ = true; }
 
+    // What this realm's code assigned to a replaceable builtin
+    // (rt_replaceable_builtins.h: `Math.random`, `Date.now`), the hole for
+    // none. The builtins are the thread's and frozen; these are the realm's.
+    static constexpr size_t kReplaceableBuiltins = 2;
+    Value replacedBuiltin(size_t which) const noexcept { return replacedBuiltins_[which]; }
+    void setReplacedBuiltin(size_t which, Value v) noexcept { replacedBuiltins_[which] = v; }
+
     // GC root tracing for this realm's held heap values.
     void visitRoots(const Heap::RootVisitor& visit);
 
@@ -114,6 +121,7 @@ private:
     std::vector<std::pair<std::string, HostGlobalMeta>> hostGlobalMeta_;
     std::unordered_set<std::string> hostGlobalNames_;
     bool hostGlobalsSpecial_ = false;
+    Value replacedBuiltins_[kReplaceableBuiltins] = {Value::fromHole(), Value::fromHole()};
 };
 
 // The builtin names every realm's global object is populated with, each one a

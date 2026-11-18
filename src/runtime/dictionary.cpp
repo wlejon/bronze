@@ -350,6 +350,27 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     }
 }
 
+void ObjectHeader::reshapeDictionary(Rooted<Value>& self) {
+    auto* obj = self.get().asObject<ObjectHeader>();
+    Shape* old = obj->shape;
+    if (!old || !old->isDictionary()) return;
+    if (old->used_as_prototype) bumpProtoMutationEpoch();
+    Shape* fresh = new Shape();
+    fresh->root = old->root;
+    fresh->dict = new Dictionary(*old->dict);
+    fresh->dict->retireAnswers();
+    fresh->copyInlineSlots(old);
+    fresh->used_as_prototype = old->used_as_prototype;
+    obj->shape = fresh;
+    // The old shape is left to the finalizer already registered for it; a
+    // frozen table's shape outlives its object (releaseDictionaryShape), so
+    // no cache entry can come to name another object at its address.
+    Heap& heap = runtime::rtHeap();
+    if (heap.contains(obj)) {
+        heap.gc().add_finalizer(reinterpret_cast<uintptr_t>(obj), &releaseDictionaryShape, fresh);
+    }
+}
+
 bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     if (!shape) return true;
     if (runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, name);

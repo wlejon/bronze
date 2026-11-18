@@ -127,6 +127,7 @@ const WellKnownSymbol kWellKnownSymbols[] = {
     {"search", rtSymbolSearch},
     {"split", rtSymbolSplit},
     {"unscopables", rtSymbolUnscopables},
+    {"metadata", rtSymbolMetadata},
 };
 
 // ---- Symbol.prototype (20.4.3) ---------------------------------------------
