@@ -86,6 +86,20 @@ struct ArrayHeader {
     // NO_CLAIM: `claimNumbers` refused this array once and will not scan it
     // again (bronze_abi_layout.h).
     static constexpr uint32_t kNumbersRefused = BRONZE_ABI_ARRAY_BIT_NO_CLAIM;
+    // EXOTIC: some element is not in the block — an accessor, or a data
+    // element with an attribute the others lack (Object.defineProperty, an
+    // element made non-writable on an unfrozen array). Such an element is an
+    // entry of the array's dictionary under its canonical index key, and the
+    // block holds a HOLE at its index, so every path that trusts the block
+    // misses it: generated code (a hole leaves the fast read; a store, push
+    // and pop need the bare shape, which a dictionary is not) and the
+    // runtime's fast paths, which ask rtArrayChainHoldsIndex — true for such
+    // an array — before reading a hole as nothing (rt_array_exotic.cpp).
+    // Never cleared: the array stays in the slow mode for good.
+    static constexpr uint32_t kExoticElements = 8;
+    static_assert(kExoticElements != kElementsAreNumbers && kExoticElements != kNumbersRefused &&
+                  kExoticElements != kHasCustomPrototype);
+    bool hasExoticElements() const noexcept { return (reserved & kExoticElements) != 0; }
 
     bool elementsAreNumbers() const noexcept { return (reserved & kElementsAreNumbers) != 0; }
     void forgetNumbers() noexcept { reserved &= ~kElementsAreNumbers; }

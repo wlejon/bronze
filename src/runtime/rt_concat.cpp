@@ -35,6 +35,7 @@
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/number_format.h"
 #include "runtime/profile.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
@@ -239,28 +240,34 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
     return concatAppendSlow(accBits, xBits);
 }
 
-uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
-    recordHelperCall("bronze_concat_template");
-    // A template's pieces in a block the caller owns and the collector scans
-    // (the argv block): each a String, or a Number its `to.string` let
-    // through. A Number becomes its String here, which runs nothing: a small
-    // integer is the immortal cached one, anything else is allocated and
-    // written back into the block, so it stays rooted while later pieces are
-    // converted and while the result is.
+}  // extern "C"
+
+namespace {
+
+// A template piece that is a Number, as its String (written back into the
+// block by the caller, which keeps it rooted). Runs nothing: a small
+// non-negative integer (an id, a count, a counter) is the cached string, -0
+// included; any other Number is formatted, which allocates.
+Value numberPiece(Value v) {
+    const double d = v.asNumber();
+    if (d >= 0.0 && d < 1024.0) {
+        const auto n = static_cast<uint32_t>(d);
+        if (static_cast<double>(n) == d) {
+            if (const Value cached = rtSmallIntString(n); cached.isString()) return cached;
+        }
+    }
+    return rtPrimitiveToString(v);
+}
+
+// Any template: every piece converted, then the result sized, allocated and
+// filled. Pieces already converted by the caller are Strings and pass.
+uint64_t concatTemplateGeneral(uint64_t* pieces, uint32_t count) {
     uint64_t total = 0;
     bool utf16 = false;
     for (uint32_t i = 0; i < count; ++i) {
         Value v(pieces[i]);
         if (!v.isString()) {
-            // A small non-negative integer (an id, a count, a counter) is the
-            // cached string, -0 included; any other Number is formatted.
-            const double d = v.asNumber();
-            Value cached;
-            if (d >= 0.0 && d < 1024.0) {
-                const auto n = static_cast<uint32_t>(d);
-                if (static_cast<double>(n) == d) cached = rtSmallIntString(n);
-            }
-            v = cached.isString() ? cached : rtPrimitiveToString(v);
+            v = numberPiece(v);
             pieces[i] = v.rawBits();
         }
         const StringHeader* s = v.asString<StringHeader>();
@@ -315,6 +322,58 @@ uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
         out->latin1Data()[len] = '\0';
     }
     return Value::fromString(out).rawBits();
+}
+
+}  // namespace
+
+extern "C" {
+
+uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
+    recordHelperCall("bronze_concat_template");
+    // A template's pieces in a block the caller owns and the collector scans
+    // (the argv block): each a String, or a Number its `to.string` let
+    // through.
+    //
+    // The usual template (a key, a label: one-byte pieces, short) in ONE pass:
+    // each String's units and each Number's ToString (formatJsNumber,
+    // nothing allocated) are copied into a buffer on the stack, then the
+    // result is allocated and filled with one copy. A two-byte piece, a
+    // result long enough to be a view, or a full young window is the general
+    // path's, which converts a Number into its String and writes it back into
+    // the block, so it stays rooted while later pieces are converted.
+    char text[StringHeader::kViewMinLength];
+    uint32_t len = 0;
+    uint32_t i = 0;
+    for (; i < count; ++i) {
+        const Value v(pieces[i]);
+        if (!v.isString()) {
+            // A Number's ToString written straight into the buffer: nothing
+            // allocated (formatJsNumber writes at most 32 bytes).
+            if (len > StringHeader::kViewMinLength - 32) break;
+            const auto n = static_cast<uint32_t>(formatJsNumber(v.asNumber(), text + len));
+            if (n >= StringHeader::kViewMinLength - len) break;
+            len += n;
+            continue;
+        }
+        const StringHeader* s = v.asString<StringHeader>();
+        const uint32_t n = s->length;
+        if (s->isUTF16() || n >= StringHeader::kViewMinLength - len) break;
+        copyLatin1(text + len, s->latin1Data(), n);
+        len += n;
+    }
+    if (i == count) {
+        if (HeapObjectHeader* h = rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(len) + 1,
+                                                       Tag::String)) {
+            auto* out = reinterpret_cast<StringHeader*>(h);
+            out->length = len;
+            out->flags = 0;
+            char* dst = reinterpret_cast<char*>(out + 1);
+            copyLatin1(dst, text, len);
+            dst[len] = '\0';
+            return Value::fromString(out).rawBits();
+        }
+    }
+    return concatTemplateGeneral(pieces, count);
 }
 
 uint64_t bronze_concat_end(uint64_t vBits) {

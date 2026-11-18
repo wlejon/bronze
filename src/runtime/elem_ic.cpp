@@ -365,8 +365,8 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     install(probe, liveKey, filled);
 }
 
-void elemCacheFillDict(Value objVal, Value key, StringHeader* name, uint32_t slot) {
-    if (name == nullptr || censusFillsSuppressed()) return;
+void elemCacheFillDict(Value objVal, Value key, uint32_t slot) {
+    if (censusFillsSuppressed()) return;
     Shape* shape = objVal.asObject<ObjectHeader>()->shape;
     if (shape->dict == nullptr || shape->readCacheable()) return;
     // A heap string's entry would answer only that string object (the stub's
@@ -382,16 +382,23 @@ void elemCacheFillDict(Value objVal, Value key, StringHeader* name, uint32_t slo
     filled.cached_slot = slot;
     filled.cached_depth = BRONZE_ABI_ELEM_CELL_DICT;
     filled.cached_epoch = shape->dict->generation;
-    install(probe, name, filled);
+    install(probe, probe.kind == ElemKeyKind::String ? key.asString<StringHeader>() : nullptr, filled);
 }
 
 namespace {
 
 void install(const ElemProbe& probe, StringHeader* liveKey, const InlineCache& filled) {
-    StringHeader* internedKey = elemCacheInternKey(liveKey);
-    if (!internedKey) {
-        recordElemIcMiss("key_budget_spent", 0, 0);
-        return;
+    // Only a STRING entry names its key (keyMatches compares content against
+    // it); a Number's or a boolean's witness is its whole identity, so its
+    // entry keeps none and spends nothing of the interning budget.
+    StringHeader* internedKey = nullptr;
+    if (probe.kind == ElemKeyKind::String) {
+        // An arena string is immortal already: the entry may name it as it is.
+        internedKey = liveKey != nullptr && liveKey->isArena() ? liveKey : elemCacheInternKey(liveKey);
+        if (!internedKey) {
+            recordElemIcMiss("key_budget_spent", 0, 0);
+            return;
+        }
     }
     // The pair this fill displaces from its own bucket moves to the way
     // beside it, whatever is there: two pairs of one bucket then both answer

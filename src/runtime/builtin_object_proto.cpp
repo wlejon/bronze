@@ -229,7 +229,13 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
                 return true;
             }
             if (name.isString() && rtIsIntegerLikeKey(key, index)) {
-                if (!self.get().asObject<ArrayHeader>()->hasElem(index)) return false;
+                if (!self.get().asObject<ArrayHeader>()->hasElem(index)) {
+                    // An exotic element is the named property it is stored as.
+                    PropertyInfo exotic;
+                    if (!rtArrayExoticEntry(self.get(), index, exotic)) return false;
+                    fillFromShape(self.get().asObject<ArrayHeader>()->object(), exotic, out);
+                    return true;
+                }
                 out.enumerable = true;
                 // `Object.freeze` and `Object.seal` are the only things that
                 // take either attribute away, and integrity.h answers both --

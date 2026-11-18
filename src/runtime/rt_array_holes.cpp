@@ -150,6 +150,8 @@ const bool g_checkIndexHazard = [] {
 }();
 
 bool rtArrayChainHoldsIndexSlow(Value arr) {
+    // The array's own exotic elements are holes of its block (array.h).
+    if (arr.asObject<ArrayHeader>()->hasExoticElements()) return true;
     if (rtTls()->array_index_hazard == 0) {
         if (BRONZE_UNLIKELY(g_checkIndexHazard) && chainHoldsIndexLatched(arr)) {
             fatal("internal: an array's chain holds an index but the array index hazard is clear");
@@ -189,6 +191,7 @@ bool rtArrayHolesSeeChain(Value arr) {
 }
 
 bool rtArrayInheritedHas(Rooted<Value>& arr, uint32_t index) {
+    if (PropertyInfo own; rtArrayExoticEntry(arr.get(), index, own)) return true;
     Rooted<Value> proto{prototypeOf(arr.get())};
     if (!proto.get().isObject()) return false;
     Rooted<Value> key{Value::fromDouble(static_cast<double>(index))};
@@ -196,6 +199,7 @@ bool rtArrayInheritedHas(Rooted<Value>& arr, uint32_t index) {
 }
 
 Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index) {
+    if (PropertyInfo own; rtArrayExoticEntry(arr.get(), index, own)) return rtArrayExoticGet(arr, index, own);
     Rooted<Value> proto{prototypeOf(arr.get())};
     if (!proto.get().isObject()) return Value::fromUndefined();
     // The canonical spelling of the index: ToPropertyKey's answer, and the
@@ -217,6 +221,11 @@ Value rtArrayIndexGet(Value arr, uint32_t index) {
 
 bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val, bool strict, bool& ok) {
     ok = true;
+    // The array's own exotic element: OrdinarySet over the array itself.
+    if (PropertyInfo own; rtArrayExoticEntry(arr.get(), index, own)) {
+        ok = rtArrayExoticSet(arr, index, own, val, strict);
+        return true;
+    }
     Rooted<Value> key{rtMakeString(std::to_string(index))};
     Rooted<Value> holder{prototypeOf(arr.get())};
     for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {

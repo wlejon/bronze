@@ -440,7 +440,10 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                 uint32_t index = 0;
                 const bool isLength = key == "length";
                 const bool isIndex = !isLength && rtIsIntegerLikeKey(key, index);
-                if (isLength || isIndex) {
+                // An exotic element is a named property of the array's own
+                // shape: the ordinary walk below.
+                PropertyInfo exotic;
+                if (isLength || (isIndex && !rtArrayExoticEntry(self.get(), index, exotic))) {
                     auto* arr = self.get().asObject<ArrayHeader>();
                     if (isIndex && !arr->hasElem(index)) return Value::fromUndefined().rawBits();
                     Rooted<Value> value{isLength ? Value::fromDouble(arr->length)

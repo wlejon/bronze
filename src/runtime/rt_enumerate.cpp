@@ -527,7 +527,7 @@ uint64_t forInKeys(uint64_t objBits) {
             ArrayHeader::create(rtHeap(), indexCount ? indexCount : 4))};
         uint32_t at = 0;
         for (uint32_t i = 0; i < indexCount; ++i) {
-            if (isArray && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            if (isArray && !rtArrayOwnsIndex(src.get(), i, /*enumerableOnly=*/true)) continue;
             char buf[16];
             auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
             Rooted<Value> key{Value::fromString(
@@ -575,7 +575,7 @@ uint64_t forInKeys(uint64_t objBits) {
                 uint32_t index = 0;
                 Rooted<Value> keyVal{rtKeyAsValue(key)};
                 if (rtValueToElementIndex(keyVal.get(), index)) {
-                    if (src.get().asObject<ArrayHeader>()->hasElem(index)) continue;
+                    if (rtArrayOwnsIndex(src.get(), index, /*enumerableOnly=*/false)) continue;
                 } else {
                     PropertyInfo own;
                     if (rtArrayOwnNamed(src.get(), key, own)) continue;

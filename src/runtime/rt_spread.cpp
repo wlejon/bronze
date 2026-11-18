@@ -574,14 +574,15 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
         // point of asking one question in one way.
         const uint32_t length = srcVal.asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < length; ++i) {
-            if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            if (!rtArrayOwnsIndex(src.get(), i, /*enumerableOnly=*/true)) continue;
             if (stringTarget.get().isString() &&
                 stringTargetRefuses(stringTarget.get(), std::to_string(i))) {
                 return;
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             if (excludesKey(excluded, key)) continue;
-            Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
+            // [[Get]], which runs an exotic element's getter.
+            Rooted<Value> val{rtArrayIndexGet(src.get(), i)};
             writeKey(target, key, val, mode);
             // The write can now refuse, and copying the next index after that
             // raised would be the runtime continuing past an exception — which

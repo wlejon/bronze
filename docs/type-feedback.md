@@ -1006,7 +1006,23 @@ before (above): 0.1-0.3%. A Number or constant-string key of a dictionary
 the table's generation holds: pixi_text 23.62M to 23.52M instructions a
 frame on one build, the others unchanged; a heap string's key is never
 kept (its entry would answer only that string object, and interning one per
-fresh key cost pixi_text 0.4%).
+fresh key cost pixi_text 0.4%). What a fresh key costs is the runtime's
+general path, so that is what was cut (runtime/dict_keyed.cpp): a read, a
+write and a delete of a bare plain dictionary that is no prototype probe its
+table directly — a Number key by its digits, hashed as its string would be
+and compared there (`Dictionary::findLatin1`), so a map keyed by ids past
+the cached small-integer strings allocates nothing to read; a fresh string
+by its cached hash and an inline compare — and a missing key asks the chain
+only through bare plain links (or, for a Number, the array index hazard).
+A Number key's table entry carries no string, so ids past 1024 hit the
+stub too. Templates of short one-byte pieces are copied once, through a
+buffer on the stack, with Numbers formatted straight into it. Per call
+(instructions, a fresh key built by a 3-part template on a dictionary of
+2000 keys, the template's own cost subtracted): the template 476 to 389, a
+read hit 446 to 401, a miss 478 to 497, an existing-key write 320 to 349, a
+new-key write 1727 to 1322, an insert and delete 2289 to 1740; by a Number
+id past 1024, a read 1074 to 115 and a write 984 to 399. pixi_text 23.44M
+to 22.86M instructions a frame.
 
 Every fallback that can leave must count in the harvested build, or an exit
 the harvest never saw runs often and gives the function up for its generic

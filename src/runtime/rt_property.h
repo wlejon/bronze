@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 
+#include "runtime/array.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/property_key.h"
@@ -80,25 +81,33 @@ Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly);
 // the two answers cannot drift.
 bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 
-// `map[id]` on a map keyed by ids: the own DATA entry a small non-negative
-// integer key names on a bare plain object in dictionary mode (which is where
-// such a map lives, Shape::kIndexKeyedMapAfter), or null for any other
-// receiver, key or answer. A string key names its entry the same way (a
-// cache keyed by computed strings is in dictionary mode by the transition
-// bound, shape.h). Nothing is allocated on the GC heap, so a caller
-// may hold a raw receiver across it; the slot is read or written by the
-// caller, who also owns the questions a write asks (`writable`).
-const DictEntry* rtIdKeyedOwnEntry(Value objVal, Value key);
-// `map[k]` read on the same receivers and keys: the own data entry's value,
-// or, for a key the map lacks, the prototype chain's answer while every link
-// is a bare plain object holding the name as data or not at all (`undefined`
-// at the chain's end: `if (!cache[key])`). False for anything else, which is
-// then the generic read's. Allocates nothing on the GC heap. An answer that
-// is the receiver's own data entry also sets `ownSlot` (when given) to its
-// slot and `ownName` to the name it is under: what the computed-read table
-// keeps of it (elem_ic.h elemCacheFillDict).
-bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot = nullptr,
-                   StringHeader** ownName = nullptr);
+// ---- maps: computed keys of a dictionary-mode object (dict_keyed.cpp) ----
+//
+// `map[k]`, `map[k] = v` and `delete map[k]` on a bare plain object in
+// dictionary mode that is no prototype (where a map keyed by ids or by
+// computed strings lives: Shape::kIndexKeyedMapAfter, the transition bound),
+// for a String key or a Number that is a uint32 integer. A Number is never
+// made a string to be looked up: its digits are hashed and compared in a
+// buffer (Dictionary::findLatin1), and only a key the map stores becomes one.
+// Each answers false for any other receiver, key or case, which is then the
+// generic path's.
+//
+// The read: the own data entry's value, or, for a key the map lacks, the
+// prototype chain's answer while every link is a bare plain object holding
+// the name as data or not at all (for a Number key, while the array index
+// hazard says no prototype holds a digit key: object.h). Allocates nothing on
+// the GC heap. An answer that is the own data entry sets `ownSlot` (when
+// given): what the computed-read table keeps (elem_ic.h elemCacheFillDict).
+bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot = nullptr);
+// The write (10.1.9.2 OrdinarySet): an own writable data entry is stored; a
+// key the map lacks is added as an enumerable, writable, configurable data
+// property when the map is extensible and no link of the chain (as the read
+// asks it) holds the name. May allocate (the stored key, the slot storage).
+bool rtIdKeyedWrite(Value objVal, Value key, Value val);
+// The delete (10.1.10.1): true, with the entry removed, or with none there;
+// false (generic) for a non-configurable one, whose refusal is the generic
+// path's to report.
+bool rtIdKeyedDelete(Value objVal, Value key);
 
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
@@ -351,9 +360,10 @@ bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal);
 // nothing, and these are what let every fast path keep saying so with one
 // cached test rather than a walk.
 
-// Could anything on this array's prototype chain answer an array index? False
-// means every hole reads as `undefined` and as absent, which is the fast
-// paths' whole premise. Cached per chain and per prototype-mutation epoch,
+// Could anything but the element block answer an array index of this array —
+// a link of its prototype chain, or its own exotic elements (array.h
+// kExoticElements, which the block holds as holes)? False means every hole
+// reads as `undefined` and as absent, which is the fast paths' whole premise. Cached per chain and per prototype-mutation epoch,
 // so a run of holes asks it once; true is conservative for a link that is no
 // ordinary object (a proxy answers for itself). The receiver must be an array.
 //
@@ -365,7 +375,10 @@ bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal);
 extern const bool g_checkIndexHazard;
 bool rtArrayChainHoldsIndexSlow(Value arr);
 inline bool rtArrayChainHoldsIndex(Value arr) {
-    if (rtTls()->array_index_hazard == 0 && !g_checkIndexHazard) return false;
+    if (rtTls()->array_index_hazard == 0 && !g_checkIndexHazard &&
+        !arr.asObject<ArrayHeader>()->hasExoticElements()) {
+        return false;
+    }
     return rtArrayChainHoldsIndexSlow(arr);
 }
 
@@ -375,9 +388,10 @@ inline bool rtArrayChainHoldsIndex(Value arr) {
 // and the block can be moved as it stands.
 bool rtArrayHolesSeeChain(Value arr);
 
-// [[HasProperty]] and [[Get]] of `index` on the array's PROTOTYPE, which is
-// what a hole at `index` answers; the getter of an accessor there runs with the
-// array as `this`. Both may run user code (a proxy, a getter).
+// [[HasProperty]] and [[Get]] of `index` past the block: the array's own
+// exotic element there, else the PROTOTYPE's answer, which is what a hole at
+// `index` answers; a getter runs with the array as `this`. Both may run user
+// code (a proxy, a getter).
 bool rtArrayInheritedHas(Rooted<Value>& arr, uint32_t index);
 Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index);
 
@@ -388,8 +402,9 @@ Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index);
 Value rtArrayIndexGet(Value arr, uint32_t index);
 
 // The chain half of 10.1.9.1 OrdinarySet for an index the array does NOT own
-// (a hole, or at or past `length`), asked only when rtArrayChainHoldsIndex
-// says the chain could answer. True when the chain decided the write: a setter
+// in its block (a hole, or at or past `length`), asked only when
+// rtArrayChainHoldsIndex says the chain could answer; an own exotic element
+// there decides the write the same way (10.1.9.2 over the array itself). True when the chain decided the write: a setter
 // ran (with the array as `this`), an inherited non-writable element or a
 // setter-less accessor refused it (reported per `strict`), a proxy's [[Set]]
 // took it, or a typed array's absent index made it a silent success; `ok` is
@@ -405,6 +420,35 @@ bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val,
 // refusing it, a proxy's [[Set]] — with its refusal in `refusal`; false when
 // the write lands on the receiver as its own property.
 bool rtInheritedNamedSet(Rooted<Value>& receiver, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal);
+
+// ---- an array's exotic elements (rt_array_exotic.cpp) ----
+//
+// An element that is no plain writable, enumerable, configurable data value
+// (array.h kExoticElements): an entry of the array's dictionary under its
+// canonical index key, with a hole in the block at its index.
+
+// The exotic element at `index`, or false. Allocates nothing.
+bool rtArrayExoticEntry(Value arr, uint32_t index, PropertyInfo& out);
+// Is `index` an own property of the array — a block element or an exotic one
+// (and, with `enumerableOnly`, an enumerable one)? Allocates nothing.
+bool rtArrayOwnsIndex(Value arr, uint32_t index, bool enumerableOnly);
+// [[Get]] and the own half of OrdinarySet of an exotic element, which must be
+// there; the set reports a refusal per `strict` and answers [[Set]]'s boolean.
+Value rtArrayExoticGet(Rooted<Value>& arr, uint32_t index, const PropertyInfo& info);
+bool rtArrayExoticSet(Rooted<Value>& arr, uint32_t index, const PropertyInfo& info, Rooted<Value>& val,
+                      bool strict);
+// [[Delete]] of an exotic element, which must be there: false when it is not
+// configurable.
+bool rtArrayExoticDelete(Value arr, uint32_t index);
+// ArraySetLength's deletes (10.4.2.4 step 17) of the exotic elements at or
+// past `newLen`, highest first, stopping at a non-configurable one: the
+// length the array may shrink to (newLen, or one past the element that
+// stopped it).
+uint32_t rtArrayExoticTruncate(Value arr, uint32_t newLen);
+// The block element at `index` moved, as it is, into an exotic one (the array
+// put in dictionary mode first), so that a descriptor can give it attributes
+// of its own; with no element there, only the mode and the mark.
+void rtArrayMakeExotic(Rooted<Value>& arr, uint32_t index);
 
 // An own element write: the array's own refusals (frozen, sealed,
 // non-extensible), then the store, growing `length` past it. No chain is

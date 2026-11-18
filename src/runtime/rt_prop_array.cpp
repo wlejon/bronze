@@ -53,7 +53,17 @@ bool rtArrayOwnNamed(Value arrVal, PropertyKey name, PropertyInfo& out) {
 StringKeyList rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly) {
     auto* arr = arrVal.asObject<ArrayHeader>();
     if (arr->isBare()) return {};
-    return rtOwnStringKeysOrdered(arr->object(), enumerableOnly);
+    StringKeyList keys = rtOwnStringKeysOrdered(arr->object(), enumerableOnly);
+    if (!arr->hasExoticElements()) return keys;
+    // An exotic element's key is an index, which the listers report in the
+    // index part (rtArrayOwnsIndex), not here.
+    StringKeyList named;
+    for (StringHeader* k : keys) {
+        uint32_t index = 0;
+        if (k->isLatin1() && rtIsIntegerLikeKey(std::string_view(k->latin1Data(), k->getLength()), index)) continue;
+        named.push_back(k);
+    }
+    return named;
 }
 
 SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, bool askChain) {
@@ -92,6 +102,14 @@ bool rtArrayNamedDelete(Value arrVal, PropertyKey name) {
 }
 
 SetRefusal rtArrayOwnIndexWrite(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val) {
+    // An exotic element there (CreateDataProperty over it, 10.1.6.3): a
+    // configurable one is replaced by a plain element, a writable data one
+    // takes the value only when it already has the plain attributes, and
+    // anything else refuses.
+    if (PropertyInfo own; rtArrayExoticEntry(arr.get(), index, own)) {
+        if (!own.configurable) return SetRefusal::NotWritable;
+        rtArrayExoticDelete(arr.get(), index);
+    }
     const SetRefusal refusal = rtArrayElementWriteRefusal(arr.get(), index);
     if (refusal != SetRefusal::None) return refusal;
     if (index > arr.get().asObject<ArrayHeader>()->length) {
@@ -191,6 +209,10 @@ SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal) {
             }
         }
     }
+    // The exotic elements above the block's stop are deleted one by one,
+    // highest first, and one that is not configurable stops the shrink one
+    // past itself.
+    stop = rtArrayExoticTruncate(arr.get(), stop);
     ArrayHeader::setLength(rtHeap(), arr, stop);
     return stop == newLen ? SetRefusal::None : SetRefusal::NotWritable;
 }

@@ -165,11 +165,11 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
 // compared, never followed. Only a Number key or an ARENA string's (a
 // program's constant, a shape key) is kept: a heap string's entry would
 // answer only that string object, and a key built for the read is a new one
-// each time. `name` is the key the entry is under (the key string, or a
-// Number's rtSmallIntString). A frozen dictionary
+// each time; a Number's entry needs no string at all (its witness is its
+// identity). A frozen dictionary
 // (Shape::readCacheable) takes the shape path's entries and none of these;
 // elemCacheProbe passes over this form. Allocates nothing on the GC heap.
-void elemCacheFillDict(Value objVal, Value key, StringHeader* name, uint32_t slot);
+void elemCacheFillDict(Value objVal, Value key, uint32_t slot);
 
 // Publish this thread's table into `bronze_tls_block::elem_cache_tbl`, so that
 // generated code can probe it (il2mir/il_prop_stubs.cpp build_elem_get_stub

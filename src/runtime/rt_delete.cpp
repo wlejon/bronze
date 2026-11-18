@@ -146,7 +146,7 @@ bool deleteElementByIndex(Value objVal, Value idxVal, uint32_t& outIndex) {
     // is in the state delete wants whatever the integrity level says, so a
     // sealed array still answers true for one (10.5.6 step 3).
     auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
-    if (!arr->hasElem(idx)) return true;
+    if (!arr->hasElem(idx)) return rtArrayExoticDelete(objVal, idx);  // an exotic element, or none
     if (!rtArrayElementsConfigurable(objVal)) return false;
     arr->deleteElem(idx);
     return true;
@@ -295,6 +295,8 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         return bronze_elem_delete(objRoot.get().rawBits(), keyRoot.get().rawBits(), strict);
     }
 
+    // A map's key (dict_keyed.cpp): removed, or never there.
+    if (rtIdKeyedDelete(objVal, idxVal)) return true;
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         Rooted<Value> arrRoot{objVal};
         std::string keyText;

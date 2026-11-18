@@ -234,12 +234,10 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     // The entry outlives the allocations further down: it lives in a per-thread
     // table and holds only arena pointers, so no collection can move it or what
     // it names.
-    // A map keyed by ids, which no entry below can speak for (a dictionary's
-    // slots are not in its shape): the own writable data entry is the slot.
-    if (const DictEntry* own = rtIdKeyedOwnEntry(objVal, Value(idxBits)); own && own->writable) {
-        objVal.asObject<ObjectHeader>()->setSlot(own->slot, Value(valBits));
-        return;
-    }
+    // A map keyed by ids or computed strings, which no entry below can speak
+    // for (a dictionary's slots are not in its shape): its own entry stored,
+    // or a key it lacks added (dict_keyed.cpp).
+    if (rtIdKeyedWrite(objVal, Value(idxBits), Value(valBits))) return;
 
     ElemSetCacheEntry* setEntry = elemSetCacheEntryFor(objVal, Value(idxBits));
     if (setEntry && setEntry->ic.describesOwn(objVal.asObject<ObjectHeader>()->shape)) {

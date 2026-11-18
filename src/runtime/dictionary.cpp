@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
@@ -43,6 +44,35 @@ uint32_t hashKey(PropertyKey key) noexcept {
     return static_cast<uint32_t>(bits);
 }
 
+// Two runs of one-byte units, compared a word at a time: a map's keys are
+// short, and memcmp is a call through the PLT and a dispatch for them.
+inline bool bytesEqual(const char* a, const char* b, uint32_t n) noexcept {
+    while (n >= 8) {
+        uint64_t x = 0;
+        uint64_t y = 0;
+        std::memcpy(&x, a, 8);
+        std::memcpy(&y, b, 8);
+        if (x != y) return false;
+        a += 8;
+        b += 8;
+        n -= 8;
+    }
+    if (n >= 4) {
+        uint32_t x = 0;
+        uint32_t y = 0;
+        std::memcpy(&x, a, 4);
+        std::memcpy(&y, b, 4);
+        if (x != y) return false;
+        std::memcpy(&x, a + n - 4, 4);
+        std::memcpy(&y, b + n - 4, 4);
+        return x == y;
+    }
+    for (uint32_t k = 0; k < n; ++k) {
+        if (a[k] != b[k]) return false;
+    }
+    return true;
+}
+
 constexpr uint32_t kMinIndexCapacity = 8;
 
 uint32_t capacityFor(uint32_t live) noexcept {
@@ -71,7 +101,18 @@ uint64_t Dictionary::nextGeneration() noexcept {
 
 const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
     if (!name.valid() || index_.empty()) return nullptr;
-    const uint32_t hash = hashKey(name);
+    // A string's hash is cached on it (hashed once per string object): read
+    // here rather than through a call, as is the compare below — a map's
+    // key built per access (`cache[a + ':' + b]`) is a new string object
+    // every time, so its every hit is a content compare.
+    const StringHeader* ns = name.string();
+    uint32_t hash = 0;
+    if (ns != nullptr) {
+        const uint32_t f = ns->flags;
+        hash = ((f & StringHeader::kHasHashFlag) != 0 ? f & 0xFFFFFFFCU : ns->hash()) >> 2;
+    } else {
+        hash = hashKey(name);
+    }
     const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
     for (uint32_t i = hash & mask;; i = (i + 1) & mask) {
         const uint64_t cell = index_[i];
@@ -81,12 +122,43 @@ const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
         // thousands; only an equal hash pays for the compare.
         if (static_cast<uint32_t>(cell >> 32) != hash) continue;
         const DictEntry& e = entries[static_cast<uint32_t>(cell) - 1];
-        if (e.live() && e.key.matches(name)) return &e;
+        if (e.key.identity() == name.identity()) return &e;
+        // A symbol is only itself; a tombstone's key is no string.
+        const StringHeader* es = e.key.string();
+        if (ns == nullptr || es == nullptr || es->length != ns->length) continue;
+        if (((es->flags | ns->flags) & StringHeader::kUTF16Flag) == 0) {
+            if (bytesEqual(es->latin1Data(), ns->latin1Data(), ns->length)) return &e;
+        } else if (es->equals(*ns)) {
+            return &e;
+        }
     }
 }
 
 DictEntry* Dictionary::find(PropertyKey name) noexcept {
     return const_cast<DictEntry*>(static_cast<const Dictionary*>(this)->find(name));
+}
+
+DictEntry* Dictionary::findLatin1(const char* bytes, uint32_t length, uint32_t hash) noexcept {
+    if (index_.empty()) return nullptr;
+    const uint32_t keyHash = hash >> 2;  // hashKey's form
+    const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
+    for (uint32_t i = keyHash & mask;; i = (i + 1) & mask) {
+        const uint64_t cell = index_[i];
+        if (cell == 0) return nullptr;
+        if (static_cast<uint32_t>(cell >> 32) != keyHash) continue;
+        DictEntry& e = entries[static_cast<uint32_t>(cell) - 1];
+        const StringHeader* s = e.key.string();
+        if (s == nullptr || s->length != length) continue;
+        if (s->isLatin1()) {
+            if (bytesEqual(s->latin1Data(), bytes, length)) return &e;
+            continue;
+        }
+        // A two-byte spelling of a one-byte key (string.cpp hashWide).
+        const uint16_t* u = s->utf16Data();
+        uint32_t k = 0;
+        while (k < length && u[k] == static_cast<unsigned char>(bytes[k])) ++k;
+        if (k == length) return &e;
+    }
 }
 
 void Dictionary::insertIndex(uint32_t entryPos, uint32_t hash) noexcept {

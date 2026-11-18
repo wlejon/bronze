@@ -90,7 +90,7 @@ Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly) {
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
     uint32_t at = 0;
     for (uint32_t i = 0; i < length; ++i) {
-        if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+        if (!rtArrayOwnsIndex(src.get(), i, enumerableOnly)) continue;
         Rooted<Value> key{indexName(i)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
     }

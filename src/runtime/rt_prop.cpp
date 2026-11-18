@@ -825,10 +825,14 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
     // A map keyed by ids or computed strings (rtIdKeyedRead): its entry, or
     // its chain's answer for a key it lacks; an own data entry is kept in the
     // computed-read table for the module's stub (elemCacheFillDict).
+    // A heap string's entry is never kept (elemCacheFillDict), so a key built
+    // for the read does not pay the call.
     uint32_t ownSlot = UINT32_MAX;
-    StringHeader* ownName = nullptr;
-    if (Value v; rtIdKeyedRead(objVal, Value(idxBits), v, &ownSlot, &ownName)) {
-        if (ownSlot != UINT32_MAX) elemCacheFillDict(objVal, Value(idxBits), ownName, ownSlot);
+    if (Value v; rtIdKeyedRead(objVal, Value(idxBits), v, &ownSlot)) {
+        const Value key(idxBits);
+        if (ownSlot != UINT32_MAX && !(key.isString() && !key.asString<StringHeader>()->isArena())) {
+            elemCacheFillDict(objVal, key, ownSlot);
+        }
         return v.rawBits();
     }
 

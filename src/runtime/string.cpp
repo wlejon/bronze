@@ -318,6 +318,11 @@ uint32_t StringHeader::hash() const noexcept {
     return cached_hash;
 }
 
+uint32_t StringHeader::hashLatin1(const char* bytes, uint32_t length) noexcept {
+    const uint64_t wide = hashNarrow(reinterpret_cast<const uint8_t*>(bytes), length);
+    return static_cast<uint32_t>(wide >> 32) & 0xFFFFFFFCU;
+}
+
 static void copyUnitsInto(StringHeader* dst, uint32_t at, const StringHeader* src);
 
 namespace {
@@ -590,6 +595,16 @@ StringHeader* StringHeader::copyToOld(Heap& heap, Rooted<Value>& src) {
     } else {
         out->latin1Data()[out->length] = '\0';
     }
+    return out;
+}
+
+StringHeader* StringHeader::createLatin1Old(Heap& heap, const char* bytes, uint32_t length) {
+    auto* out = reinterpret_cast<StringHeader*>(
+        heap.allocateOld(sizeof(uint32_t) * 2 + static_cast<size_t>(length) + 1, Tag::String));
+    out->length = length;
+    out->flags = hashLatin1(bytes, length) | kHasHashFlag;
+    std::memcpy(out + 1, bytes, length);
+    out->latin1Data()[length] = '\0';
     return out;
 }
 

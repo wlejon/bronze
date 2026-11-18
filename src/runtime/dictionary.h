@@ -56,12 +56,13 @@ struct DictEntry {
 // Dictionary does NOT list — an array's ELEMENTS, which live in the element
 // block, and a function's `prototype`, which lives in a slot of its own.
 //
-// One level rather than a bit per property, because nothing in bronze can give
-// one element different attributes from its neighbour: `Object.defineProperty`
-// takes a plain object only, so `freeze`, `seal` and `preventExtensions` are the
-// only operations that reach these, they apply to all of them at once, and they
-// only ever move one way. The three states below are therefore the only three
-// such storage ever reaches.
+// One level rather than a bit per property, because the block's elements all
+// share their attributes: an element given attributes of its own by
+// `Object.defineProperty` leaves the block for an entry of this table (an
+// array's EXOTIC element, rt_array_exotic.cpp), so `freeze`, `seal` and
+// `preventExtensions` are the only operations that reach what the block holds,
+// they apply to all of it at once, and they only ever move one way. The three
+// states below are therefore the only three such storage ever reaches.
 enum class IntegrityLevel : uint8_t {
     Open,    // writable and configurable: an ordinary array's elements
     Sealed,  // non-configurable — `delete a[i]` refuses, a write still lands
@@ -143,6 +144,10 @@ public:
 
     const DictEntry* find(PropertyKey name) const noexcept;
     DictEntry* find(PropertyKey name) noexcept;
+    // The entry of the string key whose one-byte units are `bytes` (a
+    // Number's digits, dict_keyed.cpp), found without a string: `hash` is
+    // StringHeader::hashLatin1 of them.
+    DictEntry* findLatin1(const char* bytes, uint32_t length, uint32_t hash) noexcept;
 
     // Appends a property the caller has already found absent, and indexes it.
     // The key must already be in a form an entry may keep

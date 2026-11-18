@@ -123,6 +123,7 @@ bronze_add_module(runtime
         rt_operator.cpp
         rt_numeric.cpp
         rt_key.cpp
+        dict_keyed.cpp
         elem_ic.cpp
         elem_cell.cpp
         ic_hot.cpp
@@ -136,6 +137,7 @@ bronze_add_module(runtime
         rt_prop_primitive.cpp
         rt_prop_array.cpp
         rt_array_holes.cpp
+        rt_array_exotic.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
         rt_elem_write.cpp

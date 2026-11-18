@@ -329,14 +329,14 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
 //    non-writable. It is non-configurable and non-enumerable from birth, so a
 //    descriptor asking for either is 10.1.6.3's refusal.
 //  - an ELEMENT is a value in a dense block, not a descriptor. Its attributes
-//    are all true, and the only thing that changes them is the array's
-//    integrity level, which changes all of them at once (integrity.h). So a
-//    descriptor that would leave one element with an attribute the others do
-//    not have — a non-enumerable index, a non-writable one, an accessor at an
-//    index — asks for storage bronze does not keep, and is refused BY NAME
-//    rather than defined as something else; one that agrees with what the
-//    element has is a value write, and one that asks a sealed or frozen
-//    array to change is the TypeError 10.1.6.3 gives.
+//    are all true, and the array's integrity level changes all of them at
+//    once (integrity.h). A descriptor that agrees with what the element has
+//    is a value write, and one that asks a sealed or frozen array to restore
+//    an attribute is the TypeError 10.1.6.3 gives. One that would leave one
+//    element with an attribute the others do not have — a non-enumerable
+//    index, a non-writable one, an accessor — makes it an EXOTIC element
+//    (rt_array_exotic.cpp), a named property of the array under its index
+//    key over which the ordinary algorithm below decides.
 //  - anything else lives in the side object, which is an ordinary shape and
 //    takes the ordinary algorithm — and carries the array's integrity level,
 //    so a frozen array refuses a new named property there.
@@ -376,8 +376,14 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
     }
 
     if (isIndex) {
-        if (accessor) {
-            return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
+        // An element with attributes of its own — an accessor, or one the
+        // descriptor takes an attribute away from — is an EXOTIC element: the
+        // array's dictionary holds it under this key, and the block a hole
+        // (rt_array_exotic.cpp). The ordinary algorithm then decides the
+        // define over that entry, every refusal of 10.1.6.3 included.
+        PropertyInfo exotic;
+        if (rtArrayExoticEntry(self.get(), index, exotic)) {
+            return applyDecodedDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
         }
         auto* arr = self.get().asObject<ArrayHeader>();
         if (arr->hasElem(index)) {
@@ -385,13 +391,17 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
                 rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::None;
             const bool configurable = rtArrayElementsConfigurable(self.get());
             // An attribute the element has that the descriptor would take
-            // away is per-element storage bronze does not keep; one it lacks
-            // that the descriptor would restore is 10.1.6.3 step 4's refusal
-            // over a non-configurable property.
-            if ((d.hasEnumerable && !d.wantEnumerable) || (d.hasWritable && !d.wantWritable && writable) ||
+            // away, or a change to an accessor: the element moves, as it is,
+            // into an exotic one, over which the ordinary algorithm decides
+            // (a non-configurable one refusing the accessor, say).
+            if (accessor || (d.hasEnumerable && !d.wantEnumerable) ||
+                (d.hasWritable && !d.wantWritable && writable) ||
                 (d.hasConfigurable && !d.wantConfigurable && configurable)) {
-                return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
+                rtArrayMakeExotic(self, index);
+                return applyDecodedDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
             }
+            // One it lacks that the descriptor would restore is 10.1.6.3
+            // step 4's refusal over a non-configurable property.
             if ((d.hasWritable && d.wantWritable && !writable) ||
                 (d.hasConfigurable && d.wantConfigurable && !configurable)) {
                 return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
@@ -410,15 +420,24 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
             }
             return true;
         }
-        // A NEW element: 10.1.6.3 step 2 completes every absent attribute to
-        // false, and an element with any of the three false is the storage
-        // refused above.
-        if (!(d.hasWritable && d.wantWritable && d.hasEnumerable && d.wantEnumerable &&
-              d.hasConfigurable && d.wantConfigurable)) {
-            return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
-        }
         if (rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::NotExtensible) {
             return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
+        }
+        // A NEW element: 10.1.6.3 step 2 completes every absent attribute to
+        // false, so anything but a writable, enumerable, configurable data
+        // element is an exotic one, past whose index `length` then grows
+        // (10.4.2.1 step 3.h).
+        if (accessor || !(d.hasWritable && d.wantWritable && d.hasEnumerable && d.wantEnumerable &&
+                          d.hasConfigurable && d.wantConfigurable)) {
+            // The length first, through ArraySetLength's own test of what the
+            // heap can hold (the holes below the index are stored), so a
+            // length that does not fit throws its RangeError with nothing
+            // defined.
+            if (index >= self.get().asObject<ArrayHeader>()->length) {
+                rtArraySetLength(self, Value::fromDouble(static_cast<double>(index) + 1.0));
+            }
+            rtArrayMakeExotic(self, index);
+            return applyDecodedDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
         }
         Rooted<Value> stored{d.hasValue ? value.get() : Value::fromUndefined()};
         self.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, stored);

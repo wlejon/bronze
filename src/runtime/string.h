@@ -132,6 +132,12 @@ struct StringHeader {
     // is a house rule; localeCompare provides deterministic root-locale code unit comparison.
     bool lessThan(const StringHeader& other) const noexcept;
     uint32_t hash() const noexcept;
+    // hash() of the one-byte string whose units are `bytes`, without one:
+    // what a key spelled in a buffer (a Number's digits) is looked up under.
+    static uint32_t hashLatin1(const char* bytes, uint32_t length) noexcept;
+    // A one-byte string of the OLD generation (copyToOld's kind) holding
+    // `bytes`, its hash already cached.
+    static StringHeader* createLatin1Old(Heap& heap, const char* bytes, uint32_t length);
 
     // `a + b` of two strings. A result of kViewMinLength units or more is a
     // view: appended in place when `a` is a view that ends where its buffer's
