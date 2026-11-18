@@ -66,7 +66,9 @@ std::mutex& companionsMutex() {
 Companion* build(const ColdLink& link) {
     auto* c = new Companion();
     std::string err;
-    if (!decodeCompanion(std::string_view(link.blob, link.blobSize), c->il, c->inputs, err)) coldFatal(err);
+    // Each body stays in the image's blob until its function is first
+    // lowered (ColdCompanionInputs::bodies).
+    if (!decodeCompanion(std::string_view(link.blob, link.blobSize), c->il, c->inputs, err, true)) coldFatal(err);
     const char* name = link.names;
     for (uint64_t i = 0; i < link.linkCount; ++i) {
         const size_t len = std::strlen(name);
@@ -120,7 +122,7 @@ Companion* build(const ColdLink& link) {
         },
         *c->mir, c->il, entry, pipeline);
 
-    const std::vector<std::string> names = computeUniqueFunctionNames(c->il);
+    const std::vector<std::string>& names = c->inputs.uniqueNames;
     c->cellNames.resize(link.cellCount);
     for (size_t i = 0; i < c->inputs.interpreted.size(); ++i) {
         const uint32_t cell = c->inputs.interpreted[i];

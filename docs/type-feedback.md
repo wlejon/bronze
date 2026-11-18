@@ -746,14 +746,26 @@ thread (1.8 s and 2.3 s), and brass's passes and register allocation on the
 largest function, about 2.4 s of the 3.6 s codegen of three_meshes.
 Frames and start-up are unchanged (first output of three_meshes at 26 ms,
 of pixi_text at 45 ms): a run like the harvested one calls no interpreted
-function. The first call of one builds the companion (30 to 45 ms on these
-modules). The bodies' MIR is built lazily, a function's on its first call;
-what the first call pays for is the rest, for every cold function at once:
-decoding the IL (a fifth of it: 6 to 10 ms against 50 to 60 ms for the whole
-when the build times the same steps under its own load), then the proofs,
-each body's brass AST and the module's declarations. Doing that
-per function too needs the blob indexed by function, and the brass AST and
-proofs made per body on demand. A wrong profile (every function never
+function. The first call of one builds the companion, and the companion
+reads each body only when its function is first lowered: the blob holds the
+module with every body dropped, then per interpreted function its
+CreateFunction callees and parameter counts (all that lowering reads of every
+body up front: closure names and arities) and its body's size, then the
+bodies one after another (`il::serializeBlocks`). The companion decodes the
+headers and leaves each body a view into the image (`decodeCompanion`'s
+`deferBodies`), marks its brass AST function `body_deferred`, and on the
+function's first lowering reads the IL body and converts it
+(`TranslatorOptions::deferred_body`, `lowerFunctionToBrassAst`). The
+companion does not check the IL's proof certificates again
+(`il::verifyModuleProofs`): its bodies are the image's own IL, which the
+image's build proof-checked with the whole module, and they ship inside that
+image, whose native code is trusted on the same grounds. On smallworlds'
+app.js (8268 interpreted functions, an 8.3 MB blob) the first cold call
+builds the companion in 17 ms where it took 82 ms, and that call's own body
+in 30 µs: the IL headers and the unique names (2 ms each), the module's
+declarations and per-function metadata for all 10306 functions (8 ms with
+lowering's setup), the tiered pipeline (2.6 ms) and the link table (1 ms);
+the module is 33 KB smaller. A wrong profile (every function never
 entered) costs what it did with the native cold tier: three_meshes runs
 18.1 ms a frame on it either way, against 2.8 ms on its own harvest, until
 bro's cold-entry count drops the profile.

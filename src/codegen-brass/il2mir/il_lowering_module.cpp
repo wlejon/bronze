@@ -68,7 +68,25 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     return true;
 }
 
+// Each CreateFunc of `fn` as `f(callee name, parameter count)`, in body
+// order; a deferred body's (BronzeFunction::body_deferred) from its summary.
+template <class F>
+static void for_each_create_func(const BronzeFunction& fn, F&& f) {
+    if (fn.body_deferred && fn.blocks.empty()) {
+        for (const auto& [callee, params] : fn.create_funcs) f(callee, params);
+        return;
+    }
+    for (const auto& blk : fn.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == BronzeOp::CreateFunc) f(inst.callee_name, inst.param_count);
+        }
+    }
+}
+
 static bool functions_are_identical(const BronzeFunction& a, const BronzeFunction& b) {
+    // A body not read yet is no one's twin. (A companion's functions carry
+    // the image's unique names, so no two share one.)
+    if (a.body_deferred || b.body_deferred) return false;
     if (a.params != b.params ||
         a.return_type != b.return_type || a.is_exported != b.is_exported) return false;
     if (a.blocks.size() != b.blocks.size()) return false;
@@ -244,15 +262,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             size_t non_leaf_idx = SIZE_MAX;
             for (size_t idx : indices) {
                 bool has_self_create = false;
-                for (const auto& blk : ast.functions[idx].blocks) {
-                    for (const auto& inst : blk.instructions) {
-                        if (inst.op == BronzeOp::CreateFunc && inst.callee_name == name) {
-                            has_self_create = true;
-                            break;
-                        }
-                    }
-                    if (has_self_create) break;
-                }
+                for_each_create_func(ast.functions[idx], [&](const std::string& callee, uint32_t) {
+                    if (callee == name) has_self_create = true;
+                });
                 if (has_self_create) {
                     non_leaf_idx = idx;
                     break;
@@ -290,26 +302,21 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     std::unordered_map<std::string, size_t> create_func_occurrence;
     std::unordered_map<size_t, size_t> closure_parent_fn;
     for (size_t fn_idx = 0; fn_idx < ast.functions.size(); ++fn_idx) {
-        for (const auto& blk : ast.functions[fn_idx].blocks) {
-            for (const auto& inst : blk.instructions) {
-                if (inst.op == BronzeOp::CreateFunc) {
-                    const std::string& cname = inst.callee_name;
-                    auto it = name_to_indices.find(cname);
-                    if (it != name_to_indices.end() && it->second.size() > 1 && cname != "main" && !curry_names.count(cname)) {
-                        size_t k = create_func_occurrence[cname]++;
-                        if (k < it->second.size()) {
-                            size_t child_fn_idx = it->second[k];
-                            const std::string& child_res_name = resolved_names[child_fn_idx];
-                            if (!child_res_name.empty()) {
-                                caller_create_func_targets_[fn_idx][cname].push_back(child_res_name);
-                                caller_to_callee_map_[fn_idx][cname] = child_res_name;
-                                closure_parent_fn[child_fn_idx] = fn_idx;
-                            }
-                        }
+        for_each_create_func(ast.functions[fn_idx], [&](const std::string& cname, uint32_t) {
+            auto it = name_to_indices.find(cname);
+            if (it != name_to_indices.end() && it->second.size() > 1 && cname != "main" && !curry_names.count(cname)) {
+                size_t k = create_func_occurrence[cname]++;
+                if (k < it->second.size()) {
+                    size_t child_fn_idx = it->second[k];
+                    const std::string& child_res_name = resolved_names[child_fn_idx];
+                    if (!child_res_name.empty()) {
+                        caller_create_func_targets_[fn_idx][cname].push_back(child_res_name);
+                        caller_to_callee_map_[fn_idx][cname] = child_res_name;
+                        closure_parent_fn[child_fn_idx] = fn_idx;
                     }
                 }
             }
-        }
+        });
     }
 
     // Propagate mappings from parent scopes down to child closures
@@ -349,14 +356,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     callee_param_counts_.clear();
     closure_functions_.clear();
     for (const auto& fn : ast.functions) {
-        for (const auto& blk : fn.blocks) {
-            for (const auto& inst : blk.instructions) {
-                if (inst.op == BronzeOp::CreateFunc) {
-                    callee_param_counts_[inst.callee_name] = inst.param_count;
-                    closure_functions_.insert(inst.callee_name);
-                }
-            }
-        }
+        for_each_create_func(fn, [&](const std::string& callee, uint32_t params) {
+            callee_param_counts_[callee] = params;
+            closure_functions_.insert(callee);
+        });
     }
     ltimer.mark("closure set");
 
@@ -437,7 +440,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     lazy_bodies_.clear();
     for (size_t i = 0; i < ast.functions.size(); ++i) {
         if (resolved_names[i].empty()) continue;
-        if (ast.functions[i].blocks.empty()) continue;
+        if (ast.functions[i].blocks.empty() && !ast.functions[i].body_deferred) continue;
         if (options_.companion && !options_.is_interpreted(i)) continue;
         // An image's interpreted function: its stub, and its wrapper.
         if (!options_.companion && options_.is_interpreted(i)) {

@@ -716,6 +716,29 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     return true;
 }
 
+std::string serializeBlocks(const std::vector<Block>& blocks) {
+    Writer w;
+    w.var(blocks.size());
+    for (const auto& b : blocks) writeBlock(w, b);
+    return w.take();
+}
+
+bool deserializeBlocks(std::string_view bytes, std::vector<Block>& out, std::string& err) {
+    Reader r(bytes);
+    out.clear();
+    out.resize(r.count());
+    for (auto& b : out) {
+        if (!r.ok()) break;
+        readBlock(r, b);
+    }
+    if (r.ok() && !r.atEnd()) r.fail("trailing bytes");
+    if (!r.ok()) {
+        err = "malformed IL blocks: " + r.error();
+        return false;
+    }
+    return true;
+}
+
 void attachSources(Module& module, const std::vector<std::string_view>& texts, bool retainTexts) {
     module.sourceTexts.clear();
     module.lineTables.clear();

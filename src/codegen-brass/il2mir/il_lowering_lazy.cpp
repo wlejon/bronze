@@ -15,6 +15,15 @@
 namespace il2mir {
 
 bool IlLowering::lower_body(size_t i, Module& mod, Function* target) {
+    // A deferred body is converted now, the first time it is lowered.
+    if (current_ast_->functions[i].body_deferred && current_ast_->functions[i].blocks.empty()) {
+        if (deferred_ast_ != current_ast_ || !options_.deferred_body ||
+            !options_.deferred_body(i, deferred_ast_->functions[i])) {
+            if (diag_) diag_->error("deferred body of '" + resolved_names_[i] + "' did not read");
+            has_error_ = true;
+            return false;
+        }
+    }
     current_fn_idx_ = i;
     prop_lowering_.set_cold_code(current_ast_->functions[i].cold);
     return lower_function(current_ast_->functions[i], mod, resolved_names_[i], target);
@@ -164,7 +173,7 @@ struct LazyLowering {
 
 } // namespace
 
-TranslationResult translate_bronze_ast_lazy(BronzeModuleAST&& ast, const TranslatorOptions& options,
+TranslationResult translate_bronze_ast_lazy(BronzeModuleAST&& ast, TranslatorOptions options,
                                             DiagnosticReporter* diag) {
     if (!options.lazy_bodies) return translate_bronze_ast(ast, options, diag);
     TranslationResult result;
@@ -174,7 +183,8 @@ TranslationResult translate_bronze_ast_lazy(BronzeModuleAST&& ast, const Transla
     // provider's own, since the caller's is gone by then.
     DiagnosticReporter default_diag;
     DiagnosticReporter* active_diag = diag ? diag : &default_diag;
-    state->lowering = std::make_unique<IlLowering>(options, active_diag);
+    state->lowering = std::make_unique<IlLowering>(std::move(options), active_diag);
+    state->lowering->set_deferred_ast(&state->ast);
     auto mod = state->lowering->lower_module(state->ast);
     if (!mod) {
         result.error_message = active_diag->has_errors() ? active_diag->format_all()

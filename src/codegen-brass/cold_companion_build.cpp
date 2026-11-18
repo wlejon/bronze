@@ -32,7 +32,7 @@ using brass::object::Section;
 using brass::object::SymbolBinding;
 using brass::object::SymbolType;
 
-constexpr uint64_t kBlobMagic = 0x504D4F43444C4F43ull;  // "COLDCOMP"
+constexpr uint64_t kBlobMagic = 0x32504D4F43444C43ull;  // "CLDCOMP2": bodies apart
 
 bool hasOp(const il::Function& fn, std::initializer_list<il::Op> ops) {
     for (const il::Block& b : fn.blocks) {
@@ -209,15 +209,16 @@ ColdSelection selectInterpreted(const il::Module& module, const std::vector<std:
 }
 
 std::string encodeCompanion(const il::Module& module, const ColdCompanionInputs& in) {
-    // Only the interpreted bodies: every other function is a declaration,
-    // one with no body in the image an import (raw bits, as there).
+    // Every function a declaration here, one with no body in the image an
+    // import (raw bits, as there); the interpreted bodies follow, each apart.
     il::Module stripped = module;
     for (size_t i = 0; i < stripped.functions.size(); ++i) {
-        if (i < in.interpreted.size() && in.interpreted[i] != UINT32_MAX) continue;
         il::Function& fn = stripped.functions[i];
-        fn.isExternal = fn.isExternal || fn.blocks.empty();
+        const bool interpreted = i < in.interpreted.size() && in.interpreted[i] != UINT32_MAX;
         fn.blocks.clear();
         fn.blocks.shrink_to_fit();
+        if (interpreted) continue;
+        fn.isExternal = fn.isExternal || module.functions[i].blocks.empty();
         fn.inlineScopes.clear();
         // What only the image's descriptor and wrapper read.
         fn.displayName.clear();
@@ -239,10 +240,35 @@ std::string encodeCompanion(const il::Module& module, const ColdCompanionInputs&
         w.list(t.lineStarts());
         w.var(t.size());
     }
+    // Per interpreted function, in function order: its CreateFunction
+    // callees and parameter counts (what lowering reads of every body) and
+    // its body's size; then the bodies, one after another, which a decode
+    // that defers them does not touch.
+    std::string bodies;
+    std::vector<uint32_t> sizes;
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (i >= in.interpreted.size() || in.interpreted[i] == UINT32_MAX) continue;
+        const il::Function& fn = module.functions[i];
+        const std::string body = il::serializeBlocks(fn.blocks);
+        sizes.push_back(static_cast<uint32_t>(body.size()));
+        bodies += body;
+        std::vector<std::pair<uint32_t, uint32_t>> creates;
+        for (const il::Block& b : fn.blocks) {
+            for (const il::Instruction& inst : b.instructions) {
+                if (inst.op == il::Op::CreateFunction) {
+                    creates.emplace_back(inst.calleeIndex, static_cast<uint32_t>(inst.immI32));
+                }
+            }
+        }
+        w.pairs(creates);
+    }
+    w.list(sizes);
+    w.bytes(bodies);
     return w.take();
 }
 
-bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionInputs& in, std::string& err) {
+bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionInputs& in, std::string& err,
+                     bool deferBodies) {
     Reader r(bytes);
     if (r.var() != kBlobMagic) {
         err = "not a cold companion";
@@ -263,10 +289,46 @@ bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionIn
         r.list(starts);
         t = LineTable::fromLineStarts(std::move(starts), r.u32());
     }
-    if (!r.ok() || !r.atEnd() || in.interpreted.size() != module.functions.size() ||
+    if (!r.ok() || in.interpreted.size() != module.functions.size() ||
         in.fnFlags.size() != module.functions.size()) {
         err = "malformed cold companion";
         return false;
+    }
+    in.bodies.assign(module.functions.size(), std::string_view());
+    in.deferred.deferred.assign(module.functions.size(), 0);
+    in.deferred.createFuncs.assign(module.functions.size(), {});
+    for (size_t i = 0; i < module.functions.size() && r.ok(); ++i) {
+        if (in.interpreted[i] != UINT32_MAX) r.pairs(in.deferred.createFuncs[i]);
+    }
+    std::vector<uint32_t> sizes;
+    r.list(sizes);
+    const std::string_view all = r.bytes();
+    size_t at = 0;
+    size_t next = 0;
+    for (size_t i = 0; i < module.functions.size() && r.ok(); ++i) {
+        if (in.interpreted[i] == UINT32_MAX) continue;
+        if (next >= sizes.size() || sizes[next] > all.size() - at) {
+            err = "malformed cold companion";
+            return false;
+        }
+        const std::string_view body = all.substr(at, sizes[next]);
+        at += sizes[next++];
+        if (deferBodies) {
+            in.bodies[i] = body;
+            in.deferred.deferred[i] = 1;
+        } else if (!il::deserializeBlocks(body, module.functions[i].blocks, err)) {
+            return false;
+        }
+    }
+    if (!r.ok() || !r.atEnd() || next != sizes.size() || at != all.size()) {
+        err = "malformed cold companion";
+        return false;
+    }
+    if (!deferBodies) {
+        in.bodies.clear();
+        in.deferred = DeferredBodies{};
+    } else {
+        in.uniqueNames = computeUniqueFunctionNames(module);
     }
     return true;
 }

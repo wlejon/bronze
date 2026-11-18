@@ -57,8 +57,8 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
     return b.build_bitcast_i64_tagged(tagged);
 }
 
-IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag)
-    : options_(options), diag_(diag), alloc_lowering_(options.enable_tlab) {
+IlLowering::IlLowering(TranslatorOptions options, DiagnosticReporter* diag)
+    : options_(std::move(options)), diag_(diag), alloc_lowering_(options_.enable_tlab) {
     prop_lowering_.set_inline_sets(!options.enable_census);
     prop_lowering_.set_in_process(options.in_process);
     if (options.count_slow_sites && options.slow_site_count != 0) {

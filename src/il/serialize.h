@@ -73,6 +73,12 @@ std::string serializeModule(const Module& module);
 // False with `err` set on any malformed input; `out` is then unspecified.
 bool deserializeModule(std::string_view bytes, Module& out, std::string& err);
 
+// One function's blocks alone, in the module format's encoding: a body kept
+// apart from its module and read only when it is needed (an image's
+// interpreted cold functions, codegen-brass/cold_companion.h).
+std::string serializeBlocks(const std::vector<Block>& blocks);
+bool deserializeBlocks(std::string_view bytes, std::vector<Block>& out, std::string& err);
+
 // Fills `sourceTexts` (when `retainTexts`) and `lineTables` from the program's
 // file texts, in `sourceFiles` order — what lowering built them from.
 void attachSources(Module& module, const std::vector<std::string_view>& texts, bool retainTexts);

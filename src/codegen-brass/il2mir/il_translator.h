@@ -5,6 +5,7 @@
 #include "il_ast.h"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -301,6 +302,11 @@ struct TranslatorOptions {
     bool is_interpreted(size_t fn_index) const {
         return fn_index < interpreted.size() && interpreted[fn_index] != kNotInterpreted;
     }
+    // A companion's deferred bodies (BronzeFunction::body_deferred): fills
+    // AST function `fn_index`'s blocks, which the lowering of its body asks
+    // for first; false when its body does not read. Only with lazy_bodies,
+    // whose provider owns the AST it writes.
+    std::function<bool(size_t fn_index, BronzeFunction& out)> deferred_body;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;
@@ -328,7 +334,7 @@ TranslationResult translate_bronze_ast(
 // lazy_bodies, the same as translate_bronze_ast.
 TranslationResult translate_bronze_ast_lazy(
     BronzeModuleAST&& ast,
-    const TranslatorOptions& options,
+    TranslatorOptions options,
     DiagnosticReporter* diag = nullptr
 );
 

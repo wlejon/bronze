@@ -26,6 +26,7 @@
 #include <string_view>
 #include <vector>
 
+#include "codegen-brass/il_to_brass_ast.h"
 #include "il/il.h"
 
 namespace brass {
@@ -60,6 +61,15 @@ struct ColdCompanionInputs {
     std::vector<std::pair<uint32_t, uint32_t>> speculated;
     std::vector<std::pair<uint32_t, uint32_t>> fallbacks;
     bool perThreadData = true;
+    // A blob decoded with its bodies deferred (decodeCompanion): per IL
+    // function, its body still encoded (il::serializeBlocks; a view into the
+    // blob), read when the function is first lowered, and what lowering
+    // reads of every body before that.
+    std::vector<std::string_view> bodies;
+    DeferredBodies deferred;
+    // With deferred bodies, the module's computeUniqueFunctionNames, which
+    // the build and the resolver both read.
+    std::vector<std::string> uniqueNames;
 };
 
 // Which of a harvested module's functions are interpreted, and what stays
@@ -78,10 +88,14 @@ struct ColdSelection {
 };
 ColdSelection selectInterpreted(const il::Module& module, const std::vector<std::string>& uniqueNames);
 
-// The companion's IL and inputs as one blob, and back (the blob is the
-// module with every body not interpreted dropped, then the inputs).
+// The companion's IL and inputs as one blob, and back. The blob is the
+// module with every body dropped, the inputs, then each interpreted body on
+// its own with its CreateFunction callees: `deferBodies` leaves the bodies
+// in the blob (ColdCompanionInputs::bodies), each read when its function is
+// first lowered, so the first cold call reads one body, not every one.
 std::string encodeCompanion(const il::Module& module, const ColdCompanionInputs& in);
-bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionInputs& in, std::string& err);
+bool decodeCompanion(std::string_view bytes, il::Module& module, ColdCompanionInputs& in, std::string& err,
+                     bool deferBodies = false);
 
 // The image's `__bronze_cold_link` (il2mir kColdLinkSymbol), read-only.
 struct ColdLink {

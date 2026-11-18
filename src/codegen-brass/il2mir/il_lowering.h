@@ -30,7 +30,7 @@ bool is_literal_il_op(BronzeOp op);
 
 class IlLowering {
 public:
-    IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag = nullptr);
+    IlLowering(TranslatorOptions options, DiagnosticReporter* diag = nullptr);
 
     std::unique_ptr<Module> lower_module(const BronzeModuleAST& ast);
     // Lazy bodies (TranslatorOptions::lazy_bodies): builds the body of `fn`,
@@ -38,6 +38,9 @@ public:
     // must outlive this object, as must this object the module). The
     // module's body provider; run one at a time.
     bool lower_lazy_body(Function& fn);
+    // The AST lower_module will be given, writable: its deferred bodies
+    // (BronzeFunction::body_deferred) are filled in there when first lowered.
+    void set_deferred_ast(BronzeModuleAST* ast) { deferred_ast_ = ast; }
     Value* ensure_type(Value* val, Type target_type, Builder& b);
     std::string resolve_callee(const std::string& callee_name) const;
     std::string resolve_create_func_callee(const std::string& callee_name);
@@ -273,6 +276,9 @@ private:
     void apply_inst_loc(Builder& b, const BronzeInstruction& inst);
     bool has_error_ = false;
     const BronzeModuleAST* current_ast_ = nullptr;
+    // The same AST, writable, when its deferred bodies are filled in on
+    // first need (TranslatorOptions::deferred_body; translate_bronze_ast_lazy).
+    BronzeModuleAST* deferred_ast_ = nullptr;
     size_t current_fn_idx_ = 0;
     std::unordered_map<size_t, std::unordered_map<std::string, std::string>> caller_to_callee_map_;
     std::unordered_map<size_t, std::unordered_map<std::string, std::vector<std::string>>> caller_create_func_targets_;

@@ -336,6 +336,12 @@ struct BronzeFunction {
     };
     std::vector<InlineScope> inline_scopes;
     std::vector<BronzeBlock> blocks;
+    // A companion's interpreted function whose body is not converted yet
+    // (TranslatorOptions::deferred_body builds it on first need): `blocks`
+    // is empty, and `create_funcs` is what lowering reads of every body up
+    // front, each CreateFunc's callee and parameter count, in body order.
+    bool body_deferred = false;
+    std::vector<std::pair<std::string, uint32_t>> create_funcs;
 };
 
 struct BronzeModuleAST {

@@ -9,6 +9,7 @@
 
 #include "abi/bronze_abi.h"
 #include "il/feedback_site.h"
+#include "il/serialize.h"
 #include "il/verifier_proofs.h"
 #include "support/timings.h"
 
@@ -355,7 +356,11 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // One level inside buildObjectFile's "mir" phase: "translate" is brass's
     // IL lowering plus its whole MIR optimization pipeline.
     support::PhaseTimer mtimer(support::timingsEnabled(), 6);
-    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
+    // A deferred companion's names were computed when it was decoded.
+    const bool namesGiven = companion_ && !companion_->uniqueNames.empty();
+    std::vector<std::string> ownNames;
+    if (!namesGiven) ownNames = computeUniqueFunctionNames(module);
+    const std::vector<std::string>& uniqueNames = namesGiven ? companion_->uniqueNames : ownNames;
 
     const bool optimize = this->optimize();
     il2mir::TranslatorOptions options;
@@ -509,20 +514,43 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // element access) are what lowering emits unchecked code for, so they
     // are checked in every build, Release too: a certificate that does not
     // hold refuses the module with the function and the proof named,
-    // rather than run code that could read memory it should not.
-    if (!il::verifyModuleProofs(module, diags)) {
+    // rather than run code that could read memory it should not. Not a
+    // companion's (cold_companion.h): its bodies are the image's own IL,
+    // which the image's build proof-checked with the rest of the module, and
+    // they ship inside that image, whose native code is trusted on the same
+    // grounds.
+    if (!companion_ && !il::verifyModuleProofs(module, diags)) {
         return nullptr;
     }
     mtimer.mark("proofs");
 
+    // A companion decoded with its bodies deferred reads each when it is
+    // first lowered: the IL body from the blob, then its brass AST.
+    const codegen::DeferredBodies* deferred =
+        companion_ && !companion_->bodies.empty() ? &companion_->deferred : nullptr;
+    // The module and the inputs outlive the MIR module (the resolver's
+    // Companion owns all three), and the bodies are views into the image.
+    if (deferred) {
+        const il::Module* mod = &module;
+        const codegen::ColdCompanionInputs* in = companion_;
+        options.deferred_body = [mod, in](size_t i, il2mir::BronzeFunction& out) {
+            if (i >= in->bodies.size() || in->bodies[i].empty()) return false;
+            il::Function fn = mod->functions[i];
+            std::string err;
+            if (!il::deserializeBlocks(in->bodies[i], fn.blocks, err)) return false;
+            out = codegen::lowerFunctionToBrassAst(*mod, fn, i, in->uniqueNames);
+            return true;
+        };
+    }
+
     brass::DiagnosticReporter reporter;
     std::vector<uint32_t> globalReadKeys;
     mtimer.mark("options");
-    auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
+    auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys, deferred);
     if (companion_) globalReadKeys = companion_->globalReadKeys;
     ast.global_read_keys = globalReadKeys;
     mtimer.mark("brass ast");
-    il2mir::TranslationResult res = il2mir::translate_bronze_ast_lazy(std::move(ast), options, &reporter);
+    il2mir::TranslationResult res = il2mir::translate_bronze_ast_lazy(std::move(ast), std::move(options), &reporter);
     mtimer.mark("translate");
 
     if (!res.success || !res.module || reporter.has_errors()) {

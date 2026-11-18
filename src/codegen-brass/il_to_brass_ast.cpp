@@ -654,7 +654,8 @@ std::string globalReadThunkName(uint32_t keyIndex) {
 il2mir::BronzeModuleAST lowerToBrassAst(
     const il::Module& module,
     const std::vector<std::string>& uniqueNames,
-    std::vector<uint32_t>* globalReadKeys
+    std::vector<uint32_t>* globalReadKeys,
+    const DeferredBodies* deferred
 ) {
     il2mir::BronzeModuleAST ast;
     ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
@@ -702,6 +703,16 @@ il2mir::BronzeModuleAST lowerToBrassAst(
     if (globalReadKeys) {
         for (const auto& keys : chunkKeys) globalReadKeys->insert(globalReadKeys->end(), keys.begin(), keys.end());
     }
+    if (deferred) {
+        for (size_t fnIdx = 0; fnIdx < count && fnIdx < deferred->deferred.size(); ++fnIdx) {
+            if (!deferred->deferred[fnIdx]) continue;
+            il2mir::BronzeFunction& bfn = ast.functions[fnIdx];
+            bfn.body_deferred = true;
+            for (const auto& [callee, params] : deferred->createFuncs[fnIdx]) {
+                bfn.create_funcs.emplace_back(ctx.fnName(callee), params);
+            }
+        }
+    }
 
     if (globalReadKeys && !globalReadKeys->empty()) {
         std::sort(globalReadKeys->begin(), globalReadKeys->end());
@@ -710,6 +721,12 @@ il2mir::BronzeModuleAST lowerToBrassAst(
     }
 
     return ast;
+}
+
+il2mir::BronzeFunction lowerFunctionToBrassAst(const il::Module& module, const il::Function& fn, size_t fnIdx,
+                                               const std::vector<std::string>& uniqueNames) {
+    const LowerContext ctx{module, uniqueNames, module.lineTables};
+    return convertFunction(fn, fnIdx, uniqueNames, ctx, nullptr);
 }
 
 namespace {
