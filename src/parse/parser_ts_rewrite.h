@@ -111,6 +111,14 @@ private:
     std::string object_;
 };
 
+// A reference spelled `undefined` parses as the literal. Where a parameter,
+// variable, catch binding or function of that name shadows the global (a
+// sloppy `function (window, undefined)` wrapper), the reference is to that
+// binding instead, so this walk turns each such literal into an Ident.
+// Run only for a file that binds the name (Parser::expect notes it); the top
+// level keeps the literal, the global `undefined` being read-only.
+bool bindUndefinedReferences(std::vector<ast::StmtPtr>& body, DiagnosticSink& diags);
+
 // Node builders for the JavaScript the TypeScript lowerings emit. Every node
 // gets the span of the declaration it stands for, so a diagnostic or a stack
 // trace inside the emitted code points at the source that produced it.

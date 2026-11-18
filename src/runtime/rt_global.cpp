@@ -221,6 +221,28 @@ extern "C" uint64_t bronze_global_get_name(const char* name) {
     return BRONZE_ABI_UNDEFINED_BITS;
 }
 
+// A write to a name no scope declared (lower_unresolved.cpp emitUnresolvedPut):
+// 9.1.1.4.5 SetMutableBinding on the global environment, whose object record
+// is the global object. A name the object has (or inherits, or a host
+// registered) is Set there, refused as any Set is; a name it lacks is
+// created by sloppy code — `Top = 1` makes `globalThis.Top`, configurable
+// and deletable like any property a Set adds — and is 6.2.5.6 PutValue
+// step 3's ReferenceError in strict code.
+extern "C" void bronze_put_unresolved(uint64_t nameBits, uint64_t valBits, bool strict) {
+    Rooted<Value> name{Value(nameBits)};
+    Rooted<Value> val{Value(valBits)};
+    Rooted<Value> glob{rtGlobalThisObject()};
+    if (strict) {
+        const std::string text = rtAsciiChars(name.get().asString<StringHeader>());
+        Value host = Value::fromUndefined();
+        if (!rtHostGlobalLookup(text, host) && !bronze_has_property(name.get().rawBits(), glob.get().rawBits())) {
+            rtThrowReferenceError(text + " is not defined");
+            return;
+        }
+    }
+    bronze_elem_set(glob.get().rawBits(), name.get().rawBits(), val.get().rawBits(), strict);
+}
+
 extern "C" uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
                                            uint32_t nameKey, uint32_t fnFlags, uint64_t envBits);
 extern "C" uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,

@@ -49,6 +49,15 @@ bool Lowerer::resolvesName(const std::string& name) const {
     return isProvidedGlobal(name);
 }
 
+// Whether a WRITE to a name no scope of this module declares goes to the
+// global object (emitUnresolvedPut): any name the ladder cannot resolve, and
+// the three value properties reads fold to constants, whose global
+// properties are read-only — so the put is a sloppy no-op and a strict
+// TypeError, as the spec makes it.
+bool Lowerer::writesGlobalObject(const std::string& name) const {
+    return name == "NaN" || name == "Infinity" || name == "undefined" || !resolvesName(name);
+}
+
 // Once per NAME, not once per mention: `document` appears eleven times in
 // three.js's utils.js and eleven identical warnings is a diagnostic nobody
 // reads. The set is per-module and lowering order is deterministic, so the
@@ -97,6 +106,41 @@ Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
     inst.span = span;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
+}
+
+// The WRITE of an unresolved name: 9.1.1.4.5 SetMutableBinding on the global
+// environment, at run time (bronze_put_unresolved). A property the global
+// object has is set; a name it lacks is created there by sloppy code
+// (`Top = 1`, `Inner = 2` in a function: a configurable property a later
+// `delete` removes, read back by every script through ResolveName) and is
+// 6.2.5.6 PutValue step 3's ReferenceError in strict code and modules.
+void Lowerer::emitUnresolvedPut(const std::string& name, Value value, Span span, il::Function& ilFn) {
+    if (!resolvesName(name)) warnUnresolved(name, span);
+    const uint32_t putFn = registerExternalFunction("bronze_put_unresolved", il::Type::Void,
+                                                    {il::Type::Dynamic, il::Type::Dynamic, il::Type::Bool});
+    il::ValueId nameVal = ilFn.valueCount++;
+    il::Instruction nameInst;
+    nameInst.op = il::Op::Box;
+    nameInst.type = il::Type::Dynamic;
+    nameInst.boxType = il::Type::Str;
+    nameInst.result = nameVal;
+    nameInst.keyIndex = getKeyConstantIndex(name);
+    emitInst(ilFn, nameInst);
+    il::ValueId strictVal = ilFn.valueCount++;
+    il::Instruction boolInst;
+    boolInst.op = il::Op::ConstBool;
+    boolInst.type = il::Type::Bool;
+    boolInst.result = strictVal;
+    boolInst.immI32 = strictFlag() ? 1 : 0;
+    emitInst(ilFn, boolInst);
+    il::Instruction call;
+    call.op = il::Op::Call;
+    call.type = il::Type::Void;
+    call.result = il::kNoValue;
+    call.operands = {nameVal, boxValueIfNeeded(value, ilFn).id, strictVal};
+    call.calleeIndex = putFn;
+    call.span = span;
+    emitInst(ilFn, call);
 }
 
 }  // namespace bronze::lower

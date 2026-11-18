@@ -15,9 +15,9 @@
 // 3. 13.15.2 (simple assignment) evaluates the right side BEFORE PutValue, so
 //    `missing = sideEffect()` runs the call and then throws; 13.15.4 (compound
 //    assignment) begins with GetValue of the target, so `missing += 1` throws
-//    before its right side runs at all. A module is strict code (16.2.1.6.4),
-//    so PutValue on an unresolvable reference throws rather than creating a
-//    global.
+//    before its right side runs at all. In strict code PutValue on an
+//    unresolvable reference throws rather than creating a global (sloppy
+//    code's is sloppy_global_assign).
 // 4. An unresolvable name inside an argument list throws while the arguments
 //    are being evaluated, so the call never happens.
 //
@@ -58,19 +58,22 @@ function bump() {
   return 1;
 }
 
-try {
-  missingTarget = bump();
-} catch (e) {
-  console.log(e.message);
-}
-console.log("right side ran:", sideEffects);
+(function () {
+  "use strict";
+  try {
+    missingTarget = bump();
+  } catch (e) {
+    console.log(e.message);
+  }
+  console.log("right side ran:", sideEffects);
 
-try {
-  missingTarget += bump();
-} catch (e) {
-  console.log(e.message);
-}
-console.log("right side ran:", sideEffects);
+  try {
+    missingTarget += bump();
+  } catch (e) {
+    console.log(e.message);
+  }
+  console.log("right side ran:", sideEffects);
+})();
 
 try {
   console.log("unreachable", missingArgument);

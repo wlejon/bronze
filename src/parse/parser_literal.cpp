@@ -610,7 +610,10 @@ ExprPtr Parser::parseObjectLit() {
             const Token& nameTok = advance();
             // (`of` has a token of its own for `for (x of y)` and is an
             // ordinary binding name everywhere else: `{ of }` is shorthand.)
-            const bool reserved = nameTok.kind != TokenKind::Identifier && nameTok.kind != TokenKind::KwOf;
+            // `undefined` is an identifier (Parser::expect): `{ undefined }`
+            // reads the binding, which lowering resolves like any name.
+            const bool reserved = nameTok.kind != TokenKind::Identifier && nameTok.kind != TokenKind::KwOf &&
+                                  nameTok.kind != TokenKind::KwUndefined;
             prop.key = std::string(nameTok.text);
             if (!reserved && (prop.key == "get" || prop.key == "set") &&
                 (isIdentifierName(peek().kind) || check(TokenKind::StringLiteral) ||

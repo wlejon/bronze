@@ -1,0 +1,7 @@
+1 function
+Lib assign 1 function | defs 3 | spread {"a":1,"c":3} | assignFrom {"a":1,"c":3} | entries [["a",1],["b",null],["c",3]] | forin [a,b,c] | json undefined | rest {"c":3}
+K assign 1 function | defs 3 | spread {"s":1,"a":1,"c":3} | assignFrom {"s":1,"a":1,"c":3} | entries [["s",1],["a",1],["b",null],["c",3]] | forin [s,a,b,c] | json undefined | rest {"s":1,"c":3}
+arrow assign 1 function | defs 3 | spread {"a":1,"c":3} | assignFrom {"a":1,"c":3} | entries [["a",1],["b",null],["c",3]] | forin [a,b,c] | json undefined | rest {"c":3}
+bound assign 1 function | defs 3 | spread {"a":1,"c":3} | assignFrom {"a":1,"c":3} | entries [["a",1],["b",null],["c",3]] | forin [a,b,c] | json undefined | rest {"c":3}
+gen assign 1 function | defs 3 | spread {"a":1,"c":3} | assignFrom {"a":1,"c":3} | entries [["a",1],["b",null],["c",3]] | forin [a,b,c] | json {"a":1,"c":3} | rest {"c":3}
+ta assign 1 function | defs 3 | spread {"0":0,"1":0,"a":1,"c":3} | assignFrom {"0":0,"1":0,"a":1,"c":3} | entries [["0",0],["1",0],["a",1],["b",null],["c",3]] | forin [0,1,a,b,c] | json {"0":0,"1":0,"a":1,"c":3} | rest {"0":0,"1":0,"c":3}

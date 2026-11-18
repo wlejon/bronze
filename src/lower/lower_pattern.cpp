@@ -152,11 +152,10 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
         emitEnvSet(depth, index, boxed, ilFn, /*assigning=*/true);
         return true;
     }
-    if (!resolvesName(name)) {
-        // A destructuring ASSIGNMENT target that names nothing. The source has
-        // already been evaluated and destructured, which is the order 13.15.2
-        // gives: every PutValue happens after, and this one throws.
-        emitReferenceError(name, span, ilFn);
+    if (writesGlobalObject(name)) {
+        // A destructuring ASSIGNMENT target that names nothing: a global
+        // reference, written as `x = v` writes one (emitUnresolvedPut).
+        emitUnresolvedPut(name, boxed, span, ilFn);
         return true;
     }
     diags_.error(span, "cannot assign to '" + name + "'");

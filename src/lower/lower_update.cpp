@@ -111,10 +111,14 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
     uint32_t index = 0;
     if (!isLocal &&
         (currentEnvValue_ == il::kNoValue || !findEnclosingEnvVar(ident->name, depth, index))) {
-        if (!resolvesName(ident->name)) {
-            // `x++` on an unresolvable name throws at the READ, before
-            // any write is attempted (13.4.4.1 step 1 is GetValue).
-            return emitReferenceError(ident->name, ident->span, ilFn);
+        if (writesGlobalObject(ident->name)) {
+            // A global reference: read through ResolveName, which throws
+            // when the global object lacks the name (13.4.4.1 step 1 is
+            // GetValue), then written back as `x = v` writes one.
+            Value numOld = emitUpdateOld(emitReferenceError(ident->name, ident->span, ilFn), ilFn);
+            Value newVal = emitUpdateStep(numOld, un.op, ilFn);
+            emitUnresolvedPut(ident->name, newVal, ident->span, ilFn);
+            return isPrefix(un.op) ? newVal : numOld;
         }
         // A name the ladder DOES resolve, but not to something an
         // update can write: a module function, or a provided global.

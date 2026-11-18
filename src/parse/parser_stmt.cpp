@@ -1,8 +1,12 @@
 // The token cursor, the module entry point, and one method per statement
 // production. Expressions are parser_expr.cpp.
 
+#include <unordered_set>
+
+#include "ast/assigned.h"
 #include "ast/queries.h"
 #include "parse/parser.h"
+#include "parse/parser_ts_rewrite.h"
 
 namespace bronze {
 
@@ -27,6 +31,15 @@ bool Parser::match(TokenKind kind) {
 
 const Token* Parser::expect(TokenKind kind, const char* what) {
     if (check(kind) || (kind == TokenKind::Identifier && check(TokenKind::KwOf))) return &advance();
+    // `undefined` is an identifier, not a reserved word: only the global
+    // property is read-only, so a parameter, a variable, a catch binding or a
+    // function may be named it (jQuery's `function (window, undefined)`).
+    // A reference still parses as the literal; bindUndefinedReferences turns
+    // the ones such a binding shadows back into references to it.
+    if (kind == TokenKind::Identifier && check(TokenKind::KwUndefined)) {
+        bindsUndefined_ = true;
+        return &advance();
+    }
     std::string msg = std::string("expected ") + what + ", got '" +
                       std::string(peek().text.empty() ? tokenKindName(peek().kind) : peek().text) + "'";
     diags_.error(peek().span, msg);
@@ -103,7 +116,60 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         error("unconsumed input after last declaration");
         return nullptr;
     }
+    if (bindsUndefined_ && !ts_rewrite::bindUndefinedReferences(mod->body, diags_)) return nullptr;
+    rebindableFunctionsToVars(mod->body);
     return mod;
+}
+
+// A top-level function declaration is a MUTABLE binding (9.1.1.1.5 for a
+// module, 9.1.1.4 for a script): `function Ni() { return (Ni = …), Ni(…) }`,
+// Babel's `_extends` helper, replaces itself on first call. Lowering compiles a
+// top-level declaration as a static function, whose name nothing can rebind,
+// so one the file rebinds anywhere (ast::getDeeplyReboundNames, which errs
+// toward finding one) becomes `var Ni = function () {…}` at the head of the
+// body: initialized before any statement runs, as instantiation would, named
+// `Ni` by NamedEvaluation, and with no name binding of its own inside, so a
+// write in its body reaches the outer binding. An export of it is a live
+// binding as any exported variable is.
+void Parser::rebindableFunctionsToVars(std::vector<StmtPtr>& body) {
+    std::unordered_set<std::string> rebound;
+    bool any = false;
+    for (const auto& s : body) {
+        if (dynamic_cast<const FunctionDecl*>(s.get())) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) return;
+    rebound = ast::getDeeplyReboundNames(body);
+    if (rebound.empty()) return;
+    std::vector<StmtPtr> hoisted;
+    for (auto& s : body) {
+        auto* fn = dynamic_cast<FunctionDecl*>(s.get());
+        if (!fn || fn->name.empty() || rebound.count(fn->name) == 0) continue;
+        auto expr = std::make_unique<FunctionExpr>();
+        expr->span = fn->span;
+        expr->params = std::move(fn->params);
+        expr->returnType = std::move(fn->returnType);
+        expr->body = std::move(fn->body);
+        expr->strict = fn->strict;
+        expr->isGenerator = fn->isGenerator;
+        expr->isAsync = fn->isAsync;
+        auto decl = std::make_unique<VarDecl>();
+        decl->span = fn->span;
+        decl->isVar = true;
+        decl->name = fn->name;
+        decl->init = std::move(expr);
+        hoisted.push_back(std::move(decl));
+        s.reset();
+    }
+    std::vector<StmtPtr> rest;
+    rest.reserve(body.size());
+    for (auto& s : body) {
+        if (s) rest.push_back(std::move(s));
+    }
+    body = std::move(hoisted);
+    for (auto& s : rest) body.push_back(std::move(s));
 }
 
 std::vector<StmtPtr> Parser::parseBlockOrSingleStmt() {

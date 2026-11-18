@@ -140,6 +140,9 @@
      * still answered but never cached, because the program can assign again. */ \
     X(bronze_global_get_cached,   BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_resolve_name,        BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
+    /* A write to an unresolved name: the global object's property, created \
+     * by sloppy code (rt_global.cpp). Name string, value, strict. */ \
+    X(bronze_put_unresolved,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     /* A `--pins` claim CONTRADICTED by a value the program actually produced
      * (src/types/pins.h). The u32 is a registered key index holding the

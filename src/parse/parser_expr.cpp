@@ -157,6 +157,15 @@ ExprPtr Parser::parseAssign() {
         return nullptr;
     }
     if (!checkStrictAssignmentTarget(*lhs)) return nullptr;
+    // `undefined = v` writes the binding of that name: a shadowing one, or
+    // the global object's read-only property (a no-op in sloppy code, a
+    // TypeError in strict). The target is the identifier, not the literal.
+    if (dynamic_cast<UndefinedLit*>(lhs.get())) {
+        auto name = std::make_unique<Ident>();
+        name->span = lhs->span;
+        name->name = "undefined";
+        lhs = std::move(name);
+    }
     // `[a, b] = pair` and `({ x } = o)`. Nothing before the `=` distinguishes
     // the pattern from the literal that covers it, which is why ECMA-262
     // 13.15.5 refines it exactly here — at the token that reveals which one
@@ -375,13 +384,6 @@ ExprPtr Parser::parseUnaryPrefix() {
         del->operand = std::move(operand);
         lastOperandIsUnary_ = true;
         return del;
-    }
-    if (check(TokenKind::KwClass)) {
-        auto expr = parseClassExpr();
-        if (!expr) return nullptr;
-        auto suffixed = parsePostfixOps(std::move(expr));
-        lastOperandIsUnary_ = false;
-        return suffixed;
     }
     if (check(TokenKind::Ellipsis)) {
         // The three list positions that admit a spread parse it themselves,
@@ -824,6 +826,10 @@ ExprPtr Parser::parsePrimary() {
             return parseArrayLit();
         case TokenKind::KwFunction:
             return parseFunctionExpr();
+        // A ClassExpression is a PrimaryExpression (13.2), so it is what a
+        // `new` constructs too: `new class extends Base { … }()`.
+        case TokenKind::KwClass:
+            return parseClassExpr();
         // The two `import` forms that are EXPRESSIONS rather than declarations
         // (ECMA-262 13.3.10 and 13.3.12). Neither reaches the statement
         // production, so naming them there is not enough — an `import(...)` in

@@ -130,6 +130,9 @@ private:
     // declared inside strict code is strict" means. Nothing later can ask the
     // question, which is why the answer is written onto the AST nodes here.
     bool strict_ = false;
+    // Whether the file binds a name `undefined` anywhere (Parser::expect),
+    // so parseModule runs ts_rewrite::bindUndefinedReferences on it.
+    bool bindsUndefined_ = false;
     // Whether this file is TypeScript (parseModule decides, from its name).
     // Several TypeScript productions are spelled with tokens that already mean
     // something in JavaScript — `a < b > (c)` is two comparisons in JavaScript
@@ -551,6 +554,7 @@ private:
     ast::StmtPtr parseForAssignmentHead(const Token& kw, bool isAwait);
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
+    void rebindableFunctionsToVars(std::vector<ast::StmtPtr>& body);
     // --- parser_type*.cpp: TypeScript types ------------------------------
     // A type, as a tree (ast/type.h). Null on a diagnosed error.
     // `inArrowReturn` is set for an arrow function's return annotation, where

@@ -137,14 +137,12 @@ static Value toObjectForAssign(Value v) {
     }
     // 20.1.2.1 step 1: ToObject(target) — a primitive target is copied INTO
     // its box, which is then the result.
+    // Any object is a target: a proxy's [[Set]] is its trap and every other
+    // kind's that is not an ordinary object (an array, a function, a typed
+    // array) the computed write, each reached by the copy loop
+    // (rt_spread.cpp's `copyProperty`).
     if (!v.isObject()) return rtToObject(v);
-    if (rtObjectIsPlain(v)) return v;
-    const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
-    // A proxy's [[Set]] is its trap and an array's is the computed write;
-    // the copy loop (rt_spread.cpp's `copyProperty`) reaches each through
-    // its own path.
-    if (kind == HeapKind::Proxy || kind == HeapKind::Array) return v;
-    refuseObjectKind(v, "assign");
+    return v;
 }
 
 uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

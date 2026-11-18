@@ -1,0 +1,14 @@
+object true
+5
+1 2
+catch 1
+3 4
+3 3
+undefined x
+true false
+pat
+{"undefined":4} true
+undefined NaN Infinity
+TypeError
+TypeError
+strict param

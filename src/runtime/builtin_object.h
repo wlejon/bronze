@@ -59,7 +59,6 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member);
 // describe, redefine, or copy into. Any other receiver is the TypeError it
 // throws; it answers true when it returns.
 bool rtObjectRequirePropertyTable(Value v, const char* member);
-[[noreturn]] void refuseObjectKind(Value v, const char* member);
 
 // Does this value keep its properties in a shape? The predicate the two halves
 // share, so that "a plain object" means one thing across both files.

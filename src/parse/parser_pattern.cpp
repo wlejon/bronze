@@ -163,7 +163,9 @@ PatternPtr Parser::parseObjectPattern() {
             if (match(TokenKind::Colon)) {
                 if (!parsePatternTarget(elem)) return nullptr;
             } else {
-                if (keyTok->kind != TokenKind::Identifier && keyTok->kind != TokenKind::KwOf) {
+                if (keyTok->kind == TokenKind::KwUndefined) {
+                    bindsUndefined_ = true;  // an identifier (Parser::expect)
+                } else if (keyTok->kind != TokenKind::Identifier && keyTok->kind != TokenKind::KwOf) {
                     diags_.error(keyTok->span,
                                  "a reserved word may not be used as a shorthand property in a pattern");
                     return nullptr;

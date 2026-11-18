@@ -444,4 +444,24 @@ std::string heritageName(const Expr* expr) {
     return "";
 }
 
+namespace {
+
+class BindUndefined final : public ScopedWalk {
+public:
+    using ScopedWalk::ScopedWalk;
+
+private:
+    bool visitSlot(ExprPtr& p) override {
+        if (!dynamic_cast<UndefinedLit*>(p.get()) || !shadowed("undefined")) return false;
+        p = makeIdent("undefined", p->span);
+        return true;
+    }
+};
+
+}  // namespace
+
+bool bindUndefinedReferences(std::vector<StmtPtr>& body, DiagnosticSink& diags) {
+    return BindUndefined(diags).walkStmts(body);
+}
+
 }  // namespace bronze::ts_rewrite

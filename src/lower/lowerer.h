@@ -230,6 +230,8 @@ private:
     bool resolvesName(const std::string& name) const;
     void warnUnresolved(const std::string& name, Span span);
     Value emitReferenceError(const std::string& name, Span span, il::Function& ilFn);
+    void emitUnresolvedPut(const std::string& name, Value value, Span span, il::Function& ilFn);
+    bool writesGlobalObject(const std::string& name) const;
     std::vector<std::string> functionVarNames_;
     std::unordered_set<std::string> warnedUnresolved_;
 

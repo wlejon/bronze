@@ -351,10 +351,11 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
         rtProxySet(target.get(), key.get(), val.get(), kSpreadWriteThrows);
         return;
     }
-    // An array target (`Object.assign(arr, ...)`) keeps an index in its
-    // block and a name in its own shape; the computed write is the one
-    // path that knows which, and it reports its own refusals.
-    if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+    // Any target that is not an ordinary object — an array (an index in its
+    // block, a name in its own shape), a function (its statics, `name`,
+    // `prototype`), a typed array — takes the computed write, the one path
+    // that knows where each kind keeps a key, and it reports its own refusals.
+    if (!rtObjectIsPlain(target.get())) {
         bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                         kSpreadWriteThrows);
         return;
@@ -683,20 +684,32 @@ void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode
         }
         return;
     }
-    // Every PRIMITIVE now has an answer, so what is left is an object kind
-    // whose own keys are not in a shape. It is named rather than reported
-    // empty, because "no properties" is a wrong answer about a receiver with
-    // elements in it and not a missing one.
+    // Any other object kind whose own keys are not in a shape (an iterator, a
+    // generator): 7.3.25 as written, over the object's own internal methods —
+    // its [[OwnPropertyKeys]] (both halves, Reflect.ownKeys's order), each
+    // key's own descriptor for enumerability, and [[Get]].
     if (!HeapKind::shapeNamesPrototype(srcVal.asObject<HeapObjectHeader>()->flags)) {
-        if (excluded) {
-            rtThrowTypeError(std::string("object rest from ") + rtObjectKindName(srcVal) +
-                             " is unsupported (its own keys are not in a property table a "
-                             "rest pattern could read)");
-            return;
+        const uint64_t call[1] = {src.get().rawBits()};
+        Rooted<Value> names{Value(rtObjectGetOwnPropertyNames(0, 0, 1, call))};
+        const uint64_t symCall[1] = {src.get().rawBits()};
+        Rooted<Value> symbols{Value(rtObjectGetOwnPropertySymbols(0, 0, 1, symCall))};
+        for (Rooted<Value>* list : {&names, &symbols}) {
+            const uint32_t keyCount = list->get().asObject<ArrayHeader>()->length;
+            for (uint32_t ki = 0; ki < keyCount; ++ki) {
+                Rooted<Value> key{list->get().asObject<ArrayHeader>()->getElem(ki)};
+                if (stringTarget.get().isString() && key.get().isString() &&
+                    stringTargetRefuses(stringTarget.get(),
+                                        rtUtf8Chars(key.get().asString<StringHeader>()))) {
+                    return;
+                }
+                if (excludesKey(excluded, key)) continue;
+                OwnPropertyDetail found;
+                if (!rtOwnPropertyOf(src, key.get(), found) || !found.enumerable) continue;
+                Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+                writeKey(target, key, val, mode);
+            }
         }
-        fatal((std::string("object spread of ") + rtObjectKindName(srcVal) +
-               " (its own keys are not in a property table a spread could read)")
-                  .c_str());
+        return;
     }
     // A typed array's elements are own enumerable properties that come AHEAD
     // of its named keys (10.4.5.7), and they live in the view's window rather

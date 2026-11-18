@@ -443,21 +443,39 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         const size_t bindingIdx = isLocal ? it->second : 0;
         uint32_t depth = 0;
         uint32_t index = 0;
+        // A name no scope declares is a reference to the global environment:
+        // read through ResolveName (a ReferenceError when the global object
+        // lacks it) and written through emitUnresolvedPut, which creates it
+        // in sloppy code.
+        bool isGlobal = false;
         if (!isLocal) {
             if (currentEnvValue_ == il::kNoValue ||
                 !findEnclosingEnvVar(ident->name, depth, index)) {
-                if (!resolvesName(ident->name)) {
-                    if (!compound && !lowerExpr(*bin->rhs, ilFn)) return std::nullopt;
-                    return emitReferenceError(ident->name, ident->span, ilFn);
+                if (!writesGlobalObject(ident->name)) {
+                    diags_.error(ident->span, "cannot assign to '" + ident->name + "'");
+                    return std::nullopt;
                 }
-                diags_.error(ident->span, "cannot assign to '" + ident->name + "'");
-                return std::nullopt;
+                isGlobal = true;
             }
         }
+        auto readTarget = [&]() {
+            if (isGlobal) return emitReferenceError(ident->name, ident->span, ilFn);
+            return isLocal ? readBinding(varBindings_[bindingIdx], ilFn) : emitEnvGet(depth, index, ilFn);
+        };
+        auto writeTarget = [&](Value v) {
+            if (isGlobal) {
+                emitUnresolvedPut(ident->name, v, ident->span, ilFn);
+            } else if (isLocal) {
+                if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
+                    writeBinding(varBindings_[bindingIdx], v, ilFn);
+                }
+            } else {
+                emitEnvSet(depth, index, v, ilFn, /*assigning=*/true);
+            }
+        };
 
         if (isLogical) {
-            Value curVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
-                                   : emitEnvGet(depth, index, ilFn);
+            Value curVal = readTarget();
             il::ValueId condId = il::kNoValue;
             if (bin->op == ast::BinaryOp::NullishAssign) {
                 if (curVal.type != il::Type::Dynamic) {
@@ -483,13 +501,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             auto rhsVal = lowerExpr(*bin->rhs, ilFn);
             if (!rhsVal) return std::nullopt;
             Value rhsStored = *rhsVal;
-            if (isLocal) {
-                if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
-                    writeBinding(varBindings_[bindingIdx], rhsStored, ilFn);
-                }
-            } else {
-                emitEnvSet(depth, index, rhsStored, ilFn, /*assigning=*/true);
-            }
+            writeTarget(rhsStored);
             auto stateRhs = snapshotVarStates();
             bool rhsReaches = !currentBlockIsTerminated(ilFn);
             size_t rhsEndBlockIdx = currentBlockIdx_;
@@ -548,10 +560,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         }
 
         std::optional<Value> curVal;
-        if (compound) {
-            curVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
-                             : emitEnvGet(depth, index, ilFn);
-        }
+        if (compound) curVal = readTarget();
 
         auto rhsVal = compound ? lowerExpr(*bin->rhs, ilFn)
                                : lowerNamedEvaluation(*bin->rhs, sourceSpelling(ident->name), ilFn);
@@ -559,13 +568,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                                 : *rhsVal;
-        if (isLocal) {
-            if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
-                writeBinding(varBindings_[bindingIdx], stored, ilFn);
-            }
-        } else {
-            emitEnvSet(depth, index, stored, ilFn, /*assigning=*/true);
-        }
+        writeTarget(stored);
         // The binding now holds this: a handle of a known class, or — for
         // anything else — no longer one.
         noteNativeClassOfBinding(ident->name, stored.nativeClass);

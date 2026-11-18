@@ -150,12 +150,6 @@ const char* propertyStoreReason(Value v) {
 // rest of them did.
 }  // namespace
 
-[[noreturn]] void refuseObjectKind(Value v, const char* member) {
-    fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
-           propertyStoreReason(v) + ")")
-              .c_str());
-}
-
 bool rtObjectRequirePropertyTable(Value v, const char* member) {
     if (isPlainObject(v)) return true;
     if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) return true;

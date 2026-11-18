@@ -554,6 +554,38 @@ wrapper (the two such kinds that carry a shape), and an add through such a
 chain is never cached. A program that makes none a prototype pays one branch
 per cached chain walk.
 
+## Names no scope declares, and rebound declarations
+
+A name that lowering cannot resolve to a binding of the program is a
+reference to the global environment, settled at run time
+(`lower/lower_unresolved.cpp`). A read asks the host's globals and then the
+global object, and is a ReferenceError when neither has the name. A write
+(`=`, a compound or logical assignment, `++`, a destructuring target) goes
+through `bronze_put_unresolved` (`runtime/rt_global.cpp`), which is
+9.1.1.4.5:
+- a name the global object has or inherits is set there;
+- sloppy code creates a missing name as an ordinary, deletable property
+  (`Top = 1`, at top level or in a function);
+- strict code gets a ReferenceError for a missing name.
+
+Writes to `undefined`, `NaN` and `Infinity` take the same path and meet the
+global object's read-only properties: a no-op in sloppy code, a TypeError in
+strict.
+
+`undefined` is an identifier. It can be a parameter, a variable, a catch
+binding or a pattern name, as in jQuery's `function (window, undefined)`. A
+reference still parses as the `undefined` literal. In a file that binds the
+name, `ts_rewrite::bindUndefinedReferences` turns each reference that such a
+binding shadows into a reference to that binding.
+
+A top-level function declaration is compiled as a static function. When the
+file rebinds its name anywhere (`ast::getDeeplyReboundNames`), as Babel's
+self-replacing `_extends` helper does, the parser rewrites the declaration
+as `var f = function () {…}` at the head of the body
+(`Parser::rebindableFunctionsToVars`). The binding is then initialized
+before any statement runs, the function keeps its `name`, and an export of
+it is a live binding.
+
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
 Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code, and hot loops moved into optimized code mid-loop (OSR), all compiled on brass's process-wide compile pool while the program runs. The optimizer runs per function as it tiers up, not over the whole program before it starts. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.

@@ -1,0 +1,11 @@
+undefined
+1 2 1 true undefined
+set {"value":"set","writable":true,"enumerable":true,"configurable":true}
+compound ReferenceError
+update ReferenceError
+logical ReferenceError
+6
+4 lg
+strict ReferenceError StrictNew is not defined
+strict ok true undefined
+2 2

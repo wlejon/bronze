@@ -289,7 +289,9 @@ void rtInstallAsyncGeneratorPrototype(Rooted<Value>& proto) {
     for (const auto& method : methods) {
         Rooted<Value> fn{rtNativeFunction(method.code, method.arity, method.name, method.length)};
         Rooted<Value> key{rtMakeString(method.name)};
-        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn);
+        // Non-enumerable, as every builtin method is (ECMA-262 18).
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
 }
 
