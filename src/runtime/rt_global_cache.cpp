@@ -46,12 +46,20 @@ bool cachedGlobalRead(Realm* realm, uint32_t keyIndex, uint64_t& out) {
         out = e.value.rawBits();
         return true;
     }
-    if (e.kind != 2) return false;
+    if (e.kind != 2 && e.kind != 3) return false;
     const Value glob = realm->globalObject();
     if (!glob.isObject()) return false;
     const auto* obj = glob.asObject<ObjectHeader>();
     if (obj->shape != e.shape) return false;
     if (obj->shape->isDictionary() && obj->shape->dict->generation != e.generation) return false;
+    if (e.kind == 3) {
+        // Absent: still so while no property was added (a dictionary's add
+        // keeps its generation and grows its entries; a shape's is a new
+        // shape).
+        if (obj->shape->isDictionary() && obj->shape->dict->entries.size() != e.slot) return false;
+        out = Value::fromHole().rawBits();
+        return true;
+    }
     out = obj->getSlot(e.slot).rawBits();
     return true;
 }
@@ -155,6 +163,23 @@ bool rtCachedGlobalRead(uint32_t keyIndex, uint64_t& out) {
     return cachedGlobalRead(rtCurrentRealm(), keyIndex, out);
 }
 
+void rtRememberGlobalAbsent(uint32_t keyIndex) {
+    Realm* realm = rtCurrentRealm();
+    const Value glob = realm->globalObject();
+    if (!glob.isObject()) return;
+    const auto* obj = glob.asObject<ObjectHeader>();
+    if (!obj->shape) return;
+    Realm::GlobalReadEntry& e = readEntry(realm, keyIndex);
+    e.epoch = t_globalReadEpoch;
+    e.kind = 3;
+    e.shape = obj->shape;
+    const bool dict = obj->shape->isDictionary();
+    e.generation = dict ? obj->shape->dict->generation : 0;
+    e.slot = dict ? static_cast<uint32_t>(obj->shape->dict->entries.size()) : 0;
+    e.writable = false;
+    e.value = Value::fromUndefined();
+}
+
 void rtRememberGlobalValue(uint32_t keyIndex, Value v) {
     rememberValue(rtCurrentRealm(), keyIndex, v);
 }
@@ -166,7 +191,12 @@ extern "C" {
 uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     recordPropCall("bronze_global_get", keyIndex, nullptr);
     Realm* realm = rtCurrentRealm();
-    if (uint64_t cached = 0; cachedGlobalRead(realm, keyIndex, cached)) return cached;
+    if (uint64_t cached = 0; cachedGlobalRead(realm, keyIndex, cached)) {
+        if (Value(cached).isHole()) {
+            return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
+        }
+        return cached;
+    }
     const std::string& keyStr = rtKeyString(keyIndex);
     if (keyStr == "globalThis") {
         return rtGlobalThisObject().rawBits();

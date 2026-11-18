@@ -471,7 +471,10 @@ A bare-name read or write of a global is cached per realm and key
 global's value, or the slot of the global object's own data property. A slot
 entry holds while the global object keeps the shape and dictionary generation
 it was filled at, so adding a property keeps it and deleting or moving one
-retires it. Every entry holds only while its epoch is the thread's global-read
+retires it. A name that resolves to nothing (`typeof VideoFrame`, a feature
+test run per call) is cached absent, holding while the global object's table
+also keeps its entry count, so any property added retires it: a miss costs
+19 ns instead of the full ladder. Every entry holds only while its epoch is the thread's global-read
 epoch, which moves when a host registers, forces or a page overrides a host
 global, a builtin's binding is written, or anything defines a property on a
 global object. A cached write also needs a writable property whose name is no

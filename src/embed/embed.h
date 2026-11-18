@@ -513,8 +513,11 @@ BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value, GlobalK
 // object as `this`, and writes call `setter` with the value. `setter`
 // undefined makes it read-only. Never cached. The getter and setter are
 // function values made in the realm (createFunction); they are rooted by the
-// global object's property.
-BRONZE_EMBED_API void registerGlobalAccessor(std::string_view name, Value getter, Value setter);
+// global object's property. `configurable` false makes it [LegacyUnforgeable]
+// (`location`): a page can neither delete nor redefine it; registering it
+// again rewrites its getter and setter.
+BRONZE_EMBED_API void registerGlobalAccessor(std::string_view name, Value getter, Value setter,
+                                             bool configurable = true);
 
 // Provide `name` now and its value later: the registry lists it at once (the
 // manifest, hasHostGlobal and `typeof name` see it), and the first read of it

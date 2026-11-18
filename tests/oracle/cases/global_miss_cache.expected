@@ -1,0 +1,6 @@
+0 ReferenceError
+true by write
+false ReferenceError
+true by define
+true by set 49
+strict ReferenceError

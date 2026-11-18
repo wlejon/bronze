@@ -448,7 +448,7 @@ bool builtinOwnsName(const std::string& name) {
 }  // namespace
 
 void rtDefineHostGlobalAccessorOnRealm(Realm* r, const std::string& name, Value getter,
-                                       Value setter) {
+                                       Value setter, bool configurable) {
     if (!r || name == "globalThis" || builtinOwnsName(name)) return;
     ShadowStackFrame frame;
     Rooted<Value> get{getter};
@@ -461,11 +461,20 @@ void rtDefineHostGlobalAccessorOnRealm(Realm* r, const std::string& name, Value 
         auto* obj = glob.get().asObject<ObjectHeader>();
         PropertyInfo own;
         if (obj->shape && obj->shape->lookupProperty(pkey, own)) {
+            // A non-configurable accessor registered again (an unforgeable
+            // `location`): no delete can remove it, so the pair is rewritten
+            // in its slots, both halves, an absent setter included.
+            if (own.accessor && !own.configurable) {
+                obj->setSlot(own.slot, get.get());
+                obj->setSlot(own.slot + 1, set.get());
+                runtime::rtBumpGlobalReadEpoch();
+                return;
+            }
             bronze_elem_delete(glob.get().rawBits(), key.get().rawBits(), /*strict=*/false);
         }
     }
     ObjectHeader::defineAccessor(runtime::rtHeap(), runtime::rtArena(), glob, key, get, set,
-                                 /*enumerable=*/true, /*configurable=*/true);
+                                 /*enumerable=*/true, configurable);
     r->setGlobalObject(glob.get());
 }
 

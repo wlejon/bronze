@@ -237,7 +237,7 @@ void rtDefineHostGlobalOnRealm(Realm* realm, const std::string& name, Value valu
 // An accessor-kind host global (rtRegisterHostGlobalAccessor): `getter` and
 // `setter` (undefined for none) as an accessor property of the global object.
 void rtDefineHostGlobalAccessorOnRealm(Realm* realm, const std::string& name, Value getter,
-                                       Value setter);
+                                       Value setter, bool configurable);
 // A pending lazy host global (host_globals.h) as the accessor pair the embed
 // layer's hook builds, on `realm`'s global object.
 void rtDefineLazyHostGlobalOnRealm(Realm* realm, const std::string& name);

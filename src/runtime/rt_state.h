@@ -148,7 +148,10 @@ void rtBumpGlobalReadEpoch() noexcept;
 // The current realm's cached answer for a bare-name read of `keyIndex`, and
 // the two ways a resolved read records one: a value (a builtin, a host
 // global) or the global object's own data property it read.
+// `out` is the hole for a name cached ABSENT (rtRememberGlobalAbsent): no
+// builtin, host global or own property of the global object has it.
 bool rtCachedGlobalRead(uint32_t keyIndex, uint64_t& out);
+void rtRememberGlobalAbsent(uint32_t keyIndex);
 void rtRememberGlobalValue(uint32_t keyIndex, Value v);
 void rtRememberGlobalSlot(uint32_t keyIndex);
 // A bare-name write (bronze_put_unresolved) through the cached slot of the

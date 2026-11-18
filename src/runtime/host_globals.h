@@ -54,7 +54,10 @@ void rtRegisterHostGlobal(const std::string& name, Value value,
 // object as receiver, and a write — bare or through `window.x` — calls
 // `setter` with the value. `setter` undefined makes it read-only (a sloppy
 // no-op, a strict TypeError). Its reads are never cached.
-void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter);
+// `configurable` false: an [LegacyUnforgeable] accessor (`location`), which a
+// page can neither delete nor redefine.
+void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter,
+                                  bool configurable = true);
 
 // A page wrote or defined `name` on `realmGlobal` (rtNoteGlobalObjectWrite):
 // a registry name of the Replaceable or Readonly kind is overridden in that

@@ -164,7 +164,8 @@ void rtRegisterHostGlobal(const std::string& name, Value value, HostGlobalKind k
     rtDefineHostGlobalOnRealm(t.realm, name, value, kind == HostGlobalKind::Readonly);
 }
 
-void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter) {
+void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value setter,
+                                  bool configurable) {
     if (rtNativeBareNameRegistered(name)) {
         fatal(("registerGlobalAccessor(\"" + name +
                "\"): the name is a registered native (embed::registerNative)")
@@ -194,7 +195,7 @@ void rtRegisterHostGlobalAccessor(const std::string& name, Value getter, Value s
         }
     }
     if (!listed) t.values.emplace_back(name, Value::fromUndefined());
-    rtDefineHostGlobalAccessorOnRealm(t.realm, name, getter, setter);
+    rtDefineHostGlobalAccessorOnRealm(t.realm, name, getter, setter, configurable);
 }
 
 bool rtHostGlobalLookup(const std::string& name, Value& out) {

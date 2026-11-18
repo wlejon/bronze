@@ -549,7 +549,11 @@ extern "C" {
 // can change under a running program, which is the whole reason the question
 // survives to run time.
 uint64_t bronze_resolve_name(uint32_t keyIndex, bool soft) {
-    if (uint64_t cached = 0; rtCachedGlobalRead(keyIndex, cached)) return cached;
+    if (uint64_t cached = 0; rtCachedGlobalRead(keyIndex, cached)) {
+        if (!Value(cached).isHole()) return cached;
+        if (soft) return Value::fromUndefined().rawBits();
+        return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
+    }
     const std::string& name = rtKeyString(keyIndex);
     if (Value host = Value::fromUndefined(); rtHostGlobalLookup(name, host)) {
         rtRememberGlobalValue(keyIndex, host);
@@ -560,6 +564,9 @@ uint64_t bronze_resolve_name(uint32_t keyIndex, bool soft) {
         rtRememberGlobalSlot(keyIndex);
         return fromGlobalObject.rawBits();
     }
+    // A miss answers the next read from the cache too: a feature test
+    // (`typeof VideoFrame`) runs per call.
+    rtRememberGlobalAbsent(keyIndex);
     if (soft) return Value::fromUndefined().rawBits();
     return rtThrowReferenceError(name + " is not defined").rawBits();
 }
