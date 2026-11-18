@@ -4,8 +4,12 @@
 // rtThreadModuleState / rtStackModuleEpoch) so this translation unit introduces
 // no thread_local destructors of its own.
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
+
+#include "runtime/heap.h"
+#include "runtime/tls_block.h"
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
@@ -28,12 +32,56 @@ namespace bronze::runtime {
 // The global-read epoch: a cached answer (Realm::globalReads) holds while its
 // epoch is this one. Bumped wherever the module read cells are emptied — a
 // host global registered, overridden or forced, a builtin's binding written —
-// so the per-realm cache and the cells retire together.
-static thread_local uint64_t t_globalReadEpoch = 1;
+// and on every change to a global object's table generated code reads through
+// (Dictionary::notifiesGlobalReads), so the per-realm cache, its inline cells
+// and the module cells retire together. It lives in the TLS block, where
+// generated code compares a cell's with it.
+#define t_globalReadEpoch (rtTls()->global_read_epoch)
 
-void rtBumpGlobalReadEpoch() noexcept { ++t_globalReadEpoch; }
+void rtBumpGlobalReadEpoch() noexcept { ++rtTls()->global_read_epoch; }
+
+void rtForgetGlobalReadCells() noexcept {
+    rtTls()->global_read_cells = 0;
+    rtTls()->global_read_cell_count = 0;
+}
 
 namespace {
+
+// The word every name cached absent reads through: the hole.
+const uint64_t kAbsentWord = BRONZE_ABI_HOLE_BITS;
+
+// Publishes the realm's table to generated code (it is the current realm's:
+// every fill is) and makes `e`'s cell valid, reading through `read` and, when
+// not null, writing through `write`.
+void fillInline(Realm* realm, Realm::GlobalReadEntry& e, const uint64_t* read, uint64_t* write) {
+    auto& reads = realm->globalReads();
+    bronze_tls_block* tls = rtTls();
+    tls->global_read_cells = reinterpret_cast<uint64_t>(reads.data());
+    tls->global_read_cell_count = reads.size();
+    e.inlineRead = read;
+    e.inlineWrite = write;
+    e.inlineEpoch = tls->global_read_epoch;
+}
+
+// Whether generated code may keep the address of the global object's slot
+// `slot`: the object's table tells it of every change (and is marked to), and
+// the storage the slot lives in is old, so no collection moves it.
+// A shape-chain global object's every new shape moves the epoch
+// (rtNoteGlobalShapeChange); a dictionary-mode one's table is marked to; and
+// every collection moves it (heap.cpp), since a young object or slot block
+// moves only then.
+uint64_t* stableSlot(ObjectHeader* obj, uint32_t slot) {
+    if (!obj->shape || !rtMaybeGlobalObjectShape(obj->shape)) return nullptr;
+    uint64_t* addr = nullptr;
+    if (slot < ObjectHeader::kOverflowSlot) {
+        addr = reinterpret_cast<uint64_t*>(&obj->slotsData()[slot]);
+    } else {
+        auto* block = obj->overflow.asObject<HeapObjectHeader>();
+        addr = reinterpret_cast<uint64_t*>(&block->payload<Value>()[slot - ObjectHeader::kOverflowSlot]);
+    }
+    if (obj->shape->isDictionary()) obj->shape->dict->notifiesGlobalReads = true;
+    return addr;
+}
 
 // Reads the global object's own data property `keyIndex` straight from its
 // slot when the realm's entry for the key still describes the object.
@@ -66,7 +114,15 @@ bool cachedGlobalRead(Realm* realm, uint32_t keyIndex, uint64_t& out) {
 
 Realm::GlobalReadEntry& readEntry(Realm* realm, uint32_t keyIndex) {
     auto& reads = realm->globalReads();
-    if (keyIndex >= reads.size()) reads.resize(static_cast<size_t>(keyIndex) + 1);
+    if (keyIndex >= reads.size()) {
+        // A move of the table moves the values cells read through.
+        const auto* before = reads.data();
+        reads.resize(std::max<size_t>(static_cast<size_t>(keyIndex) + 1, reads.size() * 2));
+        if (reads.data() != before) {
+            rtBumpGlobalReadEpoch();
+            rtForgetGlobalReadCells();
+        }
+    }
     return reads[keyIndex];
 }
 
@@ -75,6 +131,7 @@ void rememberValue(Realm* realm, uint32_t keyIndex, Value v) {
     e.epoch = t_globalReadEpoch;
     e.kind = 1;
     e.value = v;
+    fillInline(realm, e, reinterpret_cast<const uint64_t*>(&e.value), nullptr);
 }
 
 // The global object's own property `keyIndex`, when it is a boxed data
@@ -104,6 +161,12 @@ void rememberSlot(Realm* realm, uint32_t keyIndex) {
             special = text == builtin;
         }
         e.writable = !special;
+    }
+    auto* mutableObj = const_cast<ObjectHeader*>(obj);
+    if (uint64_t* addr = stableSlot(mutableObj, info.slot)) {
+        const bool frozen =
+            obj->shape->isDictionary() && obj->shape->dict->level == IntegrityLevel::Frozen;
+        fillInline(realm, e, addr, e.writable && !frozen ? addr : nullptr);
     }
 }
 
@@ -178,6 +241,10 @@ void rtRememberGlobalAbsent(uint32_t keyIndex) {
     e.slot = dict ? static_cast<uint32_t>(obj->shape->dict->entries.size()) : 0;
     e.writable = false;
     e.value = Value::fromUndefined();
+    if (rtMaybeGlobalObjectShape(obj->shape)) {
+        if (dict) obj->shape->dict->notifiesGlobalReads = true;
+        fillInline(realm, e, &kAbsentWord, nullptr);
+    }
 }
 
 void rtRememberGlobalValue(uint32_t keyIndex, Value v) {

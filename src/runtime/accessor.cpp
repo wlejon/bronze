@@ -118,7 +118,10 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         // An add on a shape-chain object, exactly like `setProp`'s: if this
         // object is somebody's prototype, the pair just defined shadows what
         // every depth > 0 entry below it points at.
-        if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
+        if (obj->shape->used_as_prototype) {
+            bumpProtoMutationEpoch();
+            runtime::rtNoteGlobalShapeChange(obj->shape);
+        }
         Shape* next = obj->shape->addProperty(arena, heap, key, slot, enumerable,
                                               /*is_accessor=*/true, /*is_writable=*/true,
                                               configurable);

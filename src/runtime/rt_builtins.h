@@ -94,6 +94,15 @@ inline bool rtMaybeGlobalObjectShape(const Shape* shape) noexcept {
     return false;
 }
 
+void rtBumpGlobalReadEpoch() noexcept;
+// A shape-chain global object takes a new shape (an add, a move to dictionary
+// mode): its slots may move with it, so the inline global-read cells, which
+// hold slot addresses, retire (rt_global_cache.cpp). Asked where the paths
+// already ask `used_as_prototype`, which every global object's shape is.
+inline void rtNoteGlobalShapeChange(const Shape* shape) noexcept {
+    if (rtMaybeGlobalObjectShape(shape)) rtBumpGlobalReadEpoch();
+}
+
 // 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength, filled in from the key
 // index the creator was given. `BRONZE_ABI_FN_NAME_NONE` leaves both absent.
 void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uint32_t length);

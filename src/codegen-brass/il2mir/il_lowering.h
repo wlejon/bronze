@@ -46,6 +46,24 @@ public:
     std::string resolve_create_func_callee(const std::string& callee_name);
     Value* get_key_id(Builder& b, uint32_t key_idx);
     uint32_t find_key_constant(const std::string& name) const;
+    // A bare-name read of the global whose key id is `key` (an i32): through
+    // the current realm's inline cell (bronze_abi_tls.h) while it is valid,
+    // else bronze_resolve_name. `soft` (typeof) answers undefined for a name
+    // that resolves to nothing.
+    Value* lower_global_name_read(Builder& b, Value* key, bool soft);
+    // A bare-name write (lower/lower_unresolved.cpp emitUnresolvedPut's call
+    // of bronze_put_unresolved): stored through the inline cell's `write`
+    // slot while the cell is valid and has one. Leaves the builder in the
+    // miss block, where the caller lowers the call as written, and returns
+    // the block both join in.
+    BasicBlock* lower_global_name_write(Builder& b, Value* key, Value* val);
+    // Per function: the results of `Box` of a key string constant, by id, to
+    // the key, which is how a bare-name write's call names its global.
+    std::unordered_map<uint32_t, uint32_t> key_boxes_;
+    // Lowering the miss of a bare-name write: the call itself.
+    bool in_global_write_ = false;
+    // The thread's TLS block address: the pinned register, or a call.
+    Value* thread_tls_block(Builder& b);
 
     Value* get_val_by_id(uint32_t id, Builder& b, const std::unordered_map<uint32_t, Value*>& val_map);
     void set_inst_result(uint32_t result_id, Value* res_val, Builder& b, std::unordered_map<uint32_t, Value*>& val_map);

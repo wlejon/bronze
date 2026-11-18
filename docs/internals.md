@@ -482,6 +482,26 @@ builtin's or host global's, and a global object that is not frozen. Measured
 on arm64: a read of a `globalThis` property 11 ns (78 before), a write 19 ns
 (220).
 
+Generated code reads and writes through the same entries without a call. The
+head of each entry is an inline cell (`bronze_abi_tls.h`,
+`BRONZE_ABI_GLOBAL_READ_CELL_*`) holding an epoch, the address of the word
+the name's value is in (the entry's own value, the global object's slot, or a
+static hole for a name cached absent) and, for a write the cache allows, the
+slot to store into. The TLS block holds the epoch and the current realm's
+table. A bare-name read (`name.resolve`) and the `bronze_put_unresolved` call a
+bare-name write lowers to check the key is in the table and the cell's epoch
+is the thread's, then load or store (with the write barrier) through the
+address, and call the runtime only on a miss (`il2mir/il_lowering.cpp`
+`lower_global_name_read`, `lower_global_name_write`). Because the cells keep
+addresses, the epoch also moves on every new shape of a shape-chain global
+object (`rtNoteGlobalShapeChange`), every add, removal or integrity change of
+a dictionary-mode one's table (`Dictionary::notifiesGlobalReads`), a move of
+the realm's table, and after every collection, since a young global object or
+slot block moves only then. A realm switch takes the table away from
+generated code until the next fill. On arm64, a loop of 1e7 reads of a global
+went from 97 to 41 ms, writes from 182 to 41 ms, calls through one from 133
+to 67 ms, and `typeof` of an absent name to 58 ms (node: 6, 5, 6 and 44 ms).
+
 A host that needs a builtin to answer differently (an `Intl`-backed
 `toLocaleString`) cannot patch the frozen prototype, so the locale methods
 (`Number.prototype.toLocaleString`, `Date.prototype.toLocale{,Date,Time}String`,
@@ -690,10 +710,10 @@ as undefined. Each `var` declarator becomes the assignment of its initializer.
 So a function of a later script does not exist while an earlier one runs, and
 another unit, an `eval` or `window.x` reads and writes the same property. Every
 reference to such a name is a bare global reference, answered by the realm's
-global read/write cache. `let`, `const` and `class` at top level stay the unit's
-own bindings. The cost is that cache: a loop of top-level function calls
-reading and writing top-level vars ran 15 times slower as a classic script
-(1122 ms) than as a module (72 ms) on arm64.
+global read/write cache and its inline cells. `let`, `const` and `class` at top
+level stay the unit's own bindings. The cost is those cells: a loop of
+top-level function calls reading and writing top-level vars runs 231 ms as a
+classic script against 71 ms as a module on arm64 (node: 17 ms).
 
 The same engine runs an ahead-of-time module's COLD functions, the ones its
 harvest saw run seldom or never: the module carries their IL instead of their

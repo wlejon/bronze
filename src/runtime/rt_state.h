@@ -145,6 +145,9 @@ void rtInvalidateGlobalReadCells();
 // Retires every realm's cached global-read answers (Realm::globalReads):
 // called wherever the cells above are emptied.
 void rtBumpGlobalReadEpoch() noexcept;
+// Takes the realm's inline cells away from generated code until the next fill
+// publishes the current realm's (a realm switched or destroyed).
+void rtForgetGlobalReadCells() noexcept;
 // The current realm's cached answer for a bare-name read of `keyIndex`, and
 // the two ways a resolved read records one: a value (a builtin, a host
 // global) or the global object's own data property it read.

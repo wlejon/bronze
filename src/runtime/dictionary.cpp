@@ -196,6 +196,7 @@ DictEntry& Dictionary::add(PropertyKey stored, uint32_t slot, bool enumerable, b
                            bool writable, bool configurable) {
     entries.push_back(DictEntry{stored, slot, enumerable, accessor, writable, configurable});
     ++live_;
+    if (notifiesGlobalReads) runtime::rtBumpGlobalReadEpoch();
     // Tombstoned cells count toward the load, because a probe crosses them
     // too; once they and the living fill three quarters, the rebuild drops
     // the dead and resizes for the living.
@@ -312,7 +313,10 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     Shape* old = obj->shape;
     // If this object is used as a prototype anywhere, demoting it to dictionary
     // mode invalidates IC entries that walk through or target it.
-    if (old->used_as_prototype) bumpProtoMutationEpoch();
+    if (old->used_as_prototype) {
+        bumpProtoMutationEpoch();
+        runtime::rtNoteGlobalShapeChange(old);
+    }
     Shape* dictShape = createDictionaryShape(old);
     Dictionary& d = *dictShape->dict;
 

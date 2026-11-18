@@ -255,6 +255,7 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
     }
     d.extensible = false;
     if (static_cast<uint8_t>(want) > static_cast<uint8_t>(d.level)) d.level = want;
+    if (d.notifiesGlobalReads) rtBumpGlobalReadEpoch();
     return self.get().rawBits();
 }
 

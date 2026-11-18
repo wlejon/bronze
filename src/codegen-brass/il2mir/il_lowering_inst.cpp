@@ -104,7 +104,8 @@ bool IlLowering::lower_instruction(
     in_protected_block_ = handler_exception(handler_id) != nullptr;
     // A call's count in a build made to be harvested (il/feedback_site.h
     // kCallCountArm): one load, add and store on its way in.
-    if ((inst_ast.op == BronzeOp::Call || inst_ast.op == BronzeOp::CallDynamic ||
+    if (!in_global_write_ &&
+        (inst_ast.op == BronzeOp::Call || inst_ast.op == BronzeOp::CallDynamic ||
          inst_ast.op == BronzeOp::MethodCall || inst_ast.op == BronzeOp::Construct) &&
         prop_lowering_.evidence_marked()) {
         prop_lowering_.arm_count(b, kCallCountArm);
@@ -141,6 +142,28 @@ bool IlLowering::lower_instruction(
         }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
         return true;
+    }
+
+    // A bare-name write: the call emitUnresolvedPut makes, named by the key
+    // string it boxed, goes through the global's inline cell first.
+    if (inst_ast.op == BronzeOp::Box && inst_ast.box_type == BronzeType::Str && inst_ast.operands.empty()) {
+        key_boxes_[inst_ast.result_id] = inst_ast.index;
+    }
+    if (!in_global_write_ && inst_ast.op == BronzeOp::Call && inst_ast.operands.size() == 3 &&
+        inst_ast.callee_name == "bronze_put_unresolved") {
+        if (auto it = key_boxes_.find(inst_ast.operands[0]); it != key_boxes_.end()) {
+            Value* val = ensure_type(get_opd(1), Type::i64(), b);
+            BasicBlock* done = lower_global_name_write(b, get_key_id(b, it->second), val);
+            // The miss: the call, lowered as it would have been.
+            in_global_write_ = true;
+            const bool ok =
+                lower_instruction(inst_ast, b, fn, val_map, block_map, handler_id, block_id, cont_counter);
+            in_global_write_ = false;
+            if (!ok) return false;
+            if (!b.current_block()->terminator()) b.build_br(done, {});
+            b.position_at_end(done);
+            return true;
+        }
     }
 
     // Speculation (il_lowering_resume.cpp, il_lowering_spec.cpp).
@@ -218,9 +241,7 @@ bool IlLowering::lower_instruction(
                         break;
                     }
                 }
-                Value* key_val = get_key_id(b, key_idx);
-                Value* soft_val = b.build_iconst_i32(inst_ast.index ? 1 : 0);
-                res_val = b.build_call("bronze_resolve_name", Type::i64(), {key_val, soft_val});
+                res_val = lower_global_name_read(b, get_key_id(b, key_idx), inst_ast.index != 0);
             }
             break;
         }

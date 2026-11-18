@@ -9,6 +9,10 @@
 
 namespace bronze {
 
+namespace runtime {
+void rtBumpGlobalReadEpoch() noexcept;
+}
+
 class NonMovingArena;
 class Shape;
 
@@ -142,6 +146,12 @@ public:
     // `Object.prototype` and `Error.prototype` are frozen.
     bool hardened{false};
 
+    // A global object's table generated code reads slots of by address
+    // (runtime/rt_global_cache.cpp, the inline global-read cells): every add,
+    // removal, retirement or integrity change moves the thread's global-read
+    // epoch, which those cells hold while it stands.
+    bool notifiesGlobalReads{false};
+
     const DictEntry* find(PropertyKey name) const noexcept;
     DictEntry* find(PropertyKey name) noexcept;
     // The entry of the string key whose one-byte units are `bytes` (a
@@ -179,7 +189,10 @@ public:
     void releaseMemory() noexcept;
 
     // A fresh generation (above), for a key that stops naming its slot.
-    void retireAnswers() noexcept { generation = nextGeneration(); }
+    void retireAnswers() noexcept {
+        generation = nextGeneration();
+        if (notifiesGlobalReads) runtime::rtBumpGlobalReadEpoch();
+    }
 
 private:
     static uint64_t nextGeneration() noexcept;

@@ -95,6 +95,12 @@ public:
     // global object still has the shape, and the table generation, it was
     // filled at.
     struct GlobalReadEntry {
+        // The cell generated code reads (bronze_abi_tls.h,
+        // BRONZE_ABI_GLOBAL_READ_CELL_*): set only where the answer is a word
+        // that stays put, a value held here or an old (unmoving) slot.
+        uint64_t inlineEpoch = 0;
+        const uint64_t* inlineRead = nullptr;
+        uint64_t* inlineWrite = nullptr;
         uint64_t epoch = 0;
         const void* shape = nullptr;
         uint64_t generation = 0;

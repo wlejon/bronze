@@ -609,7 +609,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         const uint32_t slot = trIc->cached_slot;
         // Same bump the slow path performs: if this object is somebody's
         // prototype, the add shadows what depth > 0 entries below it point at.
-        if (shape->used_as_prototype) bumpProtoMutationEpoch();
+        if (shape->used_as_prototype) {
+            bumpProtoMutationEpoch();
+            runtime::rtNoteGlobalShapeChange(shape);
+        }
         runtime::noteShapeLeave(shape, next, ShapeLeave::Add);
         noteHarvestBirth(next, val.get(), true);
         Rooted<Value> self{Value::fromObject(this)};
@@ -816,7 +819,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // load and a not-taken branch for every other add, which is what keeps
         // `new Point(x, y)` in a loop from invalidating the whole program's
         // proto caches.
-        if (shape->used_as_prototype) bumpProtoMutationEpoch();
+        if (shape->used_as_prototype) {
+            bumpProtoMutationEpoch();
+            runtime::rtNoteGlobalShapeChange(shape);
+        }
         Shape* next_shape = shape->addProperty(
             arena, heap, key, new_slot, enumerable, /*is_accessor=*/false, writable, configurable,
             desiredSlotRepr(prop_name, val.get(), enumerable, /*accessor=*/false, writable,

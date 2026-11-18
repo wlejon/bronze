@@ -49,6 +49,94 @@ Value* IlLowering::get_key_id(Builder& b, uint32_t key_idx) {
     return b.build_load(Type::i32(), map_addr, static_cast<int32_t>(key_idx * sizeof(uint32_t)));
 }
 
+Value* IlLowering::thread_tls_block(Builder& b) {
+    Module* mod = b.current_block()->parent()->parent();
+    return (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                               : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+}
+
+// cell = tls->global_read_cells + key * stride, valid while key < the count
+// and cell.epoch == tls->global_read_epoch; the value is *cell.read, and the
+// hole there is a name that resolves to nothing. Six loads and three
+// compares on a hit; everything else is the runtime's.
+Value* IlLowering::lower_global_name_read(Builder& b, Value* key, bool soft) {
+    Value* tls = thread_tls_block(b);
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "gname_" + std::to_string(fn->next_block_id());
+    BasicBlock* in_table = b.append_block(prefix + "_in");
+    BasicBlock* valid = b.append_block(prefix + "_valid");
+    BasicBlock* miss = b.append_block(prefix + "_miss_cold");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    b.position_at_end(cur);
+
+    Value* key64 = b.build_zext_i64(key);
+    Value* count = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_CELL_COUNT_OFF);
+    b.build_br_if(b.build_ult(key64, count), in_table, {}, miss, {});
+
+    b.position_at_end(in_table);
+    Value* cells = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_CELLS_OFF);
+    Value* cell = b.build_add(cells, b.build_shl(key64, b.build_iconst_i64(6)));
+    static_assert(BRONZE_ABI_GLOBAL_READ_CELL_STRIDE == 64);
+    Value* cell_epoch = b.build_load(Type::i64(), cell, BRONZE_ABI_GLOBAL_READ_CELL_EPOCH);
+    Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_EPOCH_OFF);
+    b.build_br_if(b.build_eq(cell_epoch, epoch), valid, {}, miss, {});
+
+    b.position_at_end(valid);
+    Value* read = b.build_load(Type::i64(), cell, BRONZE_ABI_GLOBAL_READ_CELL_READ);
+    Value* v = b.build_load(Type::i64(), read, 0);
+    Value* hole = b.build_eq(v, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
+    if (soft) {
+        b.build_br(merge, {b.build_select(hole, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_UNDEFINED_BITS)), v)});
+    } else {
+        b.build_br_if(hole, miss, {}, merge, {v});
+    }
+
+    b.position_at_end(miss);
+    Value* slow = b.build_call("bronze_resolve_name", Type::i64(), {key, b.build_iconst_i32(soft ? 1 : 0)});
+    b.build_br(merge, {slow});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+BasicBlock* IlLowering::lower_global_name_write(Builder& b, Value* key, Value* val) {
+    Value* tls = thread_tls_block(b);
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "gput_" + std::to_string(fn->next_block_id());
+    BasicBlock* in_table = b.append_block(prefix + "_in");
+    BasicBlock* valid = b.append_block(prefix + "_valid");
+    BasicBlock* store = b.append_block(prefix + "_store");
+    BasicBlock* miss = b.append_block(prefix + "_miss");
+    miss->set_cold();
+    BasicBlock* done = b.append_block(prefix + "_done");
+    b.position_at_end(cur);
+
+    Value* key64 = b.build_zext_i64(key);
+    Value* count = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_CELL_COUNT_OFF);
+    b.build_br_if(b.build_ult(key64, count), in_table, {}, miss, {});
+
+    b.position_at_end(in_table);
+    Value* cells = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_CELLS_OFF);
+    Value* cell = b.build_add(cells, b.build_shl(key64, b.build_iconst_i64(6)));
+    Value* cell_epoch = b.build_load(Type::i64(), cell, BRONZE_ABI_GLOBAL_READ_CELL_EPOCH);
+    Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_GLOBAL_READ_EPOCH_OFF);
+    b.build_br_if(b.build_eq(cell_epoch, epoch), valid, {}, miss, {});
+
+    b.position_at_end(valid);
+    Value* write = b.build_load(Type::i64(), cell, BRONZE_ABI_GLOBAL_READ_CELL_WRITE);
+    b.build_br_if(b.build_ne(write, b.build_iconst_i64(0)), store, {}, miss, {});
+
+    b.position_at_end(store);
+    prop_lowering_.store_value(b, write, val, kObjectSlotAliasClass, /*need_barrier=*/true);
+    b.build_br(done, {});
+
+    b.position_at_end(miss);
+    return done;
+}
+
 // tls->module_deltas[*__bronze_module_slot]: the thread's delta for this
 // module, valid once the thread has run the module's entry (which registered
 // it). Three loads, the first two independent.
@@ -216,6 +304,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     module_env_regs_.clear();
     current_fn_dynamic_ids_.clear();
+    key_boxes_.clear();
     create_func_counter_.clear();
     argv_block_ = nullptr;
     argv_block_words_ = 0;

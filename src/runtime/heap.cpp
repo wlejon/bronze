@@ -249,6 +249,9 @@ Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
         const uintptr_t ident_hi = ident_lo + gc_->reservation_bytes();
         add_post_collection_hook(
             [ident_lo, ident_hi] { runtime::elemCacheSweepIdent(ident_lo, ident_hi); });
+        // The inline global-read cells hold slot addresses, young ones
+        // included (rt_global_cache.cpp): a collection may have moved them.
+        add_post_collection_hook([] { runtime::rtBumpGlobalReadEpoch(); });
         // And a full wipe now: the thread's table may carry idents from an
         // earlier Heap (unit tests construct them directly), and a fresh
         // reservation can land where an old one was.

@@ -187,7 +187,27 @@ typedef struct bronze_tls_block {
      * visits the key without asking. */
     uint64_t for_in_epoch;
     uint64_t for_in_guard;
+    /* Bare-name global reads (runtime/rt_global_cache.cpp). The epoch moves
+     * whenever a cached answer may have stopped being one (a definition or
+     * removal on a global object, a host or builtin binding written, a realm
+     * switch). `global_read_cells` is the current realm's cell table, indexed
+     * by key id, `global_read_cell_count` cells of
+     * BRONZE_ABI_GLOBAL_READ_CELL_STRIDE bytes: generated code reads a name
+     * through cell.read while cell.epoch is the thread's. */
+    uint64_t global_read_epoch;
+    uint64_t global_read_cells;
+    uint64_t global_read_cell_count;
 } bronze_tls_block;
+
+/* One cell of `global_read_cells` (the head of Realm::GlobalReadEntry):
+ * valid while `epoch` equals the block's global_read_epoch. `read` is the
+ * word holding the name's value (a global object's slot, or the entry's own
+ * value); the hole there means the name resolves to nothing. `write`, when not
+ * null, is the slot a write of the name may store into. */
+#define BRONZE_ABI_GLOBAL_READ_CELL_STRIDE   64
+#define BRONZE_ABI_GLOBAL_READ_CELL_EPOCH     0
+#define BRONZE_ABI_GLOBAL_READ_CELL_READ      8
+#define BRONZE_ABI_GLOBAL_READ_CELL_WRITE    16
 
 /* The collection classes `collection_shapes` is indexed by, and the
  * operations `collection.op` performs (il_op.h; runtime/builtin_map.cpp
@@ -232,6 +252,9 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_COLLECTION_SHAPES_OFF         (BRONZE_TLS_GC_MEMENTO_HEADER_OFF + 8)
 #define BRONZE_TLS_FOR_IN_EPOCH_OFF              (BRONZE_TLS_COLLECTION_SHAPES_OFF + 8 * 5)
 #define BRONZE_TLS_FOR_IN_GUARD_OFF              (BRONZE_TLS_FOR_IN_EPOCH_OFF + 8)
+#define BRONZE_TLS_GLOBAL_READ_EPOCH_OFF         (BRONZE_TLS_FOR_IN_GUARD_OFF + 8)
+#define BRONZE_TLS_GLOBAL_READ_CELLS_OFF         (BRONZE_TLS_GLOBAL_READ_EPOCH_OFF + 8)
+#define BRONZE_TLS_GLOBAL_READ_CELL_COUNT_OFF    (BRONZE_TLS_GLOBAL_READ_CELLS_OFF + 8)
 
 /*
  * ---- the constants below the block ---------------------------------------
