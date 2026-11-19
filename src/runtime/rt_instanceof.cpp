@@ -226,15 +226,34 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
 
 namespace {
 
-// An `instanceof` site's cell (bronze_instanceof_cell below): the
-// constructor it certifies.
-void fillCell(uint64_t* cell, const Shape* inst, const Shape* statics, uint64_t epoch) {
+// An `instanceof` site's cell (bronze_instanceof_cell below): the constructor it
+// certifies, plus an optional memoized receiver shape and boolean answer.
+void fillCell(uint64_t* cell, const Shape* inst, const Shape* statics, uint64_t epoch,
+              const Shape* memoShape = nullptr, bool memoAnswer = false) {
     cell[BRONZE_ABI_INSTANCEOF_CELL_INSTANCE] = reinterpret_cast<uint64_t>(inst);
     cell[BRONZE_ABI_INSTANCEOF_CELL_STATICS] = reinterpret_cast<uint64_t>(statics);
     cell[BRONZE_ABI_INSTANCEOF_CELL_EPOCH] = epoch;
-    // The stub's remembered receiver answered for the certificate it
-    // replaces.
-    cell[BRONZE_ABI_INSTANCEOF_CELL_SHAPE] = 0;
+    cell[BRONZE_ABI_INSTANCEOF_CELL_SHAPE] = reinterpret_cast<uint64_t>(memoShape);
+    cell[BRONZE_ABI_INSTANCEOF_CELL_ANSWER] = memoAnswer ? 1u : 0u;
+}
+
+bool ctorAllowsStubCell(const FunctionHeader* fn) noexcept {
+    if (fn->instance_shape == nullptr || fn->instance_shape->isDictionary() || !fn->prototype.isObject() ||
+        fn->instance_shape->prototypeValue().rawBits() != fn->prototype.rawBits()) {
+        return false;
+    }
+    if (!fn->isNativeCode()) return true;
+    const Value ctor = Value::fromObject(const_cast<FunctionHeader*>(fn));
+    if (Value target, boundThis, boundArgs; rtBoundFunctionState(ctor, target, boundThis, boundArgs)) {
+        return false;
+    }
+    if (rtIsArrayConstructor(ctor) || rtIsFunctionConstructor(ctor) ||
+        ctor.rawBits() == rtObjectNamespace().rawBits()) {
+        return false;
+    }
+    const uint64_t proto = fn->prototype.rawBits();
+    return proto != rtObjectPrototype().rawBits() && proto != rtArrayPrototypeObject().rawBits() &&
+           proto != rtFunctionPrototypeObject().rawBits();
 }
 
 // `bronze_instanceof`, and with `cell` a site's cell (below) to fill too.
@@ -246,8 +265,7 @@ bool instanceofImpl(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
     if (ctorVal.isObject() && ctorVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         const auto* ctorFn = ctorVal.asObject<FunctionHeader>();
         const Shape* ctorInst = ctorFn->instance_shape;
-        if (!ctorFn->isNativeCode() && ctorInst != nullptr && !ctorInst->isDictionary() &&
-            ctorFn->prototype.isObject()) {
+        if (ctorAllowsStubCell(ctorFn)) {
             bool propsOk = false;
             const Shape* ctorProps = ctorStaticsKey(ctorFn, propsOk);
             if (propsOk) {
@@ -276,7 +294,17 @@ bool instanceofImpl(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
                         e.realmSlot == realm) {
                         // The entry was filled for this constructor, so it
                         // certifies the constructor as the cell does.
-                        if (cell != nullptr) fillCell(cell, ctorInst, ctorProps, epoch);
+                        if (cell != nullptr) {
+                            const Shape* memoShape = nullptr;
+                            if (objVal.isObject()) {
+                                const auto* objHdr = objVal.asObject<HeapObjectHeader>();
+                                if (objShape == bareArrayKey()) memoShape = rtArrayShape();
+                                else if (objHdr->flags == HeapKind::Plain || objHdr->flags == HeapKind::TypedArray) {
+                                    memoShape = objShape;
+                                }
+                            }
+                            fillCell(cell, ctorInst, ctorProps, epoch, memoShape, e.result);
+                        }
                         return e.result;
                     }
                 }
@@ -317,14 +345,20 @@ bool instanceofImpl(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
                 const Shape* fillInst = liveCtor->instance_shape;
                 bool fillPropsOk = false;
                 const Shape* fillProps = ctorStaticsKey(liveCtor, fillPropsOk);
-                const bool ctorCacheable = fillPropsOk && ancestorsMarked && !liveCtor->isNativeCode() &&
-                                           fillInst != nullptr && !fillInst->isDictionary() &&
-                                           liveCtor->prototype.isObject() &&
-                                           fillInst->prototypeValue().rawBits() == liveCtor->prototype.rawBits();
+                const bool ctorCacheable = fillPropsOk && ancestorsMarked && ctorAllowsStubCell(liveCtor);
+                const bool objChainOk = ctorCacheable && objectChainCacheable(objRoot.get(), liveCtor->prototype);
                 if (cell != nullptr && ctorCacheable && rtTls()->proto_epoch == epochBefore) {
-                    fillCell(cell, fillInst, fillProps, epochBefore);
+                    const Shape* memoShape = nullptr;
+                    if (objChainOk && objRoot.get().isObject()) {
+                        const auto* hdr = objRoot.get().asObject<HeapObjectHeader>();
+                        if (isBareArray(hdr)) memoShape = rtArrayShape();
+                        else if (hdr->flags == HeapKind::Plain || hdr->flags == HeapKind::TypedArray) {
+                            memoShape = objRoot.get().asObject<ObjectHeader>()->shape;
+                        }
+                    }
+                    fillCell(cell, fillInst, fillProps, epochBefore, memoShape, answer);
                 }
-                if (ctorCacheable && objectChainCacheable(objRoot.get(), liveCtor->prototype)) {
+                if (objChainOk) {
                     {
                         const Shape* fillObjShape = nullptr;
                         if (objRoot.get().isObject()) {

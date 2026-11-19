@@ -347,10 +347,31 @@ uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
     for (; i < count; ++i) {
         const Value v(pieces[i]);
         if (!v.isString()) {
+            const double d = v.asNumber();
+            if (d >= 0.0 && d <= 2147483647.0) {
+                const uint32_t u = static_cast<uint32_t>(d);
+                if (static_cast<double>(u) == d) {
+                    if (u < 10) {
+                        if (len + 1 >= StringHeader::kViewMinLength) break;
+                        text[len++] = static_cast<char>('0' + u);
+                        continue;
+                    }
+                    char tmp[10];
+                    uint32_t x = u;
+                    uint32_t n = 0;
+                    do {
+                        tmp[n++] = static_cast<char>('0' + (x % 10));
+                        x /= 10;
+                    } while (x != 0);
+                    if (n >= StringHeader::kViewMinLength - len) break;
+                    while (n > 0) text[len++] = tmp[--n];
+                    continue;
+                }
+            }
             // A Number's ToString written straight into the buffer: nothing
             // allocated (formatJsNumber writes at most 32 bytes).
             if (len > StringHeader::kViewMinLength - 32) break;
-            const auto n = static_cast<uint32_t>(formatJsNumber(v.asNumber(), text + len));
+            const auto n = static_cast<uint32_t>(formatJsNumber(d, text + len));
             if (n >= StringHeader::kViewMinLength - len) break;
             len += n;
             continue;

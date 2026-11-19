@@ -11,6 +11,7 @@
 // elements.
 
 #include <cstdio>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -417,6 +418,46 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
 // the caller's real argument count.
 uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     recordHelperCall("bronze_rest_args");
+    const uint32_t count = argc > first ? argc - first : 0;
+    const uint32_t cap = count < BRONZE_ABI_ARRAY_MIN_CAPACITY ? BRONZE_ABI_ARRAY_MIN_CAPACITY : count;
+    if (count <= 32) {
+        Shape* shape = rtArrayShape();
+        HeapObjectHeader* rawArr =
+            rtHeap().tryAllocate(sizeof(ArrayHeader) - sizeof(HeapObjectHeader), Tag::Object);
+        if (rawArr) {
+            // Mark as NumberBlock before second allocation so raw payload is never scanned as Values if block fails.
+            rawArr->flags = HeapKind::NumberBlock;
+            if (HeapObjectHeader* block = rtHeap().tryAllocate(static_cast<size_t>(cap) * sizeof(Value), Tag::Object)) {
+                auto* arr = reinterpret_cast<ArrayHeader*>(rawArr);
+                rawArr->flags = HeapKind::Array;
+                arr->shape = shape;
+                new (&arr->overflow) HeapValue(Value::fromUndefined());
+                arr->length = count;
+                arr->capacity = cap;
+                arr->head_offset = 0;
+                new (&arr->elements) HeapValue(Value::fromObject(block));
+                auto* dst = reinterpret_cast<uint64_t*>(block->payload<HeapValue>());
+                bool allNumbers = true;
+                for (uint32_t i = 0; i < count; ++i) {
+                    const uint64_t bits = argv[first + i];
+                    const Value v(bits);
+                    if (v.isNumber()) {
+                        dst[i] = bits;
+                    } else if (v.isInt32()) {
+                        dst[i] = Value::fromDouble(static_cast<double>(static_cast<int32_t>(v.payload()))).rawBits();
+                    } else {
+                        allNumbers = false;
+                        dst[i] = bits;
+                    }
+                }
+                const uint64_t hole = Value::fromHole().rawBits();
+                for (uint32_t i = count; i < cap; ++i) dst[i] = hole;
+                arr->reserved = allNumbers ? ArrayHeader::kElementsAreNumbers : ArrayHeader::kNumbersRefused;
+                block->flags = allNumbers ? HeapKind::NumberBlock : HeapKind::ValueBlock;
+                return Value::fromObject(arr).rawBits();
+            }
+        }
+    }
     // The copy comes FIRST, before the array is made — this is RootedArgs' contract
     // ("read arguments from HERE and never from `argv` again"), and allocating
     // ahead of it broke exactly the case that contract is written for. `argv`
@@ -433,8 +474,6 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     // array literal gets), so each store below is in place: no growth, no
     // allocation, and so no root per element.
     RootedArgs args(argc, argv);
-    const uint32_t count = argc > first ? argc - first : 0;
-    const uint32_t cap = count < BRONZE_ABI_ARRAY_MIN_CAPACITY ? BRONZE_ABI_ARRAY_MIN_CAPACITY : count;
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), cap))};
     ArrayHeader* arr = out.get().asObject<ArrayHeader>();
     for (uint32_t i = 0; i < count; ++i) arr->setElem(rtHeap(), i, args[first + i]);

@@ -664,21 +664,16 @@ void build_elem_cell_stub(Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
-// An `instanceof` site's stub (bronze_abi_layout.h BRONZE_ABI_INSTANCEOF_CELL_*,
-// runtime/rt_instanceof.cpp bronze_instanceof_cell). While the right operand
-// is a non-native function at the cell's instance and statics shapes and the
-// prototype epoch is the cell's, the cell certifies that `instanceof` is
-// OrdinaryHasInstance, which the stub answers: false for a primitive, else
-// whether the function's `prototype` is on the receiver's chain: the answer
-// the cell remembers for the receiver's shape, else the chain walked through
-// plain objects (shape, root, prototype: each object's [[Prototype]]
-// whatever its shape's mode) for kMaxInstanceofWalk links. Anything else,
-// a longer chain, or a link that is no plain object, is the helper's, which
-// answers and fills the cell. One straight copy per link: a loop's back edge
-// would carry an interrupt poll.
+// An `instanceof` site's stub (BRONZE_ABI_INSTANCEOF_CELL_*): while `ctor`
+// matches the cell's instance & statics shapes and prototype epoch (covering
+// JS ctors and eligible natives like TypedArray/Number/Map/Set), answers
+// primitives false, Plain/TypedArray by memo shape or kMaxInstanceofWalk links,
+// and bare Arrays by memoized `rtArrayShape` before falling back to the helper.
 void build_instanceof_stub(Function* fn) {
     constexpr int kMaxInstanceofWalk = 8;
     constexpr int32_t kFunctionHeaderLow = (BRONZE_ABI_OBJ_FLAGS_FUNCTION << 16) | BRONZE_ABI_TAG_OBJECT;
+    constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+    constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
     Builder b(*fn->parent());
     b.set_function(fn);
     BasicBlock* entry = b.append_block("entry");
@@ -689,6 +684,7 @@ void build_instanceof_stub(Function* fn) {
     BasicBlock* fn_bb = b.append_block("io_fn");
     BasicBlock* certified = b.append_block("io_certified");
     BasicBlock* object = b.append_block("io_object");
+    BasicBlock* arr_bb = b.append_block("io_arr");
     BasicBlock* primitive = b.append_block("io_primitive");
     BasicBlock* memo = b.append_block("io_memo");
     BasicBlock* memo_hit = b.append_block("io_memo_hit");
@@ -700,6 +696,9 @@ void build_instanceof_stub(Function* fn) {
     auto plain_at = [&](Value* p) {
         return b.build_eq(b.build_load(Type::i32(), p, 0), b.build_iconst_i32(kPlainHeaderLow));
     };
+    auto ta_at = [&](Value* p) {
+        return b.build_eq(b.build_load(Type::i32(), p, 0), b.build_iconst_i32(kTypedArrayHeaderLow));
+    };
 
     b.position_at_end(entry);
     Value* cptr = b.build_xor(ctor, imm(b, static_cast<int64_t>(kObjectTagBits)));
@@ -708,22 +707,30 @@ void build_instanceof_stub(Function* fn) {
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), cptr, 0), b.build_iconst_i32(kFunctionHeaderLow)), fn_bb,
                   helper);
     b.position_at_end(fn_bb);
-    Value* flags = b.build_load(Type::i64(), cptr, BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
-    Value* not_native = b.build_eq(b.build_and(flags, imm(b, BRONZE_ABI_FN_FLAG_NATIVE)), imm(b, 0));
     Value* inst_ok = b.build_eq(b.build_load(Type::i64(), cptr, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET),
                                 word_at(BRONZE_ABI_INSTANCEOF_CELL_INSTANCE));
     Value* statics_ok = b.build_eq(b.build_load(Type::i64(), cptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
                                    word_at(BRONZE_ABI_INSTANCEOF_CELL_STATICS));
     Value* epoch_ok = b.build_eq(word_at(BRONZE_ABI_INSTANCEOF_CELL_EPOCH),
                                  b.build_load(Type::i64(), tls(b), BRONZE_TLS_PROTO_EPOCH_OFF));
-    b.build_br_if(b.build_and(b.build_and(not_native, inst_ok), b.build_and(statics_ok, epoch_ok)), certified,
-                  helper);
+    b.build_br_if(b.build_and(inst_ok, b.build_and(statics_ok, epoch_ok)), certified, helper);
 
     b.position_at_end(certified);
     Value* ptr = b.build_xor(obj, imm(b, static_cast<int64_t>(kObjectTagBits)));
     b.build_br_if(b.build_ult(ptr, imm(b, kPayloadLimit)), object, primitive);
     b.position_at_end(object);
-    b.build_br_if(plain_at(ptr), memo, helper);
+    Value* hdr = b.build_load(Type::i32(), ptr, 0);
+    Value* walkable_hdr = b.build_or(b.build_eq(hdr, b.build_iconst_i32(kPlainHeaderLow)),
+                                     b.build_eq(hdr, b.build_iconst_i32(kTypedArrayHeaderLow)));
+    b.build_br_if(walkable_hdr, memo, arr_bb);
+    b.position_at_end(arr_bb);
+    BasicBlock* arr_check = b.append_block("io_arr_check");
+    b.position_at_end(arr_bb);
+    b.build_br_if(b.build_eq(hdr, b.build_iconst_i32(kArrayHeaderLow)), arr_check, helper);
+    b.position_at_end(arr_check);
+    b.build_br_if(b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                             word_at(BRONZE_ABI_INSTANCEOF_CELL_SHAPE)),
+                  memo_hit, helper);
     b.position_at_end(memo);
     Value* shape0 = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     b.build_br_if(b.build_eq(shape0, word_at(BRONZE_ABI_INSTANCEOF_CELL_SHAPE)), memo_hit, walk);
@@ -742,7 +749,8 @@ void build_instanceof_stub(Function* fn) {
         BasicBlock* not_obj = last ? nullptr : b.append_block(at + "_notobj");
         BasicBlock* is_obj = last ? nullptr : b.append_block(at + "_obj");
         b.position_at_end(here);
-        b.build_br_if(plain_at(cur), plain, helper);
+        Value* ok_link = (link == 1) ? b.build_or(plain_at(cur), ta_at(cur)) : plain_at(cur);
+        b.build_br_if(ok_link, plain, helper);
         b.position_at_end(plain);
         Value* root = b.build_load(Type::i64(), b.build_load(Type::i64(), cur, BRONZE_ABI_OBJ_SHAPE_OFFSET),
                                    BRONZE_ABI_SHAPE_ROOT_OFFSET);
@@ -764,11 +772,7 @@ void build_instanceof_stub(Function* fn) {
         cur = pptr;
     }
 
-    // A walk that answered went through plain objects only, every one past
-    // the receiver a marked prototype whose [[Prototype]] cannot change without
-    // a new epoch, so the answer holds for the receiver's shape while the
-    // cell's epoch does, unless that shape is a dictionary's (its own
-    // prototype may change in place): the shape and answer are remembered.
+    // Cache non-dictionary receiver shapes in the cell for subsequent probes.
     auto remember = [&](int64_t answer) {
         Value* is_dict = b.build_ne(b.build_load(Type::i64(), shape0, BRONZE_ABI_SHAPE_DICT_OFFSET), imm(b, 0));
         b.build_store(Type::i64(), cell, BRONZE_ABI_INSTANCEOF_CELL_SHAPE * 8, b.build_select(is_dict, imm(b, 0), shape0));

@@ -103,13 +103,44 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
 
     for (ValueId v = 0; v < fn.params.size(); ++v) types[v] = fn.params[v].type;
 
-    // The indices of the planned element accesses.
+    // The indices of the planned element accesses, closed backward through
+    // block-parameter incoming edges and int-planned index arithmetic so
+    // loop-carried index offsets (e.g. `uvsOffset *= s; uvsOffset += s`) stay
+    // int32 instead of being demoted to doubles.
     std::unordered_set<ValueId> indices;
+    std::vector<ValueId> indexWork;
+    auto pushIndex = [&](ValueId id) {
+        if (id != il::kNoValue && indices.insert(id).second) indexWork.push_back(id);
+    };
     for (const SitePlan& p : plan.sites) {
         if (p.kind != SiteKind::ElemRead && p.kind != SiteKind::ElemWrite) continue;
         const il::Instruction& inst = fn.blocks[p.block].instructions[p.index];
         if ((inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet) && inst.operands.size() >= 2) {
-            indices.insert(inst.operands[1]);
+            pushIndex(inst.operands[1]);
+        }
+    }
+    for (size_t wi = 0; wi < indexWork.size(); ++wi) {
+        const ValueId v = indexWork[wi];
+        const auto dIt = defs.find(v);
+        if (dIt == defs.end()) continue;
+        if (dIt->second.index == UINT32_MAX) {
+            if (const auto inIt = incoming.find(v); inIt != incoming.end()) {
+                for (ValueId in : inIt->second) pushIndex(in);
+            }
+            continue;
+        }
+        const auto pIt = planAt.find(at(dIt->second.block, dIt->second.index));
+        if (pIt == planAt.end()) continue;
+        const SitePlan& sp = plan.sites[pIt->second];
+        if (sp.kind != SiteKind::Arith || sp.form != ArithForm::Int) continue;
+        const il::Instruction& dInst = fn.blocks[dIt->second.block].instructions[dIt->second.index];
+        if (dInst.op != il::Op::Add && dInst.op != il::Op::Sub && dInst.op != il::Op::Mul &&
+            dInst.op != il::Op::NumericStep) {
+            continue;
+        }
+        for (ValueId opd : dInst.operands) {
+            const auto opDef = defs.find(opd);
+            if (opDef != defs.end() && opDef->second.index == UINT32_MAX) pushIndex(opd);
         }
     }
 
@@ -173,7 +204,8 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
             const il::Instruction& inst = fn.blocks[p.block].instructions[p.index];
             if (!demotable(inst.op)) continue;
             if (inst.result != il::kNoValue && indices.count(inst.result) != 0 &&
-                (inst.op == il::Op::Add || inst.op == il::Op::Sub || inst.op == il::Op::Mul)) {
+                (inst.op == il::Op::Add || inst.op == il::Op::Sub || inst.op == il::Op::Mul ||
+                 inst.op == il::Op::NumericStep)) {
                 continue;
             }
             for (ValueId v : inst.operands) {

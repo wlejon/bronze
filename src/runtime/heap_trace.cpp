@@ -145,7 +145,9 @@ inline void visitPlainValues(uint64_t* w, size_t end, Tracer& t) {
 
 // A full collection's trace of a Cell: its Values, and what only a full
 // collection follows (a dynamic module's token, the shape's prototype).
-BRONZE_NOINLINE void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
+BRONZE_NOINLINE void traceCellFull(uintptr_t payload, size_t payload_bytes, Tracer& t) {
+    auto* w = reinterpret_cast<uint64_t*>(payload);
+    const ValueWords v = valueWordsOf(payload, payload_bytes);
     if (runtime::rtHasDynamicModules()) {
         const auto* h = reinterpret_cast<const HeapObjectHeader*>(w);
         if (h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Function) {
@@ -163,11 +165,16 @@ BRONZE_NOINLINE void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
     if (v.shaped) traceShapePrototype(w, t);
 }
 
+BRONZE_NOINLINE void traceCellSlow(uintptr_t payload, size_t payload_bytes, Tracer& t) {
+    const ValueWords v = valueWordsOf(payload, payload_bytes);
+    if (v.first < v.end) t.visit_run(reinterpret_cast<uint64_t*>(payload) + v.first, v.end - v.first);
+}
+
 void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
-    auto* w = reinterpret_cast<uint64_t*>(payload);
-    if (t.purpose() == Tracer::Purpose::Full) {
-        return traceCellFull(w, valueWordsOf(payload, payload_bytes), t);
+    if (t.purpose() == Tracer::Purpose::Full) [[unlikely]] {
+        return traceCellFull(payload, payload_bytes, t);
     }
+    auto* w = reinterpret_cast<uint64_t*>(payload);
     const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
     if (h->tag == static_cast<uint16_t>(Tag::Object)) {
         const size_t words = std::min<size_t>(h->size, payload_bytes) / sizeof(Value);
@@ -188,8 +195,7 @@ void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
             default: break;
         }
     }
-    const ValueWords v = valueWordsOf(payload, payload_bytes);
-    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
+    return traceCellSlow(payload, payload_bytes, t);
 }
 
 // The Value words of a Cell in payload bytes [begin, end): what a minor
