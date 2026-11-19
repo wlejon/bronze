@@ -97,7 +97,8 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
     uint32_t slot = 0;
     PropertyInfo own;
     const bool hasOwn = obj->shape->lookupProperty(name, own);
-    if (hasOwn && own.accessor) {
+    if (hasOwn && own.accessor && own.enumerable == enumerable &&
+        own.configurable == configurable) {
         slot = own.slot;
         // The pair is rewritten in place, so no shape moves; on a prototype
         // the epoch has to. The latches that verify a prototype's getters
@@ -106,14 +107,16 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         // keep answering for the getter this call replaced.
         if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
     } else if (obj->shape->isDictionary()) {
-        obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
+        obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot, configurable);
+        if (hasOwn && obj->shape->used_as_prototype) bumpProtoMutationEpoch();
     } else if (hasOwn || obj->shape->slotsUsedAfterAdd(2) > Shape::kDictionaryThreshold ||
                obj->shape->refusesNewTransition(name)) {
         // A redefinition the chain cannot express, or the map-sized object
         // `setProp` moves for the same reason (a pair is two slots, so the
         // test is on the second).
         toDictionary(arena, self);
-        obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
+        obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot, configurable);
+        if (hasOwn && obj->shape->used_as_prototype) bumpProtoMutationEpoch();
     } else {
         // An add on a shape-chain object, exactly like `setProp`'s: if this
         // object is somebody's prototype, the pair just defined shadows what

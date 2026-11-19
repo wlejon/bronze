@@ -589,7 +589,7 @@ struct ObjectHeader {
     // tree cannot express.
     static ObjectHeader* dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                     PropertyKey name, bool enumerable, bool accessor,
-                                    uint32_t& out_slot);
+                                    uint32_t& out_slot, bool configurable = true);
     // Insert a data property already proven absent from `self`'s dictionary,
     // stamping `writable` and `configurable` directly without re-probing `find`.
     static ObjectHeader* dictAddAbsent(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,

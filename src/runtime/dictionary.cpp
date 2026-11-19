@@ -468,7 +468,7 @@ PropertyKey ObjectHeader::dictKeyToStore(Heap& heap, NonMovingArena& arena, Prop
 
 ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                        PropertyKey name, bool enumerable, bool accessor,
-                                       uint32_t& out_slot) {
+                                       uint32_t& out_slot, bool configurable) {
     auto* obj = self.get().asObject<ObjectHeader>();
     if (!obj->shape || !obj->shape->isDictionary()) {
         fatal("internal: a dictionary definition on an object that is not in dictionary mode");
@@ -477,6 +477,7 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
 
     if (DictEntry* existing = d.find(name)) {
         existing->enumerable = enumerable;
+        existing->configurable = configurable;
         if (existing->accessor == accessor) {
             out_slot = existing->slot;
             return obj;
@@ -498,7 +499,7 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         PropertyKey stored = dictKeyToStore(heap, arena, name);
         obj = self.get().asObject<ObjectHeader>();
         out_slot = d.allocateSlots(accessor ? 2u : 1u);
-        d.add(stored, out_slot, enumerable, accessor);
+        d.add(stored, out_slot, enumerable, accessor, /*writable=*/true, configurable);
         // A depth > 0 entry can never be walking THROUGH this object — a
         // dictionary anywhere on the path is what `cachedProtoHolder` refuses
         // — and a negative entry never speaks for a chain with one on it
