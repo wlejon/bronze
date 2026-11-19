@@ -84,14 +84,7 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (newLength <= arr->length) {
-            // Shrinking keeps NUMBERS: the holes land at or past the new
-            // length, and every element still below it is what it was.
-            HeapValue* slots = arr->elementsKeepingNumbers();
-            for (uint32_t i = newLength; i < arr->length; ++i) slots[i] = Value::fromHole();
-            arr->length = newLength;
-            if (newLength == 0) {
-                arr->head_offset = 0;
-            }
+            arr->truncate(newLength);
             return;
         }
         if (arr->head_offset + newLength > arr->capacity) {

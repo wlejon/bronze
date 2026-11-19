@@ -242,6 +242,20 @@ struct ArrayHeader {
     // through a root and `this` must not be reused.
     static void setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength);
 
+    // Shrinks length to `newLength` (caller guarantees newLength <= length).
+    // Never allocates. Keeps NUMBERS; when elementsAreNumbers() holds, every
+    // dropped slot holds a canonical double (never a GC reference) and every
+    // growth path overwrites or hole-fills [length..newLength), so hole-filling
+    // dropped slots can be skipped.
+    void truncate(uint32_t newLength) noexcept {
+        if (!elementsAreNumbers()) {
+            HeapValue* slots = elementsKeepingNumbers();
+            for (uint32_t i = newLength; i < length; ++i) slots[i] = Value::fromHole();
+        }
+        length = newLength;
+        if (newLength == 0) head_offset = 0;
+    }
+
     // `count` elements of `src` from `start`, appended to `self` in one copy
     // with one barrier: what `slice`, a spread of an array and `concat` are
     // when nothing between the read and the write can run a program. A hole

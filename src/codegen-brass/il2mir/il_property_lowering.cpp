@@ -129,7 +129,8 @@ bool lower_property_instruction(
             }
             if (site && prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey && !prop_lowering.cold_code()) {
                 prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site,
-                                                  lowering->is_primitive_value(inst_ast.operands[1]));
+                                                  lowering->is_primitive_value(inst_ast.operands[1]),
+                                                  length_key(lowering, inst_ast.index));
             } else {
                 prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
                                              site ? prop_lowering.site_ptr(b, site) : nullptr);

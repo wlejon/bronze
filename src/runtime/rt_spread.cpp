@@ -825,8 +825,9 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
             // collection moves both the array and its element block.
             auto* keys = excluded.get().asObject<ArrayHeader>();
             if (i >= keys->length) break;
-            Rooted<Value> k{keys->getElem(i)};
-            if (k.get().isString() || k.get().isSymbol()) continue;
+            const Value rawKey = keys->getElem(i);
+            if (rawKey.isString() || rawKey.isSymbol()) continue;
+            Rooted<Value> k{rawKey};
             // Step 1 (ToPrimitive) for an object, then step 2's ToString for
             // whatever primitive is left — two helpers because the first runs
             // user code and the second only allocates.

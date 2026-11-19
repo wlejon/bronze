@@ -59,15 +59,34 @@ struct ShapeHint {
     // An assign's hint: the chain answered none of the keys at this epoch.
     uint64_t epoch;
     bool assign;
+    // Every copied property sits inline with compatible slot representation,
+    // so copyAsBefore skips ensureSlots() and setSlot() generalization checks.
+    bool directInlineCopy;
     uint16_t count;
     // Slots an object at `after` needs (ObjectHeader::ensureSlots).
     uint16_t slotCount;
     uint16_t from[kMaxKeys];
     uint16_t to[kMaxKeys];
 };
-constexpr uint32_t kHintCount = 64;
+constexpr uint32_t kHintCount = 128;
 // Plain data, so thread teardown has nothing to run for it.
 thread_local ShapeHint t_hints[kHintCount];
+
+// A rest pattern's excluded keys, read out of their array once: the walk
+// below asks about every property of the source.
+constexpr uint32_t kMaxExcluded = 16;
+
+struct RestHint {
+    const Shape* source;
+    const Shape* before;
+    uint64_t epoch;
+    bool assign;
+    uint8_t excludedCount;
+    const void* excludedIds[kMaxExcluded];
+    ShapeHint hint;
+};
+constexpr uint32_t kRestHintCount = 64;
+thread_local RestHint t_restHints[kRestHintCount];
 
 ShapeHint& hintFor(const Shape* source, const Shape* before, uint64_t kept, bool assign) noexcept {
     const uint64_t a = reinterpret_cast<uintptr_t>(source);
@@ -80,6 +99,63 @@ bool hintMatches(const ShapeHint& hint, const Shape* source, const Shape* before
                  bool assign) noexcept {
     return hint.source == source && hint.before == before && hint.kept == kept &&
            hint.assign == assign && (!assign || hint.epoch == protoMutationEpoch());
+}
+
+uint64_t restKeysHash(const void* const* ids, uint32_t count) noexcept {
+    uint64_t h = 0x517cc1b727220a95ull ^ count;
+    for (uint32_t i = 0; i < count; ++i) {
+        h = (h * 0x9E3779B97F4A7C15ull) ^ reinterpret_cast<uintptr_t>(ids[i]);
+    }
+    return h;
+}
+
+RestHint& restHintFor(const Shape* source, const Shape* before, uint64_t keysHash,
+                      uint32_t excludedCount, bool assign) noexcept {
+    const uint64_t a = reinterpret_cast<uintptr_t>(source);
+    const uint64_t b = reinterpret_cast<uintptr_t>(before);
+    const uint64_t h =
+        (a ^ (b * 0x9E3779B97F4A7C15ull) ^ keysHash ^
+         (static_cast<uint64_t>(excludedCount) << 8) ^ static_cast<uint64_t>(assign)) *
+        0xD6E8FEB86659FD93ull;
+    return t_restHints[(h >> 40) % kRestHintCount];
+}
+
+bool restHintMatches(const RestHint& rh, const Shape* source, const Shape* before,
+                     const void* const* ids, uint32_t count, bool assign) noexcept {
+    if (rh.source != source || rh.before != before || rh.assign != assign ||
+        rh.excludedCount != count) {
+        return false;
+    }
+    if (assign && rh.epoch != protoMutationEpoch()) return false;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (rh.excludedIds[i] != ids[i]) return false;
+    }
+    return true;
+}
+
+bool canDirectInlineCopy(const Shape* source, const Shape* after, const ShapeHint& hint) noexcept {
+    if (hint.slotCount > ObjectHeader::kOverflowSlot) return false;
+    for (uint32_t i = 0; i < hint.count; ++i) {
+        if (hint.from[i] >= ObjectHeader::kOverflowSlot || hint.to[i] >= ObjectHeader::kOverflowSlot) {
+            return false;
+        }
+        if (after->slotIsDouble(hint.to[i]) && !source->slotIsDouble(hint.from[i])) return false;
+        if (after->slotIsObject(hint.to[i]) && !source->slotIsObject(hint.from[i])) return false;
+    }
+    return true;
+}
+
+void storeRestHint(const Shape* source, const Shape* before, uint64_t restHash,
+                   const void* const* excludedIds, uint32_t excludedLen, bool assign,
+                   const ShapeHint& hint) noexcept {
+    RestHint& rh = restHintFor(source, before, restHash, excludedLen, assign);
+    rh.source = source;
+    rh.before = before;
+    rh.epoch = assign ? protoMutationEpoch() : 0;
+    rh.assign = assign;
+    rh.excludedCount = static_cast<uint8_t>(excludedLen);
+    for (uint32_t i = 0; i < excludedLen; ++i) rh.excludedIds[i] = excludedIds[i];
+    rh.hint = hint;
 }
 
 // A plain object with no internal slots, on the transition tree.
@@ -98,9 +174,6 @@ bool mayBeIndex(const StringHeader* s) noexcept {
     return c >= '0' && c <= '9';
 }
 
-// A rest pattern's excluded keys, read out of their array once: the walk
-// below asks about every property of the source.
-constexpr uint32_t kMaxExcluded = 16;
 struct Excluded {
     PropertyKey keys[kMaxExcluded];
     uint32_t count = 0;
@@ -169,6 +242,24 @@ bool isPlainAppend(const Shape* after, const Shape* before, const Shape* const* 
 // The copy a remembered one stands for. The one allocation comes ahead of
 // every raw pointer.
 void copyAsBefore(const ShapeHint& hint, Rooted<Value>& target, Rooted<Value>& src) {
+    if (hint.directInlineCopy) {
+        ObjectHeader* to = target.get().asObject<ObjectHeader>();
+        const ObjectHeader* from = src.get().asObject<ObjectHeader>();
+        to->shape = hint.after;
+        const Value* srcSlots = from->slotsData();
+        if (rtHeap().gc().is_young(reinterpret_cast<uintptr_t>(to))) {
+            auto* dstSlots = reinterpret_cast<Value*>(to->slotsData());
+            for (uint32_t i = 0; i < hint.count; ++i) {
+                dstSlots[hint.to[i]] = srcSlots[hint.from[i]];
+            }
+        } else {
+            HeapValue* dstSlots = to->slotsData();
+            for (uint32_t i = 0; i < hint.count; ++i) {
+                dstSlots[hint.to[i]] = srcSlots[hint.from[i]];
+            }
+        }
+        return;
+    }
     ObjectHeader* to = ObjectHeader::ensureSlots(rtHeap(), target, hint.slotCount);
     const ObjectHeader* from = src.get().asObject<ObjectHeader>();
     to->shape = hint.after;
@@ -182,6 +273,7 @@ void copyAsBefore(const ShapeHint& hint, Rooted<Value>& target, Rooted<Value>& s
 
 void rtForgetSpreadShapeHints() noexcept {
     for (ShapeHint& h : t_hints) h = ShapeHint{};
+    for (RestHint& r : t_restHints) r = RestHint{};
 }
 
 bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value>* excluded,
@@ -210,11 +302,31 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
     // held raw.
     if (source->has_symbol_keys) return false;
     Excluded skip;
+    const void* excludedIds[kMaxExcluded] = {};
+    uint32_t excludedLen = 0;
+    uint64_t restHash = 0;
+    bool allImmortalExcluded = false;
     if (excluded) {
         const auto* keys = excluded->get().asObject<ArrayHeader>();
-        if (keys->length > kMaxExcluded) return false;
-        for (uint32_t i = 0; i < keys->length; ++i) {
-            skip.keys[skip.count++] = PropertyKey::fromValue(keys->getElem(i));
+        excludedLen = keys->length;
+        if (excludedLen > kMaxExcluded) return false;
+        allImmortalExcluded = true;
+        for (uint32_t i = 0; i < excludedLen; ++i) {
+            const PropertyKey pk = PropertyKey::fromValue(keys->getElem(i));
+            skip.keys[skip.count++] = pk;
+            if (!pk.valid() || !pk.immortal()) {
+                allImmortalExcluded = false;
+            } else {
+                excludedIds[i] = pk.identity();
+            }
+        }
+        if (allImmortalExcluded) {
+            restHash = restKeysHash(excludedIds, excludedLen);
+            const RestHint& rh = restHintFor(source, before, restHash, excludedLen, assign);
+            if (restHintMatches(rh, source, before, excludedIds, excludedLen, assign)) {
+                copyAsBefore(rh.hint, target, src);
+                return true;
+            }
         }
     }
     const Shape* nodes[kMaxKeys];
@@ -233,7 +345,19 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
         nodes[count++] = s;
         kept |= 1ull << at;
     }
-    if (count == 0) return true;
+    if (count == 0) {
+        if (allImmortalExcluded) {
+            ShapeHint emptyHint{};
+            emptyHint.source = source;
+            emptyHint.before = before;
+            emptyHint.after = const_cast<Shape*>(before);
+            emptyHint.kept = 0;
+            emptyHint.assign = assign;
+            emptyHint.directInlineCopy = true;
+            storeRestHint(source, before, restHash, excludedIds, excludedLen, assign, emptyHint);
+        }
+        return true;
+    }
     if (!excluded) kept = kAllKept;
     for (uint32_t i = 0, j = count - 1; i < j; ++i, --j) {
         const Shape* t = nodes[i];
@@ -241,9 +365,12 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
         nodes[j] = t;
     }
 
-    ShapeHint& hint = hintFor(source, before, kept, assign);
-    if (hintMatches(hint, source, before, kept, assign)) {
-        copyAsBefore(hint, target, src);
+    const ShapeHint& hitHint = hintFor(source, before, kept, assign);
+    if (hintMatches(hitHint, source, before, kept, assign)) {
+        copyAsBefore(hitHint, target, src);
+        if (allImmortalExcluded) {
+            storeRestHint(source, before, restHash, excludedIds, excludedLen, assign, hitHint);
+        }
         return true;
     }
     if (assign) {
@@ -272,7 +399,11 @@ bool rtSpreadPlain(Rooted<Value>& target, Rooted<Value>& src, const Rooted<Value
         next.count = static_cast<uint16_t>(count);
         next.slotCount = static_cast<uint16_t>(slotCount);
         for (uint32_t i = 0; i < count; ++i) next.from[i] = static_cast<uint16_t>(nodes[i]->slot_index);
-        hint = next;
+        next.directInlineCopy = canDirectInlineCopy(source, done->shape, next);
+        hintFor(source, before, kept, assign) = next;
+        if (allImmortalExcluded) {
+            storeRestHint(source, before, restHash, excludedIds, excludedLen, assign, next);
+        }
     }
     return true;
 }

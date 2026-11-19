@@ -139,8 +139,8 @@ void rtArrayIndexSet(Value arrVal, uint32_t index, Value v, bool strict) {
 // configurable, `length` writable (integrity.cpp keeps a sealed or frozen
 // array's attributes in its dictionary) — and a Number that is an integer in
 // [0, length] is its own ToUint32, so neither the RangeError nor the sealed
-// stop applies. Shrinking allocates nothing but the root. False when the write
-// is not that one, for the caller's ordinary path.
+// stop applies. Shrinking allocates nothing. False when the write is not that
+// one, for the caller's ordinary path.
 bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal) {
     if (!newLenVal.isNumber()) return false;
     auto* arr = arrVal.asObject<ArrayHeader>();
@@ -149,8 +149,7 @@ bool rtArrayTruncateFast(Value arrVal, uint32_t keyIndex, Value newLenVal) {
     if (!(num >= 0.0) || num > static_cast<double>(arr->length) || std::floor(num) != num) {
         return false;
     }
-    Rooted<Value> arrRoot{arrVal};
-    ArrayHeader::setLength(rtHeap(), arrRoot, static_cast<uint32_t>(num));
+    arr->truncate(static_cast<uint32_t>(num));
     return true;
 }
 

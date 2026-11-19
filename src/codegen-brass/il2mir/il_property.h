@@ -150,7 +150,7 @@ public:
     // there, inline or overflow, with the write barrier for a reference; the
     // helper on a miss. Requires a real site.
     void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
-                             const IcSite& site, bool val_is_primitive = false);
+                             const IcSite& site, bool val_is_primitive = false, bool is_length = false);
 
     // Whether writes get lower_prop_set_mono (off while a census counts
     // every write through the helper).

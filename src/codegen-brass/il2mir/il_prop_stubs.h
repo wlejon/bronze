@@ -22,6 +22,11 @@ void build_prop_get_stub(Function* fn);
 // A setter it calls is entered through the stub named `setter_call_sym`.
 constexpr const char* kPropSetStub = "__bronze_prop_set_stub";
 void build_prop_set_stub(Function* fn, const std::string& setter_call_sym);
+// (i64 obj, i32 key, i64 val, ptr site, i32 mode) -> void: assignment to
+// `"length"` when way 0 missed. Truncates bare NUMBERS arrays inline and
+// delegates everything else to `prop_set_sym` (`__bronze_prop_set_stub`).
+constexpr const char* kPropSetLengthStub = "__bronze_prop_set_length_stub";
+void build_prop_set_length_stub(Function* fn, const std::string& prop_set_sym);
 // (i64 setter payload, i64 this, i64 val) -> void: the setter entered with
 // its one argument rooted.
 constexpr const char* kSetterCallStub = "__bronze_setter_call_stub";

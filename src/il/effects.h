@@ -58,6 +58,10 @@ enum class Loc : uint16_t {
     // `array.push` with kStoreNumber) writes `Elements` but not this, so a
     // NUMBERS dense test stays answered across the loop that fills the array.
     ElemKinds = 1u << 13,
+    // An operation that may shrink an Array, detach its elements block, or trip
+    // array_index_hazard: everything that writes everything writes this, whereas
+    // monotonic `array.push` and growing `elem.store` only write `ArrayLen`.
+    ArrayShrink = 1u << 14,
 };
 
 class LocSet {
@@ -82,7 +86,7 @@ public:
     constexpr bool operator==(const LocSet&) const = default;
 
 private:
-    static constexpr uint16_t kAllBits = (1u << 14) - 1;
+    static constexpr uint16_t kAllBits = (1u << 15) - 1;
     explicit constexpr LocSet(uint16_t bits) : bits_(bits) {}
     uint16_t bits_ = 0;
 };

@@ -647,14 +647,51 @@ bool IlLowering::lower_math_fn(const BronzeInstruction& inst, Builder& b, const 
         res_val = y != nullptr ? b.build_call(name, Type::f64(), {x, y}) : b.build_call(name, Type::f64(), {x});
         return true;
     };
+    auto emit_minmax = [&](bool is_min) {
+        BasicBlock* cur = b.current_block();
+        const std::string p = (is_min ? "min_" : "max_") + std::to_string(cur->parent()->next_block_id());
+        BasicBlock* bb_check_y = b.append_block(p + "_y");
+        BasicBlock* bb_eq_or_nan = b.append_block(p + "_eqnan");
+        BasicBlock* bb_eq = b.append_block(p + "_eq");
+        BasicBlock* bb_nan = b.append_block(p + "_nan");
+        BasicBlock* bb_merge = b.append_block(p + "_merge");
+        bb_eq_or_nan->set_cold();
+        bb_eq->set_cold();
+        bb_nan->set_cold();
+        Value* res = b.add_block_param(bb_merge, Type::f64());
+
+        b.position_at_end(cur);
+        Value* take_x = is_min ? b.build_slt(x, y) : b.build_sgt(x, y);
+        b.build_br_if(take_x, bb_merge, {x}, bb_check_y, {});
+
+        b.position_at_end(bb_check_y);
+        Value* take_y = is_min ? b.build_sgt(x, y) : b.build_slt(x, y);
+        b.build_br_if(take_y, bb_merge, {y}, bb_eq_or_nan, {});
+
+        b.position_at_end(bb_eq_or_nan);
+        b.build_br_if(b.build_eq(x, y), bb_eq, bb_nan);
+
+        b.position_at_end(bb_eq);
+        Value* is_neg_zero_x = b.build_eq(b.build_bitcast_i64_f64(x),
+                                          iconst64(b, static_cast<int64_t>(uint64_t{1} << 63)));
+        Value* eq_res = is_min ? b.build_select(is_neg_zero_x, x, y) : b.build_select(is_neg_zero_x, y, x);
+        b.build_br(bb_merge, {eq_res});
+
+        b.position_at_end(bb_nan);
+        b.build_br(bb_merge, {b.build_bitcast_f64_i64(iconst64(b, BRONZE_ABI_CANONICAL_NAN_BITS))});
+
+        b.position_at_end(bb_merge);
+        res_val = res;
+        return true;
+    };
     switch (inst.imm_i64) {
         case kAbs: res_val = b.build_fabs_f64(x); return true;
         case kFloor: res_val = b.build_floor_f64(x); return true;
         case kCeil: res_val = b.build_ceil_f64(x); return true;
         case kSqrt: res_val = b.build_sqrt_f64(x); return true;
         case kRound: return kernel("bronze_math_round_f64");
-        case kMin: return kernel("bronze_math_min2_f64");
-        case kMax: return kernel("bronze_math_max2_f64");
+        case kMin: return emit_minmax(/*is_min=*/true);
+        case kMax: return emit_minmax(/*is_min=*/false);
         case kSin: return kernel("brass_sin_f64");
         case kCos: return kernel("brass_cos_f64");
         case kTan: return kernel("bronze_math_tan_f64");

@@ -415,6 +415,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         build_prop_set_stub(
             mod->create_function(module_sym(kPropSetStub), Type::void_type(), Span<const Type>(set_params, 5)),
             module_sym(kSetterCallStub));
+        build_prop_set_length_stub(
+            mod->create_function(module_sym(kPropSetLengthStub), Type::void_type(), Span<const Type>(set_params, 5)),
+            module_sym(kPropSetStub));
         const Type setter_params[] = {Type::i64(), Type::i64(), Type::i64()};
         build_setter_call_stub(
             mod->create_function(module_sym(kSetterCallStub), Type::void_type(), Span<const Type>(setter_params, 3)));

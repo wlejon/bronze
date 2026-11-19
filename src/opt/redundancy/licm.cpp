@@ -189,7 +189,8 @@ public:
 private:
     WriteSet blockWrites(BlockId b) const;
     bool invariant(ValueId v) const;
-    bool canHoist(const il::Instruction& inst) const;
+    bool canHoist(BlockId b, size_t instIdx, const il::Instruction& inst);
+    bool canHoistMonotonicDenseGuard(BlockId b, size_t instIdx, const il::Instruction& inst);
     bool dominatesLatches(BlockId b) const;
     std::optional<Step> guardStep(BlockId b);
     bool latchMatches(ValueId v, ValueId paramId, bool wantI32) const;
@@ -236,7 +237,50 @@ bool LoopPlanner::invariant(ValueId v) const {
     return false;
 }
 
-bool LoopPlanner::canHoist(const il::Instruction& inst) const {
+bool LoopPlanner::canHoistMonotonicDenseGuard(BlockId b, size_t instIdx, const il::Instruction& inst) {
+    if (inst.op != Op::IsDenseArray || inst.operands.size() != 1) return false;
+    Access shrinkRead = readOf(inst, il::effectsOf(inst));
+    shrinkRead.locs = (inst.immI32 & il::kDenseNumbers) != 0
+                          ? (il::Loc::Shapes | il::Loc::ArrayShrink | il::Loc::ElemKinds)
+                          : (il::Loc::Shapes | il::Loc::ArrayShrink);
+    if (loopWrites_.kills(shrinkRead, a_.alias)) return false;
+    const auto& uses = a_.defs.uses(inst.result);
+    if (uses.size() != 1) return false;
+    const UseSite& u = uses[0];
+    const auto& insts = fn_.blocks[b].instructions;
+    if (u.kind != UseSite::Kind::Operand || u.block != b || u.inst + 1 != insts.size()) return false;
+    const il::Instruction& term = insts.back();
+    if (term.op != Op::Branch || term.operands.size() != 1 || term.operands[0] != inst.result) return false;
+    const BlockId thenBlock = term.target.block;
+    const BlockId elseBlock = term.elseTarget.block;
+    if (thenBlock == elseBlock || endsInLeave(fn_.blocks[thenBlock]) || !endsInLeave(fn_.blocks[elseBlock])) {
+        return false;
+    }
+    if (!dominatesLatches(b)) return false;
+    for (const il::Instruction& ei : fn_.blocks[elseBlock].instructions) {
+        if (!isCacheFill(ei.op)) continue;
+        for (ValueId v : ei.operands) {
+            if (!invariant(v)) return false;
+        }
+    }
+    const bool optimistic = fn_.blocks[elseBlock].instructions.back().keyIndex == il::kResumeOptimistic;
+    if (!resumeTarget(optimistic)) return false;
+
+    const ValueId arr = inst.operands[0];
+    for (BlockId lb : loop_.blocks) {
+        const auto& lInsts = fn_.blocks[lb].instructions;
+        for (size_t j = 0; j < lInsts.size(); ++j) {
+            const il::Effects we = il::effectsOf(lInsts[j]);
+            if (!we.writes.has(il::Loc::ArrayLen)) continue;
+            const Access w = writeOf(lInsts[j], we);
+            if (w.where.place == Place::Array && !a_.alias.mayAlias(arr, w.where.base)) continue;
+            if (lb == b ? j <= instIdx : !a_.dom.dominates(b, lb)) return false;
+        }
+    }
+    return true;
+}
+
+bool LoopPlanner::canHoist(BlockId b, size_t instIdx, const il::Instruction& inst) {
     if (inst.result == kNoValue || inst.result >= hoisted_.size() || il::isTerminator(inst.op)) return false;
     const il::Effects e = il::effectsOf(inst);
     if (!e.writes.empty() || e.callsUnknown || e.throws || e.allocates || e.observableOrder || e.barrier) {
@@ -250,7 +294,9 @@ bool LoopPlanner::canHoist(const il::Instruction& inst) const {
         if (!licence || !licenceHolds(*licence, preheaderFacts_)) return false;
         if (licence->dependsOn.intersects(loopWrites_.allLocs())) return false;
     }
-    if (!e.reads.empty() && loopWrites_.kills(readOf(inst, e), a_.alias)) return false;
+    if (!e.reads.empty() && loopWrites_.kills(readOf(inst, e), a_.alias)) {
+        return canHoistMonotonicDenseGuard(b, instIdx, inst);
+    }
     return true;
 }
 
@@ -322,7 +368,7 @@ std::vector<Step> LoopPlanner::plan() {
         if (!loop_.contains(b) || a_.loops.innermost(b) != loopIndex_) continue;
         const auto& insts = fn_.blocks[b].instructions;
         for (size_t i = 0; i + 1 < insts.size(); ++i) {
-            if (!canHoist(insts[i])) continue;
+            if (!canHoist(b, i, insts[i])) continue;
             hoisted_[insts[i].result] = 1;
             Step step;
             step.kind = Step::Kind::Move;

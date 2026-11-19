@@ -68,9 +68,10 @@ public:
                 return;
             }
             case il::Op::IsDenseArray: {
+                const il::Loc lenLoc = truth ? Loc::ArrayShrink : Loc::ArrayLen;
                 const il::LocSet denseLocs = (d->immI32 & il::kDenseNumbers) != 0
-                                                 ? (Loc::Shapes | Loc::ArrayLen | Loc::ElemKinds)
-                                                 : (Loc::Shapes | Loc::ArrayLen);
+                                                 ? (Loc::Shapes | lenLoc | Loc::ElemKinds)
+                                                 : (Loc::Shapes | lenLoc);
                 memoryFact(cond, FactKind::DenseArray, truth, d->operands[0], d->immI32, denseLocs, out);
                 return;
             }

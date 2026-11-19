@@ -300,7 +300,8 @@ Value* PropertyLoweringHelper::slot_address(Builder& b, Value* ptr, Value* slot_
 }
 
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
-                                                 uint32_t imm, const IcSite& site, bool val_is_primitive) {
+                                                 uint32_t imm, const IcSite& site, bool val_is_primitive,
+                                                 bool is_length) {
     count_shape_turn(b, obj, site);
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();
@@ -325,7 +326,7 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     b.build_br_if(hit, bb_fast, bb_slow);
     b.position_at_end(bb_slow);
     slow_arm(b);
-    b.build_call(stub_sym(kPropSetStub), Type::void_type(),
+    b.build_call(stub_sym(is_length && imm < kDefineWriteMode ? kPropSetLengthStub : kPropSetStub), Type::void_type(),
                  {obj, runtime_key(b, key_index), val, site_ptr(b, site), b.build_iconst_i32(static_cast<int32_t>(imm))});
     b.build_br(bb_merge);
 

@@ -68,7 +68,7 @@ inline bool isBareArray(const HeapObjectHeader* hdr) noexcept {
 // only an undefined `parent` (%Function.prototype%) leaves fixed.
 inline const Shape* ctorStaticsKey(const FunctionHeader* fn, bool& ok) noexcept {
     const Shape* sh = fn->shape;
-    ok = sh != nullptr && !sh->isDictionary() &&
+    ok = sh != nullptr && sh->readCacheable() &&
          (sh->prototypeValue().isObject() || fn->parent.isUndefined());
     return sh;
 }
@@ -98,7 +98,7 @@ bool objectChainCacheable(Value obj, Value targetProto) noexcept {
     if (isBareArray(firstHdr)) return true;
     if (!HeapKind::shapeNamesPrototype(firstHdr->flags)) return false;
     const Shape* firstShape = reinterpret_cast<const ObjectHeader*>(firstHdr)->shape;
-    if (!firstShape || firstShape->isDictionary()) return false;
+    if (!firstShape || !firstShape->readCacheable()) return false;
 
     Value cur = obj;
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
@@ -335,7 +335,8 @@ bool instanceofImpl(uint64_t objBits, uint64_t ctorBits, uint64_t* cell) {
                 PropertyInfo info;
                 const Shape* sh = cur->shape;
                 if (sh && sh->lookupProperty(hasInstProp, info)) break;
-                if (depth > 0 && (!sh || sh->isDictionary() || !sh->used_as_prototype)) {
+                const bool frozenDict = sh != nullptr && sh->isDictionary() && sh->readCacheable();
+                if (depth > 0 && (!sh || (!sh->used_as_prototype && !frozenDict))) {
                     ancestorsMarked = false;
                 }
             }
