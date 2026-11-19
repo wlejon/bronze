@@ -23,6 +23,7 @@
 #include "runtime/dictionary.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
@@ -440,13 +441,17 @@ bool rtIsHardened(Value receiver) {
     return d && d->hardened;
 }
 
+// The program closing an intrinsic itself, which ends its realm's additions
+// to it (intrinsic_additions.h).
 uint64_t rtObjectFreeze(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    rtIntrinsicAdditionsClose(args[0]);
     return setIntegrity(args[0], IntegrityLevel::Frozen, "freeze");
 }
 
 uint64_t rtObjectSeal(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    rtIntrinsicAdditionsClose(args[0]);
     return setIntegrity(args[0], IntegrityLevel::Sealed, "seal");
 }
 
@@ -455,6 +460,7 @@ uint64_t rtObjectSeal(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 // sealed, which the monotone rule in setIntegrity already says.
 uint64_t rtObjectPreventExtensions(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    rtIntrinsicAdditionsClose(args[0]);
     return setIntegrity(args[0], IntegrityLevel::Open, "preventExtensions");
 }
 

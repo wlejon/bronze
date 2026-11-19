@@ -88,6 +88,19 @@ public:
     Value replacedBuiltin(size_t which) const noexcept { return replacedBuiltins_[which]; }
     void setReplacedBuiltin(size_t which, Value v) noexcept { replacedBuiltins_[which] = v; }
 
+    // What this realm's code added to a frozen intrinsic
+    // (intrinsic_additions.h): a key the intrinsic does not have, and its
+    // value, per intrinsic (named by its dictionary, which never moves).
+    struct IntrinsicAddition {
+        const void* table = nullptr;
+        Value key = Value::fromUndefined();
+        Value value = Value::fromUndefined();
+    };
+    std::vector<IntrinsicAddition>& intrinsicAdditions() noexcept { return intrinsicAdditions_; }
+    // The intrinsics this realm's code froze, sealed or closed itself, which
+    // take no further additions.
+    std::vector<const void*>& closedIntrinsics() noexcept { return closedIntrinsics_; }
+
     // The answers to bare-name global reads, indexed by key id
     // (rt_global_cache.cpp): a value (a builtin, a host global), or where an
     // own data property of the global object lives. An entry holds while its
@@ -148,6 +161,8 @@ private:
     std::unordered_set<std::string> hostGlobalNames_;
     bool hostGlobalsSpecial_ = false;
     Value replacedBuiltins_[kReplaceableBuiltins] = {Value::fromHole(), Value::fromHole()};
+    std::vector<IntrinsicAddition> intrinsicAdditions_;
+    std::vector<const void*> closedIntrinsics_;
     std::vector<GlobalReadEntry> globalReads_;
 };
 

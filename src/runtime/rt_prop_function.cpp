@@ -23,6 +23,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/map.h"
@@ -472,6 +473,12 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
     // installed there would see the function. `rtFunctionPrototypeObject`
     // builds the intrinsics on first use, which is why it is taken through a
     // root afterwards.
+    // A realm's addition to a frozen builtin function itself (`Object.x = f`)
+    // is nearer than %Function.prototype% (intrinsic_additions.h).
+    if (Value added; rtIntrinsicAdditionAt(recv.get().asObject<FunctionHeader>()->object(),
+                                           PropertyKey::forString(keyHeader), added)) {
+        return added.rawBits();
+    }
     {
         Rooted<Value> fpBox{rtFunctionPrototypeObject()};
         ObjectHeader* fpObj = fpBox.get().asObject<FunctionHeader>()->object();
@@ -479,6 +486,11 @@ uint64_t functionMemberImpl(Value objVal, const std::string* optKeyStr, StringHe
         if (fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
             Rooted<Value> key(Value::fromString(keyHeader));
             return fpObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
+        }
+        // And its addition to %Function.prototype% (`Function.prototype.method
+        // = f`).
+        if (Value added; rtIntrinsicAdditionAt(fpObj, PropertyKey::forString(keyHeader), added)) {
+            return added.rawBits();
         }
     }
     // `Function.prototype` has had its say, so what is left is the object

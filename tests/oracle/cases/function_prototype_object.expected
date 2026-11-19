@@ -26,6 +26,6 @@ static shadows: static call true
 own shadows: own bind true true
 patched: function f(a, b) { return this.x + a + b; } class K { static s() {} m() {} }
 restored: true true
-expando on FP: undefined true undefined
+expando on FP: 3 true undefined
 native forms: function call() { [native code] } function () { [native code] }
 tag: [object Function] [object Function]

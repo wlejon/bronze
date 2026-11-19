@@ -414,6 +414,34 @@ is missing, which the frozen `Symbol` would refuse (Babylon, model-viewer).
 libraries that name them (a `[Symbol.dispose]()` method); there is no `using`
 declaration.
 
+A NEW key written to a frozen intrinsic is not refused: it is the realm's
+addition (`runtime/intrinsic_additions.h`). Old libraries extend the
+builtins (`Number.prototype.clamp = ...` in a melonJS game,
+`Object.prototype.clone = ...` in a Pac-Man clone, Babylon's array observer
+setting `next` on `Array.prototype.push`), and the intrinsics are shared by
+every realm on the thread, so the write goes to a table on the current realm
+(`Realm::intrinsicAdditions`), keyed by the intrinsic's dictionary, which
+never moves. An assignment or a data-property definition of a key the
+intrinsic lacks lands there and succeeds; a key it has stays frozen, and an
+accessor definition is still refused. A read that walked the whole chain and
+found nothing asks the table for each hardened link in order (`getProp`'s
+chain end, and the array and function read ladders, which answer
+Array.prototype, a builtin function and Function.prototype from their own
+tables). That is where the property would have been: an intrinsic's
+prototype is always another intrinsic, so nothing ordinary sits below one to
+shadow it. Each new addition bumps the prototype-mutation epoch, so no read
+site keeps a cached miss, and an addition's read is never cached. `in`
+asks the table after its own walk answered false; an index-like addition
+trips the array index hazard, so an array's holes look up the chain to it.
+`delete` removes an addition. A program that freezes, seals or prevents
+extensions of an intrinsic itself closes it in its realm, and a new key is
+refused from then on, as for any object it froze. An addition is not an
+own property of the intrinsic: `hasOwnProperty`, `Object.keys` and for-in
+do not see it. Nor is a symbol-keyed addition to
+Array.prototype or RegExp.prototype read from an array or a RegExp, whose
+symbol-keyed reads `rt_prop_symbol.cpp` answers. Another realm on the thread
+does not see a realm's additions.
+
 Lockdown also pins the global BINDINGS `Math` and `Number` in every realm of
 the thread (`rtPinLockedGlobals`, realm.cpp): read-only and not configurable,
 so `globalThis.Math = x` and a `defineProperty` over it are refused. No

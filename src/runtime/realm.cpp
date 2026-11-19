@@ -318,6 +318,10 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
     }
     for (auto& entry : hostGlobals_) visit(entry.second);
     for (Value& replaced : replacedBuiltins_) visit(replaced);
+    for (IntrinsicAddition& a : intrinsicAdditions_) {
+        visit(a.key);
+        visit(a.value);
+    }
     for (GlobalReadEntry& e : globalReads_) {
         if (e.kind == 1) visit(e.value);
     }

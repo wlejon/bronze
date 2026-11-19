@@ -33,6 +33,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
@@ -261,6 +262,12 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
     DictEntry* existing = entryOf(target.get(), name);
     if (!existing) {
         if (!target.get().asObject<ObjectHeader>()->shape->dict->extensible) {
+            // A data property defined on a frozen intrinsic is the realm's
+            // addition (intrinsic_additions.h); an accessor stays refused.
+            if (!accessor && rtIntrinsicAdditionSet(target.get().asObject<ObjectHeader>(), name,
+                                                    hasValue ? value.get() : Value::fromUndefined())) {
+                return true;
+            }
             return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
         }
     } else if (!existing->configurable) {

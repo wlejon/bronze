@@ -36,6 +36,7 @@
 #include "runtime/tls_block.h"
 #include "runtime/accessor.h"
 #include "runtime/array.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/bigint.h"
 #include "runtime/profile.h"
 #include "runtime/shape_census.h"
@@ -482,6 +483,12 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
                 }
                 return method.rawBits();
             }
+        }
+        // A realm's addition to Array.prototype (intrinsic_additions.h),
+        // which the method table above does not hold.
+        if (Value added; rtIntrinsicAdditionAt(rtArrayPrototypeObject().asObject<ObjectHeader>(),
+                                                PropertyKey::forString(keyHeader), added)) {
+            return added.rawBits();
         }
         rtCheckArrayMember(keyStr);
         // `Array.prototype`'s own members have all had their say — including

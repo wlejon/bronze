@@ -25,6 +25,7 @@
 #include "runtime/array.h"
 #include "runtime/bigint.h"
 #include "runtime/env.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -699,8 +700,26 @@ uint64_t bronze_typeof(uint64_t bits) {
 
 bool bronze_is_callable(uint64_t bits) { return rtIsCallableValue(Value(bits)); }
 
+static bool hasPropertyWalk(uint64_t keyBits, uint64_t objBits);
+
 bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     recordHelperCall("bronze_has_property");
+    Rooted<Value> objRoot{Value(objBits)};
+    Rooted<Value> keyRoot{Value(keyBits)};
+    if (hasPropertyWalk(keyBits, objBits)) return true;
+    if (!rtIntrinsicAdditionsAny()) return false;
+    // Found nowhere: a realm's addition to a frozen intrinsic on the chain
+    // is there all the same (intrinsic_additions.h). An object key is passed
+    // over rather than converted a second time, since its conversion is a
+    // program's own `toString`.
+    if (keyRoot.get().isObject()) return false;
+    if (!keyRoot.get().isString() && !keyRoot.get().isSymbol()) {
+        keyRoot.set(rtValueToString(keyRoot.get()));
+    }
+    return rtIntrinsicAdditionHas(objRoot, PropertyKey::fromValue(keyRoot.get()));
+}
+
+static bool hasPropertyWalk(uint64_t keyBits, uint64_t objBits) {
     Rooted<Value> objRoot{Value(objBits)};
     if (!objRoot.get().isObject()) {
         rtThrowTypeError("Cannot use 'in' operator: the right-hand side is not an object");

@@ -3,7 +3,7 @@ absent own 100:own,
 absent deleted 0:
 absent proto 100:proto,
 absent getter 100:get5, 100
-absent root 0:
+absent root 400:root,root,root,root,
 absent again 0:
 proto warm 1743900/9900
 proto changed 879000/9900

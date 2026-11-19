@@ -31,6 +31,7 @@
 #include "runtime/builtin_object.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/integrity.h"
 #include "runtime/proxy.h"
 #include "runtime/typed_array.h"
@@ -83,7 +84,7 @@ bool chainHoldsIndex(Value link) {
         if (link.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return true;
         const auto* obj = link.asObject<ObjectHeader>();
         if (!obj->shape) return false;
-        if (ownIndexKey(obj)) return true;
+        if (ownIndexKey(obj) || rtIntrinsicAdditionHoldsIndex(obj)) return true;
         link = obj->shape->prototypeValue();
     }
     return true;

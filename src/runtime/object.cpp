@@ -1,4 +1,5 @@
 #include "runtime/object.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/shape_census.h"
 #include "runtime/tls_block.h"
 
@@ -487,6 +488,10 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
         if (!holder->shape) return Value::fromUndefined();
         const Value proto = holder->shape->prototypeValue();
         if (!proto.isObject()) {
+            // Found nowhere: a realm's addition to a frozen intrinsic on the
+            // chain is where it would have been (intrinsic_additions.h). Not
+            // cached either way, and no miss is witnessed.
+            if (Value added; runtime::rtIntrinsicAdditionGet(this, prop_name, added)) return added;
             if (absentWitness) *absentWitness = true;
             return Value::fromUndefined();
         }
@@ -777,6 +782,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // step 2.b), silently, for the same sloppy-mode reason a non-writable
     // property discards its write.
     if (shape->isDictionary() && !shape->dict->extensible) {
+        // A frozen intrinsic takes the key as the realm's addition
+        // (intrinsic_additions.h).
+        if (runtime::rtIntrinsicAdditionSet(this, PropertyKey::fromValue(key.get()), val.get())) return this;
         if (refused) *refused = SetRefusal::NotExtensible;
         return this;
     }

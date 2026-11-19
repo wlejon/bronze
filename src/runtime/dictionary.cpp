@@ -14,6 +14,7 @@
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
 #include "runtime/ic_harvest.h"
+#include "runtime/intrinsic_additions.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
@@ -383,7 +384,12 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
         // the removal from one probe of its table; the steps are the ones
         // below.
         DictEntry* e = shape->dict->find(name);
-        if (e == nullptr) return true;
+        // Absent from a frozen intrinsic: the realm's addition, if it made
+        // one, is what goes (intrinsic_additions.h).
+        if (e == nullptr) {
+            runtime::rtIntrinsicAdditionDelete(this, name);
+            return true;
+        }
         if (!e->configurable) return false;
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
         const uint32_t slot = e->slot;
