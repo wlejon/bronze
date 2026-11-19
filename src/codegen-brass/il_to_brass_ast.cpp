@@ -18,8 +18,8 @@ static_assert(il2mir::kHasOwnWrite == bronze::il::kHasOwnWrite && il2mir::kHasOw
                   il2mir::kHasOwnSlotShift == bronze::il::kHasOwnSlotShift,
               "shape.has_own's immediate is read alike on both sides");
 static_assert(il2mir::kDenseNumbers == bronze::il::kDenseNumbers && il2mir::kElemLoadNumber == bronze::il::kElemLoadNumber &&
-                  il2mir::kStoreNumber == bronze::il::kStoreNumber,
-              "the NUMBERS forms of is.dense_array and elem.load, named twice");
+                  il2mir::kStoreNumber == bronze::il::kStoreNumber && il2mir::kStoreGrow == bronze::il::kStoreGrow,
+              "the NUMBERS and StoreGrow forms of is.dense_array, elem.load and elem.store, named twice");
 static_assert(il2mir::kShapeTurnArm == bronze::il::kShapeTurnArm && il2mir::kShapeTurnArm < il2mir::kSlowSiteArms &&
                   il2mir::kLastShapeArm == bronze::il::kLastShapeArm,
               "the shape turns' indices, named twice");

@@ -239,6 +239,13 @@ void rewriteElem(RewriteContext& ctx, const SitePlan& plan) {
             const ValueId f = b.emit(il::Op::UnboxF64, il::Type::F64, {value});
             perKind(b, plan, array, x, il::Type::Void, [&](int32_t kind) { return store(x, f, kind); });
         }
+    } else if (plan.grow) {
+        b.guard(b.emit(il::Op::IsPlainArray, il::Type::Bool, {array}));
+        const ValueId x = indexValue(b, plan, index);
+        const ValueId n = b.emit(il::Op::ArrayLength, il::Type::I32, {array});
+        b.guard(b.emit(il::Op::CmpGe, il::Type::Bool, {x, b.constI32(0)}));
+        b.guard(b.emit(il::Op::CmpLe, il::Type::Bool, {x, n}));
+        b.emit(il::Op::ElemStore, il::Type::Void, {array, x, value}, il::kStoreGrow);
     } else {
         b.guard(b.emit(il::Op::IsPlainArray, il::Type::Bool, {array}));
         const ValueId x = guardDense(b, plan, array, index);

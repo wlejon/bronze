@@ -384,11 +384,16 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     BasicBlock* bb_store = b.append_block(prefix + "_store");
     Value* store_at = b.add_block_param(bb_store, Type::i64());
     const bool define = strict == kDefineWriteMode;
+    BasicBlock* bb_no_elems = define ? nullptr : b.append_block(prefix + "_noelems");
+    BasicBlock* bb_append_room = define ? nullptr : b.append_block(prefix + "_aproom");
+    BasicBlock* bb_append_grow = define ? nullptr : b.append_block(prefix + "_apgrow");
     BasicBlock* bb_not_arr = define ? nullptr : b.append_block(prefix + "_notarr");
     BasicBlock* bb_view = define ? nullptr : b.append_block(prefix + "_view");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_done = b.append_block(prefix + "_done");
     bb_slow->set_cold();
+    if (bb_no_elems) bb_no_elems->set_cold();
+    if (bb_append_grow) bb_append_grow->set_cold();
 
     b.position_at_end(cur);
     Value* ptr = object_address(b, obj);
@@ -403,10 +408,18 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
                              tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF));
     Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
-                                  iconst(b, kObjectTagBits));
+    Value* mask = tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF);
+    Value* has_elems = b.build_eq(b.build_and(elems, mask), iconst(b, kObjectTagBits));
     Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-    b.build_br_if(b.build_and(bare, has_elems), bb_present, bb_slow);
+    b.build_br_if(b.build_and(bare, has_elems), bb_present, define ? bb_slow : bb_no_elems);
+
+    if (!define) {
+        b.position_at_end(bb_no_elems);
+        Value* no_hazard = b.build_ne(mask, iconst(b, 0));
+        Value* zero_append = b.build_and(b.build_eq(len, b.build_iconst_i32(0)),
+                                         b.build_eq(ei.idx, b.build_iconst_i32(0)));
+        b.build_br_if(b.build_and(b.build_and(bare, no_hazard), zero_append), bb_append_grow, bb_slow);
+    }
 
     b.position_at_end(bb_present);
     const ArrayElements e = array_elements(b, ptr);
@@ -419,15 +432,32 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_store, {at});
 
     // An append: the index is the length, below the capacity (the elements
-    // block is as long as the capacity, from the head).
+    // block is as long as the capacity, from the head); growing past capacity
+    // or allocating the first element block runs `bronze_array_push1` under
+    // `kElemArmGrow` so harvest still plans `kStoreGrow`.
     b.position_at_end(bb_append_test);
-    Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
-    Value* room = b.build_ult(b.build_add(e.head, b.build_zext_i64(ei.idx)), b.build_zext_i64(cap));
-    b.build_br_if(b.build_and(b.build_eq(ei.idx, len), room), bb_append, bb_slow);
+    if (define) {
+        Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+        Value* room = b.build_ult(b.build_add(e.head, b.build_zext_i64(ei.idx)), b.build_zext_i64(cap));
+        b.build_br_if(b.build_and(b.build_eq(ei.idx, len), room), bb_append, bb_slow);
+    } else {
+        Value* at_end = b.build_and(b.build_eq(ei.idx, len), b.build_sge(ei.idx, b.build_iconst_i32(0)));
+        b.build_br_if(at_end, bb_append_room, bb_slow);
+        b.position_at_end(bb_append_room);
+        Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+        Value* room = b.build_ult(b.build_add(e.head, b.build_zext_i64(ei.idx)), b.build_zext_i64(cap));
+        b.build_br_if(room, bb_append, bb_append_grow);
+    }
     b.position_at_end(bb_append);
     arm_begin(b, kElemArmGrow);
     array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, b.build_add(ei.idx, b.build_iconst_i32(1)));
     b.build_br(bb_store, {at});
+    if (!define) {
+        b.position_at_end(bb_append_grow);
+        arm_begin(b, kElemArmGrow);
+        b.build_call("bronze_array_push1", Type::i64(), {obj, val});
+        b.build_br(bb_done);
+    }
 
     b.position_at_end(bb_store);
     const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
@@ -490,19 +520,22 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 // cleared by any value that is no Number, and the barrier. The result is the
 // new length. Anything else goes to `miss`.
 Value* PropertyLoweringHelper::lower_array_push_n(Builder& b, Value* ptr, const std::vector<Value*>& vals,
-                                                  BasicBlock* miss, bool known_number) {
+                                                  BasicBlock* miss, bool known_number, bool already_plain) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "apush_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* room_test = b.append_block(prefix + "_room");
     BasicBlock* store = b.append_block(prefix + "_store");
     b.position_at_end(cur);
-    Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
-                             tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF));
-    Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
-                                  iconst(b, kObjectTagBits));
-    b.build_br_if(b.build_and(bare, has_elems), room_test, miss);
-    b.position_at_end(room_test);
+    if (!already_plain) {
+        BasicBlock* room_test = b.append_block(prefix + "_room");
+        b.position_at_end(cur);
+        Value* bare = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                 tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF));
+        Value* elems = array_header_load(b, Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        Value* has_elems = b.build_eq(b.build_and(elems, tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF)),
+                                      iconst(b, kObjectTagBits));
+        b.build_br_if(b.build_and(bare, has_elems), room_test, miss);
+        b.position_at_end(room_test);
+    }
     Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
     const ArrayElements e = array_elements(b, ptr);
@@ -819,7 +852,8 @@ Value* PropertyLoweringHelper::lower_is_plain_array(Builder& b, Value* obj) {
     b.position_at_end(bb_arr);
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     Value* bare = tls_block_word(b, BRONZE_TLS_ARRAY_SHAPE_OFF);
-    b.build_br(bb_merge, {b.build_eq(shape, bare)});
+    Value* no_hazard = b.build_ne(tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF), iconst(b, 0));
+    b.build_br(bb_merge, {b.build_and(b.build_eq(shape, bare), no_hazard)});
 
     b.position_at_end(bb_merge);
     return result;

@@ -180,8 +180,10 @@ public:
     // (il_elem_lowering.cpp); anything else branches to `miss`. The result
     // is the call's. `known_number`: values are Numbers (array.push with
     // kStoreNumber), so neither the NUMBERS bit nor the barrier is touched.
+    // `already_plain`: caller already proved `is.plain_array`, so shape and
+    // index-hazard checks are skipped.
     Value* lower_array_push_n(Builder& b, Value* ptr, const std::vector<Value*>& vals, BasicBlock* miss,
-                              bool known_number = false);
+                              bool known_number = false, bool already_plain = false);
     Value* lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss, bool known_number = false);
     Value* lower_array_pop(Builder& b, Value* ptr, BasicBlock* miss);
     // An array literal's element `k` (key constant `key_index`) defined on

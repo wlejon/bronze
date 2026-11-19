@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <brass/runtime/coroutine.hpp>
 
+#include "runtime/array.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -33,6 +34,7 @@ constexpr size_t kPrefixWords = sizeof(ObjectHeader) / sizeof(Value) + ObjectHea
 // The first word after the shape pointer.
 constexpr size_t kFirstValueWord = 2;
 static_assert(offsetof(ObjectHeader, shape) == 8 && offsetof(ObjectHeader, overflow) == 16);
+static_assert(offsetof(ArrayHeader, overflow) == 16 && offsetof(ArrayHeader, elements) == 40);
 
 // An object's shape decides its [[Prototype]], which lives on the ROOT shape
 // in the non-moving arena. A full collection keeps a prototype alive for as
@@ -111,7 +113,10 @@ bool isPlainObjectWords(const uint64_t* w, const ValueWords& v) {
     return v.end > 3 && h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Plain;
 }
 
-void visitPlainValues(uint64_t* w, size_t end, Tracer& t) {
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((always_inline))
+#endif
+inline void visitPlainValues(uint64_t* w, size_t end, Tracer& t) {
     const Shape* shape = reinterpret_cast<const ObjectHeader*>(w)->shape;
     if (!shape || shape->double_slots == 0) {
         t.visit_run(w + 2, end - 2);
@@ -160,13 +165,31 @@ BRONZE_NOINLINE void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
 
 void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     auto* w = reinterpret_cast<uint64_t*>(payload);
-    const ValueWords v = valueWordsOf(payload, payload_bytes);
-    if (t.purpose() == Tracer::Purpose::Full) return traceCellFull(w, v, t);
-    // A minor collection (and verification): the Values and nothing else.
-    if (v.first < v.end) {
-        if (isPlainObjectWords(w, v)) visitPlainValues(w, v.end, t);
-        else t.visit_run(w + v.first, v.end - v.first);
+    if (t.purpose() == Tracer::Purpose::Full) {
+        return traceCellFull(w, valueWordsOf(payload, payload_bytes), t);
     }
+    const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
+    if (h->tag == static_cast<uint16_t>(Tag::Object)) {
+        const size_t words = std::min<size_t>(h->size, payload_bytes) / sizeof(Value);
+        switch (h->flags) {
+            case HeapKind::NumberBlock: return;
+            case HeapKind::Plain:
+                if (words > 3) visitPlainValues(w, words, t);
+                else if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
+                return;
+            case HeapKind::Array:
+                if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
+                if (words > 5) t.visit(w + 5);
+                return;
+            case HeapKind::ValueBlock:
+            case HeapKind::SlotBlock:
+                if (words > 1) t.visit_run(w + 1, words - 1);
+                return;
+            default: break;
+        }
+    }
+    const ValueWords v = valueWordsOf(payload, payload_bytes);
+    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
 }
 
 // The Value words of a Cell in payload bytes [begin, end): what a minor

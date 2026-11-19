@@ -91,6 +91,12 @@ Location placeOf(const il::Instruction& inst) {
             return at;
         case Op::ElemLoad:
         case Op::ElemStore:
+            if (inst.op == Op::ElemStore && (inst.immI32 & il::kStoreGrow) != 0) {
+                if (inst.operands.empty()) return at;
+                at.place = Place::Array;
+                at.base = inst.operands[0];
+                return at;
+            }
             if (inst.operands.size() < 2) return at;
             at.place = Place::Elem;
             at.base = inst.operands[0];

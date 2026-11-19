@@ -393,6 +393,10 @@ uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < BRONZE_ABI_ARRAY_MIN_CAPACITY) ? BRONZE_ABI_ARRAY_MIN_CAPACITY : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
     arr->length = length;
+    if (length == 0) {
+        arr->reserved |= ArrayHeader::kElementsAreNumbers;
+        arr->syncElementsKind();
+    }
     return Value::fromObject(arr).rawBits();
 }
 

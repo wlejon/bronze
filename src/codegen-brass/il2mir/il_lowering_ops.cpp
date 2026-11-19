@@ -630,8 +630,8 @@ bool lower_ops_instruction(
             Value* result = b.add_block_param(merge, Type::i64());
             b.position_at_end(cur);
             Value* ptr = b.build_lshr(b.build_shl(arr, b.build_iconst_i64(16)), b.build_iconst_i64(16));
-            Value* fast = lowering->prop_lowering().lower_array_push_n(b, ptr, vals, slow,
-                                                                       (inst_ast.imm_i64 & kStoreNumber) != 0);
+            Value* fast = lowering->prop_lowering().lower_array_push_n(
+                b, ptr, vals, slow, (inst_ast.imm_i64 & kStoreNumber) != 0, /*already_plain=*/true);
             b.build_br(merge, {fast});
             b.position_at_end(slow);
             if (vals.size() == 1) {

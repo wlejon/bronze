@@ -472,25 +472,67 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
         case BronzeOp::ElemStore: {
             if (!need(3)) return false;
             Value* ptr = object_address(b, bits(0));
-            const ArrayElements e = array_elements(b, ptr);
-            Value* at = b.build_add(b.build_zext_i64(i32(1)), e.head);
+            Value* idx = i32(1);
             Value* v = bits(2);
             const bool primitive = is_primitive_value(inst.operands[2]) || prop_lowering_.is_known_non_ref(v);
             const bool always_number = opd[2]->type() == Type::f64() || boxed_f64_source(v) != nullptr ||
                                        (inst.imm_i64 & kStoreNumber) != 0;
-            const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
-                Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
-                array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
-                                   bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
-                array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
-            };
-            if (always_number) {
-                prop_lowering_.store_value_indexed(b, e.block, at, kBronzeHdrBytes, v, kBoxedElementAliasClass,
-                                                   /*need_barrier=*/false);
-            } else {
-                prop_lowering_.store_value_indexed(b, e.block, at, kBronzeHdrBytes, v, kBoxedElementAliasClass,
+            auto emit_store = [&](Value* block, Value* at_idx) {
+                if (always_number) {
+                    prop_lowering_.store_value_indexed(b, block, at_idx, kBronzeHdrBytes, v, kBoxedElementAliasClass,
+                                                       /*need_barrier=*/false);
+                    return;
+                }
+                const auto forget_numbers = [ptr, block](Builder& bb) {
+                    Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+                    array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
+                                       bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+                    array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
+                };
+                prop_lowering_.store_value_indexed(b, block, at_idx, kBronzeHdrBytes, v, kBoxedElementAliasClass,
                                                    !primitive, forget_numbers);
+            };
+            if ((inst.imm_i64 & kStoreGrow) == 0) {
+                const ArrayElements e = array_elements(b, ptr);
+                emit_store(e.block, b.build_add(b.build_zext_i64(idx), e.head));
+                return true;
             }
+            BasicBlock* cur = b.current_block();
+            const std::string prefix = "elemgrow_" + std::to_string(cur->parent()->next_block_id());
+            BasicBlock* bb_append_test = b.append_block(prefix + "_aptest");
+            BasicBlock* bb_append = b.append_block(prefix + "_ap");
+            BasicBlock* bb_store = b.append_block(prefix + "_store");
+            BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+            BasicBlock* bb_done = b.append_block(prefix + "_done");
+            bb_slow->set_cold();
+
+            b.position_at_end(cur);
+            Value* len = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            b.build_br_if(b.build_ult(idx, len), bb_store, bb_append_test);
+
+            b.position_at_end(bb_append_test);
+            Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+            Value* head = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+            Value* end = b.build_add(b.build_zext_i64(head), b.build_zext_i64(idx));
+            b.build_br_if(b.build_ult(end, b.build_zext_i64(cap)), bb_append, bb_slow);
+
+            b.position_at_end(bb_append);
+            array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET,
+                               b.build_add(idx, b.build_iconst_i32(1)));
+            b.build_br(bb_store);
+
+            b.position_at_end(bb_store);
+            {
+                const ArrayElements e = array_elements(b, ptr);
+                emit_store(e.block, b.build_add(b.build_zext_i64(idx), e.head));
+            }
+            b.build_br(bb_done);
+
+            b.position_at_end(bb_slow);
+            b.build_call("bronze_array_push1", Type::i64(), {bits(0), v});
+            b.build_br(bb_done);
+
+            b.position_at_end(bb_done);
             return true;
         }
         // bool = in.bounds %i, %len: unsigned (cmp ; setb). Widened by a

@@ -392,6 +392,13 @@ Effects rawEffects(const Instruction& inst) {
         case Op::ElemLoad:
             return guardedOp(Loc::Elements, LocSet::none());
         case Op::ElemStore:
+            if ((inst.immI32 & kStoreGrow) != 0) {
+                const LocSet kinds = (inst.immI32 & kStoreNumber) != 0 ? LocSet::none() : LocSet(Loc::ElemKinds);
+                Effects e = throwing(Loc::Shapes | Loc::ArrayLen, Loc::ArrayLen | Loc::Elements | kinds);
+                e.allocates = true;
+                e.guarded = true;
+                return e;
+            }
             return guardedOp(LocSet::none(), (inst.immI32 & kStoreNumber) != 0 ? LocSet(Loc::Elements)
                                                                               : Loc::Elements | Loc::ElemKinds);
         // Construction: the vetted byte and the instance shape live on the

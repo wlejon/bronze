@@ -320,6 +320,7 @@ void ValueWalk::forwardStore(const il::Instruction& inst, const Access& write) {
             return;
         }
         case Op::ElemStore: {
+            if (write.where.place != Place::Elem) return;
             exprs_.add(loadKey(Op::ElemLoad, t, write.where), v, read, true);
             ExprKey number = loadKey(Op::ElemLoad, t, write.where);
             number.immI32 = il::kElemLoadNumber;

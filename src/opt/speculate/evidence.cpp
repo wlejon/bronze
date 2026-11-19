@@ -185,12 +185,14 @@ void Evidence::shareConstBounds(const il::Function& fn, FunctionPlan& plan) cons
     std::unordered_map<ValueId, int32_t> bound;
     auto receiver = [&](const SitePlan& p) { return fn.blocks[p.block].instructions[p.index].operands[0]; };
     for (const SitePlan& p : plan.sites) {
-        if (p.constIndex == kNoConstIndex || p.viewKind != kDenseArray) continue;
+        if (p.grow || p.constIndex == kNoConstIndex || p.viewKind != kDenseArray) continue;
         int32_t& k = bound.try_emplace(receiver(p), p.constIndex).first->second;
         k = std::max(k, p.constIndex);
     }
     for (SitePlan& p : plan.sites) {
-        if (p.constIndex != kNoConstIndex && p.viewKind == kDenseArray) p.constBound = bound.at(receiver(p));
+        if (!p.grow && p.constIndex != kNoConstIndex && p.viewKind == kDenseArray) {
+            p.constBound = bound.at(receiver(p));
+        }
     }
 }
 
@@ -553,10 +555,13 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
                                            uint32_t index) const {
     const uint32_t site = inst.slowSite;
     if (site == il::Instruction::kNoSlowSite || !slowArmed(site)) return std::nullopt;
-    if (slowRan(site) || slowRan(site + kElemArmGrow) || slowRan(site + kElemArmMiss)) return std::nullopt;
+    if (slowRan(site) || slowRan(site + kElemArmMiss)) return std::nullopt;
+    const bool grow = slowRan(site + kElemArmGrow);
     const bool array = slowRan(site + kElemArmArray);
     const uint64_t views = slowCount(site + kElemArmView);
-    if (array == (views != 0)) return std::nullopt;
+    const bool isWrite = inst.op == il::Op::ElemSet || inst.op == il::Op::PropSet;
+    if (grow && (!isWrite || views != 0)) return std::nullopt;
+    if ((array || grow) == (views != 0)) return std::nullopt;
 
     SitePlan plan;
     plan.block = block;
@@ -608,6 +613,7 @@ std::optional<SitePlan> Evidence::planElem(const il::Instruction& inst, const Si
         const int32_t mode = il::writeMode(inst);
         if (mode != il::kWriteSloppy && mode != il::kWriteStrict) return std::nullopt;
         plan.kind = SiteKind::ElemWrite;
+        plan.grow = grow;
     }
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;

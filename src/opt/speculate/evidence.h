@@ -246,6 +246,9 @@ struct SitePlan {
     // A dense read whose every Array held only Numbers (NUMBERS bit set or
     // claimed, kElemArmNoNumbers never ran): tested with kDenseNumbers.
     bool numbers = false;
+    // An element write whose append arm ran (`kElemArmGrow`): lowered as a
+    // growing store (`ElemStore` with `kStoreGrow`).
+    bool grow = false;
     // MathCall: the il::Intrinsic. CollectionCall: the BRONZE_ABI_COLLECTION_
     // op, and in `collectionClass` the class its receiver is tested for.
     int32_t intrinsic = -1;

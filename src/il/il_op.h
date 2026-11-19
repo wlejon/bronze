@@ -929,6 +929,7 @@ inline constexpr int32_t kElemLoadNumber = 1;
 // so the store keeps the array's NUMBERS bit and does not write `ElemKinds`
 // (effects.h).
 inline constexpr int32_t kStoreNumber = 1;
+inline constexpr int32_t kStoreGrow = 2;
 // `shape.has_own`'s immI32: (slot << kHasOwnSlotShift) | mode bits.
 inline constexpr int32_t kHasOwnWrite = 1;
 inline constexpr int32_t kHasOwnNumber = 2;
