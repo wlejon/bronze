@@ -140,19 +140,17 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                 }
                 ok = b.build_eq(b.build_and(refused, doubles), b.build_iconst_i64(0));
             }
-            // A pretenured literal's object is young or old with its card
-            // dirty (and grey while marking), so the stores that fill it,
-            // before any GC point, need no barrier.
+            // Every object from bump_plain_object is either pretenured (card
+            // already dirty and grey while marking) or freshly bumped in young
+            // eden, so the stores filling it before any GC point never need a
+            // write barrier.
             Value* site = pretenure_site(b, inst.slow_site);
-            const bool pretenured = site != nullptr;
             Value* obj = alloc_lowering_.bump_plain_object(b, shape, ok, slow, fast, slots, site,
                                                            alloc_memento(b, inst.slow_site));
             Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
             for (size_t i = 0; i < opd.size(); ++i) {
                 Value* addr = b.build_add(ptr, b.build_iconst_i64(kBronzeObjSlotsOffset + 8 * static_cast<int64_t>(i)));
-                const bool primitive =
-                    is_primitive_value(inst.operands[i]) || prop_lowering_.is_known_non_ref(opd[i]);
-                prop_lowering_.store_value(b, addr, opd[i], kObjectSlotAliasClass, !primitive && !pretenured);
+                prop_lowering_.store_value(b, addr, opd[i], kObjectSlotAliasClass, false);
             }
             b.build_br(merge, {obj});
 

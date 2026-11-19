@@ -67,10 +67,13 @@ public:
                 out.push_back(Fact{FactKind::InRange, true, base, d->operands[1], packRange(c0, c0 + d->immI32), {}});
                 return;
             }
-            case il::Op::IsDenseArray:
-                memoryFact(cond, FactKind::DenseArray, truth, d->operands[0], d->immI32,
-                           Loc::Shapes | Loc::ArrayLen | Loc::Elements, out);
+            case il::Op::IsDenseArray: {
+                const il::LocSet denseLocs = (d->immI32 & il::kDenseNumbers) != 0
+                                                 ? (Loc::Shapes | Loc::ArrayLen | Loc::ElemKinds)
+                                                 : (Loc::Shapes | Loc::ArrayLen);
+                memoryFact(cond, FactKind::DenseArray, truth, d->operands[0], d->immI32, denseLocs, out);
                 return;
+            }
             case il::Op::IsPlainArray:
                 memoryFact(cond, FactKind::PlainArray, truth, d->operands[0], 0, Loc::Shapes, out);
                 return;

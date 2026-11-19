@@ -74,16 +74,19 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     mod->add_symbol_role("bronze_create_array", SymbolRole::ArrayNew);
     mod->add_symbol_role("bronze_elem_get", SymbolRole::ArrayGet);
     mod->add_symbol_role("bronze_elem_set", SymbolRole::ArraySet);
-    // JS `%` on numbers: fmod.
+    // JS `%` on numbers: fmod, pure with respect to memory and GC.
     mod->add_symbol_role("bronze_f64_mod", SymbolRole::FloatRem);
+    mod->add_symbol_role("bronze_f64_mod", SymbolRole::Pure);
+    mod->add_symbol_role("bronze_pow", SymbolRole::Pure);
     // Math.sin / Math.cos's kernels (brass's trig runtime, V8's bits)...
     mod->add_symbol_role("brass_sin_f64", SymbolRole::Pure);
     mod->add_symbol_role("brass_cos_f64", SymbolRole::Pure);
-    // The libm members' kernels (builtin_math.cpp): plain functions of their
-    // arguments, read nothing, write nothing, never collect.
+    // The libm and numeric math members' kernels (builtin_math.cpp): plain
+    // functions of their arguments, read nothing, write nothing, never collect.
     for (const char* sym : {"bronze_math_exp_f64", "bronze_math_log_f64", "bronze_math_tan_f64",
                             "bronze_math_asin_f64", "bronze_math_acos_f64", "bronze_math_atan_f64",
-                            "bronze_math_atan2_f64"}) {
+                            "bronze_math_atan2_f64", "bronze_math_round_f64", "bronze_math_min2_f64",
+                            "bronze_math_max2_f64"}) {
         mod->add_external_symbol(sym);
         mod->add_symbol_role(sym, SymbolRole::Pure);
     }
@@ -94,9 +97,13 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     mod->add_symbol_role("brass_cos_f64", SymbolRole::CosF64);
     mod->add_symbol_role("brass_sincos_f64", SymbolRole::SinCosF64);
     mod->add_symbol_role("brass_sincos_f64", SymbolRole::NoCollect);
-    // Math.random's generator: advances thread-local state (so not Pure) but
-    // touches no GC heap, so the call is not a collection point.
-    mod->add_symbol_role("bronze_math_random_f64", SymbolRole::NoCollect);
+    // Math.random's generator and leaf query/claim helpers touch no GC-traced
+    // heap allocation, so none of them can trigger a collection.
+    for (const char* sym : {"bronze_math_random_f64", "bronze_strict_eq", "bronze_is_callable",
+                            "bronze_array_claim_numbers", "bronze_shape_slot_keys", "bronze_shape_lacks"}) {
+        mod->add_external_symbol(sym);
+        mod->add_symbol_role(sym, SymbolRole::NoCollect);
+    }
     const std::string key_sym = (entry_symbol.empty() || entry_symbol == "main" || entry_symbol == "bronze_main")
                                     ? "bronze_main_key_constants"
                                     : (entry_symbol + "_key_constants");

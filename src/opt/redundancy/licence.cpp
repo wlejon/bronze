@@ -28,7 +28,7 @@ std::optional<Licence> licenceAt(const il::Instruction& inst, const FactEnv& fac
         case il::Op::ArrayLength:
             if (facts.known(FactKind::Array, x) == true) return Licence{LicenceKind::Array, x, 0, {}};
             if (!facts.isArray(x)) return std::nullopt;
-            return Licence{LicenceKind::Array, x, 0, il::Loc::Shapes | il::Loc::ArrayLen | il::Loc::Elements};
+            return Licence{LicenceKind::Array, x, 0, il::Loc::Shapes | il::Loc::ArrayLen};
         // A typed array's kind never changes, and the bare kind test is a
         // fact about the value.
         case il::Op::TypedLength:

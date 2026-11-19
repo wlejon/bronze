@@ -228,9 +228,9 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     const IcSite site = pl.ic_site_ref(b, ic_index);
     const uint32_t argc = static_cast<uint32_t>(args.size());
-    Value* argv = lowering->stage_argv(b, args);
     if (lowering->prop_lowering().cold_code()) {
         pl.slow_arm(b);
+        Value* argv = lowering->stage_argv(b, args);
         return b.build_call(lowering->module_sym(kMethodCallStub), Type::i64(),
                             {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, pl.site_ptr(b, site)});
     }
@@ -273,12 +273,10 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
         b.position_at_end(fn_test);
         Value* fn = function_entry_test(b, recv, kCallMask, kCallBits, helper,
                                         b.build_iconst_i32(static_cast<int32_t>(argc - 1)));
-        for (uint32_t i = 1; i < argc; ++i) {
-            b.build_store(Type::i64(), argv, static_cast<int32_t>((i - 1) * kWord),
-                          lowering->ensure_type(args[i], Type::i64(), b));
-        }
+        std::vector<Value*> call_args(args.begin() + 1, args.end());
+        Value* call_argv = lowering->stage_argv(b, call_args);
         Value* this_arg = lowering->ensure_type(args[0], Type::i64(), b);
-        b.build_br(merge, {enter_function(lowering, b, fn, this_arg, argc - 1, argv)});
+        b.build_br(merge, {enter_function(lowering, b, fn, this_arg, argc - 1, call_argv)});
     } else {
         // `push(v)` / `pop()` on an Array: inline at the bare array shape
         // (il_elem_lowering.cpp), the method stub otherwise.
@@ -315,7 +313,8 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
     {
         Value* code = b.build_load(Type::ptr(), site.base, site.off + BRONZE_ABI_METHOD_IC_CODE_WORD * kWord);
         Value* env = word(BRONZE_ABI_METHOD_IC_ENV_WORD);
-        b.build_br(merge, {enter_code(lowering, b, code, env, recv, argc, argv)});
+        Value* enter_argv = lowering->stage_argv(b, args);
+        b.build_br(merge, {enter_code(lowering, b, code, env, recv, argc, enter_argv)});
     }
 
     // Re-read at every call: receivers of one shape may hold different
@@ -328,13 +327,15 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
         Value* callee = pl.load_slot_br(b, ptr, slot_word);
         Value* fn = function_entry_test(b, callee, kCallMask, kCallBits, helper,
                                         b.build_iconst_i32(static_cast<int32_t>(argc)));
-        b.build_br(merge, {enter_function(lowering, b, fn, recv, argc, argv)});
+        Value* slot_argv = lowering->stage_argv(b, args);
+        b.build_br(merge, {enter_function(lowering, b, fn, recv, argc, slot_argv)});
     }
 
     b.position_at_end(helper);
     pl.slow_arm(b);
+    Value* helper_argv = lowering->stage_argv(b, args);
     b.build_br(merge, {b.build_call(lowering->module_sym(kMethodCallStub), Type::i64(),
-                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv,
+                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), helper_argv,
                                      pl.site_ptr(b, site)})});
     b.position_at_end(merge);
     return result;
