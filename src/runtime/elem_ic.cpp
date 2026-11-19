@@ -23,8 +23,8 @@ namespace {
 // per-thread ABI block — one shared table would have two threads answering each
 // other's epoch questions. Zero-initialized, which is the empty state: an empty
 // entry has a null shape, and `InlineCache::isRealShape` refuses it.
-thread_local ElemCacheEntry g_elemCache[kElemCacheEntries];
-thread_local ElemSetCacheEntry g_elemSetCache[kElemSetCacheEntries];
+alignas(64) thread_local ElemCacheEntry g_elemCache[kElemCacheEntries];
+alignas(64) thread_local ElemSetCacheEntry g_elemSetCache[kElemSetCacheEntries];
 
 // Everything generated code assumes about the table's shape, asserted beside
 // the table rather than beside the constants: a layout fact is only true where

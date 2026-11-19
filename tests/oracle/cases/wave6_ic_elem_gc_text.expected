@@ -1,0 +1,5 @@
+w6_ic: 10|25440|1.25|2.25|generalized|11|139|1|non-plain|1307|true|99
+w6_elem: 798700|3600|726
+w6_gc: 1784.5
+w6_tpl: |only|0,p=0:0|end,0,p=1:0|end,9,p=2:9|end,10,p=3:10|end,99,p=4:99|end,100,p=5:100|end,123456,p=6:123456|end,2147483647,p=7:2147483647|end,-1,p=8:-1|end,-42,p=9:-42|end,1.5,p=10:1.5|end,NaN,p=11:NaN|end,Infinity,p=12:Infinity|end|1_ab_23_cd_456_ef_7890_gh_ij_z|héllo_42_🚀|308|pre_123_xxxx|xxxx
+w6_dict: 999|420|421|777|true|L_1024|L_5000|88|4400|true|true|true|20|true 20:undefined

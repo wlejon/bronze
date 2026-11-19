@@ -238,13 +238,12 @@ void build_prop_get_stub(Function* fn) {
 // The computed-read stub: (obj, key) -> value, what a computed read takes when
 // its site has no cell or its cell has stopped taking fills: the thread's
 // computed-read table (runtime/elem_ic.h), probed as elemCacheProbe probes it,
-// for a plain receiver that is no dictionary and a Number, boolean or hashed
-// string key. A string key is the entry's only by its identity latch
-// (`key_ident`, which the runtime sets after proving the live key equal to
-// the entry's and clears in every collection for a movable string), so no
-// content compare is made here. The entry's words are answered as a
-// property site's (answer_entry); everything else is bronze_elem_get.
+// for a plain receiver that is no dictionary and a hashed string, Number, or
+// boolean key. String keys check first with an arena-interned/live identity
+// latch (`key_ident`), so a hit compares shape + key_ident only; inline own
+// slots bypass shape->dict and epoch loads. Everything else is bronze_elem_get.
 void build_elem_get_stub(Function* fn) {
+    static_assert(BRONZE_ABI_ELEM_ENTRY_SIZE == 64, "elem cache stride must stay a power of two");
     Builder b(*fn->parent());
     b.set_function(fn);
     BasicBlock* entry = b.append_block("entry");
@@ -252,17 +251,24 @@ void build_elem_get_stub(Function* fn) {
     Value* key = b.add_block_param(entry, Type::i64());
     BasicBlock* object = b.append_block("eg_object");
     BasicBlock* plain = b.append_block("eg_plain");
-    BasicBlock* not_number = b.append_block("eg_not_number");
-    BasicBlock* not_bool = b.append_block("eg_not_bool");
     BasicBlock* str = b.append_block("eg_string");
-    BasicBlock* probe = b.append_block("eg_probe");
-    Value* witness = b.add_block_param(probe, Type::i64());
-    Value* kind = b.add_block_param(probe, Type::i64());
-    BasicBlock* table = b.append_block("eg_table");
-    BasicBlock* beside = b.append_block("eg_beside");
+    BasicBlock* str_tbl = b.append_block("eg_str_tbl");
+    BasicBlock* str_probe = b.append_block("eg_str_probe");
+    BasicBlock* str_beside = b.append_block("eg_str_beside");
+    BasicBlock* not_str = b.append_block("eg_not_str");
+    BasicBlock* not_num = b.append_block("eg_not_num");
+    BasicBlock* prim_probe = b.append_block("eg_prim_probe");
+    Value* pwitness = b.add_block_param(prim_probe, Type::i64());
+    Value* pkind = b.add_block_param(prim_probe, Type::i64());
+    BasicBlock* prim_tbl = b.append_block("eg_prim_tbl");
+    BasicBlock* prim_beside = b.append_block("eg_prim_beside");
     BasicBlock* beside_hit = b.append_block("eg_beside_hit");
-    BasicBlock* hit = b.append_block("eg_hit");
-    Value* at = b.add_block_param(hit, Type::i64());
+    Value* at_beside = b.add_block_param(beside_hit, Type::i64());
+    BasicBlock* promote = b.append_block("eg_promote");
+    BasicBlock* hit_fast = b.append_block("eg_hit_fast");
+    Value* at = b.add_block_param(hit_fast, Type::i64());
+    BasicBlock* hit_inline = b.append_block("eg_hit_inline");
+    BasicBlock* hit_slow = b.append_block("eg_hit_slow");
     BasicBlock* hit_shaped = b.append_block("eg_hit_shaped");
     BasicBlock* hit_dict = b.append_block("eg_hit_dict");
     BasicBlock* dict_read = b.append_block("eg_dict_read");
@@ -275,67 +281,93 @@ void build_elem_get_stub(Function* fn) {
     b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)), plain, helper);
     b.position_at_end(plain);
     Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    // A dictionary's properties are not in its shape: its entries are the
-    // dictionary form (runtime/elem_ic.h elemCacheFillDict), answered at the
-    // hit below.
-    Value* dict = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET);
-    b.build_br_if(b.build_ule(key, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), probe,
-                  {key, imm(b, BRONZE_ABI_ELEM_KIND_NUMBER)}, not_number, {});
-    b.position_at_end(not_number);
-    Value* bool_bit = b.build_xor(key, imm(b, static_cast<int64_t>(BRONZE_ABI_FALSE_BITS)));
-    b.build_br_if(b.build_ult(bool_bit, imm(b, 2)), probe, {bool_bit, imm(b, BRONZE_ABI_ELEM_KIND_BOOL)}, not_bool, {});
-    b.position_at_end(not_bool);
-    Value* sptr = b.build_xor(key, imm(b, static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_STRING} << 48)));
-    b.build_br_if(b.build_ult(sptr, imm(b, kPayloadLimit)), str, helper);
-    b.position_at_end(str);
-    Value* flags = b.build_zext_i64(b.build_load(Type::i32(), sptr, BRONZE_ABI_STRING_FLAGS_OFFSET));
-    b.build_br_if(b.build_ne(b.build_and(flags, imm(b, BRONZE_ABI_STRING_HASHED_BIT)), imm(b, 0)), probe,
-                  {b.build_and(flags, imm(b, BRONZE_ABI_STRING_HASH_MASK)), imm(b, BRONZE_ABI_ELEM_KIND_STRING)},
-                  helper, {});
 
-    // runtime/elem_ic.cpp bucketOf, and its two ways: the bucket, then the
-    // entry beside it.
-    b.position_at_end(probe);
-    Value* tbl = b.build_load(Type::i64(), tls(b), BRONZE_TLS_ELEM_CACHE_TBL_OFF);
-    b.build_br_if(b.build_ne(tbl, imm(b, 0)), table, helper);
-    b.position_at_end(table);
-    Value* h = b.build_add(b.build_mul(shape, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_SHAPE))),
-                           b.build_mul(witness, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_WITNESS))));
-    Value* bucket = b.build_lshr(h, imm(b, BRONZE_ABI_ELEM_BUCKET_SHIFT));
-    const auto entry_at = [&](Value* index) {
-        return b.build_add(tbl, b.build_mul(index, imm(b, BRONZE_ABI_ELEM_ENTRY_SIZE)));
+    const auto entry_at = [&](Value* tbl, Value* index) {
+        return b.build_add(tbl, b.build_shl(index, imm(b, 6)));
     };
-    const auto matches = [&](Value* e) {
+    const auto bucket_of = [&](Value* witness) {
+        Value* h = b.build_add(b.build_mul(shape, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_SHAPE))),
+                               b.build_mul(witness, imm(b, static_cast<int64_t>(BRONZE_ABI_ELEM_HASH_MUL_WITNESS))));
+        return b.build_lshr(h, imm(b, BRONZE_ABI_ELEM_BUCKET_SHIFT));
+    };
+
+    // String keys first: the dominant case for computed property reads.
+    Value* sptr = b.build_xor(key, imm(b, static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_STRING} << 48)));
+    b.build_br_if(b.build_ult(sptr, imm(b, kPayloadLimit)), str, not_str);
+
+    b.position_at_end(str);
+    Value* sflags = b.build_zext_i64(b.build_load(Type::i32(), sptr, BRONZE_ABI_STRING_FLAGS_OFFSET));
+    b.build_br_if(b.build_ne(b.build_and(sflags, imm(b, BRONZE_ABI_STRING_HASHED_BIT)), imm(b, 0)), str_tbl, helper);
+
+    b.position_at_end(str_tbl);
+    Value* stbl = b.build_load(Type::i64(), tls(b), BRONZE_TLS_ELEM_CACHE_TBL_OFF);
+    b.build_br_if(b.build_ne(stbl, imm(b, 0)), str_probe, helper);
+
+    b.position_at_end(str_probe);
+    Value* switness = b.build_and(sflags, imm(b, BRONZE_ABI_STRING_HASH_MASK));
+    Value* sbucket = bucket_of(switness);
+    const auto str_matches = [&](Value* e) {
+        return b.build_and(
+            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), shape),
+            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IDENT_OFFSET), key));
+    };
+    Value* sfirst = entry_at(stbl, sbucket);
+    b.build_br_if(str_matches(sfirst), hit_fast, {sfirst}, str_beside, {});
+
+    b.position_at_end(str_beside);
+    Value* ssecond = entry_at(stbl, b.build_xor(sbucket, imm(b, 1)));
+    b.build_br_if(str_matches(ssecond), beside_hit, {ssecond}, helper, {});
+
+    // Number or boolean keys.
+    b.position_at_end(not_str);
+    b.build_br_if(b.build_ule(key, imm(b, static_cast<int64_t>(kBronzeNumberMaxBits))), prim_probe,
+                  {key, imm(b, BRONZE_ABI_ELEM_KIND_NUMBER)}, not_num, {});
+    b.position_at_end(not_num);
+    Value* bool_bit = b.build_xor(key, imm(b, static_cast<int64_t>(BRONZE_ABI_FALSE_BITS)));
+    b.build_br_if(b.build_ult(bool_bit, imm(b, 2)), prim_probe,
+                  {bool_bit, imm(b, BRONZE_ABI_ELEM_KIND_BOOL)}, helper, {});
+
+    b.position_at_end(prim_probe);
+    Value* ptbl = b.build_load(Type::i64(), tls(b), BRONZE_TLS_ELEM_CACHE_TBL_OFF);
+    b.build_br_if(b.build_ne(ptbl, imm(b, 0)), prim_tbl, helper);
+
+    b.position_at_end(prim_tbl);
+    Value* pbucket = bucket_of(pwitness);
+    const auto prim_matches = [&](Value* e) {
         Value* m = b.build_and(
             b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SHAPE_OFFSET), shape),
-            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_WITNESS_OFFSET), witness));
-        m = b.build_and(m, b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), e, BRONZE_ABI_ELEM_KIND_OFFSET)), kind));
-        // A string's entry by the latch: a number's or boolean's witness is
-        // its whole identity.
-        Value* latched = b.build_or(b.build_ne(kind, imm(b, BRONZE_ABI_ELEM_KIND_STRING)),
-                                    b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_IDENT_OFFSET), key));
-        return b.build_and(m, latched);
+            b.build_eq(b.build_load(Type::i64(), e, BRONZE_ABI_ELEM_WITNESS_OFFSET), pwitness));
+        return b.build_and(
+            m, b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), e, BRONZE_ABI_ELEM_KIND_OFFSET)), pkind));
     };
-    Value* first = entry_at(bucket);
-    b.build_br_if(matches(first), hit, {first}, beside, {});
-    b.position_at_end(beside);
-    Value* second = entry_at(b.build_xor(bucket, imm(b, 1)));
-    b.build_br_if(matches(second), beside_hit, helper);
+    Value* pfirst = entry_at(ptbl, pbucket);
+    b.build_br_if(prim_matches(pfirst), hit_fast, {pfirst}, prim_beside, {});
+
+    b.position_at_end(prim_beside);
+    Value* psecond = entry_at(ptbl, b.build_xor(pbucket, imm(b, 1)));
+    b.build_br_if(prim_matches(psecond), beside_hit, {psecond}, helper, {});
+
     // Counted, so that a pair read this often from beside its bucket is moved
     // into it by the runtime's probe (BRONZE_ABI_ELEM_BESIDE_PROMOTE).
     b.position_at_end(beside_hit);
-    Value* hits = b.build_load(Type::i32(), second, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET);
+    Value* hits = b.build_load(Type::i32(), at_beside, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET);
     Value* bumped = b.build_add(hits, b.build_iconst_i32(1));
-    b.build_store(Type::i32(), second, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET, bumped);
-    BasicBlock* promote = b.append_block("eg_promote");
-    b.position_at_end(beside_hit);
-    b.build_br_if(b.build_uge(bumped, b.build_iconst_i32(BRONZE_ABI_ELEM_BESIDE_PROMOTE)), promote, {}, hit, {second});
+    b.build_store(Type::i32(), at_beside, BRONZE_ABI_ELEM_BESIDE_HITS_OFFSET, bumped);
+    b.build_br_if(b.build_uge(bumped, b.build_iconst_i32(BRONZE_ABI_ELEM_BESIDE_PROMOTE)),
+                  promote, {}, hit_fast, {at_beside});
     b.position_at_end(promote);
     b.build_br(helper);
 
-    b.position_at_end(hit);
+    b.position_at_end(hit_fast);
     Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET);
+    b.build_br_if(b.build_ult(word, imm(b, kBronzeObjOverflowSlot)), hit_inline, hit_slow);
+
+    b.position_at_end(hit_inline);
+    b.build_ret(b.build_load_indexed(Type::i64(), ptr, word, 8, kBronzeObjSlotsOffset));
+
+    b.position_at_end(hit_slow);
     Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_EPOCH_OFFSET);
+    Value* dict = b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET);
     b.build_br_if(b.build_eq(dict, imm(b, 0)), hit_shaped, hit_dict);
     b.position_at_end(hit_shaped);
     answer_entry(b, obj, ptr, shape, word, epoch, helper, "eg");
@@ -374,6 +406,15 @@ void build_prop_set_stub(Function* fn, const std::string& setter_call_sym) {
     Value* site = b.add_block_param(entry, Type::ptr());
     Value* mode = b.add_block_param(entry, Type::i32());
     BasicBlock* object = b.append_block("ps_object");
+    BasicBlock* way_promote = b.append_block("ps_way_promote");
+    Value* wp_word = b.add_block_param(way_promote, Type::i64());
+    Value* wp_epoch = b.add_block_param(way_promote, Type::i64());
+    BasicBlock* wp_count = b.append_block("ps_wp_count");
+    BasicBlock* wp_take = b.append_block("ps_wp_take");
+    BasicBlock* relatch_count = b.append_block("ps_relatch_count");
+    Value* rc_word = b.add_block_param(relatch_count, Type::i64());
+    Value* rc_epoch = b.add_block_param(relatch_count, Type::i64());
+    BasicBlock* relatch_take = b.append_block("ps_relatch_take");
     BasicBlock* own = b.append_block("ps_own");
     Value* word = b.add_block_param(own, Type::i64());
     Value* epoch = b.add_block_param(own, Type::i64());
@@ -395,32 +436,48 @@ void build_prop_set_stub(Function* fn, const std::string& setter_call_sym) {
         BasicBlock* cur = b.current_block();
         BasicBlock* next = b.append_block("ps_way" + std::to_string(way + 1));
         b.position_at_end(cur);
-        b.build_br_if(b.build_eq(shape, way_word(b, site, way, BRONZE_ABI_IC_SHAPE_OFFSET)), own,
+        b.build_br_if(b.build_eq(shape, way_word(b, site, way, BRONZE_ABI_IC_SHAPE_OFFSET)),
+                      way == 0 ? own : way_promote,
                       {way_word(b, site, way, BRONZE_ABI_IC_SLOT_OFFSET), way_word(b, site, way, BRONZE_ABI_IC_EPOCH_OFFSET)},
                       next, {});
         b.position_at_end(next);
     }
-    // The table answers a full site BRONZE_ABI_IC_SET_MEGA_RELATCH times,
-    // counted in its word 11; then one miss goes to the helper, which resets
-    // the count and relatches the hot shape into way 0 (rt_prop_write.cpp).
-    // A shape the table does not name either is the add's to test.
+    // The megamorphic table answers a site up to BRONZE_ABI_IC_SET_MEGA_RELATCH
+    // times, counted in word 11 (BRONZE_ABI_IC_SET_MEGA_COUNT_WORD); then one
+    // miss goes to the helper, which zeroes the counter and swaps the active
+    // shape into way 0 (rt_prop_write.cpp). Warm secondary-way hits count
+    // separately in word 10 (BRONZE_ABI_IC_SET_PROMOTE_WORD) so 2/3-shape sites
+    // never set word 11's ic_harvest megamorphic marker. A shape the table does
+    // not name either is the add's to test.
     Value* set_key = b.build_or(b.build_zext_i64(key), imm(b, BRONZE_ABI_MEGA_PROP_SET_KEY_BIT));
-    BasicBlock* probe_from = b.current_block();
-    BasicBlock* mega_hit = b.append_block("ps_mega_hit");
-    Value* mega_word = b.add_block_param(mega_hit, Type::i64());
-    Value* mega_epoch = b.add_block_param(mega_hit, Type::i64());
-    b.position_at_end(probe_from);
-    mega_probe(b, site, BRONZE_ABI_IC_SET_WAYS - 1, shape, set_key, mega_hit, add);
-    b.position_at_end(mega_hit);
+    mega_probe(b, site, BRONZE_ABI_IC_SET_WAYS - 1, shape, set_key, relatch_count, add);
+
+    b.position_at_end(way_promote);
+    {
+        Value* is_assign = b.build_ult(mode, b.build_iconst_i32(static_cast<int32_t>(kDefineWriteMode)));
+        Value* hi = b.build_lshr(wp_word, imm(b, 32));
+        Value* inlineable = b.build_or(b.build_eq(hi, imm(b, 0)),
+                                       b.build_eq(hi, imm(b, BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG)));
+        b.build_br_if(b.build_and(is_assign, inlineable), wp_count, {}, own, {wp_word, wp_epoch});
+    }
+    b.position_at_end(wp_count);
+    {
+        constexpr int32_t kPromoteOff = BRONZE_ABI_IC_SET_PROMOTE_WORD * 8;
+        Value* count = b.build_load(Type::i64(), site, kPromoteOff);
+        b.build_br_if(b.build_ult(count, imm(b, BRONZE_ABI_IC_SET_MEGA_RELATCH)), wp_take, {}, helper, {});
+        b.position_at_end(wp_take);
+        b.build_store(Type::i64(), site, kPromoteOff, b.build_add(count, imm(b, 1)));
+        b.build_br(own, {wp_word, wp_epoch});
+    }
+
+    b.position_at_end(relatch_count);
     {
         constexpr int32_t kCountOff = BRONZE_ABI_IC_SET_MEGA_COUNT_WORD * 8;
         Value* count = b.build_load(Type::i64(), site, kCountOff);
-        BasicBlock* take = b.append_block("ps_mega_take");
-        b.position_at_end(mega_hit);
-        b.build_br_if(b.build_ult(count, imm(b, BRONZE_ABI_IC_SET_MEGA_RELATCH)), take, helper);
-        b.position_at_end(take);
+        b.build_br_if(b.build_ult(count, imm(b, BRONZE_ABI_IC_SET_MEGA_RELATCH)), relatch_take, {}, helper, {});
+        b.position_at_end(relatch_take);
         b.build_store(Type::i64(), site, kCountOff, b.build_add(count, imm(b, 1)));
-        b.build_br(own, {mega_word, mega_epoch});
+        b.build_br(own, {rc_word, rc_epoch});
     }
 
     // The value a slot of each representation takes as it is: a Number's bits

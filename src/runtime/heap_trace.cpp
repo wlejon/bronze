@@ -130,16 +130,8 @@ inline void visitPlainValues(uint64_t* w, size_t end, Tracer& t) {
         return;
     }
     if (w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
-    uint64_t keep = (~skip) & mask;
-    while (keep != 0) {
-        const unsigned start = static_cast<unsigned>(__builtin_ctzll(keep));
-        const uint64_t shifted = keep >> start;
-        const uint64_t inv = ~shifted;
-        const unsigned len = inv != 0 ? static_cast<unsigned>(__builtin_ctzll(inv))
-                                      : static_cast<unsigned>(64 - start);
-        t.visit_run(w + 3 + start, len);
-        keep &= ~((len == 64 ? ~uint64_t{0} : ((uint64_t{1} << len) - 1)) << start);
-    }
+    const uint64_t keep = (~skip) & mask;
+    if (keep != 0) t.visit_mask(w + 3, keep);
     if (3 + inlineSlots < end) t.visit_run(w + 3 + inlineSlots, end - (3 + inlineSlots));
 }
 
@@ -176,23 +168,24 @@ void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     }
     auto* w = reinterpret_cast<uint64_t*>(payload);
     const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
-    if (h->tag == static_cast<uint16_t>(Tag::Object)) {
+    if (h->tag == static_cast<uint16_t>(Tag::Object)) [[likely]] {
+        const uint16_t flags = h->flags;
+        if (flags == HeapKind::Plain) [[likely]] {
+            const size_t words = std::min<size_t>(h->size, payload_bytes) / sizeof(Value);
+            if (words > 3) visitPlainValues(w, words, t);
+            else if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
+            return;
+        }
+        if (flags == HeapKind::NumberBlock) return;
         const size_t words = std::min<size_t>(h->size, payload_bytes) / sizeof(Value);
-        switch (h->flags) {
-            case HeapKind::NumberBlock: return;
-            case HeapKind::Plain:
-                if (words > 3) visitPlainValues(w, words, t);
-                else if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
-                return;
-            case HeapKind::Array:
-                if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
-                if (words > 5) t.visit(w + 5);
-                return;
-            case HeapKind::ValueBlock:
-            case HeapKind::SlotBlock:
-                if (words > 1) t.visit_run(w + 1, words - 1);
-                return;
-            default: break;
+        if (flags == HeapKind::ValueBlock || flags == HeapKind::SlotBlock) {
+            if (words > 1) t.visit_run(w + 1, words - 1);
+            return;
+        }
+        if (flags == HeapKind::Array) {
+            if (words > 2 && w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
+            if (words > 5) t.visit(w + 5);
+            return;
         }
     }
     return traceCellSlow(payload, payload_bytes, t);

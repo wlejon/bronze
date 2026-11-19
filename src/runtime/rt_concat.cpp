@@ -324,23 +324,48 @@ uint64_t concatTemplateGeneral(uint64_t* pieces, uint32_t count) {
     return Value::fromString(out).rawBits();
 }
 
-}  // namespace
+constexpr char kDigits100[201] =
+    "0001020304050607080910111213141516171819"
+    "2021222324252627282930313233343536373839"
+    "4041424344454647484950515253545556575859"
+    "6061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
 
-extern "C" {
+inline uint32_t u32Digits(uint32_t u) noexcept {
+    if (u < 10u) return 1u;
+    if (u < 100u) return 2u;
+    if (u < 1000u) return 3u;
+    if (u < 10000u) return 4u;
+    if (u < 100000u) return 5u;
+    if (u < 1000000u) return 6u;
+    if (u < 10000000u) return 7u;
+    if (u < 100000000u) return 8u;
+    if (u < 1000000000u) return 9u;
+    return 10u;
+}
 
-uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
-    recordHelperCall("bronze_concat_template");
-    // A template's pieces in a block the caller owns and the collector scans
-    // (the argv block): each a String, or a Number its `to.string` let
-    // through.
-    //
-    // The usual template (a key, a label: one-byte pieces, short) in ONE pass:
-    // each String's units and each Number's ToString (formatJsNumber,
-    // nothing allocated) are copied into a buffer on the stack, then the
-    // result is allocated and filled with one copy. A two-byte piece, a
-    // result long enough to be a view, or a full young window is the general
-    // path's, which converts a Number into its String and writes it back into
-    // the block, so it stays rooted while later pieces are converted.
+inline char* writeU32Digits(char* dst, uint32_t u, uint32_t digits) noexcept {
+    char* p = dst + digits;
+    char* const end = p;
+    while (u >= 100u) {
+        const uint32_t q = u / 100u;
+        const uint32_t r = (u - q * 100u) * 2u;
+        p -= 2;
+        p[0] = kDigits100[r];
+        p[1] = kDigits100[r + 1u];
+        u = q;
+    }
+    if (u >= 10u) {
+        const uint32_t r = u * 2u;
+        p[-2] = kDigits100[r];
+        p[-1] = kDigits100[r + 1u];
+    } else {
+        p[-1] = static_cast<char>('0' + u);
+    }
+    return end;
+}
+
+BRONZE_NOINLINE uint64_t concatTemplateBuffered(uint64_t* pieces, uint32_t count) {
     char text[StringHeader::kViewMinLength];
     uint32_t len = 0;
     uint32_t i = 0;
@@ -351,20 +376,10 @@ uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
             if (d >= 0.0 && d <= 2147483647.0) {
                 const uint32_t u = static_cast<uint32_t>(d);
                 if (static_cast<double>(u) == d) {
-                    if (u < 10) {
-                        if (len + 1 >= StringHeader::kViewMinLength) break;
-                        text[len++] = static_cast<char>('0' + u);
-                        continue;
-                    }
-                    char tmp[10];
-                    uint32_t x = u;
-                    uint32_t n = 0;
-                    do {
-                        tmp[n++] = static_cast<char>('0' + (x % 10));
-                        x /= 10;
-                    } while (x != 0);
+                    const uint32_t n = u32Digits(u);
                     if (n >= StringHeader::kViewMinLength - len) break;
-                    while (n > 0) text[len++] = tmp[--n];
+                    writeU32Digits(text + len, u, n);
+                    len += n;
                     continue;
                 }
             }
@@ -395,6 +410,61 @@ uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
         }
     }
     return concatTemplateGeneral(pieces, count);
+}
+
+}  // namespace
+
+extern "C" {
+
+uint64_t bronze_concat_template(uint64_t* pieces, uint32_t count) {
+    recordHelperCall("bronze_concat_template");
+    if (count == 0) return concatTemplateGeneral(pieces, 0);
+    // Two-pass Latin-1 + uint32 fast path: Pass 1 sums exact length in registers
+    // (no stack buffer or canary); Pass 2 copies strings and writes digits
+    // straight into the allocated StringHeader. Floats/UTF-16/long templates fall
+    // back to concatTemplateBuffered / concatTemplateGeneral.
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const Value v(pieces[i]);
+        if (v.isString()) {
+            const StringHeader* s = v.asString<StringHeader>();
+            if (s->isUTF16()) return concatTemplateBuffered(pieces, count);
+            total += s->length;
+        } else {
+            const double d = v.asNumber();
+            if (d >= 0.0 && d <= 2147483647.0) {
+                const uint32_t u = static_cast<uint32_t>(d);
+                if (static_cast<double>(u) == d) {
+                    total += u32Digits(u);
+                    continue;
+                }
+            }
+            return concatTemplateBuffered(pieces, count);
+        }
+        if (total >= StringHeader::kViewMinLength) return concatTemplateGeneral(pieces, count);
+    }
+    const auto len = static_cast<uint32_t>(total);
+    HeapObjectHeader* h =
+        rtHeap().tryAllocate(2 * sizeof(uint32_t) + static_cast<size_t>(len) + 1, Tag::String);
+    if (!h) return concatTemplateGeneral(pieces, count);
+    auto* out = reinterpret_cast<StringHeader*>(h);
+    out->length = len;
+    out->flags = 0;
+    char* dst = reinterpret_cast<char*>(out + 1);
+    for (uint32_t i = 0; i < count; ++i) {
+        const Value v(pieces[i]);
+        if (v.isString()) {
+            const StringHeader* s = v.asString<StringHeader>();
+            const uint32_t n = s->length;
+            copyLatin1(dst, s->latin1Data(), n);
+            dst += n;
+        } else {
+            const auto u = static_cast<uint32_t>(v.asNumber());
+            dst = writeU32Digits(dst, u, u32Digits(u));
+        }
+    }
+    *dst = '\0';
+    return Value::fromString(out).rawBits();
 }
 
 uint64_t bronze_concat_end(uint64_t vBits) {

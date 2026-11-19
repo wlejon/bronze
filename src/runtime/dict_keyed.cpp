@@ -39,7 +39,9 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
@@ -51,20 +53,11 @@ namespace bronze::runtime {
 
 namespace {
 
-// The key, as the table is asked for it: the string, or a uint32 Number's
-// digits and their hash.
-struct MapKey {
-    StringHeader* str = nullptr;
-    uint32_t length = 0;
-    uint32_t hash = 0;
-    char digits[12];
-};
-
-// False for a key kind these paths do not take (a symbol, a Number that is
-// no uint32 integer, anything else).
-inline bool resolveKey(Value key, MapKey& k) noexcept {
+inline bool trySmallIntKey(Value key, StringHeader*& outStr, uint32_t& outLarge,
+                           bool& isLargeInt) noexcept {
     if (key.isString()) {
-        k.str = key.asString<StringHeader>();
+        outStr = key.asString<StringHeader>();
+        isLargeInt = false;
         return true;
     }
     if (!key.isNumber()) return false;
@@ -72,14 +65,14 @@ inline bool resolveKey(Value key, MapKey& k) noexcept {
     if (!(d >= 0.0 && d < 4294967296.0)) return false;
     const auto n = static_cast<uint32_t>(d);
     if (static_cast<double>(n) != d) return false;  // -0 passes: ToString(-0) is "0"
-    k.length = static_cast<uint32_t>(std::to_chars(k.digits, k.digits + sizeof(k.digits), n).ptr - k.digits);
-    k.hash = StringHeader::hashLatin1(k.digits, k.length);
+    if (const Value small = rtSmallIntString(n); small.isString()) {
+        outStr = small.asString<StringHeader>();
+        isLargeInt = false;
+        return true;
+    }
+    outLarge = n;
+    isLargeInt = true;
     return true;
-}
-
-inline DictEntry* findKey(Dictionary& d, const MapKey& k) noexcept {
-    if (k.str != nullptr) return d.find(PropertyKey::forString(k.str));
-    return d.findLatin1(k.digits, k.length, k.hash);
 }
 
 // The receiver these paths take, or null.
@@ -99,11 +92,10 @@ inline ObjectHeader* mapReceiver(Value objVal) noexcept {
 // accessor, a non-writable property, a link these paths do not read).
 enum class ChainAnswer { Absent, Data, Unknown };
 
-ChainAnswer askChain(const Shape* sh, const MapKey& k, const ObjectHeader*& holder, uint32_t& slot) {
-    if (k.str == nullptr) {
-        return rtTls()->array_index_hazard == 0 ? ChainAnswer::Absent : ChainAnswer::Unknown;
-    }
-    const PropertyKey pk = PropertyKey::forString(k.str);
+ChainAnswer askChainString(const Shape* sh, StringHeader* s, bool isIndex, const ObjectHeader*& holder,
+                           uint32_t& slot) {
+    if (isIndex && rtTls()->array_index_hazard == 0) return ChainAnswer::Absent;
+    const PropertyKey pk = PropertyKey::forString(s);
     Value proto = sh->prototypeValue();
     for (int link = 0; link < 8; ++link) {
         if (proto.isNull()) return ChainAnswer::Absent;
@@ -125,14 +117,105 @@ ChainAnswer askChain(const Shape* sh, const MapKey& k, const ObjectHeader*& hold
     return ChainAnswer::Unknown;
 }
 
+inline void formatLargeU32(uint32_t n, char* digits, uint32_t& length, uint32_t& hash) noexcept {
+    length = static_cast<uint32_t>(std::to_chars(digits, digits + 12, n).ptr - digits);
+    hash = StringHeader::hashLatin1(digits, length);
+}
+
+BRONZE_NOINLINE bool rtIdKeyedReadLargeInt(ObjectHeader* obj, uint32_t n, Value& out,
+                                           uint32_t* ownSlot) {
+    char digits[12];
+    uint32_t length = 0;
+    uint32_t hash = 0;
+    formatLargeU32(n, digits, length, hash);
+    if (const DictEntry* e = obj->shape->dict->findLatin1(digits, length, hash)) {
+        if (e->accessor) return false;
+        out = obj->getSlot(e->slot);
+        if (ownSlot != nullptr) *ownSlot = e->slot;
+        return true;
+    }
+    if (rtTls()->array_index_hazard == 0) {
+        out = Value::fromUndefined();
+        return true;
+    }
+    return false;
+}
+
+BRONZE_NOINLINE bool rtIdKeyedWriteAddString(Value objVal, StringHeader* s, bool isIndex,
+                                             Value val) {
+    auto* obj = objVal.asObject<ObjectHeader>();
+    Dictionary& d = *obj->shape->dict;
+    if (!d.extensible) return false;
+    const ObjectHeader* holder = nullptr;
+    uint32_t inherited = 0;
+    if (askChainString(obj->shape, s, isIndex, holder, inherited) == ChainAnswer::Unknown) {
+        return false;
+    }
+    Heap& heap = rtHeap();
+    Rooted<Value> self{objVal};
+    Rooted<Value> valRoot{val};
+    const PropertyKey stored = ObjectHeader::dictKeyToStore(heap, rtArena(), PropertyKey::forString(s));
+    const uint32_t slot = d.allocateSlots(1u);
+    d.add(stored, slot, /*enumerable=*/true, /*accessor=*/false);
+    ObjectHeader* live = ObjectHeader::ensureSlots(heap, self, d.nextSlot);
+    live->rawSetSlot(slot, valRoot.get());
+    return true;
+}
+
+BRONZE_NOINLINE bool rtIdKeyedWriteLargeInt(Value objVal, uint32_t n, Value val) {
+    auto* obj = objVal.asObject<ObjectHeader>();
+    Dictionary& d = *obj->shape->dict;
+    char digits[12];
+    uint32_t length = 0;
+    uint32_t hash = 0;
+    formatLargeU32(n, digits, length, hash);
+    if (DictEntry* e = d.findLatin1(digits, length, hash)) {
+        if (e->accessor || !e->writable) return false;
+        obj->rawSetSlot(e->slot, val);
+        return true;
+    }
+    if (!d.extensible || rtTls()->array_index_hazard != 0) return false;
+    Heap& heap = rtHeap();
+    Rooted<Value> self{objVal};
+    Rooted<Value> valRoot{val};
+    StringHeader* s = StringHeader::createLatin1Old(heap, digits, length);
+    gcShadeEdge(Value::fromString(s));
+    const PropertyKey stored = PropertyKey::forString(s);
+    const uint32_t slot = d.allocateSlots(1u);
+    d.add(stored, slot, /*enumerable=*/true, /*accessor=*/false);
+    ObjectHeader* live = ObjectHeader::ensureSlots(heap, self, d.nextSlot);
+    live->rawSetSlot(slot, valRoot.get());
+    return true;
+}
+
+BRONZE_NOINLINE bool rtIdKeyedDeleteLargeInt(ObjectHeader* obj, uint32_t n) {
+    char digits[12];
+    uint32_t length = 0;
+    uint32_t hash = 0;
+    formatLargeU32(n, digits, length, hash);
+    Dictionary& d = *obj->shape->dict;
+    DictEntry* e = d.findLatin1(digits, length, hash);
+    if (e == nullptr) return true;
+    if (!e->configurable) return false;
+    const uint32_t slot = e->slot;
+    const bool accessor = e->accessor;
+    d.removeEntry(e);
+    obj->rawSetSlot(slot, Value::fromUndefined());
+    if (accessor) obj->rawSetSlot(slot + 1, Value::fromUndefined());
+    return true;
+}
+
 }  // namespace
 
 bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot) {
     ObjectHeader* obj = mapReceiver(objVal);
     if (obj == nullptr) return false;
-    MapKey k;
-    if (!resolveKey(key, k)) return false;
-    if (const DictEntry* e = findKey(*obj->shape->dict, k)) {
+    StringHeader* s = nullptr;
+    uint32_t largeN = 0;
+    bool isLarge = false;
+    if (!trySmallIntKey(key, s, largeN, isLarge)) return false;
+    if (isLarge) return rtIdKeyedReadLargeInt(obj, largeN, out, ownSlot);
+    if (const DictEntry* e = obj->shape->dict->find(PropertyKey::forString(s))) {
         if (e->accessor) return false;
         out = obj->getSlot(e->slot);
         if (ownSlot != nullptr) *ownSlot = e->slot;
@@ -140,7 +223,7 @@ bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot) {
     }
     const ObjectHeader* holder = nullptr;
     uint32_t slot = 0;
-    switch (askChain(obj->shape, k, holder, slot)) {
+    switch (askChainString(obj->shape, s, key.isNumber(), holder, slot)) {
         case ChainAnswer::Absent: out = Value::fromUndefined(); return true;
         case ChainAnswer::Data: out = holder->getSlot(slot); return true;
         case ChainAnswer::Unknown: return false;
@@ -151,55 +234,37 @@ bool rtIdKeyedRead(Value objVal, Value key, Value& out, uint32_t* ownSlot) {
 bool rtIdKeyedWrite(Value objVal, Value key, Value val) {
     ObjectHeader* obj = mapReceiver(objVal);
     if (obj == nullptr) return false;
-    MapKey k;
-    if (!resolveKey(key, k)) return false;
+    StringHeader* s = nullptr;
+    uint32_t largeN = 0;
+    bool isLarge = false;
+    if (!trySmallIntKey(key, s, largeN, isLarge)) return false;
+    if (isLarge) return rtIdKeyedWriteLargeInt(objVal, largeN, val);
     Dictionary& d = *obj->shape->dict;
-    if (DictEntry* e = findKey(d, k)) {
+    if (DictEntry* e = d.find(PropertyKey::forString(s))) {
         if (e->accessor || !e->writable) return false;
-        obj->setSlot(e->slot, val);
+        obj->rawSetSlot(e->slot, val);
         return true;
     }
-    if (!d.extensible) return false;
-    const ObjectHeader* holder = nullptr;
-    uint32_t inherited = 0;
-    if (askChain(obj->shape, k, holder, inherited) == ChainAnswer::Unknown) return false;
-    // A new own property (an inherited writable data property is shadowed by
-    // it). The steps of ObjectHeader::dictAddAbsent, with the stored key made
-    // straight from the digits for a Number. Both allocations can collect, so
-    // the map and the value are reached through roots; the table itself is
-    // off the heap and stays where it is.
-    Heap& heap = rtHeap();
-    Rooted<Value> self{objVal};
-    Rooted<Value> valRoot{val};
-    PropertyKey stored;
-    if (k.str != nullptr) {
-        stored = ObjectHeader::dictKeyToStore(heap, rtArena(), PropertyKey::forString(k.str));
-    } else {
-        StringHeader* s = StringHeader::createLatin1Old(heap, k.digits, k.length);
-        gcShadeEdge(Value::fromString(s));
-        stored = PropertyKey::forString(s);
-    }
-    const uint32_t slot = d.allocateSlots(1u);
-    d.add(stored, slot, /*enumerable=*/true, /*accessor=*/false);
-    ObjectHeader* live = ObjectHeader::ensureSlots(heap, self, d.nextSlot);
-    live->setSlot(slot, valRoot.get());
-    return true;
+    return rtIdKeyedWriteAddString(objVal, s, key.isNumber(), val);
 }
 
 bool rtIdKeyedDelete(Value objVal, Value key) {
     ObjectHeader* obj = mapReceiver(objVal);
     if (obj == nullptr) return false;
-    MapKey k;
-    if (!resolveKey(key, k)) return false;
+    StringHeader* s = nullptr;
+    uint32_t largeN = 0;
+    bool isLarge = false;
+    if (!trySmallIntKey(key, s, largeN, isLarge)) return false;
+    if (isLarge) return rtIdKeyedDeleteLargeInt(obj, largeN);
     Dictionary& d = *obj->shape->dict;
-    DictEntry* e = findKey(d, k);
+    DictEntry* e = d.find(PropertyKey::forString(s));
     if (e == nullptr) return true;
     if (!e->configurable) return false;
     const uint32_t slot = e->slot;
     const bool accessor = e->accessor;
     d.removeEntry(e);
-    obj->setSlot(slot, Value::fromUndefined());
-    if (accessor) obj->setSlot(slot + 1, Value::fromUndefined());
+    obj->rawSetSlot(slot, Value::fromUndefined());
+    if (accessor) obj->rawSetSlot(slot + 1, Value::fromUndefined());
     return true;
 }
 

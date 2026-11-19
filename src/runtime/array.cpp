@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include "abi/bronze_abi.h"
@@ -33,21 +34,29 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     // `HeapKind::Plain` — and a plain object is a thing the collector reads a
     // `Shape*` out of. Elements are Values (or raw Numbers + Holes when
     // NUMBERS holds, marked NumberBlock so GC tracing skips them in O(1)).
-    block->flags = arr->elementsAreNumbers() ? HeapKind::NumberBlock : HeapKind::ValueBlock;
+    const bool numbers = arr->elementsAreNumbers();
+    block->flags = numbers ? HeapKind::NumberBlock : HeapKind::ValueBlock;
 
     HeapValue* slots = block->payload<HeapValue>();
     uint32_t i = 0;
     // Read through the const accessor: copying the elements across changes
     // none of them, so NUMBERS stays what it was.
     const Value* old_slots = std::as_const(*arr).elementsData();
-    // The block is new, so one bulk barrier over the copied run is all the
-    // collector needs (gcCopyValues), and a hole is not a reference, so the
-    // fill needs none; a per-slot barrier was most of a growth.
+    // Young blocks and NumberBlocks need no write barrier; only an old-gen
+    // ValueBlock copy goes through gcCopyValues, and holes are non-pointers.
     if (old_slots) {
         i = arr->length < new_capacity ? arr->length : new_capacity;
-        gcCopyValues(block, slots, old_slots, i);
+        if (i > 0) {
+            if (numbers || heap.gc().is_young(reinterpret_cast<uintptr_t>(block))) {
+                std::memcpy(static_cast<void*>(slots), old_slots, static_cast<size_t>(i) * sizeof(Value));
+            } else {
+                gcCopyValues(block, slots, old_slots, i);
+            }
+        }
     }
-    gcFillValues(block, slots + i, Value::fromHole(), new_capacity - i);
+    auto* raw = reinterpret_cast<Value*>(slots);
+    const Value hole = Value::fromHole();
+    for (; i < new_capacity; ++i) raw[i] = hole;
 
     arr->elements = Value::fromObject(block);
     arr->capacity = new_capacity;

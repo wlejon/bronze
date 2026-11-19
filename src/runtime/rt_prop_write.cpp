@@ -178,6 +178,15 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (site && HeapKind::shapeNamesPrototype(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
         const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
         ic = site->findForSet(shape);
+        if (ic && ic != &site->ways[0] &&
+            icEntry[BRONZE_ABI_IC_SET_PROMOTE_WORD] >= BRONZE_ABI_IC_SET_MEGA_RELATCH) {
+            icEntry[BRONZE_ABI_IC_SET_PROMOTE_WORD] = 0;
+            if (!ic->isAccessor() && !ic->isObjectSlot()) {
+                std::swap(site->ways[0], *ic);
+                rtIcHotNoteWrite(&site->ways[0]);
+                ic = &site->ways[0];
+            }
+        }
         if (!ic) {
             if (site->ways[BRONZE_ABI_IC_SET_WAYS - 1].isRealShape()) {
                 uint64_t& tableAnswers = icEntry[BRONZE_ABI_IC_SET_MEGA_COUNT_WORD];

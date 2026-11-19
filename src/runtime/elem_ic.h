@@ -67,7 +67,7 @@ enum class ElemKeyKind : uint8_t {
     Boolean = 3,
 };
 
-struct ElemCacheEntry {
+struct alignas(64) ElemCacheEntry {
     // The answer, in exactly the representation a property site's entry uses:
     // shape, slot, depth (with the accessor and absent flags), fill epoch. It
     // is the same struct rather than a parallel one so that the validity
@@ -109,6 +109,7 @@ struct ElemCacheEntry {
     // shape key handed out by enumeration) is immortal and survives the
     // sweep, which is what keeps the hot three.js pairs latched across GC.
     uint64_t key_ident = 0;
+    uint64_t pad_ = 0;
 };
 
 // Enough entries that the fifteen (shape, key) pairs three.js touches in its
@@ -213,7 +214,7 @@ void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept;
 // never scanned and needs no post-collection sweep — the read table's ident
 // latch is what forced one there, and this table has no inline arm to latch
 // for.
-struct ElemSetCacheEntry {
+struct alignas(64) ElemSetCacheEntry {
     // What `ObjectHeader::setProp` hits and fills, in the representation it
     // already speaks: the same struct a named set SITE hands it, so no rule
     // about when a write may be cached is restated here. Every fill is
@@ -229,6 +230,7 @@ struct ElemSetCacheEntry {
     StringHeader* key = nullptr;
     ElemKeyKind kind = ElemKeyKind::Empty;
     uint64_t key_ident = 0;
+    uint64_t pad_ = 0;
 };
 
 // As many as the read table. three.js's whole computed-store working set is

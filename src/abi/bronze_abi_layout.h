@@ -33,12 +33,15 @@
  *
  * READ sites use every way; a WRITE site uses BRONZE_ABI_IC_SET_WAYS ways
  * (ways 0..2), leaving way 3's shape word zero so a full write site stays
- * distinguishable from a four-way read site and leaving word
- * BRONZE_ABI_IC_SET_MEGA_COUNT_WORD (word 11) free for the write stub's count
- * of answers from the thread's megamorphic table once all three ways are
- * occupied. Every BRONZE_ABI_IC_SET_MEGA_RELATCH-th table answer goes to the
- * helper, which zeroes the counter and shifts the active shape into way 0 so
- * a site whose hot shapes change after warm-up re-latches them. An integer.
+ * distinguishable from a four-way read site, leaving word
+ * BRONZE_ABI_IC_SET_PROMOTE_WORD (word 10) for counting warm secondary-way
+ * (ways[1..2]) assign hits before promoting them into way 0, and leaving word
+ * BRONZE_ABI_IC_SET_MEGA_COUNT_WORD (word 11) exclusively for the write stub's
+ * count of answers from the thread's megamorphic table once all three ways are
+ * occupied (which ic_harvest.cpp reads as the megamorphic marker). Every
+ * BRONZE_ABI_IC_SET_MEGA_RELATCH-th hit goes to the helper, which zeroes the
+ * counter and shifts the active shape into way 0 so a site whose hot shapes
+ * change after warm-up re-latches them. Both counters are plain integers.
  *
  * Generated code compares the receiver's shape against way 0, then — only on
  * a way-0 miss — against ways 1..N-1, and
@@ -99,6 +102,7 @@
  * after its null check.
  */
 #define BRONZE_ABI_IC_ENTRY_SIZE     24 /* sizeof(InlineCache) */
+#define BRONZE_ABI_IC_SET_PROMOTE_WORD    10
 #define BRONZE_ABI_IC_SET_MEGA_COUNT_WORD 11
 #define BRONZE_ABI_IC_SET_MEGA_RELATCH    64
 #define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
@@ -516,7 +520,7 @@
  * reproduce it EXACTLY: a probe that hashes differently from the
  * fill does not answer wrongly, it simply never hits, which is a silent
  * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
-#define BRONZE_ABI_ELEM_ENTRY_SIZE      56 /* sizeof(ElemCacheEntry) */
+#define BRONZE_ABI_ELEM_ENTRY_SIZE      64 /* sizeof(ElemCacheEntry) */
 #define BRONZE_ABI_ELEM_IC_OFFSET        0 /* ElemCacheEntry::ic (InlineCache) */
 /* A computed read site's cell (codegen-brass/elem_cells.h, runtime/elem_ic.cpp
  * bronze_elem_get_cell): five words, the receiver's shape, the key's bits,
