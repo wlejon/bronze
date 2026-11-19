@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <optional>
 #include <vector>
 
@@ -82,20 +83,30 @@ struct Analyses {
 // One step of a loop's plan, applied in order at the end of the preheader
 // chain.
 struct Step {
-    enum class Kind : uint8_t { Move, Guard };
+    enum class Kind : uint8_t { Move, Guard, ParamGuard };
     Kind kind = Kind::Move;
     // The instruction to move (Move), or the guard's block (Guard), as the
     // plan's snapshot numbers them.
     BlockId block = kNoBlock;
     uint32_t index = 0;
-    // Guard only.
+    // Guard / ParamGuard.
     ValueId cond = kNoValue;
     bool exitOnTrue = false;
     LeaveTarget target;
     // The cache fills the guard's own exit made before leaving, copied to the
     // hoisted exit (cacheFills).
     std::vector<il::Instruction> fills;
+    // ParamGuard only: loop header parameter index, loop-entry argument, and
+    // whether to guard `is.i32` / unbox to i32 vs `is.number` / unbox to f64.
+    uint32_t paramIndex = 0;
+    ValueId initValue = kNoValue;
+    bool wantI32 = false;
 };
+
+bool isInt32Double(double d) {
+    return std::isfinite(d) && (d != 0.0 || !std::signbit(d)) && d >= -2147483648.0 && d <= 2147483647.0 &&
+           static_cast<double>(static_cast<int32_t>(d)) == d;
+}
 
 // What the facts say inside one loop and at its preheader's end.
 struct LoopFacts {
@@ -181,6 +192,9 @@ private:
     bool canHoist(const il::Instruction& inst) const;
     bool dominatesLatches(BlockId b) const;
     std::optional<Step> guardStep(BlockId b);
+    bool latchMatches(ValueId v, ValueId paramId, bool wantI32) const;
+    bool isProvablyNonNumber(ValueId v) const;
+    void planParamGuards(std::vector<Step>& steps);
     const std::optional<LeaveTarget>& resumeTarget(bool optimistic);
 
     JobContext& ctx_;
@@ -320,7 +334,154 @@ std::vector<Step> LoopPlanner::plan() {
             if (std::optional<Step> guard = guardStep(b)) steps.push_back(std::move(*guard));
         }
     }
+    planParamGuards(steps);
     return steps;
+}
+
+bool LoopPlanner::latchMatches(ValueId v, ValueId paramId, bool wantI32) const {
+    if (v == paramId) return true;
+    const il::Instruction* d = a_.defs.defInst(fn_, v);
+    if (d == nullptr) return false;
+    if (d->op == Op::Box) {
+        if (d->boxType == il::Type::I32) return true;
+        if (d->boxType == il::Type::F64) {
+            if (!wantI32) return true;
+            if (d->operands.size() == 1) {
+                if (const il::Instruction* c = a_.defs.defInstIs(fn_, d->operands[0], Op::ConstF64)) {
+                    return isInt32Double(c->immF64);
+                }
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+bool LoopPlanner::isProvablyNonNumber(ValueId v) const {
+    if (preheaderFacts_.known(FactKind::Object, v) == true || preheaderFacts_.tagOf(v) == ValueTag::Nullish) {
+        return true;
+    }
+    const il::Instruction* d = a_.defs.defInst(fn_, v);
+    if (d == nullptr) return false;
+    switch (d->op) {
+        case Op::ConstUndefined:
+        case Op::ConstNull:
+        case Op::CreateObject:
+        case Op::CreateArray:
+        case Op::ObjectLiteral:
+        case Op::ArrayLiteral:
+        case Op::CreateThis:
+        case Op::CreateFunction:
+            return true;
+        case Op::Box:
+            return d->boxType == il::Type::Bool || d->boxType == il::Type::Str;
+        default:
+            return false;
+    }
+}
+
+void LoopPlanner::planParamGuards(std::vector<Step>& steps) {
+    if (!fn_.isSpeculated() || loop_.latches.empty()) return;
+    const il::Block& phBlock = fn_.blocks[preheader_];
+    if (phBlock.instructions.empty()) return;
+    const il::Instruction& phJump = phBlock.instructions.back();
+    const il::Block& header = fn_.blocks[loop_.header];
+    if (phJump.op != Op::Jump || phJump.target.block != loop_.header ||
+        phJump.target.args.size() != header.params.size()) {
+        return;
+    }
+    if (header.params.empty()) return;
+
+    enum class Need : uint8_t { None = 0, Number = 1, I32 = 2 };
+    std::vector<Need> needs(header.params.size(), Need::None);
+    std::vector<bool> needOptimistic(header.params.size(), false);
+    auto paramIndexOf = [&](ValueId id) -> std::optional<uint32_t> {
+        for (uint32_t i = 0; i < header.params.size(); ++i) {
+            if (header.params[i].id == id && header.params[i].type == il::Type::Dynamic) return i;
+        }
+        return std::nullopt;
+    };
+
+    for (BlockId b : loop_.blocks) {
+        if (fn_.blocks[b].instructions.empty() || !dominatesLatches(b)) continue;
+        const il::Instruction& term = fn_.blocks[b].instructions.back();
+        if (term.op != Op::Branch || term.operands.empty()) continue;
+        const BlockId thenBlock = term.target.block;
+        const BlockId elseBlock = term.elseTarget.block;
+        if (thenBlock == elseBlock || endsInLeave(fn_.blocks[thenBlock]) || !endsInLeave(fn_.blocks[elseBlock])) {
+            continue;
+        }
+        bool hasFill = false;
+        for (const il::Instruction& ei : fn_.blocks[elseBlock].instructions) {
+            if (isCacheFill(ei.op)) {
+                hasFill = true;
+                break;
+            }
+        }
+        if (hasFill) continue;
+        const il::Instruction* test = a_.defs.defInst(fn_, term.operands[0]);
+        if (test == nullptr || test->operands.size() != 1) continue;
+        Need n = Need::None;
+        if (test->op == Op::IsI32) n = Need::I32;
+        else if (test->op == Op::IsNumber) n = Need::Number;
+        else continue;
+        const std::optional<uint32_t> pIdx = paramIndexOf(test->operands[0]);
+        if (!pIdx) continue;
+        const bool opt = fn_.blocks[elseBlock].instructions.back().keyIndex == il::kResumeOptimistic;
+        if (static_cast<uint8_t>(n) > static_cast<uint8_t>(needs[*pIdx])) {
+            needs[*pIdx] = n;
+            needOptimistic[*pIdx] = opt;
+        } else if (n == needs[*pIdx] && !opt) {
+            needOptimistic[*pIdx] = false;
+        }
+    }
+
+    for (uint32_t pIdx = 0; pIdx < header.params.size(); ++pIdx) {
+        if (needs[pIdx] == Need::None) continue;
+        const bool wantI32 = needs[pIdx] == Need::I32;
+        const ValueId paramId = header.params[pIdx].id;
+        const ValueId initVal = phJump.target.args[pIdx];
+        if (!invariant(initVal)) continue;
+        if (const il::Instruction* initDef = a_.defs.defInst(fn_, initVal);
+            initDef != nullptr && initDef->op == Op::Box &&
+            (initDef->boxType == il::Type::I32 || (!wantI32 && initDef->boxType == il::Type::F64))) {
+            continue;
+        }
+        if (isProvablyNonNumber(initVal)) continue;
+
+        bool allMatch = true;
+        bool anyReboxed = false;
+        size_t inLatchCount = 0;
+        for (const Edge& e : a_.cfg.inEdges(loop_.header)) {
+            if (!loop_.contains(e.from) || e.kind == EdgeKind::Throw) continue;
+            const std::vector<ValueId>& args = edgeArgs(fn_, e);
+            if (args.size() != header.params.size()) {
+                allMatch = false;
+                break;
+            }
+            const ValueId latchVal = args[pIdx];
+            if (!latchMatches(latchVal, paramId, wantI32)) {
+                allMatch = false;
+                break;
+            }
+            if (latchVal != paramId) anyReboxed = true;
+            ++inLatchCount;
+        }
+        if (!allMatch || !anyReboxed || inLatchCount == 0) continue;
+
+        const std::optional<LeaveTarget>& target = resumeTarget(needOptimistic[pIdx]);
+        if (!target) continue;
+
+        Step step;
+        step.kind = Step::Kind::ParamGuard;
+        step.block = loop_.header;
+        step.exitOnTrue = false;
+        step.target = *target;
+        step.paramIndex = pIdx;
+        step.initValue = initVal;
+        step.wantI32 = wantI32;
+        steps.push_back(std::move(step));
+    }
 }
 
 void insertBeforeTerminator(il::Function& fn, BlockId b, il::Instruction inst) {
@@ -378,6 +539,40 @@ bool applyPlan(JobContext& ctx, BlockId preheader, const std::vector<Step>& step
     for (const Step& step : steps) {
         if (step.kind == Step::Kind::Guard) {
             tail = hoistGuard(fn, tail, step);
+            ++ctx.stats.guardsHoisted;
+            continue;
+        }
+        if (step.kind == Step::Kind::ParamGuard) {
+            const ValueId cond = newValue(fn);
+            il::Instruction test;
+            test.op = step.wantI32 ? Op::IsI32 : Op::IsNumber;
+            test.type = il::Type::Bool;
+            test.result = cond;
+            test.operands = {step.initValue};
+            insertBeforeTerminator(fn, tail, std::move(test));
+
+            Step guardStep = step;
+            guardStep.cond = cond;
+            tail = hoistGuard(fn, tail, guardStep);
+
+            const ValueId unboxed = newValue(fn);
+            il::Instruction unbox;
+            unbox.op = step.wantI32 ? Op::UnboxI32 : Op::UnboxF64;
+            unbox.type = step.wantI32 ? il::Type::I32 : il::Type::F64;
+            unbox.result = unboxed;
+            unbox.operands = {step.initValue};
+            insertBeforeTerminator(fn, tail, std::move(unbox));
+
+            const ValueId reboxed = newValue(fn);
+            il::Instruction box;
+            box.op = Op::Box;
+            box.type = il::Type::Dynamic;
+            box.boxType = unbox.type;
+            box.result = reboxed;
+            box.operands = {unboxed};
+            insertBeforeTerminator(fn, tail, std::move(box));
+
+            fn.blocks[tail].instructions.back().target.args[step.paramIndex] = reboxed;
             ++ctx.stats.guardsHoisted;
             continue;
         }

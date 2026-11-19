@@ -29,6 +29,8 @@ constexpr int32_t kFunctionHeaderLow =
 static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the kind flags are the header word's second half-word");
 constexpr int32_t kArrayHeaderLow =
     static_cast<int32_t>((uint32_t{BRONZE_ABI_OBJ_FLAGS_ARRAY} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
+constexpr int32_t kValueBlockHeaderLow =
+    static_cast<int32_t>((uint32_t{BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
 
 Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -476,10 +478,11 @@ bool IlLowering::lower_spec_instruction(const BronzeInstruction& inst, Builder& 
             const bool primitive = is_primitive_value(inst.operands[2]) || prop_lowering_.is_known_non_ref(v);
             const bool always_number = opd[2]->type() == Type::f64() || boxed_f64_source(v) != nullptr ||
                                        (inst.imm_i64 & kStoreNumber) != 0;
-            const auto forget_numbers = [ptr](Builder& bb) {
+            const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
                 Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
                 array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                                    bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+                array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
             };
             if (always_number) {
                 prop_lowering_.store_value_indexed(b, e.block, at, kBronzeHdrBytes, v, kBoxedElementAliasClass,

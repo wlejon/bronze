@@ -688,8 +688,9 @@
  * overflow word, and the capacity floor. */
 #define BRONZE_ABI_ARRAY_HEADER_BYTES    48
 #define BRONZE_ABI_ARRAY_MIN_CAPACITY    4
-#define BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK  18
-#define BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK 19
+#define BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK   18
+#define BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK  19
+#define BRONZE_ABI_OBJ_FLAGS_NUMBER_BLOCK 20
 
 /* Environment records (runtime/env.h EnvHeader): the parent link, then the
  * slot array. Generated code inlines captured-variable reads and writes —

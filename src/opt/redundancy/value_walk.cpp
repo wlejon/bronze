@@ -234,10 +234,22 @@ void ValueWalk::visitInstruction(BlockId b, size_t i) {
 
     // A store of a known Number keeps the array's NUMBERS bit: marked, its
     // effect no longer writes `ElemKinds`, so NUMBERS tests survive it.
-    if ((inst.op == Op::ElemStore || inst.op == Op::ArrayPush) && (inst.immI32 & il::kStoreNumber) == 0) {
-        const ValueId stored = inst.operands.size() == (inst.op == Op::ElemStore ? 3u : 2u) ? inst.operands.back()
-                                                                                          : kNoValue;
+    if (inst.op == Op::ElemStore && (inst.immI32 & il::kStoreNumber) == 0) {
+        const ValueId stored = inst.operands.size() == 3u ? inst.operands.back() : kNoValue;
         if (stored != kNoValue && knownNumber(facts_, values_, stored)) {
+            inst.immI32 |= il::kStoreNumber;
+            changed_ = true;
+        }
+    }
+    if (inst.op == Op::ArrayPush && (inst.immI32 & il::kStoreNumber) == 0 && inst.operands.size() >= 2) {
+        bool allNumbers = true;
+        for (size_t i = 1; i < inst.operands.size(); ++i) {
+            if (!knownNumber(facts_, values_, inst.operands[i])) {
+                allNumbers = false;
+                break;
+            }
+        }
+        if (allNumbers) {
             inst.immI32 |= il::kStoreNumber;
             changed_ = true;
         }

@@ -23,16 +23,17 @@ namespace {
 // to be exactly what `ArrayHeader::create` + `setCapacity` write.
 // (array.h pins the field offsets and the header size.)
 static_assert(HeapKind::ValueBlock == BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK);
+static_assert(HeapKind::NumberBlock == BRONZE_ABI_OBJ_FLAGS_NUMBER_BLOCK);
 static_assert(HeapKind::Array == BRONZE_ABI_OBJ_FLAGS_ARRAY);
 
 void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     HeapObjectHeader* block = heap.allocate(new_capacity * sizeof(Value), Tag::Object);
+    auto* arr = self.get().asObject<ArrayHeader>();
     // Not the zero `Heap::allocate` leaves behind, which reads as
     // `HeapKind::Plain` — and a plain object is a thing the collector reads a
-    // `Shape*` out of. Elements are Values and nothing else, which is what
-    // `ValueBlock` says.
-    block->flags = HeapKind::ValueBlock;
-    auto* arr = self.get().asObject<ArrayHeader>();
+    // `Shape*` out of. Elements are Values (or raw Numbers + Holes when
+    // NUMBERS holds, marked NumberBlock so GC tracing skips them in O(1)).
+    block->flags = arr->elementsAreNumbers() ? HeapKind::NumberBlock : HeapKind::ValueBlock;
 
     HeapValue* slots = block->payload<HeapValue>();
     uint32_t i = 0;
@@ -122,6 +123,7 @@ void ArrayHeader::appendRange(Heap& heap, Rooted<Value>& self, Rooted<Value>& sr
     if (numbers) {
         // A run of Numbers after Numbers: no hole among them to rewrite.
         out->reserved |= kElementsAreNumbers;
+        out->syncElementsKind();
     } else if (holesAsUndefined) {
         for (uint32_t i = 0; i < count; ++i) {
             if (HeapValue::values(to)[i].isHole()) to[i] = Value::fromUndefined();
@@ -207,6 +209,7 @@ bool ArrayHeader::claimNumbers() noexcept {
         }
     }
     reserved |= kElementsAreNumbers;
+    syncElementsKind();
     return true;
 }
 

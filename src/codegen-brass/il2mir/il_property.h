@@ -176,10 +176,12 @@ public:
     // `key in obj` (i32): an Array's present element below its length is
     // true inline, everything else bronze_has_property's.
     Value* lower_has_elem(Builder& b, Value* obj, Value* key);
-    // `a.push(v)` / `a.pop()` on an Array at the bare array shape with room
+    // `a.push(...v)` / `a.pop()` on an Array at the bare array shape with room
     // (il_elem_lowering.cpp); anything else branches to `miss`. The result
-    // is the call's. `known_number`: `val` is a Number (array.push with
+    // is the call's. `known_number`: values are Numbers (array.push with
     // kStoreNumber), so neither the NUMBERS bit nor the barrier is touched.
+    Value* lower_array_push_n(Builder& b, Value* ptr, const std::vector<Value*>& vals, BasicBlock* miss,
+                              bool known_number = false);
     Value* lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss, bool known_number = false);
     Value* lower_array_pop(Builder& b, Value* ptr, BasicBlock* miss);
     // An array literal's element `k` (key constant `key_index`) defined on

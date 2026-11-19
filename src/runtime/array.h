@@ -102,7 +102,18 @@ struct ArrayHeader {
     bool hasExoticElements() const noexcept { return (reserved & kExoticElements) != 0; }
 
     bool elementsAreNumbers() const noexcept { return (reserved & kElementsAreNumbers) != 0; }
-    void forgetNumbers() noexcept { reserved &= ~kElementsAreNumbers; }
+    void syncElementsKind() noexcept {
+        if (elements.isPointer()) {
+            elements.asObject<HeapObjectHeader>()->flags =
+                elementsAreNumbers() ? HeapKind::NumberBlock : HeapKind::ValueBlock;
+        }
+    }
+    void forgetNumbers() noexcept {
+        if ((reserved & kElementsAreNumbers) != 0) {
+            reserved &= ~kElementsAreNumbers;
+            if (elements.isPointer()) elements.asObject<HeapObjectHeader>()->flags = HeapKind::ValueBlock;
+        }
+    }
 
     // Sets NUMBERS when it is true now: a bare array (isBare) whose every
     // element below `length` is a Number. An Int32-boxed element
@@ -125,11 +136,17 @@ struct ArrayHeader {
             }
         }
         reserved |= kElementsAreNumbers;
+        syncElementsKind();
     }
     // The same for a maker that already knows the answer (a pair of values
     // in hand): no scan.
     void settleNumbers(bool allNumbers) noexcept {
-        reserved |= allNumbers ? kElementsAreNumbers : kNumbersRefused;
+        if (allNumbers) {
+            reserved |= kElementsAreNumbers;
+            syncElementsKind();
+        } else {
+            reserved |= kNumbersRefused;
+        }
     }
 
     // An ordinary array, at runtime::rtArrayShape().

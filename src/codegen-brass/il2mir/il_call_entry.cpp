@@ -208,7 +208,11 @@ enum class ArrayMethod { None, Push, Pop, Call };
 ArrayMethod array_method_of(IlLowering* lowering, uint32_t key_index, uint32_t argc) {
     const std::vector<std::string>& keys = lowering->options().key_constants;
     if (key_index >= keys.size()) return ArrayMethod::None;
-    if (argc == 1 && keys[key_index] == "push") return ArrayMethod::Push;
+    // Do not bypass the method IC for `push` during harvest runs: recording
+    // `"native"` `"array"` unlocks speculative `ArrayPush` on parameter arrays.
+    if (argc >= 1 && argc <= 8 && keys[key_index] == "push" && !lowering->options().cache_evidence) {
+        return ArrayMethod::Push;
+    }
     if (argc == 0 && keys[key_index] == "pop") return ArrayMethod::Pop;
     if (argc >= 1 && keys[key_index] == "call") return ArrayMethod::Call;
     return ArrayMethod::None;
@@ -287,9 +291,15 @@ Value* lower_method_call_inline(IlLowering* lowering, Builder& b, Value* recv, V
         b.position_at_end(not_plain);
         b.build_br_if(b.build_eq(header, b.build_iconst_i32(kArrayHeaderLow)), array, helper);
         b.position_at_end(array);
-        Value* r = array_method == ArrayMethod::Push
-                       ? pl.lower_array_push(b, ptr, lowering->ensure_type(args[0], Type::i64(), b), helper)
-                       : pl.lower_array_pop(b, ptr, helper);
+        Value* r = nullptr;
+        if (array_method == ArrayMethod::Push) {
+            std::vector<Value*> push_vals;
+            push_vals.reserve(args.size());
+            for (Value* a : args) push_vals.push_back(lowering->ensure_type(a, Type::i64(), b));
+            r = pl.lower_array_push_n(b, ptr, push_vals, helper);
+        } else {
+            r = pl.lower_array_pop(b, ptr, helper);
+        }
         b.build_br(merge, {r});
     }
 

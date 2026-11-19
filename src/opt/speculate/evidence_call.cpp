@@ -90,11 +90,16 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
     }
     const std::string& key = module_.keyConstants[inst.keyIndex];
     const size_t argc = inst.operands.size() - 1;
-    // `a.push(v)` on an array this function made (array_push.cpp): the
-    // allocation is the evidence, the receiver's shape is tested.
-    if (key == "push" && argc == 1) {
+    // `a.push(...v)` on an array this function made or one a single-way
+    // `"native"` `"array"` harvest confirms (array_push.cpp).
+    if (key == "push" && argc >= 1 && argc <= 8) {
         const il::Instruction* d = refs.def(refs.single(inst.operands[0]));
-        if (d != nullptr && (d->op == il::Op::ArrayLiteral || d->op == il::Op::CreateArray)) {
+        const bool localArray = d != nullptr && (d->op == il::Op::ArrayLiteral || d->op == il::Op::CreateArray);
+        const spec::HarvestSite* pushHarvest = harvested(inst.icIndex);
+        const bool harvestArray = pushHarvest != nullptr && pushHarvest->method && !pushHarvest->mega &&
+                                  pushHarvest->uncached <= kMaxUncachedReceivers && pushHarvest->ways.size() == 1 &&
+                                  pushHarvest->ways[0].form == "native" && pushHarvest->ways[0].receiver == "array";
+        if (localArray || harvestArray) {
             SitePlan push;
             push.kind = SiteKind::ArrayPush;
             push.block = block;

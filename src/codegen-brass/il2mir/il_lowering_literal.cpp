@@ -200,6 +200,13 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                     // the 64-bit word the allocation just stored stalled.
                     Value* numbers = b.build_select(all, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS), b.build_iconst_i32(0));
                     b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, numbers);
+                    constexpr int32_t kNumBlockLow = static_cast<int32_t>(
+                        (uint32_t{BRONZE_ABI_OBJ_FLAGS_NUMBER_BLOCK} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
+                    constexpr int32_t kValBlockLow = static_cast<int32_t>(
+                        (uint32_t{BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK} << 16) | uint32_t{BRONZE_ABI_TAG_OBJECT});
+                    Value* block_low =
+                        b.build_select(all, b.build_iconst_i32(kNumBlockLow), b.build_iconst_i32(kValBlockLow));
+                    b.build_store(Type::i32(), base, 0, block_low);
                 }
             }
             res_val = arr;

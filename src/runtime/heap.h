@@ -106,6 +106,13 @@ enum : uint16_t {
     // of one is a Value.
     ValueBlock = 19,
 
+    // An array's elements block whose owning ArrayHeader holds NUMBERS: every
+    // occupied element is a Number (double bits), every empty slot is a Hole.
+    // Neither holds a heap reference, so GC tracing skips it in O(1). Demoted
+    // back to ValueBlock whenever forgetNumbers() clears the array's NUMBERS
+    // bit.
+    NumberBlock = 20,
+
     // Not a kind: one past the highest number in use. It exists so that a
     // dispatch which must be TOTAL over the registry can pin the registry's
     // size and break the build when a kind is added. `flags` is a `uint16_t` and this enum is
@@ -114,7 +121,7 @@ enum : uint16_t {
     // available, and `bronze_has_property` is why one is needed: a kind with no
     // arm there once fell through to a cast that read its payload's first word
     // as a `Shape*`.
-    Count = 20,
+    Count = 21,
 };
 
 // Does a header of this kind BEGIN with the object prefix — `{header, Shape*

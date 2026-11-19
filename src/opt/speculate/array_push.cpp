@@ -26,13 +26,13 @@ void rewriteArrayPush(RewriteContext& ctx, const SitePlan& plan) {
     assert(plan.kind == SiteKind::ArrayPush);
     GuardBuilder b(ctx, plan.block, plan.index);
     const il::Instruction site = b.site();
-    assert(site.op == il::Op::MethodCall && site.operands.size() == 2);
+    assert(site.op == il::Op::MethodCall && site.operands.size() >= 2 && site.operands.size() <= 9);
     const ValueId array = site.operands[0];
     b.guard(b.emit(il::Op::IsPlainArray, il::Type::Bool, {array}));
     il::Instruction push;
     push.op = il::Op::ArrayPush;
     push.type = il::Type::Dynamic;
-    push.operands = {array, site.operands[1]};
+    push.operands = site.operands;
     if (site.result != il::kNoValue) {
         b.emitResult(std::move(push));
     } else {

@@ -182,8 +182,7 @@ static const SpecSignature* specSignature(Op op) {
         case Op::MemberCell: return &kMemberCell;
         case Op::MemberPublish: return &kMemberPublish;
         case Op::ShapeProto: return &kShapeProto;
-        case Op::ConstructResult:
-        case Op::ArrayPush: return &kConstructResult;
+        case Op::ConstructResult: return &kConstructResult;
         case Op::LoadShape: return &kLoadShape;
         case Op::ShapeCell: return &kShapeCell;
         case Op::PtrEq: return &kPtrEq;
@@ -600,6 +599,18 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 if (!ok) {
                     diags.error(Span{}, "Function " + fn.name + ": shape.in in b" + std::to_string(bIdx) +
                                             " does not have the form (ptr, ptr, ptr...) -> bool");
+                    return false;
+                }
+            }
+            if (inst.op == Op::ArrayPush) {
+                bool ok = inst.operands.size() >= 2 && inst.operands.size() <= 9 && inst.type == Type::Dynamic &&
+                          inst.result != kNoValue;
+                for (size_t i = 0; ok && i < inst.operands.size(); ++i) {
+                    ok = definedTypes[inst.operands[i]] == Type::Dynamic;
+                }
+                if (!ok) {
+                    diags.error(Span{}, "Function " + fn.name + ": array.push in b" + std::to_string(bIdx) +
+                                            " does not have the form (dynamic, dynamic...) -> dynamic (1..8 args)");
                     return false;
                 }
             }

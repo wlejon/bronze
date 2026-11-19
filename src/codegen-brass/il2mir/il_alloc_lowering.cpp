@@ -72,8 +72,9 @@ constexpr size_t HDR_BYTES            = 8;  // BRONZE_ABI_HDR_BYTES
 // HeapObjectHeader kind flags: bits 16..31 of header word (bronze_abi.h)
 constexpr uint64_t OBJ_FLAGS_PLAIN       = 0;  // BRONZE_ABI_OBJ_FLAGS_PLAIN
 constexpr uint64_t OBJ_FLAGS_ARRAY       = 1;  // BRONZE_ABI_OBJ_FLAGS_ARRAY
-constexpr uint64_t OBJ_FLAGS_ENV         = 12; // BRONZE_ABI_OBJ_FLAGS_ENV
-constexpr uint64_t OBJ_FLAGS_VALUE_BLOCK = 19; // BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK
+constexpr uint64_t OBJ_FLAGS_ENV          = 12; // BRONZE_ABI_OBJ_FLAGS_ENV
+constexpr uint64_t OBJ_FLAGS_VALUE_BLOCK  = 19; // BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK
+constexpr uint64_t OBJ_FLAGS_NUMBER_BLOCK = 20; // BRONZE_ABI_OBJ_FLAGS_NUMBER_BLOCK
 
 // NaN-boxing tags & masks (bronze_abi.h)
 constexpr uint32_t VALUE_TAG_SHIFT       = 48; // BRONZE_ABI_VALUE_TAG_SHIFT
@@ -101,6 +102,7 @@ static_assert(OBJ_FLAGS_PLAIN == 0, "Bronze HeapKind::Plain must be 0");
 static_assert(OBJ_FLAGS_ARRAY == 1, "Bronze HeapKind::Array must be 1");
 static_assert(OBJ_FLAGS_ENV == 12, "Bronze HeapKind::Env must be 12");
 static_assert(OBJ_FLAGS_VALUE_BLOCK == 19, "Bronze HeapKind::ValueBlock must be 19");
+static_assert(OBJ_FLAGS_NUMBER_BLOCK == 20, "Bronze HeapKind::NumberBlock must be 20");
 static_assert(VALUE_TAG_OBJECT == 0xFFF1000000000000ULL, "Bronze Object tag bits mismatch");
 static_assert(VALUE_TAG_UNDEFINED == 0xFFF6000000000000ULL, "Bronze Undefined tag bits mismatch");
 static_assert(VALUE_TAG_HOLE == 0xFFF7000000000000ULL, "Bronze Hole tag bits mismatch");
@@ -336,8 +338,9 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     b.build_store(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET, elem_val);
 
     // 2. Elements Block (at elem_ptr):
-    // Word 0 (offset 0): size=elem_block_bytes, flags=HeapKind::ValueBlock (19), tag=Tag::Object (0xFFF1)
-    uint64_t elem_w0 = make_header_word(elem_block_bytes, OBJ_FLAGS_VALUE_BLOCK, TAG_OBJECT);
+    // Word 0 (offset 0): size=elem_block_bytes, flags=NumberBlock (empty) or ValueBlock, tag=Tag::Object (0xFFF1)
+    uint64_t elem_w0 = make_header_word(elem_block_bytes,
+                                        param_count == 0 ? OBJ_FLAGS_NUMBER_BLOCK : OBJ_FLAGS_VALUE_BLOCK, TAG_OBJECT);
     b.build_store(Type::i64(), elem_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(elem_w0)));
 
     // Offsets 8..8+cap*8: slots initialized to Value::fromHole() (0xFFF7000000000000ULL)
@@ -355,11 +358,16 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     b.position_at_end(bb_fallback);
     Value* fallback_val = b.build_call("bronze_create_array", Type::i64(), {size_val});
     if (param_count == 0) {
-        // The same object the fast path makes: born NUMBERS.
+        // The same object the fast path makes: born NUMBERS with NumberBlock.
         Value* p = b.build_and(fallback_val, b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK)));
         Value* bits = b.build_load(Type::i32(), p, BRONZE_ABI_ARRAY_BITS_OFFSET);
         b.build_store(Type::i32(), p, BRONZE_ABI_ARRAY_BITS_OFFSET,
                       b.build_or(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)));
+        Value* elems = b.build_and(b.build_load(Type::i64(), p, BRONZE_ABI_ARRAY_ELEMS_OFFSET),
+                                   b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK)));
+        constexpr int32_t kNumBlockLow =
+            static_cast<int32_t>((uint32_t{OBJ_FLAGS_NUMBER_BLOCK} << 16) | uint32_t{TAG_OBJECT});
+        b.build_store(Type::i32(), elems, 0, b.build_iconst_i32(kNumBlockLow));
     }
     b.build_br(bb_merge, {fallback_val});
 

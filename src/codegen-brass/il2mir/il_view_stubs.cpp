@@ -18,6 +18,7 @@
 
 #include <brass/mir/block.hpp>
 #include <brass/mir/function.hpp>
+#include <brass/mir/instruction.hpp>
 #include <brass/mir/module.hpp>
 
 #include <string>
@@ -71,16 +72,24 @@ Value* load_u16(Builder& b, Value* data, Value* idx) {
 
 }  // namespace
 
+// Header loads on a typed array or its backing buffer after an already
+// proven non-null typed-array check never fault and may be hoisted above a
+// typed-length bounds check once `non_trapping_load` is set.
+Value* non_trapping_header(Value* v) {
+    Value* tagged = with_alias_class(v, kTypedArrayHeaderAliasClass);
+    if (auto* inst = tagged->defining_instruction()) inst->set_non_trapping_load(true);
+    return tagged;
+}
+
 // The buffer's external store, or the bytes inline after its header, plus
 // byteOffset.
 Value* view_data(Builder& b, Value* ptr) {
-    Value* buf = b.build_and(with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET),
-                                              kTypedArrayHeaderAliasClass),
+    Value* buf = b.build_and(non_trapping_header(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET)),
                              imm(b, kPayloadMask));
-    Value* ext = with_alias_class(b.build_load(Type::i64(), buf, BRONZE_ABI_BUF_EXTPTR_OFFSET), kTypedArrayHeaderAliasClass);
+    Value* ext = non_trapping_header(b.build_load(Type::i64(), buf, BRONZE_ABI_BUF_EXTPTR_OFFSET));
     Value* data = b.build_select(b.build_ne(ext, imm(b, 0)), ext, b.build_add(buf, imm(b, BRONZE_ABI_BUF_DATA_OFFSET)));
-    Value* byte_offset = b.build_zext_i64(
-        with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET), kTypedArrayHeaderAliasClass));
+    Value* byte_offset =
+        b.build_zext_i64(non_trapping_header(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET)));
     return b.build_add(data, byte_offset);
 }
 

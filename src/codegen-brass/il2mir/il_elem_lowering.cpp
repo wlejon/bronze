@@ -24,6 +24,7 @@ constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+constexpr int32_t kValueBlockHeaderLow = (BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK << 16) | BRONZE_ABI_TAG_OBJECT;
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -429,10 +430,11 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_store, {at});
 
     b.position_at_end(bb_store);
-    const auto forget_numbers = [ptr](Builder& bb) {
+    const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
         Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
         array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                            bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+        array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
     };
     store_value(b, store_at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
     b.build_br(bb_done);
@@ -479,15 +481,16 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.position_at_end(bb_done);
 }
 
-// `a.push(v)`, one argument, on an Array (`ptr`, its header already tested)
-// at the bare array shape: no own property, so `push` is %Array.prototype%'s,
-// which lockdown froze. With an elements block, no index hazard (the elements
-// tag mask, as the element store's append arm reads it) and room past the
-// length, 23.1.3.23's one Set lands in the block: the value at the length,
-// the length one more, NUMBERS cleared by a value that is no Number, and the
-// barrier. The result is the new length. Anything else goes to `miss`.
-Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss,
-                                                bool known_number) {
+// `a.push(...vals)`, 1..8 arguments, on an Array (`ptr`, its header already
+// tested) at the bare array shape: no own property, so `push` is
+// %Array.prototype%'s, which lockdown froze. With an elements block, no index
+// hazard (the elements tag mask, as the element store's append arm reads it) and
+// room past the length for all `vals.size()` elements, 23.1.3.23's Sets land
+// in the block: each value starting at length, the length bumped by n, NUMBERS
+// cleared by any value that is no Number, and the barrier. The result is the
+// new length. Anything else goes to `miss`.
+Value* PropertyLoweringHelper::lower_array_push_n(Builder& b, Value* ptr, const std::vector<Value*>& vals,
+                                                  BasicBlock* miss, bool known_number) {
     BasicBlock* cur = b.current_block();
     const std::string prefix = "apush_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* room_test = b.append_block(prefix + "_room");
@@ -504,22 +507,34 @@ Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* v
     Value* cap = array_header_load(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
     const ArrayElements e = array_elements(b, ptr);
     Value* end = b.build_add(e.head, b.build_zext_i64(len));
-    b.build_br_if(b.build_ult(end, b.build_zext_i64(cap)), store, miss);
+    const uint32_t n = static_cast<uint32_t>(vals.size());
+    Value* room = n == 1 ? b.build_ult(end, b.build_zext_i64(cap))
+                         : b.build_ule(b.build_add(end, iconst(b, n)), b.build_zext_i64(cap));
+    b.build_br_if(room, store, miss);
     b.position_at_end(store);
     Value* at = b.build_add(b.build_add(e.block, b.build_shl(end, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
-    Value* new_len = b.build_add(len, b.build_iconst_i32(1));
+    Value* new_len = b.build_add(len, b.build_iconst_i32(static_cast<int32_t>(n)));
     array_header_store(b, Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET, new_len);
-    const auto forget_numbers = [ptr](Builder& bb) {
+    const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
         Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
         array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                            bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+        array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
     };
-    if (known_number) {
-        store_value(b, at, val, kBoxedElementAliasClass, /*need_barrier=*/false);
-    } else {
-        store_value(b, at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
+    for (size_t i = 0; i < vals.size(); ++i) {
+        Value* slot = i == 0 ? at : b.build_add(at, iconst(b, i * 8));
+        if (known_number) {
+            store_value(b, slot, vals[i], kBoxedElementAliasClass, /*need_barrier=*/false);
+        } else {
+            store_value(b, slot, vals[i], kBoxedElementAliasClass, !is_known_non_ref(vals[i]), forget_numbers);
+        }
     }
     return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(new_len));
+}
+
+Value* PropertyLoweringHelper::lower_array_push(Builder& b, Value* ptr, Value* val, BasicBlock* miss,
+                                                bool known_number) {
+    return lower_array_push_n(b, ptr, {val}, miss, known_number);
 }
 
 // `a.pop()` on an Array at the bare array shape whose last element is
@@ -596,10 +611,11 @@ void PropertyLoweringHelper::lower_literal_element(Builder& b, Value* obj, int32
     Value* at = b.build_add(b.build_add(e.block, b.build_shl(b.build_add(iconst(b, static_cast<uint64_t>(k)), e.head),
                                                             iconst(b, 3))),
                             iconst(b, kBronzeHdrBytes));
-    const auto forget_numbers = [ptr](Builder& bb) {
+    const auto forget_numbers = [ptr, block = e.block](Builder& bb) {
         Value* word = array_header_load(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
         array_header_store(bb, Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET,
                            bb.build_and(word, bb.build_iconst_i32(~int32_t{BRONZE_ABI_ARRAY_BIT_NUMBERS})));
+        array_header_store(bb, Type::i32(), block, 0, bb.build_iconst_i32(kValueBlockHeaderLow));
     };
     store_value(b, at, val, kBoxedElementAliasClass, !is_known_non_ref(val), forget_numbers);
     b.build_br(bb_done);

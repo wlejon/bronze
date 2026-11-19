@@ -94,6 +94,7 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
     // the length and flags.
     if (h->tag == static_cast<uint16_t>(Tag::String)) return {2, words, false};
     if (h->tag != static_cast<uint16_t>(Tag::Object)) return {0, 0, false};
+    if (h->flags == HeapKind::NumberBlock) return {0, 0, false};
     // Every object value begins with the shape word and the overflow block
     // (heap.h carriesShape); every word after the shape pointer is a Value or
     // a word no pointer tag can spell — a typed array's or an array's packed
@@ -103,6 +104,38 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
     // Everything else — an environment, an iterator record, a slot block, a
     // value block — is a Value in every word after the header.
     return {1, words, false};
+}
+
+bool isPlainObjectWords(const uint64_t* w, const ValueWords& v) {
+    const auto* h = reinterpret_cast<const HeapObjectHeader*>(w);
+    return v.end > 3 && h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Plain;
+}
+
+void visitPlainValues(uint64_t* w, size_t end, Tracer& t) {
+    const Shape* shape = reinterpret_cast<const ObjectHeader*>(w)->shape;
+    if (!shape || shape->double_slots == 0) {
+        t.visit_run(w + 2, end - 2);
+        return;
+    }
+    const size_t inlineSlots = std::min<size_t>(end - 3, std::min<size_t>(shape->inline_slots, size_t{64}));
+    const uint64_t mask = inlineSlots == 64 ? ~uint64_t{0} : ((uint64_t{1} << inlineSlots) - 1);
+    const uint64_t skip = shape->double_slots & mask;
+    if (skip == 0) {
+        t.visit_run(w + 2, end - 2);
+        return;
+    }
+    if (w[2] != Value::fromUndefined().rawBits()) t.visit(w + 2);
+    uint64_t keep = (~skip) & mask;
+    while (keep != 0) {
+        const unsigned start = static_cast<unsigned>(__builtin_ctzll(keep));
+        const uint64_t shifted = keep >> start;
+        const uint64_t inv = ~shifted;
+        const unsigned len = inv != 0 ? static_cast<unsigned>(__builtin_ctzll(inv))
+                                      : static_cast<unsigned>(64 - start);
+        t.visit_run(w + 3 + start, len);
+        keep &= ~((len == 64 ? ~uint64_t{0} : ((uint64_t{1} << len) - 1)) << start);
+    }
+    if (3 + inlineSlots < end) t.visit_run(w + 3 + inlineSlots, end - (3 + inlineSlots));
 }
 
 // A full collection's trace of a Cell: its Values, and what only a full
@@ -118,7 +151,10 @@ BRONZE_NOINLINE void traceCellFull(uint64_t* w, ValueWords v, Tracer& t) {
         }
         for (size_t i = v.first; i < v.end; ++i) traceDynamicModuleFromWord(w[i], t);
     }
-    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
+    if (v.first < v.end) {
+        if (isPlainObjectWords(w, v)) visitPlainValues(w, v.end, t);
+        else t.visit_run(w + v.first, v.end - v.first);
+    }
     if (v.shaped) traceShapePrototype(w, t);
 }
 
@@ -127,7 +163,10 @@ void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     const ValueWords v = valueWordsOf(payload, payload_bytes);
     if (t.purpose() == Tracer::Purpose::Full) return traceCellFull(w, v, t);
     // A minor collection (and verification): the Values and nothing else.
-    if (v.first < v.end) t.visit_run(w + v.first, v.end - v.first);
+    if (v.first < v.end) {
+        if (isPlainObjectWords(w, v)) visitPlainValues(w, v.end, t);
+        else t.visit_run(w + v.first, v.end - v.first);
+    }
 }
 
 // The Value words of a Cell in payload bytes [begin, end): what a minor

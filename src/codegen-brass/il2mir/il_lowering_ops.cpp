@@ -617,7 +617,11 @@ bool lower_ops_instruction(
         // room, the runtime's push past it.
         case BronzeOp::ArrayPush: {
             Value* arr = lowering->ensure_type(get_opd(0), Type::i64(), b);
-            Value* val = lowering->ensure_type(get_opd(1), Type::i64(), b);
+            std::vector<Value*> vals;
+            vals.reserve(inst_ast.operands.size() > 1 ? inst_ast.operands.size() - 1 : 0);
+            for (size_t i = 1; i < inst_ast.operands.size(); ++i) {
+                vals.push_back(lowering->ensure_type(get_opd(i), Type::i64(), b));
+            }
             BasicBlock* cur = b.current_block();
             const std::string prefix = "arrpush_" + std::to_string(cur->parent()->next_block_id());
             BasicBlock* slow = b.append_block(prefix + "_slow");
@@ -626,11 +630,18 @@ bool lower_ops_instruction(
             Value* result = b.add_block_param(merge, Type::i64());
             b.position_at_end(cur);
             Value* ptr = b.build_lshr(b.build_shl(arr, b.build_iconst_i64(16)), b.build_iconst_i64(16));
-            Value* fast = lowering->prop_lowering().lower_array_push(b, ptr, val, slow,
-                                                                     (inst_ast.imm_i64 & kStoreNumber) != 0);
+            Value* fast = lowering->prop_lowering().lower_array_push_n(b, ptr, vals, slow,
+                                                                       (inst_ast.imm_i64 & kStoreNumber) != 0);
             b.build_br(merge, {fast});
             b.position_at_end(slow);
-            b.build_br(merge, {b.build_call("bronze_array_push1", Type::i64(), {arr, val})});
+            if (vals.size() == 1) {
+                b.build_br(merge, {b.build_call("bronze_array_push1", Type::i64(), {arr, vals[0]})});
+            } else {
+                Value* argv = lowering->stage_argv(b, vals);
+                b.build_br(merge, {b.build_call("bronze_array_push", Type::i64(),
+                                                {b.build_iconst_i64(0), arr,
+                                                 b.build_iconst_i32(static_cast<int32_t>(vals.size())), argv})});
+            }
             b.position_at_end(merge);
             res_val = result;
             return true;

@@ -55,6 +55,10 @@ uint32_t argv_block_words(const IlLowering* /*lowering*/, const BronzeFunction& 
             if (inst.op == BronzeOp::ObjectLiteral) {
                 widest = std::max<uint32_t>(widest, static_cast<uint32_t>(2 * inst.operands.size()));
             }
+            // multi-arg array.push stages its pushed values on the slow path.
+            if (inst.op == BronzeOp::ArrayPush && inst.operands.size() > 2) {
+                widest = std::max<uint32_t>(widest, static_cast<uint32_t>(inst.operands.size() - 1));
+            }
         }
     }
     return widest;
