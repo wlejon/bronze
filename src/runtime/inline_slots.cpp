@@ -21,10 +21,15 @@ namespace bronze::runtime {
 static thread_local std::unordered_map<const void*, uint8_t>* g_instanceInlineSlots = nullptr;
 
 void rtNoteInstanceInlineSlots(const void* code, uint32_t fnFlags) {
+    static thread_local const void* t_lastCode = nullptr;
+    static thread_local uint32_t t_lastFlags = 0;
+    if (code == t_lastCode && fnFlags == t_lastFlags) return;
     const uint32_t want = (fnFlags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) & BRONZE_ABI_FN_INLINE_SLOTS_MASK;
     if (want == 0 || code == nullptr) return;
     if (!g_instanceInlineSlots) g_instanceInlineSlots = new std::unordered_map<const void*, uint8_t>();
     (*g_instanceInlineSlots)[code] = static_cast<uint8_t>(Shape::clampInlineSlots(want));
+    t_lastCode = code;
+    t_lastFlags = fnFlags;
 }
 
 static uint32_t predictedInlineSlots(const FunctionHeader* fn) {

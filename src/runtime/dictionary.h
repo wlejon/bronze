@@ -206,14 +206,15 @@ private:
     void compact();
     void insertIndex(uint32_t entryPos, uint32_t hash) noexcept;
 
-    // Open addressing, capacity a power of two, each cell the key's hash in
-    // the high word and its entry position plus one in the low (0 = never
-    // used), so a probe passes a different key without reading its entry. A
-    // cell whose entry is a tombstone stays in the probe chain, so a lookup
-    // keeps probing past it and a removal never has to reorder anything. Load
-    // is kept under 3/4 counting tombstones.
+    // Open addressing with Knuth Algorithm R backward-shift deletion (no
+    // tombstones in index_), capacity a power of two, each cell the key's hash
+    // in the high word and its entry position plus one in the low (0 = empty),
+    // so a probe passes a different key without reading its entry. Load is kept
+    // under 3/4.
     std::vector<uint64_t> index_;
-    uint32_t used_{0};  // cells holding an entry position, dead ones included
+    uint64_t hashBloom_{0};
+    uint32_t maxStringLen_{0};
+    uint32_t used_{0};
     uint32_t live_{0};
 };
 

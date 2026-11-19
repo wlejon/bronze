@@ -75,6 +75,7 @@ public:
     }
 
     bool bound() const noexcept { return bound_; }
+    const JsEntryContext& entryContext() const noexcept { return entry_; }
 
     // `calleeRoot` must be the SAME value `bind` accepted, held in a root
     // across every allocation since — which is what makes re-reading the two

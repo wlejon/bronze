@@ -403,18 +403,8 @@ uint64_t bronze_create_array(uint32_t length) {
 uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
                                 uint32_t nameKey, uint32_t fnFlags, uint64_t envBits) {
     recordHelperCall("bronze_create_function");
-    Rooted<Value> env{Value(envBits)};
     FunctionHeader* fn =
-        FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity, fnFlags);
-    // Read the environment through the root only AFTER allocating: the
-    // allocation above can collect, and a by-value copy taken before it would
-    // point into dead from-space.
-    fn->env_record = env.get().isUndefined() ? Value::fromObject(fn) : env.get();
-    fn->header.flags = HeapKind::Function;
-    // The key headers are arena-interned and immortal (rt_state.cpp), so this
-    // is a pointer copy and not an allocation — which is what keeps a closure
-    // created in a loop as cheap as it was before it carried a name.
-    rtSetFunctionNameAndLength(fn, nameKey, length);
+        FunctionHeader::createCompiled(rtHeap(), code, arity, length, nameKey, fnFlags, envBits);
     return Value::fromObject(fn).rawBits();
 }
 

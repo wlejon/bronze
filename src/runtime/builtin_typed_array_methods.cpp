@@ -15,7 +15,7 @@ namespace {
 // A view every prototype method may use (requireTypedArray's tests), asked
 // without raising: the fast path below declines what the general path throws
 // for.
-bool usableView(Value v) {
+inline bool usableView(Value v) {
     if (!isTypedArray(v)) return false;
     const auto* view = v.asObject<TypedArrayHeader>();
     return view->buffer.isObject() && !view->buffer.asObject<ArrayBufferHeader>()->isDetached() &&
@@ -45,7 +45,7 @@ uint32_t storeNumbers(uint8_t* dst, const Value* elems, uint32_t count) {
 // `elements` into a uniform buffer), so it is answered from raw headers with
 // no root opened. Anything else returns false having written nothing that the
 // general path would not write identically, and the general path answers it.
-bool setFast(Value self, uint32_t argc, const uint64_t* argv) {
+inline bool setFast(Value self, uint32_t argc, const uint64_t* argv) {
     if (argc == 0 || !usableView(self)) return false;
     double offsetNum = 0.0;
     if (argc >= 2 && !Value(argv[1]).isUndefined()) {
@@ -64,11 +64,21 @@ bool setFast(Value self, uint32_t argc, const uint64_t* argv) {
         const uint32_t srcLength = srcView->length;
         if (srcLength > target->length - offset) return false;
         if (isBigIntElementKind(srcView->elementKind()) != isBigIntElementKind(dstKind)) return false;
-        // One buffer and two encodings is the general path's staged copy.
-        if (!sameRawTypedArrayEncoding(dstKind, srcView->elementKind()) &&
-            srcView->buffer.rawBits() == target->buffer.rawBits()) {
-            return false;
+        if (sameRawTypedArrayEncoding(dstKind, srcView->elementKind())) {
+            if (srcLength == 0) return true;
+            const size_t bpe = target->bytesPerElement();
+            uint8_t* dstPtr = target->bytes() + static_cast<size_t>(offset) * bpe;
+            const uint8_t* srcPtr = srcView->bytes();
+            const size_t byteLen = static_cast<size_t>(srcLength) * bpe;
+            if (srcView->buffer.rawBits() != target->buffer.rawBits()) {
+                std::memcpy(dstPtr, srcPtr, byteLen);
+            } else {
+                std::memmove(dstPtr, srcPtr, byteLen);
+            }
+            return true;
         }
+        // One buffer and two encodings is the general path's staged copy.
+        if (srcView->buffer.rawBits() == target->buffer.rawBits()) return false;
         copyTypedArrayElements(target->bytes() + static_cast<size_t>(offset) * target->bytesPerElement(),
                                dstKind, srcView->bytes(), srcView->elementKind(), srcLength);
         return true;
@@ -83,6 +93,23 @@ bool setFast(Value self, uint32_t argc, const uint64_t* argv) {
     const Value* elems = srcArr->elementsData();
     if (srcLength != 0 && elems == nullptr) return false;
     uint8_t* dst = target->bytes();
+    if (srcArr->elementsAreNumbers()) {
+        if (dstKind == ElementKind::Float32) {
+            uint8_t* out = dst + static_cast<size_t>(offset) * 4;
+            for (uint32_t i = 0; i < srcLength; ++i) {
+                const float v = static_cast<float>(elems[i].asNumber());
+                std::memcpy(out + static_cast<size_t>(i) * 4, &v, 4);
+            }
+            return true;
+        }
+        if (dstKind == ElementKind::Float64) {
+            if (srcLength != 0) {
+                std::memcpy(dst + static_cast<size_t>(offset) * 8, elems,
+                            static_cast<size_t>(srcLength) * 8);
+            }
+            return true;
+        }
+    }
     uint32_t stored;
     switch (dstKind) {
         case ElementKind::Float32:

@@ -111,6 +111,7 @@ const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
     // key built per access (`cache[a + ':' + b]`) is a new string object
     // every time, so its every hit is a content compare.
     const StringHeader* ns = name.string();
+    if (ns != nullptr && ns->length > maxStringLen_) return nullptr;
     uint32_t hash = 0;
     if (ns != nullptr) {
         const uint32_t f = ns->flags;
@@ -118,6 +119,7 @@ const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
     } else {
         hash = hashKey(name);
     }
+    if ((hashBloom_ & (uint64_t{1} << (hash & 63u))) == 0) return nullptr;
     const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
     for (uint32_t i = hash & mask;; i = (i + 1) & mask) {
         const uint64_t cell = index_[i];
@@ -144,8 +146,9 @@ DictEntry* Dictionary::find(PropertyKey name) noexcept {
 }
 
 DictEntry* Dictionary::findLatin1(const char* bytes, uint32_t length, uint32_t hash) noexcept {
-    if (index_.empty()) return nullptr;
+    if (index_.empty() || length > maxStringLen_) return nullptr;
     const uint32_t keyHash = hash >> 2;  // hashKey's form
+    if ((hashBloom_ & (uint64_t{1} << (keyHash & 63u))) == 0) return nullptr;
     const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
     for (uint32_t i = keyHash & mask;; i = (i + 1) & mask) {
         const uint64_t cell = index_[i];
@@ -172,6 +175,10 @@ void Dictionary::insertIndex(uint32_t entryPos, uint32_t hash) noexcept {
     while (index_[i] != 0) i = (i + 1) & mask;
     index_[i] = (static_cast<uint64_t>(hash) << 32) | (entryPos + 1);
     ++used_;
+    hashBloom_ |= uint64_t{1} << (hash & 63u);
+    if (const StringHeader* s = entries[entryPos].key.string(); s != nullptr && s->length > maxStringLen_) {
+        maxStringLen_ = s->length;
+    }
 }
 
 void Dictionary::reindex() {
@@ -181,6 +188,8 @@ void Dictionary::reindex() {
     }
     index_.assign(capacityFor(live_), uint64_t{0});
     used_ = 0;
+    hashBloom_ = 0;
+    maxStringLen_ = 0;
     for (uint32_t pos = 0; pos < entries.size(); ++pos) {
         if (entries[pos].live()) insertIndex(pos, hashKey(entries[pos].key));
     }
@@ -222,16 +231,36 @@ void Dictionary::removeEntry(DictEntry* e) noexcept {
     // the next accessor two adjacent ones; leaking the pair keeps the
     // allocator honest rather than nearly right.
     if (!e->accessor) freeSlots.push_back(e->slot);
-    // The tombstone: the cell that names this entry stays in every probe
-    // chain it sits on, and the entry keeps its position so nothing after it
-    // is renumbered.
+    // Remove from open-addressed index immediately via Knuth Algorithm R
+    // backward-shift deletion so lookups never traverse hash tombstones.
+    if (!index_.empty() && e->key.valid()) {
+        const uint32_t entryPos = static_cast<uint32_t>(e - entries.data());
+        const uint32_t hash = hashKey(e->key);
+        const uint32_t mask = static_cast<uint32_t>(index_.size()) - 1;
+        const uint64_t target = (static_cast<uint64_t>(hash) << 32) | (entryPos + 1);
+        uint32_t hole = hash & mask;
+        while (index_[hole] != 0 && index_[hole] != target) hole = (hole + 1) & mask;
+        if (index_[hole] == target) {
+            uint32_t cur = (hole + 1) & mask;
+            while (index_[cur] != 0) {
+                const uint32_t home = static_cast<uint32_t>(index_[cur] >> 32) & mask;
+                if (((hole - home) & mask) < ((cur - home) & mask)) {
+                    index_[hole] = index_[cur];
+                    hole = cur;
+                }
+                cur = (cur + 1) & mask;
+            }
+            index_[hole] = 0;
+            --used_;
+        }
+    }
     e->key = PropertyKey();
     --live_;
     // A key a running for-in snapshotted may be this one (rt_enumerate.cpp).
     noteForInKeyRemoved();
     retireAnswers();
-    // Once the dead have caught up with the living, the vector is half
-    // tombstones and every enumeration walks twice what it needs.
+    // Once the dead have caught up with the living, compact the entries vector
+    // so iteration and allocation stay bounded.
     if (entries.size() > 32 && live_ * 2 <= entries.size()) compact();
 }
 
@@ -255,6 +284,8 @@ void Dictionary::releaseMemory() noexcept {
     freeSlots.shrink_to_fit();
     index_.clear();
     index_.shrink_to_fit();
+    hashBloom_ = 0;
+    maxStringLen_ = 0;
     used_ = 0;
     live_ = 0;
 }

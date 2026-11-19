@@ -351,13 +351,22 @@ BRONZE_NOINLINE uint64_t weakCollectionOpByNative(uint64_t recv, uint64_t key, u
 uint64_t rtWeakCollectionOp(uint64_t recv, uint64_t key, uint32_t op) {
     const Value self{Value(recv)};
     const Value k{Value(key)};
-    uint32_t slot;
     const auto* obj = self.asObject<ObjectHeader>();
-    if (k.isObject() && (map_probe::branded(obj, g_weakMap.brand) || map_probe::branded(obj, g_weakSet.brand)) &&
-        map_probe::probe<true>(rtHeap(), self.asObject<MapHeader>(), k, slot)) {
-        if (op != BRONZE_ABI_COLLECTION_WEAKMAP_GET) return Value::fromBool(slot != UINT32_MAX).rawBits();
-        return slot == UINT32_MAX ? Value::fromUndefined().rawBits()
-                                  : self.asObject<MapHeader>()->valueAt(slot).rawBits();
+    if (k.isObject()) {
+        if (op == BRONZE_ABI_COLLECTION_WEAKMAP_GET) {
+            bool found = false;
+            Value out;
+            if (map_probe::branded(obj, g_weakMap.brand) &&
+                map_probe::probeValue<true>(rtHeap(), self.asObject<MapHeader>(), k, found, out)) {
+                return out.rawBits();
+            }
+        } else {
+            uint32_t slot = UINT32_MAX;
+            if ((map_probe::branded(obj, g_weakMap.brand) || map_probe::branded(obj, g_weakSet.brand)) &&
+                map_probe::probe<true>(rtHeap(), self.asObject<MapHeader>(), k, slot)) {
+                return Value::fromBool(slot != UINT32_MAX).rawBits();
+            }
+        }
     }
     return weakCollectionOpByNative(recv, key, op);
 }

@@ -1,0 +1,23 @@
+already: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
+reverse: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
+painter: 120 true 0 63
+holes: 8 1,2,3,4,, false false
+throw: true boom 9,7,5,3,1
+shrink: 5 1,2,3,4,5
+grow: 5 1,2,3,4 99
+freezeMid: true
+voThrow: vo 3,1,2
+capturing: 5,4,3,2,1
+dict: true symValA symValB true true true true beta,gamma,alpha true
+dictEnum: true true
+closures: itemFn 1 noCap 0 81200
+classCtor: 15150
+taSame: 0,0,1.5,-2.25,3.75,4.5,5.125,0
+taOverlapFwd: 10,20,10,20,30,40
+taOverlapBwd: 10,20,30,40,30,40
+taNumArr32: 0,0.5,1.5,2.5,3.5,0
+taNumArr64: 0,0.5,1.5,2.5,3.5,0
+taMixed: 0,10,20.5,30
+taRange: true
+coll: 111 999 true true false true true false one 42 nan false true
+hazard: true 1,999,999 1,2,3,4,5

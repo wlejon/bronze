@@ -211,6 +211,9 @@ struct FunctionHeader {
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0,
                                   uint32_t function_flags = BRONZE_ABI_FN_FLAGS_ORDINARY);
+    static FunctionHeader* createCompiled(Heap& heap, NativeFunctionCode code, uint32_t arity,
+                                          uint32_t length, uint32_t nameKey, uint32_t fnFlags,
+                                          uint64_t envBits);
 
     // 10.2.2's two answers, asked of the object. `hasConstruct` gates
     // `bronze_construct`; `hasPrototypeProperty` gates whether one is ever

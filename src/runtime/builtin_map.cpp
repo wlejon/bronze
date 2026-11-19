@@ -417,13 +417,20 @@ extern "C" uint64_t bronze_collection_op(uint64_t recv, uint64_t key, uint32_t o
     using namespace bronze::runtime;
     if (op > BRONZE_ABI_COLLECTION_SET_HAS) return rtWeakCollectionOp(recv, key, op);
     const Value self{Value(recv)};
-    const Value brand = op == BRONZE_ABI_COLLECTION_SET_HAS ? g_set.brand : g_map.brand;
-    uint32_t slot;
-    if (map_probe::branded(self.asObject<ObjectHeader>(), brand) &&
-        map_probe::probe<false>(rtHeap(), self.asObject<MapHeader>(), Value(key), slot)) {
-        if (op != BRONZE_ABI_COLLECTION_MAP_GET) return Value::fromBool(slot != UINT32_MAX).rawBits();
-        return slot == UINT32_MAX ? Value::fromUndefined().rawBits()
-                                  : self.asObject<MapHeader>()->valueAt(slot).rawBits();
+    if (op == BRONZE_ABI_COLLECTION_MAP_GET) {
+        bool found = false;
+        Value out;
+        if (map_probe::branded(self.asObject<ObjectHeader>(), g_map.brand) &&
+            map_probe::probeValue<false>(rtHeap(), self.asObject<MapHeader>(), Value(key), found, out)) {
+            return out.rawBits();
+        }
+    } else {
+        const Value brand = op == BRONZE_ABI_COLLECTION_SET_HAS ? g_set.brand : g_map.brand;
+        uint32_t slot;
+        if (map_probe::branded(self.asObject<ObjectHeader>(), brand) &&
+            map_probe::probe<false>(rtHeap(), self.asObject<MapHeader>(), Value(key), slot)) {
+            return Value::fromBool(slot != UINT32_MAX).rawBits();
+        }
     }
     return collectionOpByNative(recv, key, op);
 }

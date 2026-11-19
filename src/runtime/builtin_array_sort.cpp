@@ -21,7 +21,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
+
+#include <brass/gc/native_frames.hpp>
+#include <brass/interpreter/interpreter.hpp>
+#include <brass/runtime/exception.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -134,20 +139,54 @@ int compareElements(SortContext& c, Value x, Value y) {
     return 0;
 }
 
-// One merge of src[lo, mid) and src[mid, hi) into dst[lo, hi). Stability is
-// the `<= 0` below: on a tie the LEFT run's element goes first, and the left
-// run is the one that came first in the input. `src` and `dst` point into the
-// rooted block, so their slots are re-read after every comparison.
-void mergeRuns(SortContext& c, Value* src, Value* dst, uint32_t lo, uint32_t mid, uint32_t hi) {
-    uint32_t i = lo;
-    uint32_t j = mid;
-    uint32_t k = lo;
-    while (i < mid && j < hi) {
-        const bool takeLeft = compareElements(c, src[i], src[j]) <= 0;
-        dst[k++] = takeLeft ? src[i++] : src[j++];
+// One bottom-up merge sort over `src` / `dst` (`itemCount > 1`), parameterized
+// on the 3-way comparator `cmp(Value, Value) -> int`. Slots live in a
+// RootedBlock, so every read after `cmp(...)` re-reads the potentially relocated
+// Values. Width-1 merges pair-wise directly; larger widths merge runs with
+// bulk memcpy for any remaining tail.
+template <class CompareFn>
+void mergeSortWith(CompareFn&& cmp, Value*& src, Value*& dst, uint32_t itemCount) {
+    {
+        uint32_t lo = 0;
+        for (; lo + 1 < itemCount; lo += 2) {
+            const bool takeLeft = cmp(src[lo], src[lo + 1]) <= 0;
+            dst[lo] = takeLeft ? src[lo] : src[lo + 1];
+            dst[lo + 1] = takeLeft ? src[lo + 1] : src[lo];
+        }
+        if (lo < itemCount) dst[lo] = src[lo];
+        Value* t = src;
+        src = dst;
+        dst = t;
     }
-    while (i < mid) dst[k++] = src[i++];
-    while (j < hi) dst[k++] = src[j++];
+    for (uint32_t width = 2; width < itemCount; width *= 2) {
+        for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
+            const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
+            const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
+            if (mid >= hi) {
+                std::memcpy(dst + lo, src + lo, static_cast<size_t>(hi - lo) * sizeof(Value));
+                continue;
+            }
+            uint32_t i = lo;
+            uint32_t j = mid;
+            uint32_t k = lo;
+            while (i < mid && j < hi) {
+                const bool takeLeft = cmp(src[i], src[j]) <= 0;
+                dst[k++] = takeLeft ? src[i++] : src[j++];
+            }
+            if (i < mid) {
+                std::memcpy(dst + k, src + i, static_cast<size_t>(mid - i) * sizeof(Value));
+            } else if (j < hi) {
+                std::memcpy(dst + k, src + j, static_cast<size_t>(hi - j) * sizeof(Value));
+            }
+        }
+        Value* t = src;
+        src = dst;
+        dst = t;
+    }
+}
+
+[[noreturn]] void rethrowSortException(uint64_t bits) {
+    throw brass::runtime::BrassException(brass::HostValue::from_raw(bits));
 }
 
 // The frame a module's merge stub reads (bronze_abi_layout.h,
@@ -250,20 +289,44 @@ uint64_t sortWith(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bronze
         const uint64_t done = rtEnterJsIn(JsEntryContext::current(), merge, BRONZE_ABI_UNDEFINED_BITS,
                                           BRONZE_ABI_UNDEFINED_BITS, 0, reinterpret_cast<const uint64_t*>(&frame));
         src = reinterpret_cast<Value*>(static_cast<uintptr_t>(done));
-    } else {
-        for (uint32_t width = 1; width < itemCount; width *= 2) {
-            for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
-                const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
-                const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
-                // A comparator that threw ends the SORT, not just the merge —
-                // and the receiver has not been written, so the array the
-                // catch sees is the array the program had.
-                mergeRuns(ctx, src, dst, lo, mid, hi);
-            }
-            Value* t = src;
-            src = dst;
-            dst = t;
+    } else if (itemCount > 1 && !comparefn.get().isUndefined() && direct.bound() &&
+               direct.entryContext().hook == nullptr) {
+        const bronze_fn_code code = comparefn.get().asObject<FunctionHeader>()->code;
+        void* const tls = direct.entryContext().tls;
+        ActiveDynamicTokenScope activeScope(reinterpret_cast<const void*>(code));
+        uint64_t thrown = 0;
+        try {
+            brass::GeneratedCodeEntryScope entry;
+            mergeSortWith(
+                [&](Value x, Value y) -> int {
+                    const bool xu = x.isUndefined();
+                    const bool yu = y.isUndefined();
+                    if (xu && yu) return 0;
+                    if (xu) return 1;
+                    if (yu) return -1;
+                    const uint64_t block[2] = {x.rawBits(), y.rawBits()};
+                    const uint64_t envBits =
+                        ctx.comparefn.get().asObject<FunctionHeader>()->env_record.rawBits();
+                    const Value ans(bronze_enter_js_tls(code, envBits, BRONZE_ABI_UNDEFINED_BITS, 2,
+                                                        block, tls));
+                    double v;
+                    if (ans.isNumber()) {
+                        v = ans.asNumber();
+                    } else {
+                        ctx.answer = ans;
+                        v = rtToNumber(ctx.answer.get());
+                    }
+                    if (v < 0) return -1;
+                    if (v > 0) return 1;
+                    return 0;
+                },
+                src, dst, itemCount);
+        } catch (const brass::InterpreterThrownException& e) {
+            thrown = e.value().raw_bits();
         }
+        if (thrown != 0) rethrowSortException(thrown);
+    } else if (itemCount > 1) {
+        mergeSortWith([&](Value x, Value y) { return compareElements(ctx, x, y); }, src, dst, itemCount);
     }
     const Value* sorted = src;
 
@@ -272,37 +335,63 @@ uint64_t sortWith(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bronze
     // semantics, so on a frozen array the FIRST one throws with nothing yet
     // moved, and on a non-extensible array the first hole it would fill does.
     if (isArr) {
-        for (uint32_t i = 0; i < itemCount; ++i) {
-            const SetRefusal refusal = rtArrayElementWriteRefusal(self.get(), i);
-            if (refusal == SetRefusal::NotWritable) {
-                return rtThrowTypeError("Cannot assign to read only element of a frozen array "
-                                        "(Array.prototype.sort)")
-                    .rawBits();
+        auto* arr = self.get().asObject<ArrayHeader>();
+        if (itemCount == len && arr->length == len && arr->isBare() &&
+            arr->head_offset + len <= arr->capacity &&
+            rtTls()->array_index_hazard == 0 &&
+            (len == 0 || arr->elements.isObject())) {
+            bool allNumbers = arr->elementsAreNumbers();
+            if (allNumbers) {
+                for (uint32_t i = 0; i < len; ++i) {
+                    if (!sorted[i].isNumber()) {
+                        allNumbers = false;
+                        break;
+                    }
+                }
             }
-            if (refusal != SetRefusal::None) {
-                return rtThrowTypeError("Cannot add elements to an array that is not extensible "
-                                        "(Array.prototype.sort)")
-                    .rawBits();
+            if (!allNumbers) arr->forgetNumbers();
+            if (len > 0) {
+                HeapValue* dstElems = arr->elementsKeepingNumbers();
+                if (allNumbers) {
+                    std::memcpy(static_cast<void*>(dstElems), sorted,
+                                static_cast<size_t>(len) * sizeof(Value));
+                } else {
+                    gcCopyValues(arr->elements.asObject<HeapObjectHeader>(), dstElems, sorted, len);
+                }
             }
-            // A hole written back is a Set the chain may take (a setter at
-            // that index), which the full write asks.
-            if (!self.get().asObject<ArrayHeader>()->hasElem(i) && rtArrayChainHoldsIndex(self.get())) {
-                rtArrayIndexSet(self.get(), i, sorted[i], /*strict=*/true);
-                continue;
+        } else {
+            for (uint32_t i = 0; i < itemCount; ++i) {
+                const SetRefusal refusal = rtArrayElementWriteRefusal(self.get(), i);
+                if (refusal == SetRefusal::NotWritable) {
+                    return rtThrowTypeError("Cannot assign to read only element of a frozen array "
+                                            "(Array.prototype.sort)")
+                        .rawBits();
+                }
+                if (refusal != SetRefusal::None) {
+                    return rtThrowTypeError("Cannot add elements to an array that is not extensible "
+                                            "(Array.prototype.sort)")
+                        .rawBits();
+                }
+                // A hole written back is a Set the chain may take (a setter at
+                // that index), which the full write asks.
+                if (!self.get().asObject<ArrayHeader>()->hasElem(i) && rtArrayChainHoldsIndex(self.get())) {
+                    rtArrayIndexSet(self.get(), i, sorted[i], /*strict=*/true);
+                    continue;
+                }
+                setAt(self, i, sorted[i]);
             }
-            setAt(self, i, sorted[i]);
-        }
-        // Step 9: the tail past the items is DELETED, which is what moves the
-        // holes after the undefineds. DeletePropertyOrThrow, so a sealed array
-        // with a hole in it refuses here by name.
-        for (uint32_t i = itemCount; i < len; ++i) {
-            if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-            if (!rtArrayElementsConfigurable(self.get())) {
-                return rtThrowTypeError("Cannot delete property " + std::to_string(i) +
-                                        " of a sealed array (Array.prototype.sort)")
-                    .rawBits();
+            // Step 9: the tail past the items is DELETED, which is what moves the
+            // holes after the undefineds. DeletePropertyOrThrow, so a sealed array
+            // with a hole in it refuses here by name.
+            for (uint32_t i = itemCount; i < len; ++i) {
+                if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+                if (!rtArrayElementsConfigurable(self.get())) {
+                    return rtThrowTypeError("Cannot delete property " + std::to_string(i) +
+                                            " of a sealed array (Array.prototype.sort)")
+                        .rawBits();
+                }
+                self.get().asObject<ArrayHeader>()->deleteElem(i);
             }
-            self.get().asObject<ArrayHeader>()->deleteElem(i);
         }
     } else {
         for (uint32_t i = 0; i < itemCount; ++i) {

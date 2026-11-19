@@ -1,4 +1,5 @@
 #include <cstring>
+#include <new>
 #include "runtime/fn.h"
 
 #include <cstdlib>
@@ -12,8 +13,10 @@
 #include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/realm.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/tls_block.h"
 
 namespace bronze {
 
@@ -87,6 +90,72 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // Undefined, not null: null is a legal [[Prototype]] a program can set,
     // so the "never written" state needs a value of its own.
     fn->parent = Value::fromUndefined();
+    return fn;
+}
+
+namespace {
+
+BRONZE_NOINLINE FunctionHeader* createCompiledSlow(Heap& heap, NativeFunctionCode code, uint32_t arity,
+                                                   uint32_t length, uint32_t nameKey, uint32_t fnFlags,
+                                                   uint64_t envBits) {
+    Rooted<Value> env{Value(envBits)};
+    FunctionHeader* fn =
+        FunctionHeader::create(heap, code, Value::fromUndefined(), arity, fnFlags);
+    fn->env_record = env.get().isUndefined() ? Value::fromObject(fn) : env.get();
+    runtime::rtSetFunctionNameAndLength(fn, nameKey, length);
+    return fn;
+}
+
+}  // namespace
+
+FunctionHeader* FunctionHeader::createCompiled(Heap& heap, NativeFunctionCode code, uint32_t arity,
+                                               uint32_t length, uint32_t nameKey, uint32_t fnFlags,
+                                               uint64_t envBits) {
+    constexpr size_t kPayloadBytes = sizeof(FunctionHeader) - sizeof(HeapObjectHeader);
+    HeapObjectHeader* raw_hdr = heap.tryAllocate(kPayloadBytes, Tag::Object);
+    if (!raw_hdr) [[unlikely]] {
+        return createCompiledSlow(heap, code, arity, length, nameKey, fnFlags, envBits);
+    }
+    raw_hdr->flags = HeapKind::Function;
+    auto* fn = reinterpret_cast<FunctionHeader*>(raw_hdr);
+    fn->shape = runtime::rtFunctionShape();
+    // No collection happened and `fn` is guaranteed young, so initial fields
+    // need neither roots nor interior write-barrier checks.
+    new (&fn->overflow) HeapValue(Value::fromUndefined());
+    fn->code = code;
+    const Value envVal =
+        (envBits == BRONZE_ABI_UNDEFINED_BITS) ? Value::fromObject(fn) : Value(envBits);
+    new (&fn->env_record) HeapValue(envVal);
+    uint64_t zero = 0;
+    std::memcpy(reinterpret_cast<uint8_t*>(fn) + BRONZE_ABI_FN_FLAGS_WORD_OFFSET, &zero, 8);
+    uint32_t flags = fnFlags;
+    if ((flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0 && code != &runtime::objectConstructorBody) {
+        flags |= BRONZE_ABI_FN_FLAG_DIRECT_CALL;
+    }
+    fn->function_flags = static_cast<uint8_t>(flags);
+    fn->prototype_readonly = (flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0;
+    bronze_tls_block* const tls = runtime::rtTls();
+    fn->setRealmSlot((flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0
+                         ? 0u
+                         : static_cast<uint32_t>(tls->realm_slot));
+    new (&fn->prototype) HeapValue(Value::fromUndefined());
+    fn->instance_shape = nullptr;
+    fn->arity = arity;
+    new (&fn->parent) HeapValue(Value::fromUndefined());
+    if ((fnFlags >> BRONZE_ABI_FN_INLINE_SLOTS_SHIFT) != 0) [[unlikely]] {
+        runtime::rtNoteInstanceInlineSlots(reinterpret_cast<const void*>(code), fnFlags);
+    }
+    if (nameKey == BRONZE_ABI_FN_NAME_NONE) {
+        fn->name = nullptr;
+        fn->length = 0;
+    } else if (nameKey < tls->key_header_count && tls->key_header_tbl[nameKey] != 0) {
+        fn->name = reinterpret_cast<StringHeader*>(tls->key_header_tbl[nameKey]);
+        fn->length = length;
+    } else {
+        fn->name = nullptr;
+        fn->length = 0;
+        runtime::rtSetFunctionNameAndLength(fn, nameKey, length);
+    }
     return fn;
 }
 

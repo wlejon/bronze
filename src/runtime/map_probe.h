@@ -7,6 +7,7 @@
 // that ensureIndex would keep as it is; `false` means the caller must take
 // the rooted path, which may rebuild it.
 
+#include <bit>
 #include <cstdint>
 
 #include "runtime/heap.h"
@@ -29,6 +30,8 @@ namespace map_probe {
 // key is old, and an old object never moves, so no collection invalidates the
 // index. Inserting a movable key sets the real epoch.
 constexpr double kStableIndex = -2.0;
+constexpr uint64_t kStableIndexBits = std::bit_cast<uint64_t>(kStableIndex);
+static_assert(kStableIndexBits == 0xC000000000000000ULL);
 
 // splitmix64's finalizer: cheap, and it moves every input bit into the low
 // ones, which is what a power-of-two bucket mask reads.
@@ -48,8 +51,8 @@ inline uint32_t mix64(uint64_t x) noexcept {
 inline const uint32_t* usableBuckets(const Heap& heap, const MapHeader* map, uint32_t& mask) noexcept {
     const Value index = map->index;
     if (!index.isObject()) return nullptr;
-    const double epoch = map->indexEpoch.asNumber();
-    if (epoch != kStableIndex && epoch != static_cast<double>(static_cast<int64_t>(heap.relocation_epoch()))) {
+    if (map->indexEpoch.rawBits() != kStableIndexBits &&
+        map->indexEpoch.asNumber() != static_cast<double>(static_cast<int64_t>(heap.relocation_epoch()))) {
         return nullptr;
     }
     if (map->indexAnchor.asNumber() !=
@@ -71,7 +74,8 @@ inline const uint32_t* usableBuckets(const Heap& heap, const MapHeader* map, uin
 // other (a nonzero bucket implies an entry block, which is the only time the
 // entries are read).
 template <bool kIdentity>
-inline bool probe(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
+inline bool probeEntry(const Heap& heap, MapHeader* map, Value key, uint32_t& slot,
+                       const Value*& outEntries) noexcept {
     uint32_t mask = 0;
     const uint32_t* buckets = usableBuckets(heap, map, mask);
     if (buckets == nullptr) return false;
@@ -96,6 +100,7 @@ inline bool probe(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) n
         return true;
     }
     const Value* entries = map->entries.asObject<HeapObjectHeader>()->payload<Value>();
+    outEntries = entries;
     for (; buckets[b] != 0; b = (b + 1) & mask) {
         const uint32_t s = buckets[b] - 1;
         const Value k = entries[s * 2];
@@ -105,6 +110,22 @@ inline bool probe(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) n
         }
     }
     slot = UINT32_MAX;
+    return true;
+}
+
+template <bool kIdentity>
+inline bool probe(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
+    const Value* entries = nullptr;
+    return probeEntry<kIdentity>(heap, map, key, slot, entries);
+}
+
+template <bool kIdentity>
+inline bool probeValue(const Heap& heap, MapHeader* map, Value key, bool& found, Value& outVal) noexcept {
+    uint32_t slot = UINT32_MAX;
+    const Value* entries = nullptr;
+    if (!probeEntry<kIdentity>(heap, map, key, slot, entries)) return false;
+    found = slot != UINT32_MAX;
+    outVal = found ? entries[slot * 2 + 1] : Value::fromUndefined();
     return true;
 }
 
