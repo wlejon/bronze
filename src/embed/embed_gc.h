@@ -76,4 +76,18 @@ BRONZE_EMBED_API bool gcSweepSlice(uint64_t budgetNs);
 // exist. Not from inside a collection.
 BRONZE_EMBED_API unsigned startGcHelperThreads();
 
+// External memory (ArrayBuffer blocks the collector does not see: a
+// transfer's, a host's createExternalArrayBuffer) asks for a full
+// collection of the making thread's heap once that thread has made more of
+// it than it had live (at least 64 MB) since it last asked: a
+// stop-the-world full at its next allocation. A host that runs cycles
+// between frames takes the ask instead: with deferExternalPressure(true)
+// (the calling thread's, as all of these) the ask is noted rather than
+// made, and takeExternalPressure() returns it (true once, then false) for
+// the host to start a cycle with. One not taken by the time the next is due
+// is made as before, a full collection, so a host that stops looking never
+// lets external memory grow unbounded.
+BRONZE_EMBED_API void deferExternalPressure(bool defer);
+BRONZE_EMBED_API bool takeExternalPressure();
+
 }  // namespace bronze::embed

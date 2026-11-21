@@ -73,4 +73,9 @@ void rtAdjustExternalMemory(int64_t delta) noexcept;
 // Number of live external stores registered on the current thread.
 size_t rtExternalStoreCount() noexcept;
 
+// embed_gc.h deferExternalPressure / takeExternalPressure: the calling
+// thread's external-memory ask held for its host to take.
+void rtDeferExternalPressure(bool defer) noexcept;
+bool rtTakeExternalPressure() noexcept;
+
 }  // namespace bronze::runtime

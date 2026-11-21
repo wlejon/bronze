@@ -10,6 +10,7 @@
 
 #include "embed/embed_gc.h"
 
+#include "runtime/external_store.h"
 #include "runtime/heap.h"
 #include "runtime/rt_state.h"
 
@@ -24,5 +25,9 @@ void finishGcCycle() { runtime::rtHeap().gc().finish_marking(); }
 bool gcSweepSlice(uint64_t budgetNs) { return runtime::rtHeap().gc().sweep_slice(budgetNs); }
 
 unsigned startGcHelperThreads() { return runtime::rtHeap().gc().start_helper_threads(); }
+
+void deferExternalPressure(bool defer) { runtime::rtDeferExternalPressure(defer); }
+
+bool takeExternalPressure() { return runtime::rtTakeExternalPressure(); }
 
 }  // namespace bronze::embed

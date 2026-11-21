@@ -48,6 +48,11 @@ struct ExternalCounter {
 
 thread_local std::shared_ptr<ExternalCounter> t_externalCounter = std::make_shared<ExternalCounter>();
 thread_local uint64_t t_externalSinceRequest = 0;
+// An embedder that collects between frames takes the ask (embed_gc.h
+// deferExternalPressure): it is noted here, and made only if still untaken
+// when the next one comes due.
+thread_local bool t_externalDeferred = false;
+thread_local bool t_externalPending = false;
 
 void noteExternalAdded(Heap& heap, uint64_t bytes) {
     const uint64_t live = t_externalCounter->live.fetch_add(bytes, std::memory_order_relaxed) + bytes;
@@ -55,6 +60,11 @@ void noteExternalAdded(Heap& heap, uint64_t bytes) {
     const uint64_t before = live > t_externalSinceRequest ? live - t_externalSinceRequest : 0;
     if (t_externalSinceRequest > std::max(kExternalMinBytes, before)) {
         t_externalSinceRequest = 0;
+        if (t_externalDeferred && !t_externalPending) {
+            t_externalPending = true;
+            return;
+        }
+        t_externalPending = false;
         heap.gc().request_collection(brass::gc::CollectionKind::Full);
     }
 }
@@ -221,5 +231,16 @@ void rtAdjustExternalMemory(int64_t delta) noexcept {
 }
 
 size_t rtExternalStoreCount() noexcept { return g_externalStores.size(); }
+
+void rtDeferExternalPressure(bool defer) noexcept {
+    t_externalDeferred = defer;
+    if (!defer) t_externalPending = false;
+}
+
+bool rtTakeExternalPressure() noexcept {
+    const bool pending = t_externalPending;
+    t_externalPending = false;
+    return pending;
+}
 
 }  // namespace bronze::runtime
