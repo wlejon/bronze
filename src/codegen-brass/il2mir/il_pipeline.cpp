@@ -14,6 +14,11 @@ PassPipelineOptions pass_pipeline_options(const TranslatorOptions& options) {
     p.enable_gvn_pre = options.enable_gvn_pre;
     p.enable_sccp = options.enable_sccp;
     p.enable_guard_elim = options.enable_guard_elim;
+    p.enable_smt_guard_elim = options.enable_smt_guard_elim;
+    p.enable_superopt = options.enable_superopt;
+    p.superopt_max_sat_conflicts = options.superopt_max_sat_conflicts;
+    p.superopt_max_func_insts = options.superopt_max_func_insts;
+    p.smt_guard_max_func_insts = options.smt_guard_max_func_insts;
     p.enable_cfg_simplify = options.enable_cfg_simplify;
     p.enable_loop_unswitch = options.enable_loop_unswitch;
     p.enable_jump_threading = options.enable_jump_threading;

@@ -316,6 +316,8 @@ void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bo
     options.enable_gvn = true;
     options.enable_sccp = true;
     options.enable_guard_elim = true;
+    options.enable_smt_guard_elim = optimize;
+    options.enable_superopt = optimize;
     options.enable_cfg_simplify = true;
     options.enable_loop_unswitch = true;
     options.enable_jump_threading = true;
@@ -650,6 +652,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     brass::codegen::SchedOptions schedOpts;
     schedOpts.enable_post_ra = optimize;
     schedOpts.enable_software_pipelining = optimize;
+    schedOpts.enable_lir_superopt = optimize;
     compiler.set_sched_options(schedOpts);
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);

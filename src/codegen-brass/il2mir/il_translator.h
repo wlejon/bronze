@@ -112,6 +112,11 @@ struct TranslatorOptions {
     bool enable_gvn = true;
     bool enable_sccp = true;
     bool enable_guard_elim = true;
+    bool enable_smt_guard_elim = false;
+    bool enable_superopt = false;
+    uint32_t superopt_max_sat_conflicts = 250;
+    size_t superopt_max_func_insts = 250;
+    size_t smt_guard_max_func_insts = 300;
     bool enable_cfg_simplify = true;
     bool enable_loop_unswitch = true;
     bool enable_jump_threading = true;
