@@ -673,7 +673,7 @@ bool IlLowering::lower_math_fn(const BronzeInstruction& inst, Builder& b, const 
 
         b.position_at_end(bb_eq);
         Value* is_neg_zero_x = b.build_eq(b.build_bitcast_i64_f64(x),
-                                          iconst64(b, static_cast<int64_t>(uint64_t{1} << 63)));
+                                          iconst64(b, uint64_t{1} << 63));
         Value* eq_res = is_min ? b.build_select(is_neg_zero_x, x, y) : b.build_select(is_neg_zero_x, y, x);
         b.build_br(bb_merge, {eq_res});
 

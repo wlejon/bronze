@@ -243,8 +243,8 @@ void ValueWalk::visitInstruction(BlockId b, size_t i) {
     }
     if (inst.op == Op::ArrayPush && (inst.immI32 & il::kStoreNumber) == 0 && inst.operands.size() >= 2) {
         bool allNumbers = true;
-        for (size_t i = 1; i < inst.operands.size(); ++i) {
-            if (!knownNumber(facts_, values_, inst.operands[i])) {
+        for (size_t k = 1; k < inst.operands.size(); ++k) {
+            if (!knownNumber(facts_, values_, inst.operands[k])) {
                 allNumbers = false;
                 break;
             }
