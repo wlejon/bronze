@@ -32,16 +32,18 @@ scripts and module graphs directly in memory with zero disk I/O, and
 file for your own build to link, and `--host-globals` lists the globals your
 host provides (`document`, `requestAnimationFrame`, and so on).
 `--emit-shared` produces a module your host opens at run time instead, linked
-against a shared bronze runtime so one process can load several. The bro
-engine uses this to run compiled three.js apps against its DOM and WebGL.
-The app's scene graph and render loop run as machine code while the engine
-supplies the browser surface. `src/embed` is the C++ API a host uses to
-drive the compiled program, register globals, and hold GC-safe handles
-(`Persistent`, `HandleScope`, `Local<T>`). A host can also compile a script
-ahead of time through the embedded evaluator (`eval::buildModule`): the same
-program the JIT would run, written as a loadable module with a record of what
-it was built from, which `eval::loadModule` checks before running it, so a
-stale module falls back to the JIT instead of running.
+against a shared bronze runtime so one process can load several. `src/embed`
+is the C++ API a host uses to drive the compiled program, register globals,
+and hold GC-safe handles (`Persistent`, `HandleScope`, `Local<T>`). A host can
+also compile a script ahead of time through the embedded evaluator
+(`eval::buildModule`): the same program the JIT would run, written as a
+loadable module with a record of what it was built from, which
+`eval::loadModule` checks before running it, so a stale module falls back to
+the JIT instead of running. The bro engine compiles its apps this way, in
+process: an installed app's scripts are built on the harvest of its first run
+(`EvalOptions::harvestOutPath` / `feedbackInPath`), and its scene graph and
+render loop run as machine code while the engine supplies the browser
+surface.
 
 ## How it works
 
