@@ -65,6 +65,16 @@ struct Site {
     std::set<Fact> facts;
 };
 
+// Made by `measureRepresentation` at a write, once per representation
+// (Numbers, plain objects): by receiver name, the key positions (root first)
+// that were born of the kind and that every object of every shape of that name
+// held one of the kind in; and every key some named shape was born or found
+// holding anything else under.
+struct Kept {
+    std::map<std::string, std::vector<uint32_t>> held;
+    std::set<std::string> other;
+};
+
 struct Module {
     uint64_t digest = 0;
     uint32_t sites = 0;
@@ -84,6 +94,16 @@ struct Module {
     // A call's or a `new`'s last directly entered callee (il/feedback_site.h
     // kLastCalleeBit), by the same slow-site index: the `callee` rows.
     std::map<uint32_t, std::string> callees;
+    // The representation rows, as the last live write measured them on the
+    // thread that wrote this module.
+    Kept doubles;
+    Kept objects;
+    // A live write (rtIcHarvestWriteAll) has written this module: the exit
+    // write leaves it. What a module's teardown folds after it has no function
+    // sources left to name callees by (rtDropModuleFnSources runs first) and
+    // no heap to measure representation on, so writing again would replace
+    // named ways and the `doubles`/`objects` rows with `*other*` and nothing.
+    bool wroteLive = false;
 };
 
 struct State {
@@ -93,35 +113,30 @@ struct State {
     // module registers its tables, a compiled-in-process one's memory goes
     // with its program, and a range it left behind names freed memory.
     std::unordered_set<const void*> records;
+    bool atexitArmed = false;
+    bool dirty = false;
+};
+
+// What is per thread: shapes, and with them everything keyed by one, belong to
+// the thread whose heap made them (a worker's go with it), and the heap a
+// write measures is the writing thread's. A module is written by the threads
+// that ran it, so a write never measures one thread's heap for another's
+// module, nor follows a shape a finished thread freed.
+struct ThreadShapes {
     std::unordered_map<const Shape*, std::string> shapeNames;
     std::unordered_map<const Shape*, std::string> protoNames;
     // The shapes named here that were not dictionaries when named: shape-tree
-    // nodes, which live as long as the arena, so the heap walk at the write
-    // may follow them (a dictionary shape goes with its object).
+    // nodes, which live as long as the thread's arena, so the heap walk at the
+    // write may follow them (a dictionary shape goes with its object).
     std::unordered_set<const Shape*> plainNamed;
     // rtIcHarvestNoteBirth: per node, the kinds (kHarvestBirth*) every add
     // through the runtime that made it held.
     std::unordered_map<const Shape*, uint8_t> births;
-    // Made by `measureRepresentation` at the write, once per representation
-    // (Numbers, plain objects): by receiver name, the key positions (root
-    // first) that were born of the kind and that every object of every shape
-    // of that name held one of the kind in; and every key some named shape
-    // was born or found holding anything else under.
-    struct Kept {
-        std::map<std::string, std::vector<uint32_t>> held;
-        std::set<std::string> other;
-    };
-    Kept doubles;
-    Kept objects;
-    bool atexitArmed = false;
-    bool dirty = false;
-    // rtIcHarvestWriteAll has written: the exit write stands down. What a
-    // module's teardown folds after it has no function sources left to name
-    // callees by (rtDropModuleFnSources runs first) and no heap to measure
-    // representation on, so writing again would replace named ways and the
-    // `doubles`/`objects` rows with `*other*` and nothing.
-    bool wroteLive = false;
+    // The harvested modules this thread armed or folded, by digest and sites:
+    // the ones its live write writes.
+    std::set<std::pair<uint64_t, uint32_t>> modules;
 };
+thread_local ThreadShapes t_shapes;
 
 std::mutex g_mu;
 State* g_state = nullptr;  // leaked on purpose: the atexit writer may run after statics die
@@ -166,11 +181,12 @@ Module* moduleOf(State& s, uint64_t digest, uint32_t sites) {
     return nullptr;
 }
 
-const std::string& shapeName(State& s, const Shape* shape) {
-    auto it = s.shapeNames.find(shape);
-    if (it == s.shapeNames.end()) {
-        it = s.shapeNames.emplace(shape, typeFeedbackShapeName(shape, s.protoNames)).first;
-        if (shape != nullptr && !shape->isDictionary()) s.plainNamed.insert(shape);
+const std::string& shapeName(const Shape* shape) {
+    ThreadShapes& t = t_shapes;
+    auto it = t.shapeNames.find(shape);
+    if (it == t.shapeNames.end()) {
+        it = t.shapeNames.emplace(shape, typeFeedbackShapeName(shape, t.protoNames)).first;
+        if (shape != nullptr && !shape->isDictionary()) t.plainNamed.insert(shape);
     }
     return it->second;
 }
@@ -183,22 +199,23 @@ std::vector<const Shape*> keyNodes(const Shape* shape) {
     return chain;
 }
 
-// The representation the run's objects kept, into `s.doubles` and
-// `s.objects`. A position is a double (an object) one when the runtime saw its
+// The representation this thread's objects kept, into `doubles` and
+// `objects`. A position is a double (an object) one when the runtime saw its
 // node born holding a Number (a plain object) — rtIcHarvestNoteBirth, what a
 // build that makes the key eligible gives a claimed node — and no object of the
 // shape the heap holds now, live or dead and not yet collected, has anything
 // else there. Both are samples: nothing rests on them but the build's choice
 // of keys, since the runtime keeps a claimed slot's discipline whatever a
 // store brings (slot_repr.h).
-void measureRepresentation(State& s) {
-    s.doubles = {};
-    s.objects = {};
+void measureRepresentation(Kept& doubles, Kept& objects) {
+    const ThreadShapes& t = t_shapes;
+    doubles = {};
+    objects = {};
     // Per named shape, a position's marks: bit 0 set when an object held a
     // non-Number there, bit 1 when one held anything but a plain object.
     std::unordered_map<const Shape*, std::vector<uint8_t>> held;
     std::unordered_map<const Shape*, std::vector<const Shape*>> nodes;
-    for (const Shape* shape : s.plainNamed) nodes.emplace(shape, keyNodes(shape));
+    for (const Shape* shape : t.plainNamed) nodes.emplace(shape, keyNodes(shape));
     rtHeap().walk_objects([&](HeapObjectHeader* hdr) {
         if (hdr->flags != HeapKind::Plain) return;
         const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
@@ -217,13 +234,13 @@ void measureRepresentation(State& s) {
     for (const auto& [shape, chain] : nodes) {
         const auto marks = held.find(shape);
         for (const uint8_t kind : {kHarvestBirthNumber, kHarvestBirthObject}) {
-            State::Kept& kept = kind == kHarvestBirthNumber ? s.doubles : s.objects;
+            Kept& kept = kind == kHarvestBirthNumber ? doubles : objects;
             std::vector<uint32_t> mine;
             for (size_t i = 0; i < chain.size(); ++i) {
                 const Shape* node = chain[i];
-                const auto birth = s.births.find(node);
+                const auto birth = t.births.find(node);
                 const bool other = marks != held.end() && (marks->second[i] & kind) != 0;
-                const bool bornOther = birth != s.births.end() && (birth->second & kind) == 0;
+                const bool bornOther = birth != t.births.end() && (birth->second & kind) == 0;
                 // A key is `mixed` (`nonobject`) when some object holds
                 // anything else at a position not born so (born a Number, or
                 // its birth unseen): under eligibility that object's slot
@@ -235,13 +252,13 @@ void measureRepresentation(State& s) {
                         kept.other.insert(rtUtf8Chars(key));
                     }
                 }
-                if (birth == s.births.end() || bornOther || other || node->accessor ||
+                if (birth == t.births.end() || bornOther || other || node->accessor ||
                     node->slot_index >= BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
                     continue;
                 }
                 mine.push_back(static_cast<uint32_t>(i));
             }
-            auto [d, fresh] = kept.held.try_emplace(s.shapeNames.at(shape), mine);
+            auto [d, fresh] = kept.held.try_emplace(t.shapeNames.at(shape), mine);
             if (!fresh) {
                 std::vector<uint32_t> both;
                 std::set_intersection(d->second.begin(), d->second.end(), mine.begin(), mine.end(),
@@ -300,7 +317,7 @@ std::pair<std::string, std::string> accessorHalves(const InlineCache& way) {
 
 // A property site: its ways, one fact each, in the forms the read and write
 // paths fill (object.h InlineCache).
-void foldProperty(State& s, Site& site, const uint64_t* words) {
+void foldProperty(Site& site, const uint64_t* words) {
     uint32_t used = 0;
     for (uint32_t w = 0; w < BRONZE_ABI_IC_WAYS; ++w) {
         const auto* way = reinterpret_cast<const InlineCache*>(words + w * (BRONZE_ABI_IC_ENTRY_SIZE / 8));
@@ -312,7 +329,7 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
         }
         if (way->isAccessor() && !way->isAbsent()) {
             auto [getter, setter] = accessorHalves(*way);
-            site.facts.insert(Fact{"accessor", shapeName(s, way->cached_shape), std::move(getter), std::move(setter)});
+            site.facts.insert(Fact{"accessor", shapeName(way->cached_shape), std::move(getter), std::move(setter)});
             continue;
         }
         // A data property above the receiver names where the way found it:
@@ -320,13 +337,13 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
         // function receiver's statics chain, which no member cell reads).
         if (!way->isAbsent() && way->realDepth() != 0) {
             const bool place = !way->isStatics();
-            site.facts.insert(Fact{"proto", shapeName(s, way->cached_shape),
+            site.facts.insert(Fact{"proto", shapeName(way->cached_shape),
                                    place ? std::to_string(way->realDepth()) : std::string(),
                                    place ? std::to_string(way->cached_slot) : std::string()});
             continue;
         }
         const char* form = way->isAbsent() ? "absent" : way->isStoreFilled() ? "store" : "own";
-        site.facts.insert(Fact{form, shapeName(s, way->cached_shape), {}, {}});
+        site.facts.insert(Fact{form, shapeName(way->cached_shape), {}, {}});
     }
     if (used == BRONZE_ABI_IC_WAYS) site.full = true;
     // A write uses ways 0..2 (`BRONZE_ABI_IC_SET_WAYS`), leaving way 3's
@@ -339,7 +356,7 @@ void foldProperty(State& s, Site& site, const uint64_t* words) {
 
 // One way of a method site (bronze_abi_layout.h, "the METHOD-CALL site"):
 // `shapeWord`, `codeWord`, `arityWord` are its words 0, 1, 2 (or 6, 7, 8).
-void foldMethodWay(State& s, Site& site, uint64_t shapeWord, uint64_t codeWord, uint64_t arityWord) {
+void foldMethodWay(Site& site, uint64_t shapeWord, uint64_t codeWord, uint64_t arityWord) {
     if (shapeWord == 0) return;
     const bool slotForm = (arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0;
     if (shapeWord & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) {
@@ -355,7 +372,7 @@ void foldMethodWay(State& s, Site& site, uint64_t shapeWord, uint64_t codeWord, 
         site.facts.insert(Fact{"native", word, "native:" + word, {}});
         return;
     }
-    const std::string& receiver = shapeName(s, reinterpret_cast<const Shape*>(shapeWord));
+    const std::string& receiver = shapeName(reinterpret_cast<const Shape*>(shapeWord));
     if (slotForm) {
         site.facts.insert(Fact{"slot", receiver,
                                codeWord != 0 ? calleeOf(reinterpret_cast<const void*>(codeWord))
@@ -384,7 +401,7 @@ void appendEscaped(std::string& out, const std::string& in) {
     }
 }
 
-std::string textOf(const State& s, const Module& m) {
+std::string textOf(const Module& m) {
     char hex[17];
     std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(m.digest));
     std::string out = "bronze-type-feedback " + std::to_string(BRONZE_FEEDBACK_FORMAT_VERSION) + "\n";
@@ -449,7 +466,7 @@ std::string textOf(const State& s, const Module& m) {
     for (const auto& [index, site] : m.ics) {
         for (const Fact& f : site.facts) receivers.insert(f.receiver);
     }
-    const auto rows = [&](const State::Kept& kept, const char* heldRow, const char* otherRow) {
+    const auto rows = [&](const Kept& kept, const char* heldRow, const char* otherRow) {
         for (const std::string& receiver : receivers) {
             const auto it = kept.held.find(receiver);
             if (it == kept.held.end() || it->second.empty()) continue;
@@ -471,8 +488,8 @@ std::string textOf(const State& s, const Module& m) {
             out += '\n';
         }
     };
-    rows(s.doubles, "doubles", "mixed");
-    rows(s.objects, "objects", "nonobject");
+    rows(m.doubles, "doubles", "mixed");
+    rows(m.objects, "objects", "nonobject");
     return out;
 }
 
@@ -491,9 +508,9 @@ bool writeFile(const std::string& path, const std::string& text) {
 // leaves what its dropped instances held. Reads no heap.
 void writeAtExit() {
     std::lock_guard<std::mutex> lock(g_mu);
-    if (g_state == nullptr || !g_state->dirty || g_state->wroteLive) return;
+    if (g_state == nullptr || !g_state->dirty) return;
     for (const Module& m : g_state->modules) {
-        if (!m.path.empty()) writeFile(m.path, textOf(*g_state, m));
+        if (!m.path.empty() && !m.wroteLive) writeFile(m.path, textOf(m));
     }
     g_state->dirty = false;
 }
@@ -504,9 +521,7 @@ bool rtIcHarvestArmed() noexcept { return g_armed.load(std::memory_order_relaxed
 
 void rtIcHarvestNoteBirth(const Shape* node, uint8_t kinds) {
     if (node == nullptr) return;
-    std::lock_guard<std::mutex> lock(g_mu);
-    if (g_state == nullptr) return;
-    auto [it, fresh] = g_state->births.emplace(node, kinds);
+    auto [it, fresh] = t_shapes.births.emplace(node, kinds);
     if (!fresh) it->second &= kinds;
 }
 
@@ -538,6 +553,7 @@ bool rtIcHarvestConfigure(const void* identity, const std::string& path) {
         s.records.erase(identity);
     } else {
         s.records.insert(identity);
+        t_shapes.modules.insert({id.digest, id.sites});
     }
     if (!path.empty() && !s.atexitArmed) {
         s.atexitArmed = true;
@@ -595,6 +611,7 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
     if (!readIdentity(identity, id) || id.sites != siteCount) return;
     Module* m = moduleOf(s, id.digest, id.sites);
     if (m == nullptr || m->path.empty()) return;
+    t_shapes.modules.insert({id.digest, id.sites});
     const auto isMethod = [&](uint64_t i) {
         return methodSites != nullptr && std::binary_search(methodSites->begin(), methodSites->end(), i);
     };
@@ -608,7 +625,7 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         if (!isMethod(way[0])) continue;
         Site& site = m->ics[static_cast<uint32_t>(way[0])];
         site.method = true;
-        foldMethodWay(s, site, way[1], way[2], way[3]);
+        foldMethodWay(site, way[1], way[2], way[3]);
         s.dirty = true;
     }
     // The slow counters end where the table starts. Taken, and cleared so a
@@ -644,7 +661,7 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
             }
             if ((counts[i] >> 63) != 0) {
                 const auto* shape = reinterpret_cast<const Shape*>(counts[i] & ~(uint64_t{1} << 63));
-                std::string name = shape != nullptr ? shapeName(s, shape) : std::string("*other*");
+                std::string name = shape != nullptr ? shapeName(shape) : std::string("*other*");
                 std::string& held = m->last[i];
                 if (held != name) {
                     held = std::move(name);
@@ -670,12 +687,12 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
         Site& site = m->ics[static_cast<uint32_t>(i)];
         site.method = method;
         if (method) {
-            foldMethodWay(s, site, words[0], words[BRONZE_ABI_METHOD_IC_CODE_WORD],
+            foldMethodWay(site, words[0], words[BRONZE_ABI_METHOD_IC_CODE_WORD],
                           words[BRONZE_ABI_METHOD_IC_ARITY_WORD]);
-            foldMethodWay(s, site, words[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD],
+            foldMethodWay(site, words[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD],
                           words[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD], words[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD]);
         } else {
-            foldProperty(s, site, words);
+            foldProperty(site, words);
         }
         s.dirty = true;
     }
@@ -684,15 +701,19 @@ void rtIcHarvestFold(const uint64_t* table, uint64_t siteCount, const uint64_t* 
 int rtIcHarvestWriteAll() {
     if (!rtIcHarvestArmed()) return 0;
     rtIcHotFoldLiveRanges();
+    // This thread's heap and shapes: no lock needed for them.
+    Kept doubles, objects;
+    measureRepresentation(doubles, objects);
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return 0;
-    measureRepresentation(*g_state);
     int written = 0;
-    for (const Module& m : g_state->modules) {
-        if (!m.path.empty() && writeFile(m.path, textOf(*g_state, m))) ++written;
+    for (Module& m : g_state->modules) {
+        if (m.path.empty() || t_shapes.modules.count({m.digest, m.sites}) == 0) continue;
+        m.doubles = doubles;
+        m.objects = objects;
+        m.wroteLive = true;
+        if (writeFile(m.path, textOf(m))) ++written;
     }
-    g_state->dirty = false;
-    g_state->wroteLive = true;
     return written;
 }
 
@@ -700,12 +721,16 @@ std::string rtIcHarvestText(const void* identity) {
     Identity id;
     if (!readIdentity(identity, id)) return {};
     rtIcHotFoldLiveRanges();
+    Kept doubles, objects;
+    measureRepresentation(doubles, objects);
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == nullptr) return {};
     const Module* m = moduleOf(*g_state, id.digest, id.sites);
     if (m == nullptr || m->path.empty()) return {};
-    measureRepresentation(*g_state);
-    return textOf(*g_state, *m);
+    Module measured = *m;
+    measured.doubles = std::move(doubles);
+    measured.objects = std::move(objects);
+    return textOf(measured);
 }
 
 }  // namespace bronze::runtime
