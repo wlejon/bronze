@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 #include "ast/query_walk.h"
@@ -32,15 +33,142 @@ public:
     }
 };
 
+// The script's completion value (ECMA-262 16.1.6 ScriptEvaluation, and each
+// statement's own Evaluation) is the value of the last statement that gave
+// one. An expression statement gives its value; if, the loops, switch and
+// try give their body's, or undefined when it gave none (UpdateEmpty); a
+// block or a labelled statement gives what its statements gave; a
+// declaration, an empty block and a finally clause give nothing.
+bool isCompound(const ast::Stmt* s) {
+    return dynamic_cast<const ast::IfStmt*>(s) || dynamic_cast<const ast::WhileStmt*>(s) ||
+           dynamic_cast<const ast::DoWhileStmt*>(s) || dynamic_cast<const ast::ForStmt*>(s) ||
+           dynamic_cast<const ast::ForInStmt*>(s) || dynamic_cast<const ast::ForOfStmt*>(s) ||
+           dynamic_cast<const ast::SwitchStmt*>(s) || dynamic_cast<const ast::TryStmt*>(s);
+}
+
+bool givesValue(const ast::Stmt* s) {
+    if (s == nullptr) return false;
+    if (dynamic_cast<const ast::ExprStmt*>(s) || isCompound(s)) return true;
+    if (const auto* b = dynamic_cast<const ast::BlockStmt*>(s)) {
+        return std::any_of(b->stmts.begin(), b->stmts.end(), [](const ast::StmtPtr& p) { return givesValue(p.get()); });
+    }
+    if (const auto* l = dynamic_cast<const ast::LabeledStmt*>(s)) return givesValue(l->body.get());
+    return false;
+}
+
+ast::StmtPtr assignCompletion(const std::string& resName, ast::ExprPtr value, const bronze::Span& span) {
+    auto target = std::make_unique<ast::Ident>();
+    target->name = resName;
+    target->span = span;
+    auto assign = std::make_unique<ast::Binary>();
+    assign->op = ast::BinaryOp::Assign;
+    assign->lhs = std::move(target);
+    assign->rhs = std::move(value);
+    assign->span = span;
+    auto stmt = std::make_unique<ast::ExprStmt>();
+    stmt->expr = std::move(assign);
+    stmt->span = span;
+    return stmt;
+}
+
+// `resName = undefined`, before a compound statement: what it gives when its
+// body gives nothing.
+ast::StmtPtr resetCompletion(const std::string& resName, const bronze::Span& span) {
+    auto undef = std::make_unique<ast::UndefinedLit>();
+    undef->span = span;
+    return assignCompletion(resName, std::move(undef), span);
+}
+
+void recordCompletion(std::vector<ast::StmtPtr>& stmts, const std::string& resName);
+
+// Every expression statement in `s` (not in a nested function) assigns its
+// value to resName, and every compound statement first assigns undefined.
+void recordCompletionIn(ast::Stmt* s, const std::string& resName) {
+    if (auto* i = dynamic_cast<ast::IfStmt*>(s)) {
+        recordCompletion(i->thenBody, resName);
+        recordCompletion(i->elseBody, resName);
+    } else if (auto* w = dynamic_cast<ast::WhileStmt*>(s)) {
+        recordCompletion(w->body, resName);
+    } else if (auto* d = dynamic_cast<ast::DoWhileStmt*>(s)) {
+        recordCompletion(d->body, resName);
+    } else if (auto* f = dynamic_cast<ast::ForStmt*>(s)) {
+        recordCompletion(f->body, resName);
+    } else if (auto* fi = dynamic_cast<ast::ForInStmt*>(s)) {
+        recordCompletion(fi->body, resName);
+    } else if (auto* fo = dynamic_cast<ast::ForOfStmt*>(s)) {
+        recordCompletion(fo->body, resName);
+    } else if (auto* sw = dynamic_cast<ast::SwitchStmt*>(s)) {
+        for (ast::SwitchCase& c : sw->cases) recordCompletion(c.body, resName);
+    } else if (auto* t = dynamic_cast<ast::TryStmt*>(s)) {
+        recordCompletion(t->body, resName);
+        recordCompletion(t->catchBody, resName);
+    } else if (auto* b = dynamic_cast<ast::BlockStmt*>(s)) {
+        recordCompletion(b->stmts, resName);
+    }
+}
+
+void recordCompletion(std::vector<ast::StmtPtr>& stmts, const std::string& resName) {
+    std::vector<ast::StmtPtr> out;
+    out.reserve(stmts.size());
+    for (ast::StmtPtr& s : stmts) {
+        if (auto* e = dynamic_cast<ast::ExprStmt*>(s.get())) {
+            out.push_back(assignCompletion(resName, std::move(e->expr), s->span));
+            continue;
+        }
+        // A labelled statement's body is reached through it: a compound one
+        // is reset before the label.
+        ast::Stmt* inner = s.get();
+        while (auto* l = dynamic_cast<ast::LabeledStmt*>(inner)) {
+            if (auto* e = dynamic_cast<ast::ExprStmt*>(l->body.get())) {
+                l->body = assignCompletion(resName, std::move(e->expr), l->body->span);
+                inner = nullptr;
+                break;
+            }
+            inner = l->body.get();
+        }
+        if (inner != nullptr) {
+            if (isCompound(inner)) out.push_back(resetCompletion(resName, s->span));
+            recordCompletionIn(inner, resName);
+        }
+        out.push_back(std::move(s));
+    }
+    stmts = std::move(out);
+}
+
 std::vector<ast::FunctionDecl*> prepareEvalAstForInference(ast::Module& astModule,
                                                            const std::string& resName) {
     if (!resName.empty() && !astModule.body.empty()) {
-        if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(astModule.body.back().get())) {
-            auto varDecl = std::make_unique<ast::VarDecl>();
-            varDecl->name = resName;
-            varDecl->isVar = true;
-            varDecl->init = std::move(exprStmt->expr);
-            astModule.body.back() = std::move(varDecl);
+        // The last statement that can give a value is the one whose value
+        // the script completes with.
+        auto last = astModule.body.end();
+        for (auto it = astModule.body.begin(); it != astModule.body.end(); ++it) {
+            if (givesValue(it->get())) last = it;
+        }
+        if (last != astModule.body.end()) {
+            if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(last->get())) {
+                // The common case, and the cheap one: its value, kept.
+                auto varDecl = std::make_unique<ast::VarDecl>();
+                varDecl->name = resName;
+                varDecl->isVar = true;
+                varDecl->init = std::move(exprStmt->expr);
+                varDecl->span = exprStmt->span;
+                *last = std::move(varDecl);
+            } else {
+                // A compound statement or a block: the expression statements
+                // inside it (only it: anything before gave a value it
+                // replaces) record theirs as they run.
+                const bronze::Span span = (*last)->span;
+                std::vector<ast::StmtPtr> one;
+                one.push_back(std::move(*last));
+                recordCompletion(one, resName);
+                auto pos = astModule.body.erase(last);
+                astModule.body.insert(pos, std::make_move_iterator(one.begin()), std::make_move_iterator(one.end()));
+                auto varDecl = std::make_unique<ast::VarDecl>();
+                varDecl->name = resName;
+                varDecl->isVar = true;
+                varDecl->span = span;
+                astModule.body.insert(astModule.body.begin(), std::move(varDecl));
+            }
         }
     }
 
