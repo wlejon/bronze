@@ -106,21 +106,23 @@ def real(cmd, src, env=None):
     return rc, out, err
 
 
-def switch_case(name, src, d, exe, tfb, build, check):
-    ok, why = build(['--harvest-out', str(tfb)])
+def switch_case(name, src, d, tfb, build, check):
+    h_exe = d / 'switch_h.exe'
+    ok, why = build(['--harvest-out', str(tfb)], h_exe)
     if not ok:
         return [(name, 'switch', 'harvest build: ' + why)]
     for _ in range(40):
         tfb.unlink(missing_ok=True)
-        rc, out, err = sh([str(exe)], src.parent)
+        rc, out, err = sh([str(h_exe)], src.parent)
         if 'TRAINING' in err.splitlines() and tfb.exists():
             break
     else:
         return [(name, 'switch', 'no training run')]
-    ok, why = build(['--feedback-in', str(tfb)])
+    f_exe = d / 'switch_f.exe'
+    ok, why = build(['--feedback-in', str(tfb)], f_exe)
     if not ok:
         return [(name, 'switch', 'build: ' + why)]
-    rc, out, err = real([str(exe)], src, dict(os.environ, BRONZE_DEOPT_STATS='1'))
+    rc, out, err = real([str(f_exe)], src, dict(os.environ, BRONZE_DEOPT_STATS='1'))
     if 'TRAINING' in err.splitlines():
         return [(name, 'switch', 'no run off the training arm')]
     (d / 'deopt.txt').write_text(err)
@@ -416,7 +418,7 @@ PROFILES = [
 ]
 
 
-def adversarial(name, src, d, exe, tfb, want, want_rc):
+def adversarial(name, src, d, tfb, want, want_rc):
     """The case on each perturbed profile: (failures, builds that speculated
     something, guard exits)."""
     fails, speculated, exits = [], 0, 0
@@ -435,14 +437,15 @@ def adversarial(name, src, d, exe, tfb, want, want_rc):
             p(h, r)
         bad = d / f'adv{k}.tfb'
         bad.write_text(h.text())
-        rc, out, err = sh([bronze, 'build', str(src), '-o', str(exe), '--feedback-in', str(bad), '--opt-stats'], d, 300)
+        adv_exe = d / f'adv{k}.exe'
+        rc, out, err = sh([bronze, 'build', str(src), '-o', str(adv_exe), '--feedback-in', str(bad), '--opt-stats'], d, 300)
         if rc != 0:
             tail = (err or out).strip().splitlines()[-1][:160] if (err or out).strip() else ''
             fails.append((name, 'adversarial', f'profile {k}: build rc={rc}: {tail}'))
             continue
         m = re.search(r'^speculate: (\d+)/', out + err, re.M)
         speculated += bool(m and int(m.group(1)))
-        rc, out, err = real([str(exe)], src, dict(os.environ, BRONZE_DEOPT_STATS='1'))
+        rc, out, err = real([str(adv_exe)], src, dict(os.environ, BRONZE_DEOPT_STATS='1'))
         (d / f'deopt{k}.txt').write_text(err)
         exits += sum(int(x) for x in re.findall(r'^deopt: (\d+) exits', err, re.M))
         why = differs(out, want)
@@ -464,7 +467,6 @@ def case(name):
     d = work / name
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
-    exe = d / 'case.exe'
     tfb = d / 'case.tfb'
     fails = []
 
@@ -474,40 +476,43 @@ def case(name):
             tail = err.strip().splitlines()[-1][:120] if err.strip() else ''
             fails.append((name, mode, f'rc={rc} {why} {tail}'))
 
-    def build(extra):
-        rc, out, err = sh([bronze, 'build', str(src), '-o', str(exe)] + extra, d, 300)
+    def build(extra, out_exe):
+        rc, out, err = sh([bronze, 'build', str(src), '-o', str(out_exe)] + extra, d, 300)
         return rc == 0, (err or out).strip().splitlines()[-1][:160] if rc != 0 and (err or out).strip() else ''
 
     if 'run' in modes:
         check('run', *real([bronze, 'run', str(src)], src))
     if 'aot' in modes:
-        ok, why = build([])
+        aot_exe = d / 'aot.exe'
+        ok, why = build([], aot_exe)
         if ok:
-            check('aot', *real([str(exe)], src))
+            check('aot', *real([str(aot_exe)], src))
         else:
             fails.append((name, 'aot', 'build: ' + why))
     fed = [m for m in ('profile', 'adversarial') if m in modes]
     if fed:
         # One harvest serves the profile and adversarial modes.
-        ok, why = build(['--harvest-out', str(tfb)])
-        harvest_rc = sh([str(exe)], src.parent)[0] if ok else None
+        harvest_exe = d / 'harvest.exe'
+        ok, why = build(['--harvest-out', str(tfb)], harvest_exe)
+        harvest_rc = sh([str(harvest_exe)], src.parent)[0] if ok else None
         for mode in fed:
             if not ok:
                 fails.append((name, mode, 'harvest build: ' + why))
             elif not tfb.exists():
                 fails.append((name, mode, 'no harvest written'))
             elif mode == 'adversarial':
-                bad, speculated, exits = adversarial(name, src, d, exe, tfb, want, harvest_rc)
+                bad, speculated, exits = adversarial(name, src, d, tfb, want, harvest_rc)
                 fails.extend(bad)
                 adv_counts.append((speculated, exits))
             else:
-                built, why = build(['--feedback-in', str(tfb)])
+                prof_exe = d / 'profile.exe'
+                built, why = build(['--feedback-in', str(tfb)], prof_exe)
                 if built:
-                    check('profile', *real([str(exe)], src))
+                    check('profile', *real([str(prof_exe)], src))
                 else:
                     fails.append((name, 'profile', 'build: ' + why))
     if 'switch' in modes and switching(src):
-        fails.extend(switch_case(name, src, d, exe, tfb, build, check))
+        fails.extend(switch_case(name, src, d, tfb, build, check))
     if not any(f[1] in ('switch', 'adversarial') for f in fails):
         shutil.rmtree(d, ignore_errors=True)
     return fails
