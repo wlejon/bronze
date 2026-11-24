@@ -8,6 +8,7 @@
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
 #include <unordered_map>
+#include <vector>
 
 namespace il2mir {
 
@@ -38,6 +39,12 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, PropertyLower
 // ToBoolean of a dynamic (i64) value as an i32 0/1, inline for every operand
 // whose answer is its bits.
 Value* lower_dynamic_truthy(Builder& b, Value* v, PropertyLoweringHelper* arms = nullptr);
+// Fused ToBoolean + branch: branches each classifier arm directly to on_true/on_false
+// without materializing an intermediate 0/1 Value or merge block.
+void lower_dynamic_truthy_branch(Builder& b, Value* v,
+                                 BasicBlock* on_true, const std::vector<Value*>& true_args,
+                                 BasicBlock* on_false, const std::vector<Value*>& false_args,
+                                 PropertyLoweringHelper* arms = nullptr);
 
 // Whether the inline ToInt32 applies to the Value (or f64) bits `bits`: a
 // Number of magnitude below 2^63. NaN, the infinities and every non-Number

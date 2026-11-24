@@ -241,17 +241,27 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     mark_view_arm(*this, b, ptr, ei.idx, prefix);
     {
         BasicBlock* at = b.current_block();
+        BasicBlock* in_bounds = b.append_block(prefix + "_vin");
         BasicBlock* f32 = b.append_block(prefix + "_f32");
+        BasicBlock* not_f32 = b.append_block(prefix + "_nf32");
+        BasicBlock* f64 = b.append_block(prefix + "_f64");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
         b.position_at_end(at);
         Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
         Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
-        b.build_br_if(b.build_and(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), b.build_ult(ei.idx, vlen)),
-                      f32, stub);
+        b.build_br_if(b.build_ult(ei.idx, vlen), in_bounds, stub);
+        b.position_at_end(in_bounds);
+        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), f32, not_f32);
         b.position_at_end(f32);
         Value* f = with_alias_class(b.build_load_indexed(Type::f32(), view_data(b, ptr), b.build_zext_i64(ei.idx), 4),
                                     kTypedElementAliasClass);
         b.build_br(bb_merge, {box_f64_bits(b, b.build_fpext_f64_f32(f))});
+        b.position_at_end(not_f32);
+        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), f64, stub);
+        b.position_at_end(f64);
+        Value* d = with_alias_class(b.build_load_indexed(Type::f64(), view_data(b, ptr), b.build_zext_i64(ei.idx), 8),
+                                    kTypedElementAliasClass);
+        b.build_br(bb_merge, {box_f64_bits(b, d)});
         b.position_at_end(stub);
         b.build_br(bb_merge, {b.build_call(stub_sym(kViewGetStub), Type::i64(), {obj, ei.idx, key})});
     }
@@ -477,19 +487,28 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
         b.position_at_end(bb_view);
         mark_view_arm(*this, b, ptr, ei.idx, prefix);
         BasicBlock* view_bb = b.current_block();
+        BasicBlock* in_bounds = b.append_block(prefix + "_vin");
         BasicBlock* f32 = b.append_block(prefix + "_f32");
+        BasicBlock* not_f32 = b.append_block(prefix + "_nf32");
+        BasicBlock* f64 = b.append_block(prefix + "_f64");
         BasicBlock* stub = b.append_block(prefix + "_vstub");
         b.position_at_end(view_bb);
         Value* kind = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET), kTypedArrayHeaderAliasClass);
         Value* vlen = with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass);
         Value* number = b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
-        b.build_br_if(b.build_and(b.build_and(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)),
-                                              b.build_ult(ei.idx, vlen)),
-                                  number),
-                      f32, stub);
+        b.build_br_if(b.build_and(b.build_ult(ei.idx, vlen), number), in_bounds, stub);
+        b.position_at_end(in_bounds);
+        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)), f32, not_f32);
         b.position_at_end(f32);
         with_alias_class(b.build_store_indexed(Type::f32(), view_data(b, ptr), b.build_zext_i64(ei.idx), 4,
                                                b.build_fptrunc_f32_f64(b.build_bitcast_f64_i64(val))),
+                         kTypedElementAliasClass);
+        b.build_br(bb_done);
+        b.position_at_end(not_f32);
+        b.build_br_if(b.build_eq(kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT64)), f64, stub);
+        b.position_at_end(f64);
+        with_alias_class(b.build_store_indexed(Type::f64(), view_data(b, ptr), b.build_zext_i64(ei.idx), 8,
+                                               b.build_bitcast_f64_i64(val)),
                          kTypedElementAliasClass);
         b.build_br(bb_done);
         b.position_at_end(stub);

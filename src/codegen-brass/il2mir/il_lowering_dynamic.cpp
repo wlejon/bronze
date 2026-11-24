@@ -273,4 +273,84 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, PropertyLoweringHelper* arms) 
     return result;
 }
 
+void lower_dynamic_truthy_branch(Builder& b, Value* v,
+                                 BasicBlock* on_true, const std::vector<Value*>& true_args,
+                                 BasicBlock* on_false, const std::vector<Value*>& false_args,
+                                 PropertyLoweringHelper* arms) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "truthy_br_" + std::to_string(cur->parent()->next_block_id());
+
+    BasicBlock* true_tgt = on_true;
+    if (!true_args.empty()) {
+        true_tgt = b.append_block(prefix + "_t");
+        b.position_at_end(true_tgt);
+        b.build_br(on_true, true_args);
+    }
+    BasicBlock* false_tgt = on_false;
+    if (!false_args.empty()) {
+        false_tgt = b.append_block(prefix + "_f");
+        b.position_at_end(false_tgt);
+        b.build_br(on_false, false_args);
+    }
+
+    BasicBlock* not_true = b.append_block(prefix + "_nottrue");
+    BasicBlock* not_obj = b.append_block(prefix + "_notobj");
+    BasicBlock* classify = b.append_block(prefix + "_classify");
+    BasicBlock* num_bb = b.append_block(prefix + "_num");
+    BasicBlock* not_f64 = b.append_block(prefix + "_notf64");
+    BasicBlock* int_bb = b.append_block(prefix + "_int");
+    BasicBlock* not_num = b.append_block(prefix + "_notnum");
+    BasicBlock* str_bb = b.append_block(prefix + "_str");
+    BasicBlock* slow_bb = b.append_block(prefix + "_slow");
+
+    auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_eq(v, bits(kBoolTag | 1)), true_tgt, not_true);
+
+    b.position_at_end(not_true);
+    Value* is_falsy_flag = b.build_ule(b.build_sub(v, bits(kBoolTag)), bits(kUndefinedTag - kBoolTag));
+    b.build_br_if(is_falsy_flag, false_tgt, not_obj);
+
+    b.position_at_end(not_obj);
+    Value* is_object = b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT));
+    b.build_br_if(is_object, true_tgt, classify);
+
+    b.position_at_end(classify);
+    Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
+    b.build_br_if(is_num, num_bb, not_f64);
+
+    b.position_at_end(num_bb);
+    Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
+    Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
+    b.build_br_if(num_true, true_tgt, false_tgt);
+
+    b.position_at_end(not_f64);
+    Value* is_int =
+        b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
+                    bits(uint64_t{1} << BRONZE_ABI_VALUE_TAG_SHIFT));
+    b.build_br_if(is_int, int_bb, not_num);
+
+    b.position_at_end(int_bb);
+    Value* int_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
+    b.build_br_if(int_true, true_tgt, false_tgt);
+
+    b.position_at_end(not_num);
+    Value* is_str = b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_STRING));
+    if (arms) {
+        arms->slow_branch(b, is_str, str_bb, slow_bb);
+    } else {
+        b.build_br_if(is_str, str_bb, slow_bb);
+    }
+
+    b.position_at_end(str_bb);
+    Value* chars = b.build_load(Type::i32(), b.build_and(v, bits(0x0000FFFFFFFFFFFFULL)), BRONZE_ABI_STRING_LENGTH_OFFSET);
+    b.build_br_if(b.build_ne(chars, b.build_iconst_i32(0)), true_tgt, false_tgt);
+
+    b.position_at_end(slow_bb);
+    if (arms) arms->slow_arm(b);
+    Value* res = b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
+    b.build_br_if(res, true_tgt, false_tgt);
+}
+
 } // namespace il2mir

@@ -1,4 +1,5 @@
 #include "il_lowering.h"
+#include "il_lowering_dynamic.h"
 #include "il_call_entry.h"
 #include "il_prop_stubs.h"
 #include "il_lowering_coro.h"
@@ -582,6 +583,32 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     // 4. Lower instructions block by block, in an order where a definition
     // is lowered before its uses (see lowering_order).
+    // When arms are not marked for harvesting, precompute value use counts and
+    // false constants so a trailing `unbox.bool` -> `[!]` -> `branch` fuses
+    // directly into branches without materializing an intermediate 0/1 value.
+    std::unordered_map<uint32_t, uint32_t> use_count;
+    std::unordered_set<uint32_t> false_const_ids;
+    const bool fuse_truthy_branches = !prop_lowering_.arms_marked();
+    if (fuse_truthy_branches) {
+        auto count_uses = [&](const BronzeBlockTarget& tgt) {
+            for (uint32_t id : tgt.args) ++use_count[id];
+        };
+        for (const auto& blk : fn_ast.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == BronzeOp::ConstBool && !inst.imm_bool && inst.result_id != UINT32_MAX) {
+                    false_const_ids.insert(inst.result_id);
+                }
+                for (uint32_t id : inst.operands) ++use_count[id];
+                if (inst.op == BronzeOp::Jump) {
+                    count_uses(inst.target);
+                } else if (inst.op == BronzeOp::Branch) {
+                    count_uses(inst.target);
+                    count_uses(inst.else_target);
+                }
+            }
+        }
+    }
+
     boolean_values_.clear();
     std::vector<uint8_t> loop_headers;
     for (const BronzeBlock* blk_ptr : lowering_order(fn_ast, loop_headers)) {
@@ -598,12 +625,86 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
 
-        for (const auto& inst_ast : blk_ast.instructions) {
+        const auto& insts = blk_ast.instructions;
+        const size_t n_insts = insts.size();
+        size_t fused_unbox_idx = n_insts;
+        size_t fused_neg_idx = n_insts;
+        size_t fused_br_idx = n_insts;
+        bool fused_swap = false;
+        if (fuse_truthy_branches && n_insts >= 2 && insts.back().op == BronzeOp::Branch &&
+            !insts.back().operands.empty()) {
+            const BronzeInstruction& br = insts.back();
+            if (block_map.count(br.target.block_id) && block_map.count(br.else_target.block_id)) {
+                auto is_dynamic_unbox_bool = [&](const BronzeInstruction& inst) {
+                    return inst.op == BronzeOp::Unbox && inst.result_type == BronzeType::Bool &&
+                           inst.result_id != UINT32_MAX && !inst.operands.empty() &&
+                           use_count[inst.result_id] == 1;
+                };
+                const uint32_t br_cond_id = br.operands[0];
+                const BronzeInstruction& prev = insts[n_insts - 2];
+                if (is_dynamic_unbox_bool(prev) && prev.result_id == br_cond_id) {
+                    fused_unbox_idx = n_insts - 2;
+                    fused_br_idx = n_insts - 1;
+                } else if (n_insts >= 3 && prev.op == BronzeOp::CmpEq && prev.result_id != UINT32_MAX &&
+                           prev.result_id == br_cond_id && use_count[prev.result_id] == 1 &&
+                           prev.operands.size() == 2) {
+                    uint32_t unbox_cand_id = UINT32_MAX;
+                    if (false_const_ids.count(prev.operands[1])) unbox_cand_id = prev.operands[0];
+                    else if (false_const_ids.count(prev.operands[0])) unbox_cand_id = prev.operands[1];
+                    if (unbox_cand_id != UINT32_MAX) {
+                        size_t cand_idx = n_insts - 3;
+                        if (n_insts >= 4 && insts[cand_idx].op == BronzeOp::ConstBool &&
+                            insts[cand_idx].result_id != unbox_cand_id) {
+                            cand_idx = n_insts - 4;
+                        }
+                        if (is_dynamic_unbox_bool(insts[cand_idx]) &&
+                            insts[cand_idx].result_id == unbox_cand_id) {
+                            fused_unbox_idx = cand_idx;
+                            fused_neg_idx = n_insts - 2;
+                            fused_br_idx = n_insts - 1;
+                            fused_swap = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (size_t idx = 0; idx < n_insts; ++idx) {
+            if (idx == fused_unbox_idx || idx == fused_neg_idx || idx == fused_br_idx) continue;
+            const auto& inst_ast = insts[idx];
             apply_inst_loc(b, inst_ast);
             if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id,
                                    &cont_counter)) {
                 return false;
             }
+        }
+        if (fused_br_idx < n_insts) {
+            const BronzeInstruction& u = insts[fused_unbox_idx];
+            const BronzeInstruction& br = insts[fused_br_idx];
+            Value* raw_val = get_val_by_id(u.operands[0], b, val_map);
+            if (!raw_val) return false;
+            apply_inst_loc(b, u);
+            set_slow_site_of(u);
+            in_protected_block_ = handler_exception(blk_ast.handler_id) != nullptr;
+            BasicBlock* true_bb = block_map.at(br.target.block_id);
+            BasicBlock* false_bb = block_map.at(br.else_target.block_id);
+            auto get_args = [&](const BronzeBlockTarget& tgt, BasicBlock* target_bb) {
+                std::vector<Value*> args;
+                for (size_t i = 0; i < tgt.args.size(); ++i) {
+                    Value* a = get_val_by_id(tgt.args[i], b, val_map);
+                    if (i < target_bb->params().size() && a) a = edge_arg(a, target_bb->params()[i], b);
+                    args.push_back(a);
+                }
+                return args;
+            };
+            BasicBlock* on_true = fused_swap ? false_bb : true_bb;
+            BasicBlock* on_false = fused_swap ? true_bb : false_bb;
+            std::vector<Value*> true_args = fused_swap ? get_args(br.else_target, false_bb)
+                                                       : get_args(br.target, true_bb);
+            std::vector<Value*> false_args = fused_swap ? get_args(br.target, true_bb)
+                                                        : get_args(br.else_target, false_bb);
+            lower_dynamic_truthy_branch(b, ensure_type(raw_val, Type::i64(), b),
+                                        on_true, true_args, on_false, false_args, &prop_lowering_);
         }
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
         if (blk_ast.cold) {
