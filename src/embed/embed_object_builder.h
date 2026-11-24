@@ -9,10 +9,10 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "embed/embed.h"
-#include "embed/embed_fast_function.h"
 
 namespace bronze::embed {
 
@@ -90,33 +90,44 @@ struct ObjectBuilder {
         set(name, undefined());
     }
 
-    void def(std::string_view name, uint32_t arity, NativeFn fn) {
-        Persistent f(makeFunction(std::move(fn), arity, name));
-        obj.set(setProperty(obj.get(), name, f.get()));
-    }
-
-    // def() through the fast host-call path (embed_fast_function.h): `fn` is
-    // any callable with NativeFn's signature, called through a function
-    // pointer with its arguments copied onto the trampoline's stack rather
-    // than rooted. Same contract as def() except that no shadow-stack frame
-    // is opened for the callback.
     template <typename F>
-    void defFast(std::string_view name, uint32_t arity, F&& fn) {
-        Persistent f(makeFastFunction(std::forward<F>(fn), arity, name));
+        requires std::is_invocable_r_v<Value, std::decay_t<F>&, Value, std::span<const Value>>
+    void def(std::string_view name, uint32_t arity, F&& fn) {
+        Persistent f(makeFunction(std::forward<F>(fn), arity, name));
         obj.set(setProperty(obj.get(), name, f.get()));
     }
 
-    void defFast(std::string_view name, uint32_t arity, FastNativeFn fn, void* data,
-                 HandleDestructor dataDtor) {
-        Persistent f(makeFastFunction(fn, data, dataDtor, arity, name));
+    void def(std::string_view name, uint32_t arity, FastNativeFn fn, void* data,
+             HandleDestructor dataDtor) {
+        Persistent f(makeFunction(fn, data, dataDtor, arity, name));
         obj.set(setProperty(obj.get(), name, f.get()));
     }
 
-    void accessor(std::string_view name, NativeFn getter, NativeFn setter = nullptr) {
+    template <typename G>
+    void accessor(std::string_view name, G&& getter) {
         const std::string getName = "get " + std::string(name);
-        const std::string setName = "set " + std::string(name);
-        Persistent g(makeFunction(std::move(getter), 0, getName));
-        Persistent s(setter ? makeFunction(std::move(setter), 1, setName) : undefined());
+        Persistent g(makeFunction(std::forward<G>(getter), 0, getName));
+        obj.set(defineAccessor(obj.get(), name, g.get(), undefined(), /*enumerable=*/true));
+    }
+
+    template <typename G, typename S>
+    void accessor(std::string_view name, G&& getter, S&& setter) {
+        const std::string getName = "get " + std::string(name);
+        Persistent g(makeFunction(std::forward<G>(getter), 0, getName));
+        Value sVal = undefined();
+        if constexpr (std::is_same_v<std::decay_t<S>, std::nullptr_t>) {
+            (void)setter;
+        } else if constexpr (std::is_same_v<std::decay_t<S>, NativeFn> ||
+                             std::is_pointer_v<std::decay_t<S>>) {
+            if (setter) {
+                const std::string setName = "set " + std::string(name);
+                sVal = makeFunction(std::forward<S>(setter), 1, setName);
+            }
+        } else {
+            const std::string setName = "set " + std::string(name);
+            sVal = makeFunction(std::forward<S>(setter), 1, setName);
+        }
+        Persistent s(sVal);
         obj.set(defineAccessor(obj.get(), name, g.get(), s.get(), /*enumerable=*/true));
     }
 

@@ -8,7 +8,6 @@ PassPipelineOptions pass_pipeline_options(const TranslatorOptions& options) {
     PassPipelineOptions p;
     p.enable_sroa = options.enable_sroa;
     p.enable_inlining = options.enable_inlining;
-    p.enable_speculative_inlining = options.enable_speculative_inlining;
     p.inliner.only_inline_leaf_functions = options.inline_leaf_only;
     p.enable_gvn = options.enable_gvn;
     p.enable_gvn_pre = options.enable_gvn_pre;

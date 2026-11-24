@@ -18,7 +18,6 @@
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
-#include "embed/embed_fast_function.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -36,89 +35,16 @@ namespace bronze::embed {
 namespace {
 
 // One trampoline for every host function — which functions apart is the env
-// cell, never the code pointer. That is why the factory below builds through
-// FunctionHeader::create and NOT bronze_function_singleton: the singleton
+// cell, never the code pointer. That is why makeHostFunctionObject builds
+// through FunctionHeader::create and NOT bronze_function_singleton: the singleton
 // table interns on the code pointer, and every host function sharing this
 // address would collapse into one object, the way closures would if they
 // interned.
-uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
-                        const uint64_t* argv) {
-    // The builtin prologue (rt_roots.h): copy the receiver and the arguments
-    // into rooted slots before anything can allocate, and never read `argv`
-    // again. A frame of our own, because the nearest generated frame roots
-    // only its own slots — and the copy is rooted as the frame's one span,
-    // not slot by slot: this runs on every WebGL call bro makes, and the
-    // per-slot push and pop were the larger half of it.
-    // The block first, so it outlives the frame whose span names it.
-    RootValueBlock block(argc + 1);
-    ShadowStackFrame frame;
-    Value* slots = block.data();
-    slots[0] = Value(this_bits);
-    for (uint32_t i = 0; i < argc; ++i) slots[i + 1] = Value(argv[i]);
-    frame.rootSpan(slots, argc + 1);
-
-    // The std::function lives on the C++ heap, so the pointer is stable —
-    // read once, before the callback can move anything. The environment is
-    // the runtime's own cell, never a program's argument, so it is read
-    // whichever realm made it: a host function is called from every realm.
-    auto* fn = static_cast<NativeFn*>(handleDataAnyRealm(Value(env_bits)));
-    if (!fn) {
-        // Diagnostic dump before dying: what the environment slot actually
-        // holds decides which corruption class this is.
-        Value env(env_bits);
-        char buf[256];
-        const char* shape = "non-object";
-        uint64_t kindBits = 0, slot2 = 0;
-        uint32_t islots = 0;
-        if (env.isObject()) {
-            auto* hdr = env.asObject<HeapObjectHeader>();
-            kindBits = static_cast<uint64_t>(hdr->flags);
-            shape = (hdr->flags == HeapKind::Plain) ? "plain-object" : "other-heap-kind";
-            if (hdr->flags == HeapKind::Plain) {
-                auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
-                islots = obj->internalSlotCount();
-                if (islots >= 3) slot2 = obj->internalSlot(2).rawBits();
-            }
-        }
-        std::snprintf(buf, sizeof buf,
-                      "embed: host fn env not a native handle: env=%016llx (%s kind=%llu "
-                      "islots=%u slot2=%016llx) this=%016llx argc=%u",
-                      (unsigned long long)env_bits, shape, (unsigned long long)kindBits,
-                      islots, (unsigned long long)slot2, (unsigned long long)this_bits, argc);
-        fatal(buf);
-    }
-
-    // The span points at the rooted block itself: the collector updates it in
-    // place, so the arguments the host reads stay current across anything it
-    // does. The receiver is a copy — embed.h tells the host to re-root it
-    // before allocating.
-    //
-    // A C++ exception out of the host (a library's std::invalid_argument, a
-    // bad_alloc for a size a program asked for) becomes the JS error the call
-    // throws, so a native refusing its input is never the process's end. A
-    // JS throw is a BrassException, not a std::exception, and passes through.
-    // The JS error is raised outside the handler, once the C++ exception is
-    // gone.
-    std::string failure;
-    bool outOfMemory = false;
-    try {
-        Value result = (*fn)(slots[0], std::span<const Value>(slots + 1, argc));
-        return result.rawBits();
-    } catch (const std::bad_alloc&) {
-        outOfMemory = true;
-    } catch (const std::exception& e) {
-        failure = e.what();
-        if (failure.empty()) failure = "a native call failed";
-    }
-    if (outOfMemory) runtime::rtThrowOutOfMemory();
-    runtime::rtThrowError(runtime::ErrorKind::Error, failure);
-}
-
-
-// A C++ exception out of a fast host function becomes the call's JS error,
-// raised once the C++ exception is gone (as hostTrampoline does). The message
-// is carried in a heap string the handler allocates, so the happy path of a
-// fast call holds nothing but a pointer — no std::string, no TLS access.
+//
+// A C++ exception out of a host function becomes the call's JS error, raised
+// once the C++ exception is gone. The message is carried in a heap string the
+// handler allocates, so the happy path of a host call holds nothing but a
+// pointer — no std::string, no TLS access.
 [[noreturn]] void throwFastHostFailure(std::string* failure) {
     if (!failure) runtime::rtThrowOutOfMemory();
     std::string message = std::move(*failure);
@@ -126,9 +52,9 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
     runtime::rtThrowError(runtime::ErrorKind::Error, message);
 }
 
-// ---- the fast host function (embed_fast_function.h) ------------------------
+// ---- the host function trampoline -----------------------------------------
 
-// The env cell's payload: what makeFastFunction was handed.
+// The env cell's payload: what makeFunction was handed.
 struct FastHost {
     FastNativeFn fn;
     void* data;
@@ -141,7 +67,7 @@ void destroyFastHost(void* p) {
     delete host;
 }
 
-// The env cell is the one makeFastFunction made, and nothing reaches a
+// The env cell is the one makeFunction made, and nothing reaches a
 // function's env slot but the factory: no brand or realm check, only the data
 // slot read (internalSlot keeps its bounds check, which fatals on a cell of
 // the wrong shape rather than reading past it).
@@ -163,7 +89,7 @@ Value callFastHost(FastHost* host, Value self, const Value* args, uint32_t argc)
     throwFastHostFailure(failure);
 }
 
-// More arguments than the stack copy holds: the rooted path, as hostTrampoline.
+// More arguments than the stack copy holds: the rooted path.
 uint64_t fastHostTrampolineWide(FastHost* host, uint64_t this_bits, uint32_t argc,
                                 const uint64_t* argv) {
     RootValueBlock block(argc);
@@ -174,7 +100,7 @@ uint64_t fastHostTrampolineWide(FastHost* host, uint64_t this_bits, uint32_t arg
     return callFastHost(host, Value(this_bits), slots, argc).rawBits();
 }
 
-// The fast trampoline. The arguments are copied into an array in THIS frame
+// The unified host trampoline. The arguments are copied into an array in THIS frame
 // before anything can allocate, and `argv` is never read again: `argv` may be
 // memory no stack names (a builtin's heap-allocated block, rooted only by its
 // own frame and updated there), while every word of this frame is read by the
@@ -228,9 +154,8 @@ Value makeFunction(NativeFn fn, uint32_t arity) {
 
 namespace {
 
-// The function object both factories build around `code`: `env` is the
-// native handle cell owning the host's state. The caller has opened a root
-// frame and rooted `env`.
+// The function object built around `code`: `env` is the native handle cell
+// owning the host's state. The caller has opened a root frame and rooted `env`.
 Value makeHostFunctionObject(NativeFunctionCode code, Rooted<Value>& env, uint32_t arity,
                              std::string_view name) {
     // Same shape as bronze_create_function (rt_object.cpp): allocate first,
@@ -272,25 +197,23 @@ Value makeHostFunctionObject(NativeFunctionCode code, Rooted<Value>& env, uint32
 
 }  // namespace
 
-Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
+Value makeFunction(FastNativeFn fn, void* data, HandleDestructor dataDtor, uint32_t arity,
+                   std::string_view name) {
     ShadowStackFrame frame;
-    // The handle owns the callable; its finalizer is the destructor of a host
-    // function that has become garbage. A stateless lambda, so it converts to
-    // the plain function pointer the registry stores.
-    auto* boxed = new NativeFn(std::move(fn));
-    Rooted<Value> env{makeHandle(boxed, [](void* p) { delete static_cast<NativeFn*>(p); })};
-    return makeHostFunctionObject(hostTrampoline, env, arity, name);
-}
-
-Value makeFastFunction(FastNativeFn fn, void* data, HandleDestructor dataDtor, uint32_t arity,
-                       std::string_view name) {
-    ShadowStackFrame frame;
-    // The same handle-cell env as makeFunction's, owning a FastHost instead
-    // of a std::function: the collector forwards it with the function, and
-    // its finalizer releases the host's data once the function is garbage.
+    // The handle-cell env owns FastHost: the collector forwards it with the
+    // function, and its finalizer releases the host's data once the function is garbage.
     auto* host = new FastHost{fn, data, dataDtor};
     Rooted<Value> env{makeHandle(host, destroyFastHost)};
     return makeHostFunctionObject(fastHostTrampoline, env, arity, name);
+}
+
+Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
+    auto* boxed = new NativeFn(std::move(fn));
+    return makeFunction(
+        [](void* d, Value self, std::span<const Value> args) -> Value {
+            return (*static_cast<NativeFn*>(d))(self, args);
+        },
+        boxed, [](void* d) { delete static_cast<NativeFn*>(d); }, arity, name);
 }
 
 }  // namespace bronze::embed

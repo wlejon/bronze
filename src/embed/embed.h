@@ -5,6 +5,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "runtime/compartment.h"
@@ -639,33 +641,58 @@ BRONZE_EMBED_API void setDynamicImportHook(DynamicImportHook hook);
 // ---- native functions (embed_function.cpp) ---------------------------------
 
 // A host callable, invoked when compiled JS calls the wrapping function
-// object. `args` points at GC-ROOTED slots the collector updates in place, so
-// the span stays current across anything the callback does; `thisValue` is a
-// plain copy, which as a local stays current across the callback's
-// allocations (the GC contract above).
+// object. Arguments up to `kFastInlineArgs` are copied into the trampoline's
+// native stack frame and kept current across allocating calls by the
+// collector's conservative stack scan (`fastHostTrampoline`); calls with more
+// arguments take the rooted path (`fastHostTrampolineWide`). `thisValue` is a
+// plain copy, current as a local as with any other Value.
 //
-// To throw into JS, call one of the throw helpers below. Their exception is
-// the only one that may leave a callback: generated code unwinds it to the
-// program's `catch`. No other C++ exception may escape a callback: JS
-// `catch` cannot see it, and nothing between the callback and the host's
-// own entry point is prepared for it.
+// No ShadowStackFrame is opened automatically for the callback. Everything on
+// the embed surface opens its own where needed; any callback that reaches past
+// embed into bronze::runtime::Rooted<> directly must open a ShadowStackFrame first.
+//
+// To throw into JS, call one of the throw helpers below. Their exception, plus
+// std::bad_alloc / std::exception (converted to JS out-of-memory / Error),
+// unwind cleanly to JS `catch`.
 using NativeFn = std::function<Value(Value thisValue, std::span<const Value> args)>;
+using FastNativeFn = Value (*)(void* data, Value thisValue, std::span<const Value> args);
 
-// Wrap `fn` into a bronze function object callable from compiled JS. The
-// closure state rides in the function's environment slot as a native handle
-// (see below), so it survives collections and is destroyed when the function
-// object dies. `arity` is the count short calls are padded to (undefined
-// fill), not the JS `length`. ALLOCATES.
+inline constexpr uint32_t kFastInlineArgs = 16;
+
+// Wrap `fn` (+ `data`) or `NativeFn` into a bronze function object callable from
+// compiled JS. `arity` is the count short calls are padded to (undefined fill)
+// and sets `.length`. `name` empty leaves the function unnamed, as native builtins
+// default to; passing a name sets `.name` and populates profiler reports. ALLOCATES.
+BRONZE_EMBED_API Value makeFunction(FastNativeFn fn, void* data, HandleDestructor dataDtor,
+                                    uint32_t arity, std::string_view name = {});
 BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity = 0);
-
-// The same, NAMED. `f.name` on an unnamed host function is a hard refusal
-// (rt_state.cpp says why an absent name is not an empty one) and `setProperty`
-// refuses the key outright, so this is the only way in — and it is needed by a
-// host that stands in for a language feature which names what it builds:
-// CreateDynamicFunction calls every function it makes `anonymous`, and library
-// code reads that. `arity` becomes `length` too, since 10.2.9 and 10.2.10 fill
-// the pair together. ALLOCATES.
 BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name);
+
+// Callable `Value(Value thisValue, std::span<const Value> args)` overload
+// avoiding std::function heap boxing and double indirection (captureless
+// lambdas carry zero boxed state). ALLOCATES.
+template <typename F>
+    requires (!std::is_same_v<std::decay_t<F>, NativeFn> &&
+              std::is_invocable_r_v<Value, std::decay_t<F>&, Value, std::span<const Value>>)
+Value makeFunction(F&& f, uint32_t arity = 0, std::string_view name = {}) {
+    using Fn = std::decay_t<F>;
+    if constexpr (std::is_empty_v<Fn> && std::is_default_constructible_v<Fn>) {
+        (void)f;
+        return makeFunction(
+            [](void*, Value self, std::span<const Value> args) -> Value {
+                Fn fn{};
+                return fn(self, args);
+            },
+            nullptr, nullptr, arity, name);
+    } else {
+        auto* boxed = new Fn(std::forward<F>(f));
+        return makeFunction(
+            [](void* d, Value self, std::span<const Value> args) -> Value {
+                return (*static_cast<Fn*>(d))(self, args);
+            },
+            boxed, [](void* d) { delete static_cast<Fn*>(d); }, arity, name);
+    }
+}
 
 // Raise into the compiled program, exactly as the builtins in
 // src/runtime/builtin_*.cpp do: each throws the runtime's one exception type
