@@ -273,11 +273,19 @@ uint64_t replaceLiteral(Rooted<Value>& self, Rooted<Value>& searchValue,
     Units out;
     out.reserve(input.size());
     size_t at = 0;
-    const std::basic_string_view<uint16_t> hayView(input.data(), input.size());
-    const std::basic_string_view<uint16_t> needleView(needle.data(), needle.size());
+    // string_view::find over the code units, by std::search: basic_string_view
+    // <uint16_t> needs char_traits<uint16_t>, which libc++ deprecates. Past the
+    // end there is no match, not even of an empty needle.
+    constexpr size_t kNone = static_cast<size_t>(-1);
+    const auto findFrom = [&](size_t from) -> size_t {
+        if (from > input.size()) return kNone;
+        const auto it = std::search(input.begin() + from, input.end(), needle.begin(), needle.end());
+        if (it == input.end() && !needle.empty()) return kNone;
+        return static_cast<size_t>(it - input.begin());
+    };
     for (;;) {
-        const size_t found = hayView.find(needleView, at);
-        if (found == std::basic_string_view<uint16_t>::npos) break;
+        const size_t found = findFrom(at);
+        if (found == kNone) break;
         string_regexp::appendUnitsSlice(out, input, at, found);
         MatchPieces pieces;
         pieces.start = found;
