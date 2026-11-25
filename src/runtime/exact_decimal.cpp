@@ -251,25 +251,26 @@ std::string exactScaledDigits(double x, int k) {
     decompose(mag, mantissa, exponent);
 
 #if defined(__SIZEOF_INT128__)
+    __extension__ using u128 = unsigned __int128;
     // The same quotient in 128 bits where it fits, which is every double
     // with up to 22 digits asked for whose scaled value is below 2^127:
     // m < 2^53 and 10^22 < 2^74, so m * 10^k cannot overflow, and a shift
     // right of 128 or more leaves less than a half.
     if (k >= 0 && k <= 22) {
-        unsigned __int128 scaled = mantissa;
+        u128 scaled = mantissa;
         for (int i = 0; i < k; ++i) scaled *= 10;
         bool fits = true;
         if (exponent >= 0) {
             int width = 0;
-            for (unsigned __int128 v = scaled; v != 0; v >>= 1) ++width;
+            for (u128 v = scaled; v != 0; v >>= 1) ++width;
             fits = width + exponent <= 127;
             if (fits) scaled <<= exponent;
         } else if (-exponent >= 128) {
             scaled = 0;
         } else {
             const int shift = -exponent;
-            const unsigned __int128 half = static_cast<unsigned __int128>(1) << (shift - 1);
-            const unsigned __int128 rest = scaled & ((half << 1) - 1);
+            const u128 half = static_cast<u128>(1) << (shift - 1);
+            const u128 rest = scaled & ((half << 1) - 1);
             scaled = (scaled >> shift) + (rest >= half ? 1 : 0);
         }
         if (fits) {
