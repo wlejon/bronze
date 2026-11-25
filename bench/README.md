@@ -445,7 +445,7 @@ cat > spec.json <<'JSON'
 JSON
 
 # 3. interleave
-python bench/tools/interleave.py spec.json 51
+bronze run bench/tools/interleave.js -- spec.json 51
 ```
 
 A column with `"js"` runs under node and exists so a node number is taken

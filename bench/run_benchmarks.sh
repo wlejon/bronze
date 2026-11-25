@@ -244,169 +244,19 @@ fi
 # `wall`. `wall` measures the whole process and is for the Bro render scenes
 # only: those are host applications from another tree, they cannot be taught to
 # self-report from here, and their rows are labelled as including startup.
+BENCH_HELPER="$SCRIPT_DIR/tools/bench_helper.js"
+
 time_command_json() {
     local cmd_json="$1"
     local runs="$2"
     local mode="${3:-self}"
-    python3 -c '
-import sys, subprocess, time, statistics, json, re
-
-cmd = json.loads(sys.argv[1])
-runs = int(sys.argv[2])
-mode = sys.argv[3]
-
-LINE = re.compile(r"^\[bench\] (\S+) ms=([0-9.]+)", re.M)
-
-def elapsed(p, wall_ms):
-    """The number this run contributes, in ms."""
-    if mode == "wall":
-        return wall_ms
-    found = LINE.findall(p.stderr or "")
-    if not found:
-        return None
-    # A fixture with several timed regions (typed_array_loop, call_chain_kernel)
-    # contributes their SUM: the report has one row per fixture, and the row is
-    # the compute the fixture did. interleave.py is the tool that keeps regions
-    # apart when the difference between them is the question.
-    return sum(float(v) for _, v in found)
-
-# Warmup run (discarded)
-try:
-    p_warm = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if p_warm.returncode != 0:
-        print(json.dumps({"error": f"Warmup exit code {p_warm.returncode}: {p_warm.stderr.strip()}"}))
-        sys.exit(0)
-except Exception as e:
-    print(json.dumps({"error": f"Warmup failed: {str(e)}"}))
-    sys.exit(0)
-
-timings = []
-last_out = p_warm.stdout or ""
-last_err = p_warm.stderr or ""
-for _ in range(runs):
-    t0 = time.perf_counter()
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    t1 = time.perf_counter()
-    if p.returncode != 0:
-        print(json.dumps({"error": f"Run exit code {p.returncode}: {p.stderr.strip()}"}))
-        sys.exit(0)
-    ms = elapsed(p, (t1 - t0) * 1000.0)
-    if ms is None:
-        print(json.dumps({"error": "no [bench] line on stderr: the fixture does not "
-                                   "time itself through bench/harness.js"}))
-        sys.exit(0)
-    timings.append(ms)
-    last_out = p.stdout or ""
-    last_err = p.stderr or ""
-
-timings.sort()
-med = statistics.median(timings)
-mn = min(timings)
-mx = max(timings)
-mean_val = statistics.mean(timings)
-stdev_val = statistics.stdev(timings) if len(timings) > 1 else 0.0
-
-# The checksum comes off STDOUT. The `[bench]` lines are on stderr and are the
-# one deliberately nondeterministic thing a fixture prints, so they must never
-# be mistaken for the output a run is identified by.
-combined_lines = [line.strip()
-                  for line in last_out.splitlines() + last_err.splitlines()
-                  if line.strip() and not line.strip().startswith("[bench]")]
-checksum_line = ""
-for line in reversed(combined_lines):
-    if "[console]" in line:
-        line = line[line.find("[console]") + len("[console]"):].strip()
-    if "checksum=" in line or line.startswith("APP ") or line.startswith("DRV "):
-        checksum_line = line
-        break
-if not checksum_line and combined_lines:
-    checksum_line = combined_lines[-1]
-
-print(json.dumps({
-    "median_ms": round(med, 2),
-    "min_ms": round(mn, 2),
-    "max_ms": round(mx, 2),
-    "mean_ms": round(mean_val, 2),
-    "stdev_ms": round(stdev_val, 2),
-    "measured": mode,
-    "timings": [round(t, 2) for t in timings],
-    "output": checksum_line
-}))
-' "$cmd_json" "$runs" "$mode"
+    "$BRONZE_BIN" run "$BENCH_HELPER" -- time "$cmd_json" "$runs" "$mode"
 }
 
 # --- Profile run helper ---
 profile_command_json() {
     local cmd_json="$1"
-    python3 -c '
-import sys, subprocess, json, os
-
-cmd = json.loads(sys.argv[1])
-env = os.environ.copy()
-env["BRONZE_PROFILE"] = "1"
-env["BRONZE_IC_LOG"] = "1"
-env["BRONZE_GC_LOG"] = "1"
-env["WSLENV"] = "BRONZE_PROFILE:BRONZE_IC_LOG:BRONZE_GC_LOG"
-
-try:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
-    output = (p.stdout or "") + "\n" + (p.stderr or "")
-    
-    # Parse total helpers and top 3 helpers
-    top_helpers = []
-    total_helpers = 0
-    in_profile = False
-    for line in output.splitlines():
-        line_s = line.strip()
-        if "Total Dynamic ABI Helper Invocations:" in line_s:
-            parts = line_s.split(":")
-            if len(parts) > 1:
-                try:
-                    total_helpers = int(parts[1].strip())
-                except:
-                    pass
-        elif "=== Bronze Runtime Profile" in line_s:
-            in_profile = True
-        elif in_profile and line_s.startswith("---"):
-            continue
-        elif in_profile and ("=== Bronze GC Log" in line_s or line_s.startswith("===")):
-            in_profile = False
-        elif in_profile and line_s:
-            parts = line_s.split()
-            if len(parts) >= 2 and parts[0].startswith("bronze_"):
-                hname = parts[0]
-                try:
-                    hcount = int(parts[1])
-                    top_helpers.append({"name": hname, "count": hcount})
-                except:
-                    pass
-
-    # Parse top IC miss reason
-    top_miss = ""
-    in_miss = False
-    for line in output.splitlines():
-        line_s = line.strip()
-        if "--- bronze_prop_get Misses by Reason" in line_s or "--- bronze_prop_set Misses by Reason" in line_s:
-            in_miss = True
-        elif in_miss and line_s.startswith("---"):
-            continue
-        elif in_miss and line_s.startswith("==="):
-            in_miss = False
-        elif in_miss and line_s and not top_miss:
-            parts = line_s.split()
-            if len(parts) >= 2:
-                top_miss = f"{parts[0]} ({parts[1]})"
-                in_miss = False
-
-    res = {
-        "total_helpers": total_helpers,
-        "top_helpers": top_helpers[:3],
-        "top_miss": top_miss
-    }
-    print(json.dumps(res))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-' "$cmd_json"
+    "$BRONZE_BIN" run "$BENCH_HELPER" -- profile "$cmd_json"
 }
 
 # --- Benchmark Registry ---
@@ -494,7 +344,7 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
         stats_infer="{}"
         profile_infer="{}"
         if [[ $NOINFER_ONLY -eq 0 && -f "$exe_infer" ]]; then
-            cmd_infer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_infer")"
+            cmd_infer_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$exe_infer")"
             stats_infer="$(time_command_json "$cmd_infer_json" "$RUNS")"
             if [[ $DO_PROFILE -eq 1 ]]; then
                 profile_infer="$(profile_command_json "$cmd_infer_json")"
@@ -504,7 +354,7 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
         # Time no-infer executable
         stats_noinfer="{}"
         if [[ $INFER_ONLY -eq 0 && -f "$exe_noinfer" ]]; then
-            cmd_noinfer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_noinfer")"
+            cmd_noinfer_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$exe_noinfer")"
             stats_noinfer="$(time_command_json "$cmd_noinfer_json" "$RUNS")"
         fi
 
@@ -514,66 +364,7 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
         fi
 
         # Parse stats and combine with Node baseline
-        record_json="$(python3 -c '
-import sys, json, os
-
-name = sys.argv[1]
-desc = sys.argv[2]
-st_inf = json.loads(sys.argv[3]) if sys.argv[3] else {}
-st_noinf = json.loads(sys.argv[4]) if sys.argv[4] else {}
-btype = sys.argv[5]
-baselines_file = sys.argv[6]
-prof_inf = json.loads(sys.argv[7]) if sys.argv[7] else {}
-
-node_med = None
-node_out = ""
-if os.path.exists(baselines_file):
-    try:
-        with open(baselines_file, "r") as f:
-            bdata = json.load(f)
-            benches = bdata.get("benchmarks", {})
-            if name in benches:
-                node_med = benches[name].get("median_ms")
-                node_out = benches[name].get("checksum", "")
-    except:
-        pass
-
-if "error" in st_inf or "error" in st_noinf:
-    err = st_inf.get("error", "") + " " + st_noinf.get("error", "")
-    print(json.dumps({"name": name, "category": "pure-compute", "build_type": btype, "error": err.strip()}))
-    sys.exit(0)
-
-inf_med = st_inf.get("median_ms")
-noinf_med = st_noinf.get("median_ms")
-speedup = round(noinf_med / inf_med, 2) if (inf_med and noinf_med and inf_med > 0) else 1.0
-
-vs_node = round(node_med / inf_med, 2) if (node_med and inf_med and inf_med > 0) else None
-
-status = "N/A"
-if vs_node is not None:
-    if vs_node >= 1.05:
-        status = "WIN"
-    elif vs_node >= 0.95:
-        status = "PARITY"
-    else:
-        status = "BEHIND"
-
-record = {
-    "name": name,
-    "description": desc,
-    "category": "pure-compute",
-    "build_type": btype,
-    "infer": st_inf if st_inf else None,
-    "noinfer": st_noinf if st_noinf else None,
-    "infer_speedup": speedup,
-    "node_median_ms": node_med,
-    "vs_node": vs_node,
-    "status": status,
-    "profile": prof_inf if prof_inf else None,
-    "output_match": (st_inf.get("output") == st_noinf.get("output")) if (st_inf and st_noinf) else True
-}
-print(json.dumps(record))
-' "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_infer")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-pure "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_infer")"
 
         echo "$record_json" >> "$JSONL_OUT"
 
@@ -589,28 +380,10 @@ if [[ $PURE_ONLY -eq 0 && -n "$BRO_PATH" ]]; then
     if [[ -f "$BRO_HOST_SCENEGRAPH" && ( -z "$FILTER" || "render_scenegraph_host" =~ $FILTER || "scenegraph" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/src/bronze_host/app/appdir"
         win_appdir="$(to_win_path "$appdir")"
-        cmd_host_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_SCENEGRAPH" "$win_appdir")"
+        cmd_host_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$BRO_HOST_SCENEGRAPH" "$win_appdir" --headless --frames 30)"
         stats_render="$(time_command_json "$cmd_host_json" "$RUNS" wall)"
 
-        record_json="$(python3 -c '
-import sys, json
-st = json.loads(sys.argv[1])
-btype = sys.argv[2]
-record = {
-    "name": "render_scenegraph_host",
-    "description": "bro-bronze-host Three.js scenegraph (30 frames)",
-    "category": "render-compiled",
-    "build_type": btype,
-    "infer": st,
-    "noinfer": None,
-    "infer_speedup": 1.0,
-    "node_median_ms": None,
-    "vs_node": None,
-    "status": "HOST",
-    "output_match": True
-}
-print(json.dumps(record))
-' "$stats_render" "$BUILD_TYPE")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-render "render_scenegraph_host" "bro-bronze-host Three.js scenegraph (30 frames)" "render-compiled" "HOST" "$stats_render" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -621,28 +394,10 @@ print(json.dumps(record))
     if [[ -f "$BRO_HOST_WILD" && ( -z "$FILTER" || "render_wild_orbit_host" =~ $FILTER || "wild" =~ $FILTER || "orbit" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/tests/bronze_host/appdir_wild"
         win_appdir="$(to_win_path "$appdir")"
-        cmd_wild_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_WILD" "$win_appdir")"
+        cmd_wild_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$BRO_HOST_WILD" "$win_appdir" --headless --frames 30)"
         stats_wild="$(time_command_json "$cmd_wild_json" "$RUNS" wall)"
 
-        record_json="$(python3 -c '
-import sys, json
-st = json.loads(sys.argv[1])
-btype = sys.argv[2]
-record = {
-    "name": "render_wild_orbit_host",
-    "description": "bro-bronze-host-wild full Three.js scene + textures + OrbitControls (30 frames)",
-    "category": "render-compiled",
-    "build_type": btype,
-    "infer": st,
-    "noinfer": None,
-    "infer_speedup": 1.0,
-    "node_median_ms": None,
-    "vs_node": None,
-    "status": "HOST",
-    "output_match": True
-}
-print(json.dumps(record))
-' "$stats_wild" "$BUILD_TYPE")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-render "render_wild_orbit_host" "bro-bronze-host-wild full Three.js scene + textures + OrbitControls (30 frames)" "render-compiled" "HOST" "$stats_wild" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -653,28 +408,10 @@ print(json.dumps(record))
     if [[ -f "$BRO_HOST_INSTANCED" && ( -z "$FILTER" || "render_instanced_host" =~ $FILTER || "instanced" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/tests/bronze_host/appdir_instanced"
         win_appdir="$(to_win_path "$appdir")"
-        cmd_inst_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_INSTANCED" "$win_appdir")"
+        cmd_inst_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$BRO_HOST_INSTANCED" "$win_appdir" --headless --frames 30)"
         stats_inst="$(time_command_json "$cmd_inst_json" "$RUNS" wall)"
 
-        record_json="$(python3 -c '
-import sys, json
-st = json.loads(sys.argv[1])
-btype = sys.argv[2]
-record = {
-    "name": "render_instanced_host",
-    "description": "bro-bronze-host-instanced 2,500 instances under load (30 frames)",
-    "category": "render-compiled",
-    "build_type": btype,
-    "infer": st,
-    "noinfer": None,
-    "infer_speedup": 1.0,
-    "node_median_ms": None,
-    "vs_node": None,
-    "status": "HOST",
-    "output_match": True
-}
-print(json.dumps(record))
-' "$stats_inst" "$BUILD_TYPE")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-render "render_instanced_host" "bro-bronze-host-instanced 2,500 instances under load (30 frames)" "render-compiled" "HOST" "$stats_inst" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -687,28 +424,10 @@ print(json.dumps(record))
         script_file="$SCRIPT_DIR/render_bench_interpreted.js"
         win_smoke="$(to_win_path "$smoke_dir")"
         win_script="$(to_win_path "$script_file")"
-        cmd_interp_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$BRO_HEADLESS" "$win_smoke" "$win_script")"
+        cmd_interp_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$BRO_HEADLESS" "$win_smoke" "$win_script")"
         stats_interp="$(time_command_json "$cmd_interp_json" "$RUNS" wall)"
 
-        record_json="$(python3 -c '
-import sys, json
-st = json.loads(sys.argv[1])
-btype = sys.argv[2]
-record = {
-    "name": "render_interpreted_bro",
-    "description": "bro-headless 3D scene, script compiled in process by bronze (30 frames)",
-    "category": "render-interpreted",
-    "build_type": btype,
-    "infer": st,
-    "noinfer": None,
-    "infer_speedup": 1.0,
-    "node_median_ms": None,
-    "vs_node": None,
-    "status": "INTERP",
-    "output_match": True
-}
-print(json.dumps(record))
-' "$stats_interp" "$BUILD_TYPE")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-render "render_interpreted_bro" "bro-headless 3D scene, script compiled in process by bronze (30 frames)" "render-interpreted" "INTERP" "$stats_interp" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -718,95 +437,5 @@ fi
 
 # --- Print Markdown Results Table ---
 if [[ $JSON_ONLY -eq 0 ]]; then
-    python3 -c '
-import sys, json
-
-jsonl_file = sys.argv[1]
-do_prof = int(sys.argv[2])
-records = []
-try:
-    with open(jsonl_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-except Exception as e:
-    print(f"Failed to read results: {e}")
-    sys.exit(0)
-
-if not records:
-    print("No benchmark results generated.")
-    sys.exit(0)
-
-print("\n### Pure-Compute Benchmarks (Compiled Native vs Node.js Baseline)")
-print("| Benchmark | Inferred (ms) | Node.js (ms) | vs Node | Status | No-Infer (ms) | Speedup (Infer) | Checksum / Output |")
-print("|---|---|---|---|---|---|---|---|")
-
-for r in records:
-    if r.get("category") != "pure-compute":
-        continue
-    name = r.get("name", "")
-    if "error" in r:
-        err = r.get("error", "")
-        print(f"| `{name}` | ERROR | - | - | ERROR | - | - | {err} |")
-        continue
-    inf_st = r.get("infer") or {}
-    noinf_st = r.get("noinfer") or {}
-    inf_med = "{:.2f}".format(inf_st.get("median_ms", 0.0)) if inf_st else "-"
-    noinf_med = "{:.2f}".format(noinf_st.get("median_ms", 0.0)) if noinf_st else "-"
-    speedup = "{:.2f}x".format(r.get("infer_speedup", 1.0)) if (inf_st and noinf_st) else "-"
-    
-    node_med = "{:.2f}".format(r["node_median_ms"]) if r.get("node_median_ms") is not None else "-"
-    vs_node = "{:.2f}x".format(r["vs_node"]) if r.get("vs_node") is not None else "-"
-    status = r.get("status", "-")
-    if status == "WIN":
-        status_badge = "**WIN**"
-    elif status == "PARITY":
-        status_badge = "PARITY"
-    elif status == "BEHIND":
-        status_badge = "BEHIND"
-    else:
-        status_badge = "-"
-
-    out = inf_st.get("output", "") if inf_st else noinf_st.get("output", "")
-    print(f"| `{name}` | **{inf_med}** | {node_med} | **{vs_node}** | {status_badge} | {noinf_med} | {speedup} | `{out}` |")
-
-if do_prof:
-    print("\n#### Profile Miss Breakdown (--profile)")
-    print("| Benchmark | Total Helpers | Top ABI Helpers | Top IC Miss Reason |")
-    print("|---|---|---|---|")
-    for r in records:
-        if r.get("category") != "pure-compute":
-            continue
-        name = r.get("name", "")
-        prof = r.get("profile") or {}
-        if not prof:
-            continue
-        tot = prof.get("total_helpers", 0)
-        helpers = ", ".join([h.get("name", "") + ": " + str(h.get("count", 0)) for h in prof.get("top_helpers", [])]) or "None"
-        top_miss = prof.get("top_miss") or "None"
-        print(f"| `{name}` | {tot:,} | {helpers} | {top_miss} |")
-
-render_records = [r for r in records if r.get("category") != "pure-compute"]
-if render_records:
-    print("\n### Render Scene Benchmarks (Bro Host Execution)")
-    print("| Scene Benchmark | Mode / Runtime | Median (ms) | Min (ms) | Max (ms) | Checksum / Status |")
-    print("|---|---|---|---|---|---|")
-    for r in render_records:
-        name = r.get("name", "")
-        if "error" in r:
-            cat = r.get("category", "")
-            err = r.get("error", "")
-            print(f"| `{name}` | {cat} | ERROR | - | - | {err} |")
-            continue
-        st = r.get("infer") or {}
-        cat = "Compiled Host" if "compiled" in r.get("category", "") else "bro-headless (in-process bronze)"
-        med = "{:.2f}".format(st.get("median_ms", 0.0))
-        mn = "{:.2f}".format(st.get("min_ms", 0.0))
-        mx = "{:.2f}".format(st.get("max_ms", 0.0))
-        out = st.get("output", "")
-        print(f"| `{name}` | {cat} | **{med}** | {mn} | {mx} | `{out}` |")
-
-print("\nMachine-readable results saved to `" + jsonl_file + "`.")
-' "$JSONL_OUT" "$DO_PROFILE"
+    "$BRONZE_BIN" run "$BENCH_HELPER" -- report "$JSONL_OUT" "$DO_PROFILE"
 fi

@@ -214,12 +214,12 @@ jobs:
         run: |
           PKGDIR="$(pwd)/dist/$PKG"
           cd "$RUNNER_TEMP"
-          echo 'const xs = [1, 2, 3].map(x => x * x); console.log("bronze " + xs.join("+"));' > smoke.js
+          echo 'const xs = [1, 2, 3].map(x => x * x); console.log("bronze " + xs.join("+") + " " + Bronze.args.join(","));' > smoke.js
           if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; else EXE=""; fi
           "$PKGDIR/bronze$EXE" build smoke.js -o "smoke$EXE"
-          OUT="$("./smoke$EXE")"
+          OUT="$("./smoke$EXE" ok)"
           echo "$OUT"
-          [ "$OUT" = "bronze 1+4+9" ]
+          [ "$OUT" = "bronze 1+4+9 ok" ]
           # The module half of the layout: an --emit-shared module is written
           # with no host beside it. Running it needs a host of its own, so the
           # build succeeding IS the check.

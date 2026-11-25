@@ -7,6 +7,7 @@
 
 #include "eval/eval.h"
 #include "embed/embed.h"
+#include "host/cli_sys.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/sampler.h"
@@ -33,6 +34,7 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
+    host::installCliHost({{}, host::ownExecutablePath(), &eval::stopBackgroundCompiles});
     embed::CallResult res = eval::evalScript(
         code,
         eval::EvalOptions{.filename = "<eval>", .livesForProcess = true, .emitDebugInfo = emitDebugInfo, .tier = tier});
@@ -47,7 +49,8 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
 
 int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
                      std::optional<ExecutionTier> tier, bool emitDebugInfo,
-                     const std::optional<std::string>& classic) {
+                     const std::optional<std::string>& classic,
+                     const std::vector<std::string>& scriptArgs) {
     applyTier(tier);
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
@@ -57,6 +60,7 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
     runtime::samplerNoteJsThread();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
+    host::installCliHost({scriptArgs, host::ownExecutablePath(), &eval::stopBackgroundCompiles});
     embed::CallResult res = eval::evalFile(
         filePath, eval::EvalOptions{.filename = filePath,
                           .hostGlobals = hostGlobals,

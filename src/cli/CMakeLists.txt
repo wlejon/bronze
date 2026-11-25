@@ -10,7 +10,7 @@ if(MSVC)
     target_compile_definitions(bronze_cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-add_executable(bronze main.cpp run.cpp)
+add_executable(bronze main.cpp run.cpp ../host/cli_sys.cpp ../host/cli_proc.cpp)
 target_link_libraries(bronze PRIVATE bronze::cli bronze::eval)
 if(MSVC)
     target_compile_options(bronze PRIVATE /W4 /WX /permissive- /wd4324 /wd4702)

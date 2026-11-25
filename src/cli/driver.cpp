@@ -358,6 +358,18 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
             hostGlobals.push_back(root);
         }
     }
+    // Standalone executables run under `bronze_host`, which always exposes the
+    // lazy `Bronze` CLI/OS host namespace (`src/host/cli_sys.cpp`).
+    if (!emitObj && !emitShared) {
+        bool hasBronze = false;
+        for (const auto& g : hostGlobals) {
+            if (g == "Bronze") {
+                hasBronze = true;
+                break;
+            }
+        }
+        if (!hasBronze) hostGlobals.push_back("Bronze");
+    }
     types::PinManifest pins;
     if (!pinsPath.empty()) {
         std::string manifestErr;
@@ -531,8 +543,9 @@ static int runEval(std::string_view code, std::optional<ExecutionTier> tier = st
 
 static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals,
                         std::optional<ExecutionTier> tier, bool emitDebugInfo,
-                        const std::optional<std::string>& classic) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo, classic);
+                        const std::optional<std::string>& classic,
+                        const std::vector<std::string>& scriptArgs) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo, classic, scriptArgs);
     return fail("error: run not supported in this build\n");
 }
 
@@ -606,8 +619,40 @@ int runDriver(int argc, char** argv) {
         std::optional<ExecutionTier> tier;
         std::optional<std::string> classic;
         bool emitDebugInfo = false;
+        std::vector<std::string> scriptArgs;
         for (int i = 2; i < argc; ++i) {
             std::string_view arg = argv[i];
+            if (arg == "--") {
+                for (int j = i + 1; j < argc; ++j) scriptArgs.emplace_back(argv[j]);
+                break;
+            }
+            if (!sourcePath.empty()) {
+                // Once `<file>` is named, remaining flags/arguments belong to
+                // the script (`Bronze.args`) unless they are bronze run flags.
+                if (arg == "-g" || arg == "--debug") {
+                    emitDebugInfo = true;
+                } else if (arg == "--classic") {
+                    classic = std::string();
+                } else if (arg.rfind("--classic=", 0) == 0) {
+                    classic = std::string(arg.substr(10));
+                } else if (arg == "--host-globals" && i + 1 < argc) {
+                    hostGlobalsPath = argv[++i];
+                } else if (arg == "--interp") {
+                    tier = ExecutionTier::Tier0_Interpreter;
+                } else if (arg.rfind("--tier=", 0) == 0) {
+                    auto parsed = parseExecutionTier(arg.substr(7));
+                    if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
+                    tier = parsed;
+                } else if (arg == "--tier" && i + 1 < argc) {
+                    auto parsed = parseExecutionTier(argv[++i]);
+                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
+                    tier = parsed;
+                } else {
+                    for (int j = i; j < argc; ++j) scriptArgs.emplace_back(argv[j]);
+                    break;
+                }
+                continue;
+            }
             if (arg == "-g" || arg == "--debug") {
                 emitDebugInfo = true;
             } else if (arg == "--classic") {
@@ -634,10 +679,8 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --tier\n");
                 }
-            } else if (sourcePath.empty()) {
-                sourcePath = argv[i];
             } else {
-                return fail("error: unexpected argument " + std::string(arg) + "\n");
+                sourcePath = argv[i];
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
@@ -646,7 +689,15 @@ int runDriver(int argc, char** argv) {
             std::string err;
             if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) return fail(err);
         }
-        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo, classic);
+        bool hasBronze = false;
+        for (const auto& g : hostGlobals) {
+            if (g == "Bronze") {
+                hasBronze = true;
+                break;
+            }
+        }
+        if (!hasBronze) hostGlobals.push_back("Bronze");
+        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo, classic, scriptArgs);
     }
 
 

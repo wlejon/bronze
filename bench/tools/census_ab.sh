@@ -25,7 +25,7 @@
 # the first evidence of what inference is worth on three.js-shaped code that
 # nobody has hand-written a manifest for.
 #
-# The protocol is bench/tools/interleave.py's and is not negotiable: one run of
+# The protocol is bench/tools/interleave.js's and is not negotiable: one run of
 # every column per round, medians, warmup discarded, 101 rounds for a kernel and
 # 51 for a millisecond fixture. Every fixture times its own compute region
 # (bench/harness.js), so no column here carries a process startup and no column
@@ -105,20 +105,9 @@ for t in none inf infobs; do
 done
 echo "tj: byte-identical to main.expected in all three columns"
 # and no cspec_tj.json: `main.js` does not time itself, so it has no column
-# interleave.py could read. Its three builds exist for the cmp above.
+# interleave.js could read. Its three builds exist for the cmp above.
 echo "built"
 
 # --- 3. THE SPECS ------------------------------------------------------------
-python3 - "$OUT" <<'SPEC'
-import json, os, sys
-out = sys.argv[1]
-cols = {"es": ["hand", "inf"], "m4": ["hand", "inf", "infobs"], "nl": ["hand", "inf"]}
-for key, tags in cols.items():
-    json.dump([{"name": t, "exe": f"./{key}_{t}.exe"} for t in tags],
-              open(os.path.join(out, f"cspec_{key}.json"), "w"), indent=1)
-json.dump([{"name": t, "exe": f"./tm_{t}.exe"} for t in ["none", "hand", "inf", "infobs"]],
-          open(os.path.join(out, "cspec_tm.json"), "w"), indent=1)
-json.dump([{"name": t, "exe": f"./cc_{t}.exe"} for t in ["hand", "inf"]],
-          open(os.path.join(out, "cspec_cc.json"), "w"), indent=1)
-SPEC
+"$B" run "$HERE/tools/bench_helper.js" -- census-specs "$OUT"
 echo "specs written to $OUT"

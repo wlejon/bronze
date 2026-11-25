@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Bronze Benchmark Suite Runner (PowerShell native)
 .DESCRIPTION
@@ -110,150 +110,23 @@ if (-not $Json) {
     Write-Host ""
 }
 
-# Helper to run timing in Python.
+# Helper to run timing via bronze (`bench/tools/bench_helper.js`).
 #
 # WHAT IS MEASURED IS WHAT THE FIXTURE PRINTED — every fixture times its own
 # compute region through bench/harness.js and writes `[bench] <region> ms=<f>`
 # to stderr. The process wall clock is not consulted: startup is not a fact
 # about the compiler, and an empty bronze program already costs ~5.9 ms of it.
+$BenchHelper = Join-Path $ScriptDir "tools\bench_helper.js"
+
 function Measure-CommandStats($exePath, $numRuns) {
-    $code = @'
-import sys, subprocess, statistics, json, re
-
-cmd = [sys.argv[1]]
-runs = int(sys.argv[2])
-
-LINE = re.compile(r"^\[bench\] (\S+) ms=([0-9.]+)", re.M)
-
-try:
-    p_warm = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if p_warm.returncode != 0:
-        print(json.dumps({"error": f"Warmup exit code {p_warm.returncode}: {p_warm.stderr.strip()}"}))
-        sys.exit(0)
-except Exception as e:
-    print(json.dumps({"error": f"Warmup failed: {str(e)}"}))
-    sys.exit(0)
-
-timings = []
-last_out = p_warm.stdout or ""
-last_err = p_warm.stderr or ""
-for _ in range(runs):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if p.returncode != 0:
-        print(json.dumps({"error": f"Run exit code {p.returncode}: {p.stderr.strip()}"}))
-        sys.exit(0)
-    # A fixture with several timed regions contributes their SUM: this report
-    # has one row per fixture, and the row is the compute the fixture did.
-    found = LINE.findall(p.stderr or "")
-    if not found:
-        print(json.dumps({"error": "no [bench] line on stderr: the fixture does not "
-                                   "time itself through bench/harness.js"}))
-        sys.exit(0)
-    timings.append(sum(float(v) for _, v in found))
-    last_out = p.stdout or ""
-    last_err = p.stderr or ""
-
-timings.sort()
-med = statistics.median(timings)
-mn = min(timings)
-mx = max(timings)
-mean_val = statistics.mean(timings)
-stdev_val = statistics.stdev(timings) if len(timings) > 1 else 0.0
-
-combined_lines = [line.strip() for line in (last_out + "\n" + last_err).splitlines()
-                  if line.strip() and not line.strip().startswith("[bench]")]
-checksum_line = ""
-for line in reversed(combined_lines):
-    if "[console]" in line:
-        line = line[line.find("[console]") + len("[console]"):].strip()
-    if "checksum=" in line or line.startswith("APP ") or line.startswith("DRV "):
-        checksum_line = line
-        break
-if not checksum_line and combined_lines:
-    checksum_line = combined_lines[-1]
-
-print(json.dumps({
-    "median_ms": round(med, 2),
-    "min_ms": round(mn, 2),
-    "max_ms": round(mx, 2),
-    "mean_ms": round(mean_val, 2),
-    "stdev_ms": round(stdev_val, 2),
-    "timings": [round(t, 2) for t in timings],
-    "output": checksum_line
-}))
-'@
-    $res = $code | python - "$exePath" "$numRuns"
+    $cmdJson = ConvertTo-Json -Compress @($exePath)
+    $res = & $BronzeBin run $BenchHelper -- time $cmdJson "$numRuns" self
     return ($res | ConvertFrom-Json)
 }
 
 function Measure-ProfileStats($exePath) {
-    $code = @'
-import sys, subprocess, json, os
-
-cmd = [sys.argv[1]]
-env = os.environ.copy()
-env["BRONZE_PROFILE"] = "1"
-env["BRONZE_IC_LOG"] = "1"
-env["BRONZE_GC_LOG"] = "1"
-
-try:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
-    output = (p.stdout or "") + "\n" + (p.stderr or "")
-    
-    top_helpers = []
-    total_helpers = 0
-    in_profile = False
-    for line in output.splitlines():
-        line_s = line.strip()
-        if "Total Dynamic ABI Helper Invocations:" in line_s:
-            parts = line_s.split(":")
-            if len(parts) > 1:
-                try:
-                    total_helpers = int(parts[1].strip())
-                except:
-                    pass
-        elif "=== Bronze Runtime Profile" in line_s:
-            in_profile = True
-        elif in_profile and line_s.startswith("---"):
-            continue
-        elif in_profile and ("=== Bronze GC Log" in line_s or line_s.startswith("===")):
-            in_profile = False
-        elif in_profile and line_s:
-            parts = line_s.split()
-            if len(parts) >= 2 and parts[0].startswith("bronze_"):
-                hname = parts[0]
-                try:
-                    hcount = int(parts[1])
-                    top_helpers.append({"name": hname, "count": hcount})
-                except:
-                    pass
-
-    top_miss = ""
-    in_miss = False
-    for line in output.splitlines():
-        line_s = line.strip()
-        if "--- bronze_prop_get Misses by Reason" in line_s or "--- bronze_prop_set Misses by Reason" in line_s:
-            in_miss = True
-        elif in_miss and line_s.startswith("---"):
-            continue
-        elif in_miss and line_s.startswith("==="):
-            in_miss = False
-        elif in_miss and line_s and not top_miss:
-            parts = line_s.split()
-            if len(parts) >= 2:
-                top_miss = f"{parts[0]} ({parts[1]})"
-                in_miss = False
-
-    res = {
-        "total_helpers": total_helpers,
-        "top_helpers": top_helpers[:3],
-        "top_miss": top_miss
-    }
-    print(json.dumps(res))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'@
-    $res = $code | python - "$exePath"
+    $cmdJson = ConvertTo-Json -Compress @($exePath)
+    $res = & $BronzeBin run $BenchHelper -- profile $cmdJson
     return ($res | ConvertFrom-Json)
 }
 

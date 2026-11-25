@@ -148,11 +148,12 @@ the head of brass's main (`cmake/bro_deps.cmake`; a release tag's
 ## Testing
 
 Correctness rests on a differential suite
-([tests/oracle/run.py](tests/oracle/run.py)): JavaScript programs
+([tests/oracle/run.js](tests/oracle/run.js), compiled to `bronze-oracle` by
+`bronze build` itself): JavaScript programs
 whose exact stdout is pinned in committed files derived from ECMA-262. Every
-case compiles and runs twice (with inference and with `--no-infer`) and
-both runs must produce identical bytes, so the analysis and the dynamic
-fallback check each other. Compiled objects carry an ABI fingerprint the
+case runs through `run`, `aot`, `profile`, `switch`, and `adversarial` modes
+(plus the `three.js` and `pixi.js` milestones), and all must produce identical
+bytes. Compiled objects carry an ABI fingerprint the
 runtime verifies at startup, so an object built against an older runtime
 fails at launch with both versions named.
 
@@ -172,8 +173,8 @@ fails at launch with both versions named.
   keeps that true.
 - [docs/env-promotion.md](docs/env-promotion.md) scoped escape analysis and
   environment record optimization.
-- [tests/oracle/run.py](tests/oracle/run.py) (its docstring) how the
-  differential suite runs and what a case is.
+- [tests/oracle/run.js](tests/oracle/run.js) how the
+  self-compiled oracle suite runs and what a case is.
 
 ## License
 

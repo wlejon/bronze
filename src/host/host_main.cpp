@@ -37,6 +37,7 @@
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
+#include "host/cli_sys.h"
 
 namespace {
 
@@ -127,7 +128,7 @@ void* requireSymbol(LibHandle lib, const fs::path& module, const char* name) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     bronze::embed::setupIo();
 
     const fs::path self = ownPath();
@@ -171,6 +172,15 @@ int main() {
     const uint32_t rangeCount =
         *static_cast<const uint32_t*>(requireSymbol(lib, module, "bronze_object_code_range_count"));
     bronze_register_code_ranges(ranges, rangeCount);
+
+    // Expose the lazy `Bronze` CLI/OS host namespace (`args`, `exe`, `fs`,
+    // `path`, `exec`/`spawn`/`waitAny`, `exit`) before running the module.
+    bronze::host::CliHostConfig cliCfg;
+    cliCfg.exePath = bronze::host::ownExecutablePath();
+    if (cliCfg.exePath.empty()) cliCfg.exePath = self.string();
+    cliCfg.args.reserve(argc > 1 ? static_cast<size_t>(argc - 1) : 0);
+    for (int i = 1; i < argc; ++i) cliCfg.args.emplace_back(argv[i]);
+    bronze::host::installCliHost(std::move(cliCfg));
 
     // A GC root frame, the entry, then one drain of the microtask queue —
     // what runMain does for a linked program (embed_module.cpp).

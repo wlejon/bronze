@@ -7,11 +7,12 @@ if(NOT TARGET bronze_runtime_shared)
     return()
 endif()
 
-add_executable(bronze_host host_main.cpp)
+add_executable(bronze_host host_main.cpp cli_sys.cpp cli_proc.cpp)
 # bronze::runtime_shared and NOTHING else from bronze: a second copy of the
 # runtime's state in this process is the two-heaps failure the shared runtime
 # exists to rule out (cmake/bronze_shared_runtime.cmake).
 target_link_libraries(bronze_host PRIVATE bronze::runtime_shared ${CMAKE_DL_LIBS})
+target_include_directories(bronze_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # Beside the runtime, which is where the driver looks for both of them, and
 # where the loader of a copied host finds the runtime it links — the copy and
 # its runtime always travel together (src/cli/link.cpp stages both).

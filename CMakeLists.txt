@@ -131,6 +131,39 @@ add_subdirectory(src/host)
 
 if(BRONZE_IS_TOP_LEVEL)
     add_subdirectory(tools)
+
+    # Self-compiled oracle runner: bronze compiles tests/oracle/run.js into a
+    # native executable (`bronze-oracle`) and CTest executes it across all
+    # modes (plus the three.js and pixi.js milestones) with zero Python.
+    enable_testing()
+    if(CMAKE_CONFIGURATION_TYPES)
+        set(_bronze_oracle_dir "${CMAKE_BINARY_DIR}/oracle/$<CONFIG>")
+    else()
+        set(_bronze_oracle_dir "${CMAKE_BINARY_DIR}/oracle")
+    endif()
+    set(_bronze_oracle_exe "${_bronze_oracle_dir}/bronze-oracle${CMAKE_EXECUTABLE_SUFFIX}")
+    add_custom_command(
+        OUTPUT "${_bronze_oracle_exe}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_bronze_oracle_dir}"
+        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle/run.js" -o "${_bronze_oracle_exe}"
+        DEPENDS bronze bronze_host
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle/run.js"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle/adversarial.js"
+        COMMENT "Building self-compiled bronze-oracle executable"
+        VERBATIM)
+    add_custom_target(bronze_oracle ALL DEPENDS "${_bronze_oracle_exe}")
+
+    add_test(NAME oracle
+        COMMAND "${_bronze_oracle_exe}"
+                --bronze $<TARGET_FILE:bronze>
+                --cases-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle"
+                --modes run,aot,profile,switch,adversarial,threejs)
+    add_test(NAME oracle_pixi
+        COMMAND "${_bronze_oracle_exe}"
+                --bronze $<TARGET_FILE:bronze>
+                --cases-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle"
+                --modes pixi)
+    set_tests_properties(oracle_pixi PROPERTIES LABELS "pixi")
 endif()
 
 

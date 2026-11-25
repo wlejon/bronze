@@ -17,12 +17,14 @@ using RunEvalFn = int (*)(std::string_view, std::optional<ExecutionTier>, bool);
 // EvalOptions::classicScriptMarker, empty for one script).
 using RunFileInJitFn = int (*)(const std::string&, const std::vector<std::string>&,
                               std::optional<ExecutionTier>, bool,
-                              const std::optional<std::string>&);
+                              const std::optional<std::string>&,
+                              const std::vector<std::string>&);
 
 void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn);
 int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier = std::nullopt, bool emitDebugInfo = false);
 int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
                      std::optional<ExecutionTier> tier, bool emitDebugInfo,
-                     const std::optional<std::string>& classic);
+                     const std::optional<std::string>& classic,
+                     const std::vector<std::string>& scriptArgs = {});
 
 }  // namespace bronze::cli
