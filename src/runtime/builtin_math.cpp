@@ -16,6 +16,7 @@
 #include <limits>
 #include <random>
 #include <string>
+#include <vector>
 
 #include <brass/runtime/fast_trig.hpp>
 
@@ -85,31 +86,20 @@ uint64_t mathMax(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 }
 
 uint64_t mathHypot(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    // std::hypot's two- and three-argument forms are the ones that avoid
-    // intermediate overflow; past that, fall back to the naive sum, which
-    // is what the spec's "implementation-approximated" licence allows.
+    // V8's Math.hypot (brass::math::hypot_f64): scaled by the largest
+    // magnitude, so no square overflows, and the same bits on every platform,
+    // where std::hypot is each libm's own. Every argument is converted, left
+    // to right, before any is looked at: ToNumber runs user valueOf code.
     if (argc == 0) return Value::fromDouble(0.0).rawBits();
-    if (argc == 1) return Value::fromDouble(std::abs(argAt(argc, argv, 0))).rawBits();
-    // Each argument is converted in its own statement: ToNumber runs user
-    // valueOf code, which must see the arguments converted left to right,
-    // and a call's own argument list has no evaluation order in C++.
-    if (argc == 2) {
-        const double a = argAt(argc, argv, 0);
-        const double b = argAt(argc, argv, 1);
-        return Value::fromDouble(std::hypot(a, b)).rawBits();
+    double small[8];
+    std::vector<double> big;
+    double* vals = small;
+    if (argc > 8) {
+        big.resize(argc);
+        vals = big.data();
     }
-    if (argc == 3) {
-        const double a = argAt(argc, argv, 0);
-        const double b = argAt(argc, argv, 1);
-        const double c = argAt(argc, argv, 2);
-        return Value::fromDouble(std::hypot(a, b, c)).rawBits();
-    }
-    double sum = 0.0;
-    for (uint32_t i = 0; i < argc; ++i) {
-        double v = rtToNumber(Value(argv[i]));
-        sum += v * v;
-    }
-    return Value::fromDouble(std::sqrt(sum)).rawBits();
+    for (uint32_t i = 0; i < argc; ++i) vals[i] = argAt(argc, argv, i);
+    return Value::fromDouble(brass::math::hypot_f64(vals, argc)).rawBits();
 }
 
 // JS rounds half UP (towards +Infinity), so Math.round(-2.5) is -2, while
@@ -141,17 +131,20 @@ uint64_t mathUnary(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 double unaryFloor(double x) { return std::floor(x); }
 double unaryCeil(double x) { return std::ceil(x); }
 double unaryTrunc(double x) { return std::trunc(x); }
-double unaryCbrt(double x) { return std::cbrt(x); }
-double unaryExpm1(double x) { return std::expm1(x); }
-double unaryLog1p(double x) { return std::log1p(x); }
-double unaryLog2(double x) { return std::log2(x); }
-double unaryLog10(double x) { return std::log10(x); }
-double unarySinh(double x) { return std::sinh(x); }
-double unaryCosh(double x) { return std::cosh(x); }
-double unaryTanh(double x) { return std::tanh(x); }
-double unaryAsinh(double x) { return std::asinh(x); }
-double unaryAcosh(double x) { return std::acosh(x); }
-double unaryAtanh(double x) { return std::atanh(x); }
+// V8's fdlibm (brass/runtime/fast_trig.hpp), not the platform's libm: each
+// libm differs from the next in the last bit, and a script that steps a
+// simulation on these (a lockstep game) must step it alike on every machine.
+double unaryCbrt(double x) { return brass::math::cbrt_f64(x); }
+double unaryExpm1(double x) { return brass::math::expm1_f64(x); }
+double unaryLog1p(double x) { return brass::math::log1p_f64(x); }
+double unaryLog2(double x) { return brass::math::log2_f64(x); }
+double unaryLog10(double x) { return brass::math::log10_f64(x); }
+double unarySinh(double x) { return brass::math::sinh_f64(x); }
+double unaryCosh(double x) { return brass::math::cosh_f64(x); }
+double unaryTanh(double x) { return brass::math::tanh_f64(x); }
+double unaryAsinh(double x) { return brass::math::asinh_f64(x); }
+double unaryAcosh(double x) { return brass::math::acosh_f64(x); }
+double unaryAtanh(double x) { return brass::math::atanh_f64(x); }
 double unaryFround(double x) { return static_cast<double>(static_cast<float>(x)); }
 
 // 21.3.2.26 Math.f16round: the nearest IEEE binary16, widened back. The round
