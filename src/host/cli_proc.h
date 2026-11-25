@@ -12,6 +12,9 @@ struct ProcOptions {
     std::string cwd;
     std::vector<std::pair<std::string, std::string>> envOverrides;
     int64_t timeoutMs = 0;  // <= 0 means no timeout
+    bool mergeStderr = false;
+    std::vector<std::string> stopOnMatch;  // stop + terminate child when any line contains a needle
+    std::string liveLogPath;               // optional live line log file
 };
 
 struct ProcResult {
@@ -20,6 +23,8 @@ struct ProcResult {
     std::string stdoutText;
     std::string stderrText;
     bool timedOut = false;
+    bool stoppedEarly = false;
+    int marks = 0;
     std::string spawnError;
 };
 
@@ -37,5 +42,13 @@ std::optional<ProcResult> waitAnyProcess();
 
 // Spawn and immediately wait for completion.
 ProcResult execProcess(const std::vector<std::string>& argv, const ProcOptions& opts);
+
+// Linux perf control-fifo marked execution (`perf ... -D -1 --control fifo:ctl,ack -- <cmd>`).
+// Watches stdout for `markOn` and `markOff` and sends `enable`/`disable` over the control fifo.
+ProcResult execPerfMarked(const std::vector<std::string>& perfPrefix,
+                          const std::vector<std::string>& childCmd,
+                          const std::string& markOn,
+                          const std::string& markOff,
+                          const ProcOptions& opts);
 
 }  // namespace bronze::host

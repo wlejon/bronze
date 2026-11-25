@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -409,7 +410,7 @@ ProcResult runChildBlocking(uint64_t id, const std::vector<std::string>& argv, c
             if (devNull != STDIN_FILENO) ::close(devNull);
         }
         (void)::dup2(outPipe[1], STDOUT_FILENO);
-        (void)::dup2(errPipe[1], STDERR_FILENO);
+        (void)::dup2(opts.mergeStderr ? outPipe[1] : errPipe[1], STDERR_FILENO);
         ::close(outPipe[0]);
         ::close(outPipe[1]);
         ::close(errPipe[0]);
@@ -455,8 +456,12 @@ ProcResult runChildBlocking(uint64_t id, const std::vector<std::string>& argv, c
     const bool hasTimeout = opts.timeoutMs > 0;
     const auto deadline = SteadyClock::now() + std::chrono::milliseconds(hasTimeout ? opts.timeoutMs : 0);
 
-    int fds[2] = {outPipe[0], errPipe[0]};
+    int fds[2] = {outPipe[0], opts.mergeStderr ? -1 : errPipe[0]};
+    if (opts.mergeStderr) ::close(errPipe[0]);
     std::string* targets[2] = {&res.stdoutText, &res.stderrText};
+    std::ofstream liveLog;
+    if (!opts.liveLogPath.empty()) liveLog.open(opts.liveLogPath, std::ios::binary | std::ios::trunc);
+    size_t scanPos = 0;
     char buf[8192];
 
     while (fds[0] >= 0 || fds[1] >= 0) {
@@ -502,12 +507,32 @@ ProcResult runChildBlocking(uint64_t id, const std::vector<std::string>& argv, c
                 const ssize_t n = ::read(fds[i], buf, sizeof(buf));
                 if (n > 0) {
                     targets[i]->append(buf, static_cast<size_t>(n));
+                    if (i == 0 && liveLog.is_open()) {
+                        liveLog.write(buf, n);
+                        liveLog.flush();
+                    }
+                    if (i == 0 && !opts.stopOnMatch.empty()) {
+                        while (true) {
+                            const size_t nl = res.stdoutText.find('\n', scanPos);
+                            if (nl == std::string::npos) break;
+                            const std::string_view line(res.stdoutText.data() + scanPos, nl - scanPos);
+                            scanPos = nl + 1;
+                            for (const auto& needle : opts.stopOnMatch) {
+                                if (!needle.empty() && line.find(needle) != std::string_view::npos) {
+                                    res.stoppedEarly = true;
+                                    break;
+                                }
+                            }
+                            if (res.stoppedEarly) break;
+                        }
+                    }
                 } else if (n == 0 || (n < 0 && errno != EINTR)) {
                     ::close(fds[i]);
                     fds[i] = -1;
                 }
             }
         }
+        if (res.stoppedEarly) break;
     }
 
     if (fds[0] >= 0) ::close(fds[0]);
@@ -516,6 +541,9 @@ ProcResult runChildBlocking(uint64_t id, const std::vector<std::string>& argv, c
     if (res.timedOut) {
         (void)::kill(-pid, SIGKILL);
         (void)::kill(pid, SIGKILL);
+    } else if (res.stoppedEarly) {
+        (void)::kill(-pid, SIGTERM);
+        (void)::kill(pid, SIGTERM);
     }
 
     int status = 0;
@@ -660,6 +688,167 @@ std::optional<ProcResult> waitAnyProcess() {
 
 ProcResult execProcess(const std::vector<std::string>& argv, const ProcOptions& opts) {
     return runChildBlocking(0, argv, opts);
+}
+
+ProcResult execPerfMarked(const std::vector<std::string>& perfPrefix,
+                          const std::vector<std::string>& childCmd,
+                          const std::string& markOn,
+                          const std::string& markOff,
+                          const ProcOptions& opts) {
+    ProcResult res;
+#if !defined(__linux__)
+    (void)perfPrefix;
+    (void)childCmd;
+    (void)markOn;
+    (void)markOff;
+    (void)opts;
+    res.spawnError = "execPerfMarked: supported on Linux only";
+    return res;
+#else
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    static uint64_t seq = 0;
+    const fs::path tmpDir = fs::temp_directory_path(ec) /
+                            ("bronze_perf_" + std::to_string(::getpid()) + "_" + std::to_string(++seq));
+    fs::create_directories(tmpDir, ec);
+    const std::string ctlPath = (tmpDir / "ctl").string();
+    const std::string ackPath = (tmpDir / "ack").string();
+    if (::mkfifo(ctlPath.c_str(), 0600) != 0 || ::mkfifo(ackPath.c_str(), 0600) != 0) {
+        fs::remove_all(tmpDir, ec);
+        res.spawnError = "execPerfMarked: mkfifo failed";
+        return res;
+    }
+    const int ctlFd = ::open(ctlPath.c_str(), O_RDWR | O_CLOEXEC);
+    const int ackFd = ::open(ackPath.c_str(), O_RDWR | O_CLOEXEC);
+    if (ctlFd < 0 || ackFd < 0) {
+        if (ctlFd >= 0) ::close(ctlFd);
+        if (ackFd >= 0) ::close(ackFd);
+        fs::remove_all(tmpDir, ec);
+        res.spawnError = "execPerfMarked: open fifo failed";
+        return res;
+    }
+
+    std::vector<std::string> full = perfPrefix;
+    full.push_back("-D");
+    full.push_back("-1");
+    full.push_back("--control");
+    full.push_back("fifo:" + ctlPath + "," + ackPath);
+    full.push_back("--");
+    full.insert(full.end(), childCmd.begin(), childCmd.end());
+
+    std::string pathEnv;
+    std::vector<std::string> envStrings = buildPosixEnv(opts.envOverrides, pathEnv);
+    const std::string exePath = resolvePosixExe(full[0], pathEnv);
+    if (exePath.empty()) {
+        ::close(ctlFd);
+        ::close(ackFd);
+        fs::remove_all(tmpDir, ec);
+        res.spawnError = "execPerfMarked: executable not found: " + full[0];
+        return res;
+    }
+
+    std::vector<char*> argvPtrs;
+    for (auto& s : full) argvPtrs.push_back(s.data());
+    argvPtrs.push_back(nullptr);
+    std::vector<char*> envPtrs;
+    for (auto& s : envStrings) envPtrs.push_back(s.data());
+    envPtrs.push_back(nullptr);
+
+    int outPipe[2] = {-1, -1};
+    int errPipe[2] = {-1, -1};
+    if (::pipe(outPipe) != 0 || ::pipe(errPipe) != 0) {
+        if (outPipe[0] >= 0) { ::close(outPipe[0]); ::close(outPipe[1]); }
+        if (errPipe[0] >= 0) { ::close(errPipe[0]); ::close(errPipe[1]); }
+        ::close(ctlFd);
+        ::close(ackFd);
+        fs::remove_all(tmpDir, ec);
+        res.spawnError = "execPerfMarked: pipe failed";
+        return res;
+    }
+    setCloexec(outPipe[0]);
+    setCloexec(errPipe[0]);
+#ifdef F_SETPIPE_SZ
+    (void)::fcntl(outPipe[0], F_SETPIPE_SZ, 4096);
+#endif
+
+    const char* cwdPtr = opts.cwd.empty() ? nullptr : opts.cwd.c_str();
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        (void)::dup2(outPipe[1], STDOUT_FILENO);
+        (void)::dup2(errPipe[1], STDERR_FILENO);
+        ::close(outPipe[0]);
+        ::close(outPipe[1]);
+        ::close(errPipe[0]);
+        ::close(errPipe[1]);
+        if (cwdPtr && ::chdir(cwdPtr) != 0) ::_exit(127);
+        ::execve(exePath.c_str(), argvPtrs.data(), envPtrs.data());
+        ::_exit(127);
+    }
+    ::close(outPipe[1]);
+    ::close(errPipe[1]);
+
+    if (pid < 0) {
+        ::close(outPipe[0]);
+        ::close(errPipe[0]);
+        ::close(ctlFd);
+        ::close(ackFd);
+        fs::remove_all(tmpDir, ec);
+        res.spawnError = "execPerfMarked: fork failed";
+        return res;
+    }
+
+    std::thread errThread([&]() {
+        char ebuf[4096];
+        for (;;) {
+            const ssize_t n = ::read(errPipe[0], ebuf, sizeof(ebuf));
+            if (n > 0) res.stderrText.append(ebuf, static_cast<size_t>(n));
+            else if (n == 0 || (n < 0 && errno != EINTR)) break;
+        }
+        ::close(errPipe[0]);
+    });
+
+    auto sendCtl = [&](const char* word) {
+        const size_t len = std::strlen(word);
+        const ssize_t wr = ::write(ctlFd, word, len);
+        (void)wr;
+        char ackBuf[64];
+        const ssize_t rd = ::read(ackFd, ackBuf, sizeof(ackBuf));
+        (void)rd;
+    };
+
+    char buf[4096];
+    size_t scan = 0;
+    for (;;) {
+        const ssize_t n = ::read(outPipe[0], buf, sizeof(buf));
+        if (n > 0) {
+            res.stdoutText.append(buf, static_cast<size_t>(n));
+            while (res.marks < 2) {
+                const std::string& tag = (res.marks == 0) ? markOn : markOff;
+                const size_t from = scan > 16 ? scan - 16 : 0;
+                const size_t pos = res.stdoutText.find(tag, from);
+                if (pos == std::string::npos) {
+                    scan = res.stdoutText.size();
+                    break;
+                }
+                sendCtl(res.marks == 0 ? "enable\n" : "disable\n");
+                ++res.marks;
+                scan = pos + tag.size();
+            }
+        } else if (n == 0 || (n < 0 && errno != EINTR)) {
+            break;
+        }
+    }
+    ::close(outPipe[0]);
+    errThread.join();
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    ::close(ctlFd);
+    ::close(ackFd);
+    fs::remove_all(tmpDir, ec);
+    res.exitCode = WIFEXITED(status) ? WEXITSTATUS(status)
+                 : (WIFSIGNALED(status) ? -WTERMSIG(status) : -1);
+    return res;
+#endif
 }
 
 }  // namespace bronze::host

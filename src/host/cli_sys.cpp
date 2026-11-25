@@ -19,6 +19,8 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <climits>
@@ -107,6 +109,24 @@ ProcOptions parseProcOptions(std::span<const embed::Value> args, size_t idx, con
         opts.timeoutMs = embed::toInt64(timeoutVal);
     }
 
+    embed::Value mergeVal = embed::getProperty(o.get(), "mergeStderr");
+    if (!embed::isUndefined(mergeVal) && !embed::isNull(mergeVal)) {
+        opts.mergeStderr = embed::toBool(mergeVal);
+    }
+
+    embed::Value liveVal = embed::getProperty(o.get(), "liveLogPath");
+    if (!embed::isUndefined(liveVal) && !embed::isNull(liveVal)) {
+        if (!embed::isString(liveVal)) {
+            embed::throwTypeError(std::string(fnName) + ": options.liveLogPath must be a string");
+        }
+        opts.liveLogPath = embed::toUtf8(liveVal);
+    }
+
+    embed::Value stopVal = embed::getProperty(o.get(), "stopOnMatch");
+    if (!embed::isUndefined(stopVal) && !embed::isNull(stopVal)) {
+        opts.stopOnMatch = parseStringArray(stopVal, fnName);
+    }
+
     embed::Value envVal = embed::getProperty(o.get(), "env");
     if (!embed::isUndefined(envVal) && !embed::isNull(envVal)) {
         if (!embed::isObject(envVal)) {
@@ -146,6 +166,8 @@ embed::Value procResultToJs(const ProcResult& r, bool includeId) {
     b.set("stdout", r.stdoutText);
     b.set("stderr", r.stderrText);
     b.set("timedOut", r.timedOut);
+    b.set("stoppedEarly", r.stoppedEarly);
+    b.set("marks", r.marks);
     return b.build();
 }
 
@@ -305,7 +327,49 @@ embed::Value buildFsNamespace() {
         return embed::fromUtf8(pathToUtf8(td));
     });
 
+    f.def("symlink", 2, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+        const std::string target = requireString(args, 0, "Bronze.fs.symlink");
+        const std::string link = requireString(args, 1, "Bronze.fs.symlink");
+        const fs::path tp = utf8Path(target);
+        const fs::path lp = utf8Path(link);
+        std::error_code ec;
+        if (fs::is_directory(tp, ec)) fs::create_directory_symlink(tp, lp, ec);
+        else fs::create_symlink(tp, lp, ec);
+        if (ec) embed::throwError("Bronze.fs.symlink: " + ec.message());
+        return embed::undefined();
+    });
+
     return embed::freeze(f.build());
+}
+
+embed::Value buildStdinNamespace() {
+    embed::ObjectBuilder s;
+    auto readAllStdin = []() -> std::string {
+#if defined(_WIN32)
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        std::string out;
+        char buf[8192];
+        while (true) {
+            const size_t n = std::fread(buf, 1, sizeof(buf), stdin);
+            if (n > 0) out.append(buf, n);
+            if (n < sizeof(buf)) break;
+        }
+        return out;
+    };
+    s.def("readText", 0, [readAllStdin](embed::Value, std::span<const embed::Value>) -> embed::Value {
+        return embed::fromUtf8(readAllStdin());
+    });
+    s.def("readBytes", 0, [readAllStdin](embed::Value, std::span<const embed::Value>) -> embed::Value {
+        const std::string data = readAllStdin();
+        embed::Value arr = embed::createTypedArray(embed::elements::Uint8, static_cast<uint32_t>(data.size()));
+        if (!data.empty()) {
+            embed::TypedArrayInfo info = embed::typedArrayInfo(arr);
+            std::memcpy(info.data, data.data(), data.size());
+        }
+        return arr;
+    });
+    return embed::freeze(s.build());
 }
 
 embed::Value buildPathNamespace() {
@@ -358,6 +422,15 @@ embed::Value buildPathNamespace() {
     pb.def("isAbsolute", 1, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
         const std::string p = requireString(args, 0, "Bronze.path.isAbsolute");
         return embed::fromBool(utf8Path(p).is_absolute());
+    });
+
+    pb.def("relative", 2, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+        const std::string from = requireString(args, 0, "Bronze.path.relative");
+        const std::string to = requireString(args, 1, "Bronze.path.relative");
+        std::error_code ec;
+        fs::path rel = fs::relative(utf8Path(to), utf8Path(from), ec);
+        if (ec) rel = utf8Path(to).lexically_relative(utf8Path(from));
+        return embed::fromUtf8(pathToUtf8(rel));
     });
 
     return embed::freeze(pb.build());
@@ -453,14 +526,44 @@ void installCliHost(CliHostConfig cfg) {
             return embed::undefined();
         });
 
+        b.def("sleep", 1, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            if (args.empty() || !embed::isNumber(args[0])) {
+                embed::throwTypeError("Bronze.sleep: expected milliseconds number");
+            }
+            const int64_t ms = embed::toInt64(args[0]);
+            if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            return embed::undefined();
+        });
+
         b.defineConstant("fs", buildFsNamespace());
         b.defineConstant("path", buildPathNamespace());
+        b.defineConstant("stdin", buildStdinNamespace());
 
         b.def("exec", 2, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
             if (args.empty()) embed::throwTypeError("Bronze.exec: expected command array");
             const std::vector<std::string> cmd = parseStringArray(args[0], "Bronze.exec");
             const ProcOptions opts = parseProcOptions(args, 1, "Bronze.exec");
             const ProcResult res = execProcess(cmd, opts);
+            return procResultToJs(res, /*includeId=*/false);
+        });
+
+        b.def("execPerfMarked", 3, [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            if (args.size() < 2) {
+                embed::throwTypeError("Bronze.execPerfMarked: expected (perfPrefix, childCmd, opts?)");
+            }
+            const std::vector<std::string> perfPrefix = parseStringArray(args[0], "Bronze.execPerfMarked");
+            const std::vector<std::string> childCmd = parseStringArray(args[1], "Bronze.execPerfMarked");
+            const ProcOptions opts = parseProcOptions(args, 2, "Bronze.execPerfMarked");
+            std::string markOn = "RW mark on";
+            std::string markOff = "RW mark off";
+            if (args.size() >= 3 && embed::isObject(args[2])) {
+                embed::Persistent o(args[2]);
+                embed::Value onV = embed::getProperty(o.get(), "markOn");
+                if (embed::isString(onV)) markOn = embed::toUtf8(onV);
+                embed::Value offV = embed::getProperty(o.get(), "markOff");
+                if (embed::isString(offV)) markOff = embed::toUtf8(offV);
+            }
+            const ProcResult res = execPerfMarked(perfPrefix, childCmd, markOn, markOff, opts);
             return procResultToJs(res, /*includeId=*/false);
         });
 
