@@ -822,5 +822,5 @@ Rules that keep iteration fast:
 | `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames (`Persistent`, RAII `HandleScope`, `Local<T>`). Depends on the runtime and only calls it — the runtime never learns it exists |
 | `src/cli` | `bronze` driver (`run`, `eval`, `lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
-| `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
+| `tests/oracle` | Differential cases with pinned `.expected` stdout, run by `tests/oracle/run.py` (its docstring says how). A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
 | `tools` | Generators whose OUTPUT is committed. Run by hand, never by the build, so that no build step depends on a language bronze does not already require |

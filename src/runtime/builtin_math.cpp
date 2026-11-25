@@ -396,11 +396,12 @@ thread_local Value g_mathObject = Value::fromUndefined();
 // ones, so every tier answers alike. `sqrt` and `abs` have no kernel because
 // they are single instructions.
 //
-// sin, cos, tan, asin, acos, atan, atan2, exp and log are brass's math
-// runtime (brass/runtime/fast_trig.hpp): V8's fdlibm-derived ieee754
-// functions, so they give node's bits (the platform libm's differ in the last
-// bit on a few percent of arguments), with no FP-environment save and
-// restore.
+// Every transcendental (sin through atanh, exp, log and its kin, pow, cbrt,
+// hypot) is brass's math runtime (brass/runtime/fast_trig.hpp): V8's
+// fdlibm-derived ieee754 functions, the same bits on every platform (the
+// platform libms differ in the last bit on a few percent of arguments), with
+// no FP-environment save and restore. (Newer V8s take log, log1p, log2 and pow
+// from llvm-libc, so node can differ from them in the last bit.)
 
 // Compiled code calls brass's own entry points for sin and cos
 // (brass_sin_f64, brass_cos_f64, and brass_sincos_f64 where brass's

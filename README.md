@@ -148,7 +148,7 @@ the head of brass's main (`cmake/bro_deps.cmake`; a release tag's
 ## Testing
 
 Correctness rests on a differential suite
-([tests/oracle/README.md](tests/oracle/README.md)): JavaScript programs
+([tests/oracle/run.py](tests/oracle/run.py)): JavaScript programs
 whose exact stdout is pinned in committed files derived from ECMA-262. Every
 case compiles and runs twice (with inference and with `--no-infer`) and
 both runs must produce identical bytes, so the analysis and the dynamic
@@ -172,8 +172,8 @@ fails at launch with both versions named.
   keeps that true.
 - [docs/env-promotion.md](docs/env-promotion.md) scoped escape analysis and
   environment record optimization.
-- [tests/oracle/README.md](tests/oracle/README.md) how the differential
-  suite works and how to add a case.
+- [tests/oracle/run.py](tests/oracle/run.py) (its docstring) how the
+  differential suite runs and what a case is.
 
 ## License
 
