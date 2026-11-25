@@ -64,10 +64,13 @@ int64_t indexOfHeaders(const StringHeader* hay, const StringHeader* needle, uint
         return pos == std::string_view::npos ? -1 : static_cast<int64_t>(pos);
     }
     if (!hay->isLatin1() && !needle->isLatin1()) {
-        const std::basic_string_view<uint16_t> h(hay->utf16Data(), hayLen);
-        const std::basic_string_view<uint16_t> n(needle->utf16Data(), needleLen);
-        const size_t pos = h.find(n, from);
-        return pos == std::basic_string_view<uint16_t>::npos ? -1 : static_cast<int64_t>(pos);
+        // std::search over the code units: basic_string_view<uint16_t> needs
+        // char_traits<uint16_t>, which libc++ deprecates (an error under -Werror).
+        const uint16_t* h = hay->utf16Data();
+        const uint16_t* n = needle->utf16Data();
+        const uint16_t* end = h + hayLen;
+        const uint16_t* at = std::search(h + from, end, n, n + needleLen);
+        return at == end ? -1 : static_cast<int64_t>(at - h);
     }
     if (hay->isLatin1()) {
         const uint16_t* n = needle->utf16Data();
