@@ -47,19 +47,23 @@ surface.
 
 ## How it works
 
-bronze infers types by analysing the whole program: each binding's type at
-each point, the shape of each object site, each function's signature across
-its call sites. Where inference proves a type, the compiler emits direct
-native code; everywhere else it uses boxed dynamic values with inline
-caches, which keeps every program correct while the proven parts run fast.
-`bronze types app.js` prints what inference concluded about your code.
+bronze compiles JavaScript cleanly through one harvest-guided speculative AOT
+pipeline (`--harvest-out` followed by `--feedback-in`) and one Auto multi-tier
+Brass JIT (`src/eval`):
 
-TypeScript annotations are accepted and treated as hints. When inference
-confirms an annotation, the code takes the native path; when it can't, the
-annotation is dropped with a warning and the code runs with its actual
-JavaScript behaviour.
+- **Speculative AOT (`$spec` / `$opt` with generic `G` fallback):** whole-program
+  type/shape analysis (`bronze types app.js`) pairs with runtime inline-cache
+  harvests to emit direct native loops, unboxed numeric arithmetic, guarded
+  slot accesses, and inlined methods/constructors. Any guard miss exits cleanly
+  to the generic `G` twin via resume points without corrupting state.
+- **In-memory JIT (`bronze run` / `bronze eval` / host `eval`):** runs on the
+  Auto multi-tier Brass pipeline (Fast Tier-0 interpreter with background
+  Tier-1, Tier-2, and OSR), with compartment-isolated abort handling so host
+  runtimes stay protected.
+- **Shared memory & atomics:** full process-wide `SharedArrayBuffer` backing
+  and `Atomics.wait`/`notify`/`waitAsync` support across worker threads.
 
-`.ts`, `.mts` and `.cts` files are read as TypeScript: types, generics,
+TypeScript annotations are accepted and treated as hints. `.ts`, `.mts` and `.cts` files are read as TypeScript: types, generics,
 assertions and overloads are erased, and enums, namespaces and parameter
 properties become the JavaScript node's TypeScript transform emits for them.
 A `.js` file is read as JavaScript, so tokens TypeScript would read
@@ -67,13 +71,14 @@ differently (`a < b > (c)`, `type`, `namespace`) mean what JavaScript says;
 plain annotations (`let x: number`, `function f(a: T): R`) are still
 accepted there.
 
-The performance target is concrete: compiled output should beat nodejs on the
+The performance target is concrete: harvest-guided compiled output beats Node.js on the
 same program, and benchmarks that fall short are treated as bugs.
 
 ## Status
 
-bronze implements enough of ECMA-262 to compile large real-world libraries
-(three.js and pixi.js are the pinned milestones). Ahead-of-time compilation
+bronze passes 1,099 ECMA-262 differential oracle cases across `run`, `aot`,
+`profile`, `switch`, and `adversarial` modes (0 blocked cases remain) and compiles
+unmodified three.js r160 and pixi.js v8 from source. Ahead-of-time compilation
 turns the full module graph into native machine code. Dynamic constructs
 like `eval` and `new Function` (including generator and async functions)
 are evaluated dynamically in-memory via the Brass JIT engine (`src/eval`).
@@ -86,8 +91,8 @@ compilation stops with an error naming the feature.
 solving over straight-line JavaScript functions (backed by Brass's `BVSolver`):
 
 - `bronze check <entry.js>`: abstract-interpretation and bitvector hazard checks
-  (null/undefined dereference, division by zero, typed-array bounds, and
-  and, with `--deterministic`, a replay audit: wall clock, unseeded random,
+  (null/undefined dereference, division by zero, typed-array bounds, and,
+  with `--deterministic`, a replay audit: wall clock, unseeded random,
   `for..in` order, outer state).
 - `bronze prove-equiv <a.js> <b.js> --fn <name>`: bitvector equivalence check
   for straight-line integer JS functions, reporting a concrete counterexample

@@ -277,7 +277,7 @@ Value rtSymbolFunction() {
     // and bronze had wrong: `Object.keys(Symbol)` reported four names and
     // `for (k in Symbol)` visited them. `writable` and `configurable` stay true
     // — a shape transition carries neither, and dictionary mode is the only
-    // storage that does (cases/blocked/intrinsic_property_attributes).
+    // storage that does.
     for (const SymbolStatic& s : kSymbolStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
         Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};

@@ -184,24 +184,24 @@ if (-not $RenderOnly) {
         }
 
         # Run Timings
-        $statsInfer = $null
-        $profInfer = $null
+        $statsAot = $null
+        $profAot = $null
         if (Test-Path $exeAot) {
-            $statsInfer = Measure-CommandStats $exeAot $Runs
+            $statsAot = Measure-CommandStats $exeAot $Runs
             if ($Profile) {
-                $profInfer = Measure-ProfileStats $exeAot
+                $profAot = Measure-ProfileStats $exeAot
             }
         }
 
         if (-not $Cached) {
-            if (Test-Path $exeAot) { Remove-Item $exeAot -Force }
+            Remove-Item -Path $exeAot, "${ScriptDir}\${baseName}_aot.dll" -Force -ErrorAction SilentlyContinue
         }
 
         $nodeEntry = $NodeBaselines[$benchFile]
         $nodeMed = if ($nodeEntry) { $nodeEntry.median_ms } else { $null }
 
-        $infMed = if ($statsInfer) { $statsInfer.median_ms } else { $null }
-        $vsNode = if ($nodeMed -and $infMed -and $infMed -gt 0) { [Math]::Round($nodeMed / $infMed, 2) } else { $null }
+        $aotMed = if ($statsAot) { $statsAot.median_ms } else { $null }
+        $vsNode = if ($nodeMed -and $aotMed -and $aotMed -gt 0) { [Math]::Round($nodeMed / $aotMed, 2) } else { $null }
 
         $status = "N/A"
         if ($vsNode -ne $null) {
@@ -215,12 +215,11 @@ if (-not $RenderOnly) {
             description = $benchDesc
             category = "pure-compute"
             build_type = $BuildType
-            infer = $statsInfer
+            aot = $statsAot
             node_median_ms = $nodeMed
             vs_node = $vsNode
             status = $status
-            profile = $profInfer
-            output_match = $true
+            profile = $profAot
         }
 
         $AllRecords += $record
@@ -230,6 +229,9 @@ if (-not $RenderOnly) {
         if ($Json) {
             Write-Output $recordJson
         }
+    }
+    if (-not $Cached) {
+        Remove-Item -Path (Join-Path $ScriptDir "bronze_runtime_shared.dll") -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -243,7 +245,7 @@ if (-not $Json) {
     foreach ($r in $AllRecords) {
         if ($r.category -ne "pure-compute") { continue }
         $name = $r.name
-        $infMed = if ($r.infer) { "{0:N2}" -f $r.infer.median_ms } else { "-" }
+        $aotMed = if ($r.aot) { "{0:N2}" -f $r.aot.median_ms } else { "-" }
         $nodeMed = if ($r.node_median_ms) { "{0:N2}" -f $r.node_median_ms } else { "-" }
         $vsNode = if ($r.vs_node) { "{0:N2}x" -f $r.vs_node } else { "-" }
         
@@ -254,8 +256,8 @@ if (-not $Json) {
             default { "-" }
         }
 
-        $out = if ($r.infer) { $r.infer.output } else { "" }
-        Write-Host "| ``$name`` | **$infMed** | $nodeMed | **$vsNode** | $badge | ``$out`` |"
+        $out = if ($r.aot) { $r.aot.output } else { "" }
+        Write-Host "| ``$name`` | **$aotMed** | $nodeMed | **$vsNode** | $badge | ``$out`` |"
     }
 
     if ($Profile) {

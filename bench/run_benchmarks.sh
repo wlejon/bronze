@@ -202,16 +202,16 @@ BRO_HOST_INSTANCED=""
 BRO_HEADLESS=""
 
 if [[ -n "$BRO_PATH" ]]; then
-    for cand in "$BRO_PATH/build/Release/bro-bronze-host.exe" "$BRO_PATH/build/bro-bronze-host"; do
+    for cand in "$BRO_PATH/build/Release/bro-bronze-host.exe" "$BRO_PATH/build-release/bro-bronze-host" "$BRO_PATH/build/bro-bronze-host"; do
         [[ -f "$cand" ]] && BRO_HOST_SCENEGRAPH="$cand" && break
     done
-    for cand in "$BRO_PATH/build/Release/bro-bronze-host-wild.exe" "$BRO_PATH/build/bro-bronze-host-wild"; do
+    for cand in "$BRO_PATH/build/Release/bro-bronze-host-wild.exe" "$BRO_PATH/build-release/bro-bronze-host-wild" "$BRO_PATH/build/bro-bronze-host-wild"; do
         [[ -f "$cand" ]] && BRO_HOST_WILD="$cand" && break
     done
-    for cand in "$BRO_PATH/build/Release/bro-bronze-host-instanced.exe" "$BRO_PATH/build/bro-bronze-host-instanced"; do
+    for cand in "$BRO_PATH/build/Release/bro-bronze-host-instanced.exe" "$BRO_PATH/build-release/bro-bronze-host-instanced" "$BRO_PATH/build/bro-bronze-host-instanced"; do
         [[ -f "$cand" ]] && BRO_HOST_INSTANCED="$cand" && break
     done
-    for cand in "$BRO_PATH/build/Release/bro-headless.exe" "$BRO_PATH/build/bro-headless"; do
+    for cand in "$BRO_PATH/build/Release/bro-headless.exe" "$BRO_PATH/build-release/bro-headless" "$BRO_PATH/build/bro-headless"; do
         [[ -f "$cand" ]] && BRO_HEADLESS="$cand" && break
     done
 fi
@@ -309,11 +309,11 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
             "$BRONZE_BIN" build "$win_js" -o "$win_exe_harvest" --harvest-out "$win_tfb" >/dev/null 2>&1
             if [[ $? -ne 0 || ! -f "$exe_harvest" ]]; then
                 echo "Error: Failed to build $bench_file (harvest mode)" >&2
-                rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o" "$tfb_harvest"
+                rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.so" "${exe_harvest%.exe}.dylib" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o" "$tfb_harvest"
                 continue
             fi
             "$exe_harvest" >/dev/null 2>&1 || true
-            rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o"
+            rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.so" "${exe_harvest%.exe}.dylib" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o"
             if [[ ! -f "$tfb_harvest" ]]; then
                 echo "Error: harvest run did not produce $tfb_harvest" >&2
                 continue
@@ -344,7 +344,7 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
         fi
 
         # Parse stats and combine with Node baseline
-        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-pure "$bench_file" "$bench_desc" "$stats_aot" "{}" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_aot")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-pure "$bench_file" "$bench_desc" "$stats_aot" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_aot")"
 
         echo "$record_json" >> "$JSONL_OUT"
 
@@ -352,6 +352,9 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
             echo "$record_json"
         fi
     done
+    if [[ $USE_CACHED -eq 0 ]]; then
+        rm -f "$SCRIPT_DIR/libbronze_runtime_shared.so" "$SCRIPT_DIR/libbronze_runtime_shared.dylib" "$SCRIPT_DIR/bronze_runtime_shared.dll"
+    fi
 fi
 
 # --- Execute Render Benchmarks (Bro Host) ---

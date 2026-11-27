@@ -21,7 +21,7 @@
 // is made NATIVE (`toString` gives the NativeFunction form, 20.2.3.5), with
 // no [[Construct]] and no `prototype` (10.3: a built-in function that is not
 // a constructor has neither), and lives in no realm (the intrinsics are the
-// thread's, docs/internals.md "Realms and lockdown"). Every other function of
+// thread's, runtime/lockdown.h). Every other function of
 // the library is a HIDDEN frame: part of a builtin's algorithm, which a stack
 // trace leaves out as it leaves out a C++ builtin's own calls.
 

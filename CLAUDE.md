@@ -1,13 +1,22 @@
 # bronze — project instructions
 
-AOT compiler for JavaScript (wild, untyped JS — three.js is the bar) in
-C++20. Native layouts wherever inference proves them; `dynamic` is the
-fallback, never the substrate. Goal: faster than node for typed/inferable
-code. Read `README.md` first — it states the goals and what is deliberately
-out of scope.
+AOT & Auto multi-tier JIT compiler for JavaScript (wild, untyped JS — three.js
+and pixi.js are the bar) in C++20. Single harvest-guided speculative AOT path
+(`--harvest-out` / `--feedback-in`, generic `G` fallback + guarded `$spec`/`$opt`)
+and single Auto multi-tier Brass JIT path (`src/eval`). Goal: beat Node/V8 on
+real-world JS. Read `README.md` first — it states the goals and what is
+deliberately out of scope.
 
-## Build & test (Ninja + cl via the vcvars wrapper)
+## Build & test (Ninja + MSVC/Clang/GCC)
 
+Linux/macOS:
+```
+cmake --preset dev
+cmake --build build -j 4
+ctest --test-dir build --output-on-failure
+```
+
+Windows (`dev.cmd` wraps the vcvars environment):
 ```
 .\dev.cmd cmake --preset dev               # configure
 .\dev.cmd cmake --build --preset dev      # build (incremental ~2s)

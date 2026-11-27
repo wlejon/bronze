@@ -4,10 +4,9 @@
 //   time    <cmd_json> <runs> [self|wall]
 //   profile <cmd_json>
 //   json-argv <arg...>
-//   record-pure <name> <desc> <st_inf_json> <st_noinf_json> <btype> <baselines_file> <prof_inf_json>
+//   record-pure <name> <desc> <st_aot_json> <btype> <baselines_file> <prof_aot_json>
 //   record-render <name> <desc> <category> <status> <st_json> <btype>
 //   report <jsonl_file> <do_prof_0_or_1>
-//   census-specs <out_dir>
 
 const BENCH_LINE_RE = /^\[bench\] (\S+) ms=([0-9.]+)/gm;
 
@@ -186,10 +185,9 @@ function cmdProfile(cmdJson) {
   }
 }
 
-function cmdRecordPure(name, desc, stInfStr, stNoInfStr, btype, baselinesFile, profInfStr) {
-  const stInf = stInfStr ? JSON.parse(stInfStr) : {};
-  const stNoInf = stNoInfStr ? JSON.parse(stNoInfStr) : {};
-  const profInf = profInfStr ? JSON.parse(profInfStr) : {};
+function cmdRecordPure(name, desc, stAotStr, btype, baselinesFile, profAotStr) {
+  const stAot = stAotStr ? JSON.parse(stAotStr) : {};
+  const profAot = profAotStr ? JSON.parse(profAotStr) : {};
 
   let nodeMed = null;
   if (baselinesFile && Bronze.fs.exists(baselinesFile)) {
@@ -200,16 +198,13 @@ function cmdRecordPure(name, desc, stInfStr, stNoInfStr, btype, baselinesFile, p
     } catch (_) {}
   }
 
-  if (stInf.error || stNoInf.error) {
-    const err = `${stInf.error || ''} ${stNoInf.error || ''}`.trim();
-    console.log(JSON.stringify({ name, category: 'pure-compute', build_type: btype, error: err }));
+  if (stAot.error) {
+    console.log(JSON.stringify({ name, category: 'pure-compute', build_type: btype, error: String(stAot.error) }));
     return;
   }
 
-  const infMed = stInf.median_ms;
-  const noinfMed = stNoInf.median_ms;
-  const speedup = (infMed && noinfMed && infMed > 0) ? round2(noinfMed / infMed) : 1.0;
-  const vsNode = (nodeMed && infMed && infMed > 0) ? round2(nodeMed / infMed) : null;
+  const aotMed = stAot.median_ms;
+  const vsNode = (nodeMed && aotMed && aotMed > 0) ? round2(nodeMed / aotMed) : null;
 
   let status = 'N/A';
   if (vsNode !== null) {
@@ -218,22 +213,18 @@ function cmdRecordPure(name, desc, stInfStr, stNoInfStr, btype, baselinesFile, p
     else status = 'BEHIND';
   }
 
-  const hasInf = Object.keys(stInf).length > 0;
-  const hasNoInf = Object.keys(stNoInf).length > 0;
-  const hasProf = Object.keys(profInf).length > 0;
+  const hasAot = Object.keys(stAot).length > 0;
+  const hasProf = Object.keys(profAot).length > 0;
   console.log(JSON.stringify({
     name,
     description: desc,
     category: 'pure-compute',
     build_type: btype,
-    infer: hasInf ? stInf : null,
-    noinfer: hasNoInf ? stNoInf : null,
-    infer_speedup: speedup,
+    aot: hasAot ? stAot : null,
     node_median_ms: nodeMed,
     vs_node: vsNode,
     status,
-    profile: hasProf ? profInf : null,
-    output_match: (hasInf && hasNoInf) ? (stInf.output === stNoInf.output) : true,
+    profile: hasProf ? profAot : null,
   }));
 }
 
@@ -244,13 +235,10 @@ function cmdRecordRender(name, desc, category, status, stStr, btype) {
     description: desc,
     category,
     build_type: btype,
-    infer: st,
-    noinfer: null,
-    infer_speedup: 1.0,
+    aot: st,
     node_median_ms: null,
     vs_node: null,
     status,
-    output_match: true,
   }));
 }
 
@@ -286,14 +274,14 @@ function cmdReport(jsonlFile, doProfStr) {
       console.log(`| \`${name}\` | ERROR | - | - | ERROR | ${r.error} |`);
       continue;
     }
-    const infSt = r.infer || null;
-    const infMed = infSt ? Number(infSt.median_ms || 0).toFixed(2) : '-';
+    const aotSt = r.aot || r.infer || null;
+    const aotMed = aotSt ? Number(aotSt.median_ms || 0).toFixed(2) : '-';
     const nodeMed = r.node_median_ms != null ? Number(r.node_median_ms).toFixed(2) : '-';
     const vsNode = r.vs_node != null ? `${Number(r.vs_node).toFixed(2)}x` : '-';
     const status = r.status || '-';
     const badge = status === 'WIN' ? '**WIN**' : (status === 'PARITY' || status === 'BEHIND' ? status : '-');
-    const out = infSt ? (infSt.output || '') : '';
-    console.log(`| \`${name}\` | **${infMed}** | ${nodeMed} | **${vsNode}** | ${badge} | \`${out}\` |`);
+    const out = aotSt ? (aotSt.output || '') : '';
+    console.log(`| \`${name}\` | **${aotMed}** | ${nodeMed} | **${vsNode}** | ${badge} | \`${out}\` |`);
   }
 
   if (doProf) {
@@ -320,7 +308,7 @@ function cmdReport(jsonlFile, doProfStr) {
         console.log(`| \`${name}\` | ${r.category || ''} | ERROR | - | - | ${r.error} |`);
         continue;
       }
-      const st = r.infer || {};
+      const st = r.aot || r.infer || {};
       const cat = (r.category || '').includes('compiled') ? 'Compiled Host' : 'bro-headless (in-process bronze)';
       console.log(
         `| \`${name}\` | ${cat} | **${Number(st.median_ms || 0).toFixed(2)}** | ` +
@@ -332,26 +320,13 @@ function cmdReport(jsonlFile, doProfStr) {
   console.log(`\nMachine-readable results saved to \`${jsonlFile}\`.`);
 }
 
-function cmdCensusSpecs(outDir) {
-  const write = (file, tags, prefix) => {
-    const rows = tags.map(t => ({ name: t, exe: `./${prefix}_${t}.exe` }));
-    Bronze.fs.writeText(Bronze.path.join(outDir, file), JSON.stringify(rows, null, 1) + '\n');
-  };
-  write('cspec_es.json', ['hand', 'inf'], 'es');
-  write('cspec_m4.json', ['hand', 'inf', 'infobs'], 'm4');
-  write('cspec_nl.json', ['hand', 'inf'], 'nl');
-  write('cspec_tm.json', ['none', 'hand', 'inf', 'infobs'], 'tm');
-  write('cspec_cc.json', ['hand', 'inf'], 'cc');
-}
-
 const [sub, ...rest] = Bronze.args;
 if (sub === 'time') cmdTime(rest[0], rest[1], rest[2] || 'self');
 else if (sub === 'profile') cmdProfile(rest[0]);
 else if (sub === 'json-argv') console.log(JSON.stringify(rest));
-else if (sub === 'record-pure') cmdRecordPure(rest[0], rest[1], rest[2], rest[3], rest[4], rest[5], rest[6]);
+else if (sub === 'record-pure') cmdRecordPure(rest[0], rest[1], rest[2], rest[3], rest[4], rest[5]);
 else if (sub === 'record-render') cmdRecordRender(rest[0], rest[1], rest[2], rest[3], rest[4], rest[5]);
 else if (sub === 'report') cmdReport(rest[0], rest[1] || '0');
-else if (sub === 'census-specs') cmdCensusSpecs(rest[0]);
 else {
   console.error('unknown bench_helper subcommand: ' + (sub || ''));
   Bronze.exit(2);
