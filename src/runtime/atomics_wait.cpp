@@ -249,27 +249,25 @@ int64_t loadSigned(const void* addr, bool isBigInt) noexcept {
 
 }  // namespace
 
+template <typename T>
+uint64_t atomicLoadTyped(const uint8_t* ptr) noexcept {
+    // Apple libc++ rejects std::atomic_ref<const T> in C++20 mode.
+    return std::atomic_ref<T>(*const_cast<T*>(reinterpret_cast<const T*>(ptr)))
+        .load(std::memory_order_seq_cst);
+}
+
 uint64_t rtAtomicLoadBytes(const uint8_t* ptr, uint32_t width) noexcept {
     switch (width) {
         case 1:
-            return std::atomic_ref<const uint8_t>(*ptr).load(std::memory_order_seq_cst);
+            return atomicLoadTyped<uint8_t>(ptr);
         case 2:
-            if (isAligned<uint16_t>(ptr)) {
-                return std::atomic_ref<const uint16_t>(*reinterpret_cast<const uint16_t*>(ptr))
-                    .load(std::memory_order_seq_cst);
-            }
+            if (isAligned<uint16_t>(ptr)) return atomicLoadTyped<uint16_t>(ptr);
             break;
         case 4:
-            if (isAligned<uint32_t>(ptr)) {
-                return std::atomic_ref<const uint32_t>(*reinterpret_cast<const uint32_t*>(ptr))
-                    .load(std::memory_order_seq_cst);
-            }
+            if (isAligned<uint32_t>(ptr)) return atomicLoadTyped<uint32_t>(ptr);
             break;
         case 8:
-            if (isAligned<uint64_t>(ptr)) {
-                return std::atomic_ref<const uint64_t>(*reinterpret_cast<const uint64_t*>(ptr))
-                    .load(std::memory_order_seq_cst);
-            }
+            if (isAligned<uint64_t>(ptr)) return atomicLoadTyped<uint64_t>(ptr);
             break;
         default:
             break;
