@@ -84,6 +84,7 @@ struct Analyses {
 // chain.
 struct Step {
     enum class Kind : uint8_t { Move, Guard, ParamGuard };
+    enum class WarmFill : uint8_t { None, MemberCell, ProtoCell };
     Kind kind = Kind::Move;
     // The instruction to move (Move), or the guard's block (Guard), as the
     // plan's snapshot numbers them.
@@ -96,6 +97,9 @@ struct Step {
     // The cache fills the guard's own exit made before leaving, copied to the
     // hoisted exit (cacheFills).
     std::vector<il::Instruction> fills;
+    WarmFill warmKind = WarmFill::None;
+    int32_t warmCell = 0;
+    ValueId warmShape = kNoValue;
     // ParamGuard only: loop header parameter index, loop-entry argument, and
     // whether to guard `is.i32` / unbox to i32 vs `is.number` / unbox to f64.
     uint32_t paramIndex = 0;
@@ -360,6 +364,25 @@ std::optional<Step> LoopPlanner::guardStep(BlockId b) {
     step.exitOnTrue = thenExits;
     step.target = *target;
     step.fills = std::move(fills);
+    if (!step.fills.empty() && !step.exitOnTrue) {
+        if (const il::Instruction* cd = a_.defs.defInst(fn_, cond)) {
+            if (cd->op == Op::ProtoCell) {
+                step.warmKind = Step::WarmFill::ProtoCell;
+                step.warmCell = cd->immI32;
+            } else if (cd->op == Op::PtrEq && cd->operands.size() == 2) {
+                for (int flip = 0; flip < 2; ++flip) {
+                    const ValueId shapeId = flip ? cd->operands[1] : cd->operands[0];
+                    const ValueId cellId = flip ? cd->operands[0] : cd->operands[1];
+                    if (const il::Instruction* mc = a_.defs.defInstIs(fn_, cellId, Op::MemberCell)) {
+                        step.warmKind = Step::WarmFill::MemberCell;
+                        step.warmCell = mc->immI32;
+                        step.warmShape = shapeId;
+                        break;
+                    }
+                }
+            }
+        }
+    }
     return step;
 }
 
@@ -539,7 +562,8 @@ void insertBeforeTerminator(il::Function& fn, BlockId b, il::Instruction inst) {
 
 // Ends block `tail` (which ends in a jump to the loop header) with the
 // hoisted guard instead, and answers the new end of the preheader chain.
-BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step) {
+BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step, const std::vector<BlockId>& loopBlocks,
+                   ValueId* warmCondOut = nullptr) {
     assert(fn.isSpeculated());
     const BlockId handler = fn.blocks[tail].handler;
     const bool cold = fn.blocks[tail].cold;
@@ -556,6 +580,86 @@ BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step) {
     const BlockId exit = newBlock(fn).id;
     fn.blocks[exit].handler = handler;
     fn.blocks[exit].cold = true;
+    if (step.warmKind != Step::WarmFill::None && !step.exitOnTrue) {
+        const BlockId coldFill = newBlock(fn).id;
+        fn.blocks[coldFill].handler = handler;
+        fn.blocks[coldFill].cold = true;
+        for (const il::Instruction& fill : step.fills) fn.blocks[coldFill].instructions.push_back(fill);
+
+        const BlockId ready = newBlock(fn).id;
+        fn.blocks[ready].handler = handler;
+        fn.blocks[ready].cold = cold;
+
+        il::Instruction fillJump;
+        fillJump.op = Op::Jump;
+        fillJump.target.block = ready;
+        fn.blocks[coldFill].instructions.push_back(std::move(fillJump));
+
+        ValueId ok2 = kNoValue;
+        if (step.warmKind == Step::WarmFill::MemberCell) {
+            const ValueId c2 = newValue(fn);
+            il::Instruction cellInst;
+            cellInst.op = Op::MemberCell;
+            cellInst.type = il::Type::Ptr;
+            cellInst.result = c2;
+            cellInst.immI32 = step.warmCell;
+            fn.blocks[ready].instructions.push_back(std::move(cellInst));
+
+            ok2 = newValue(fn);
+            il::Instruction eqInst;
+            eqInst.op = Op::PtrEq;
+            eqInst.type = il::Type::Bool;
+            eqInst.result = ok2;
+            eqInst.operands = {step.warmShape, c2};
+            fn.blocks[ready].instructions.push_back(std::move(eqInst));
+        } else {
+            ok2 = newValue(fn);
+            il::Instruction pcInst;
+            pcInst.op = Op::ProtoCell;
+            pcInst.type = il::Type::Bool;
+            pcInst.result = ok2;
+            pcInst.immI32 = step.warmCell;
+            fn.blocks[ready].instructions.push_back(std::move(pcInst));
+        }
+        il::Instruction recheck;
+        recheck.op = Op::Branch;
+        recheck.operands = {ok2};
+        recheck.target.block = cont;
+        recheck.elseTarget.block = exit;
+        fn.blocks[ready].instructions.push_back(std::move(recheck));
+
+        for (BlockId lb : loopBlocks) {
+            for (il::Instruction& inst : fn.blocks[lb].instructions) {
+                for (ValueId& v : inst.operands) {
+                    if (v == step.cond) v = ok2;
+                }
+                for (ValueId& v : inst.target.args) {
+                    if (v == step.cond) v = ok2;
+                }
+                for (ValueId& v : inst.elseTarget.args) {
+                    if (v == step.cond) v = ok2;
+                }
+            }
+        }
+        if (warmCondOut != nullptr) *warmCondOut = ok2;
+
+        std::vector<ValueId> state = step.target.buildState(fn, exit);
+        il::Instruction leave;
+        leave.op = Op::Leave;
+        leave.calleeIndex = fn.speculatedFrom;
+        leave.immI32 = static_cast<int32_t>(step.target.resumeId);
+        leave.keyIndex = step.target.kind;
+        leave.operands = std::move(state);
+        fn.blocks[exit].instructions.push_back(std::move(leave));
+
+        il::Instruction br;
+        br.op = Op::Branch;
+        br.operands = {step.cond};
+        br.target.block = ready;
+        br.elseTarget.block = coldFill;
+        fn.blocks[tail].instructions.push_back(std::move(br));
+        return cont;
+    }
     for (const il::Instruction& fill : step.fills) fn.blocks[exit].instructions.push_back(fill);
     std::vector<ValueId> state = step.target.buildState(fn, exit);
     il::Instruction leave;
@@ -578,14 +682,22 @@ BlockId hoistGuard(il::Function& fn, BlockId tail, const Step& step) {
 // Applies a plan made against the function as it stood. Moves copy out of the
 // loop's blocks, which the chain never is, so the plan's indices stay valid
 // until the originals are erased at the end.
-bool applyPlan(JobContext& ctx, BlockId preheader, const std::vector<Step>& steps) {
+bool applyPlan(JobContext& ctx, BlockId preheader, const std::vector<BlockId>& loopBlocks,
+               std::vector<Step> steps) {
     il::Function& fn = ctx.fn;
     if (steps.empty()) return false;
     std::vector<std::vector<uint8_t>> moved(fn.blocks.size());
     BlockId tail = preheader;
-    for (const Step& step : steps) {
+    for (size_t si = 0; si < steps.size(); ++si) {
+        const Step& step = steps[si];
         if (step.kind == Step::Kind::Guard) {
-            tail = hoistGuard(fn, tail, step);
+            ValueId warmCond = kNoValue;
+            tail = hoistGuard(fn, tail, step, loopBlocks, &warmCond);
+            if (warmCond != kNoValue) {
+                for (size_t sj = si + 1; sj < steps.size(); ++sj) {
+                    if (steps[sj].cond == step.cond) steps[sj].cond = warmCond;
+                }
+            }
             ++ctx.stats.guardsHoisted;
             continue;
         }
@@ -600,7 +712,7 @@ bool applyPlan(JobContext& ctx, BlockId preheader, const std::vector<Step>& step
 
             Step guardStep = step;
             guardStep.cond = cond;
-            tail = hoistGuard(fn, tail, guardStep);
+            tail = hoistGuard(fn, tail, guardStep, loopBlocks);
 
             const ValueId unboxed = newValue(fn);
             il::Instruction unbox;
@@ -649,7 +761,7 @@ bool hoistLoop(JobContext& ctx, const Analyses& a, uint32_t loopIndex) {
     if (preheader == kNoBlock || loopHasBarrier(ctx.fn, loop)) return false;
     LoopFacts facts = gatherFacts(ctx.module, ctx.fn, a, loop, preheader);
     LoopPlanner planner(ctx, a, loopIndex, preheader, std::move(facts));
-    return applyPlan(ctx, preheader, planner.plan());
+    return applyPlan(ctx, preheader, loop.blocks, planner.plan());
 }
 
 // The next loop to do: the deepest not yet done, lowest header first.

@@ -264,13 +264,43 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
                              kShapeWordAliasClass);
             return true;
         }
-        // bool = proto.cell <c>: the cell's stamp is the thread's epoch.
+        // bool = proto.cell <c>: the cell's stamp is the thread's epoch,
+        // self-warming once on miss before returning whether it holds.
         case BronzeOp::ProtoCell: {
+            if (inst.imm_i64 < 0 || static_cast<size_t>(inst.imm_i64) >= options_.proto_cells.size()) {
+                return inst_error(inst, "proto.cell names no cell of the module");
+            }
+            const TranslatorOptions::ProtoCellMeta& c = options_.proto_cells[inst.imm_i64];
             Value* cells = module_data_addr(b, std::string(kProtoCellsSymbol));
-            Value* stamp = with_alias_class(b.build_load(Type::i64(), cells, static_cast<int32_t>(inst.imm_i64 * 8)),
-                                            kRuntimeWordAliasClass);
-            Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-            res_val = b.build_eq(stamp, epoch);
+            const int32_t offset = static_cast<int32_t>(inst.imm_i64 * 8);
+            Value* stamp = with_alias_class(b.build_load(Type::i64(), cells, offset), kRuntimeWordAliasClass);
+            Value* tls = tls_block(b);
+            Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+            Value* fast_hit = b.build_eq(stamp, epoch);
+
+            Function* fn = b.current_block()->parent();
+            const std::string p = "protocell_" + std::to_string(fn->next_block_id());
+            BasicBlock* cur = b.current_block();
+            BasicBlock* slow = b.append_block(p + "_slow");
+            BasicBlock* merge = b.append_block(p + "_merge");
+            Value* result = b.add_block_param(merge, fast_hit->type());
+            slow->set_cold();
+            b.position_at_end(cur);
+            b.build_br_if(fast_hit, merge, {fast_hit}, slow, {});
+
+            b.position_at_end(slow);
+            Value* cell = b.build_add(cells, b.build_iconst_i64(inst.imm_i64 * 8));
+            Value* shapes = module_data_addr(b, std::string(kShapeCellsSymbol));
+            Value* from = b.build_load(Type::i64(), shapes, static_cast<int32_t>(c.from_cell * 8));
+            Value* to = b.build_load(Type::i64(), shapes, static_cast<int32_t>(c.to_cell * 8));
+            b.build_call("bronze_transition_publish", Type::void_type(),
+                         {cell, from, get_key_id(b, c.key_index), to, b.build_iconst_i32(c.slot)});
+            Value* stamp2 = with_alias_class(b.build_load(Type::i64(), cells, offset), kRuntimeWordAliasClass);
+            Value* epoch2 = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
+            b.build_br(merge, {b.build_eq(stamp2, epoch2)});
+
+            b.position_at_end(merge);
+            res_val = result;
             return true;
         }
         // proto.publish <c>: bronze_transition_publish with the cell's two
