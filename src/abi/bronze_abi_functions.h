@@ -336,6 +336,10 @@
     /* `create.this f` when the inline bump had no room: a plain object of the
      * vetted constructor `f`'s instance shape. */ \
     X(bronze_create_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    /* `fn.constructs f` slow path: vets an unvetted plain-instance JS
+     * constructor (materializing prototype/instance_shape without invoking
+     * user code) and returns 1 if vetted for `create.this`, else 0. */ \
+    X(bronze_vet_construct,       BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     /* A PRETENURED site's plain object (docs/type-feedback.md,\
      * "Pretenuring"): one of shape `shape` (a raw Shape*, its bare header\
      * sizing it), every slot undefined, allocated straight into the old\

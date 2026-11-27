@@ -332,7 +332,8 @@ Effects rawEffects(const Instruction& inst) {
         }
 
         // ---- the speculation forms (il_op.h) ----------------------------
-        case Op::ShapeCell:   // filled once at load, never written after
+        case Op::ShapeCell:
+            return reading(Loc::Protos);
         case Op::PtrEq:
         case Op::ShapeIn:
         case Op::IsObject:
@@ -386,7 +387,11 @@ Effects rawEffects(const Instruction& inst) {
                                                                               : Loc::Elements | Loc::ElemKinds);
         // Construction: the vetted byte and the instance shape live on the
         // function object; the instance is a fresh allocation.
-        case Op::FnConstructs:
+        case Op::FnConstructs: {
+            Effects e = guardedOp(Loc::FnFields, LocSet::none());
+            e.collects = true;
+            return e;
+        }
         case Op::FnInstanceShape:
             return guardedOp(Loc::FnFields, LocSet::none());
         // The new object's shape word is written as it is made, which is what

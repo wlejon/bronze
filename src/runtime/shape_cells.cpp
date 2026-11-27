@@ -171,6 +171,63 @@ void rtShapeCellsNoteShape(const Shape* shape) {
     reindex(r);
 }
 
+void rtShapeCellsWarmPendingChildren(Shape* root) {
+    Registry& r = t_cells;
+    if (root == nullptr || root->parent != nullptr || r.pending.empty() || !eligible(root)) return;
+
+    std::unordered_map<const Shape*, std::string> protoNames;
+    const std::string rootName = typeFeedbackShapeName(root, protoNames);
+    ParsedName rootParsed;
+    if (!parseName(rootName, rootParsed) || rootParsed.dict || !rootParsed.keys.empty()) return;
+
+    std::vector<ParsedName> targets;
+    for (const PendingCell& p : r.pending) {
+        if (p.cell == nullptr) continue;
+        ParsedName parsed;
+        if (!parseName(p.key, parsed) || parsed.dict || parsed.keys.empty()) continue;
+        if (parsed.proto == rootParsed.proto && parsed.inlineSlots == rootParsed.inlineSlots) {
+            targets.push_back(std::move(parsed));
+        }
+    }
+
+    for (const ParsedName& target : targets) {
+        Shape* cur = root;
+        for (const std::string& spelled : target.keys) {
+            if (spelled.empty() || spelled[0] == '!') {
+                cur = nullptr;
+                break;
+            }
+            const SlotRepr desired = spelled[0] == '%' ? SlotRepr::Double : SlotRepr::Boxed;
+            const std::string_view rawKey =
+                spelled[0] == '%' ? std::string_view(spelled).substr(1) : std::string_view(spelled);
+            const uint32_t nextSlot = cur->nextSlotIndex(1);
+            if (rawKey.empty() || nextSlot >= cur->inline_slots || nextSlot >= Shape::kOverflowSlot) {
+                cur = nullptr;
+                break;
+            }
+            StringHeader* arenaKey =
+                StringHeader::adoptIntoArena(rtArena(), StringHeader::createFromUTF8InArena(rtArena(), rawKey));
+            const PropertyKey pk = PropertyKey::forString(arenaKey);
+            PropertyInfo existing;
+            if (cur->lookupProperty(pk, existing)) {
+                if (existing.accessor || !existing.enumerable || !existing.writable ||
+                    !existing.configurable || cur->slotIsObject(existing.slot) ||
+                    cur->slotIsDouble(existing.slot) != (desired == SlotRepr::Double)) {
+                    cur = nullptr;
+                    break;
+                }
+            }
+            uint32_t outSlot = 0;
+            cur = cur->addPropertyKey(rtArena(), pk, outSlot, true, false, true, true, desired);
+            if (cur == nullptr || cur->isDictionary()) {
+                cur = nullptr;
+                break;
+            }
+        }
+        if (cur != nullptr) rtShapeCellsNoteShape(cur);
+    }
+}
+
 void rtShapeCellsDropWithin(const void* begin, size_t size) {
     Registry& r = t_cells;
     if (r.pending.empty() || begin == nullptr || size == 0) return;

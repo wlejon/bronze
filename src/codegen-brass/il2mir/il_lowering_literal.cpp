@@ -225,7 +225,24 @@ bool IlLowering::lower_literal_instruction(const BronzeInstruction& inst, Builde
             Value* masked = b.build_and(word, b.build_iconst_i64(static_cast<int64_t>(mask)));
             Value* vetted = b.build_eq(masked, b.build_or(realm, b.build_iconst_i64(int64_t{1} << kVetShift)));
             Value* shape = b.build_load(Type::i64(), ptr, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
-            res_val = b.build_and(vetted, b.build_ne(shape, b.build_iconst_i64(0)));
+            Value* fast_ok = b.build_and(vetted, b.build_ne(shape, b.build_iconst_i64(0)));
+
+            Function* fn = b.current_block()->parent();
+            const std::string p = "fnconstructs_" + std::to_string(fn->next_block_id());
+            BasicBlock* cur = b.current_block();
+            BasicBlock* slow = b.append_block(p + "_slow");
+            BasicBlock* merge = b.append_block(p + "_merge");
+            Value* result = b.add_block_param(merge, fast_ok->type());
+            slow->set_cold();
+            b.position_at_end(cur);
+            b.build_br_if(fast_ok, merge, {fast_ok}, slow, {});
+
+            b.position_at_end(slow);
+            Value* vet = b.build_call("bronze_vet_construct", Type::i64(), {opd[0]});
+            b.build_br(merge, {b.build_ne(vet, b.build_iconst_i64(0))});
+
+            b.position_at_end(merge);
+            res_val = result;
             return true;
         }
         // ptr = fn.instance_shape %f: the instance shape word.

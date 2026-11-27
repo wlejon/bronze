@@ -35,6 +35,10 @@ namespace bronze::runtime {
 // cells its name matches. Cheap when no cell is pending.
 void rtShapeCellsNoteShape(const Shape* shape);
 
+// Materializes pending direct descendant shapes of `root` (for constructors
+// vetted before their first instance runs).
+void rtShapeCellsWarmPendingChildren(Shape* root);
+
 // A module going away: its pending cells are forgotten (their memory may be
 // freed next). By the data range it occupied, or by its module epoch.
 void rtShapeCellsDropWithin(const void* begin, size_t size);

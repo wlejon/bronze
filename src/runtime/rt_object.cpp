@@ -41,6 +41,7 @@
 #include "runtime/regexp.h"
 #include "runtime/root_remset.h"
 #include "runtime/builtin_object.h"
+#include "runtime/shape_cells.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -168,6 +169,7 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     fn->prototype = Value::fromObject(proto);
     fn->instance_shape = rtNewRootShape(fn->prototype, rtInstanceInlineSlots(fn));
     rtInstallPrototypeConstructor(fnVal);
+    rtShapeCellsNoteShape(fnVal.get().asObject<FunctionHeader>()->instance_shape);
 }
 
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
@@ -553,6 +555,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // would inherit the BASE's and `new this.constructor()` on a derived
     // instance would build a base instance.
     rtInstallPrototypeConstructor(derived);
+    rtShapeCellsNoteShape(derived.get().asObject<FunctionHeader>()->instance_shape);
 }
 
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
@@ -745,6 +748,25 @@ uint64_t bronze_create_this(uint64_t fnBits) {
         ObjectHeader::create(rtHeap(), rtArena(), fnRoot.get().asObject<FunctionHeader>()->instance_shape);
     instance->header.flags = HeapKind::Plain;
     return Value::fromObject(instance).rawBits();
+}
+
+uint64_t bronze_vet_construct(uint64_t fnBits) {
+    const Value fnVal(fnBits);
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return 0;
+    FunctionHeader* fn = fnVal.asObject<FunctionHeader>();
+    if (fn->realmSlot() != rtCurrentRealmSlot()) return 0;
+    if (fn->construct_vetted && fn->instance_shape != nullptr) return 1;
+    if (fn->isNativeCode() || !fn->hasConstruct()) return 0;
+    if (Value t, bThis, bArgs; rtBoundFunctionState(fnVal, t, bThis, bArgs)) return 0;
+    if (rtNativeBaseOf(fnVal) != NativeBase::None) return 0;
+    if (!fn->prototype.isUndefined() && !fn->prototype.isObject()) return 0;
+    Rooted<Value> fnRoot{fnVal};
+    rtEnsureFunctionPrototype(fnRoot);
+    FunctionHeader* live = fnRoot.get().asObject<FunctionHeader>();
+    if (live->instance_shape == nullptr) return 0;
+    live->construct_vetted = true;
+    rtShapeCellsWarmPendingChildren(live->instance_shape);
+    return 1;
 }
 
 // A record's size as the backend lays the records out (codegen-brass il_abi.h
