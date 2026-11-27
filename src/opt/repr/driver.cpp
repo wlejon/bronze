@@ -88,7 +88,9 @@ ReprStats selectRepresentationsModule(il::Module& module, const RedundancyOption
         il::Function& fn = module.functions[i];
         if (!fn.isSpeculated() || fn.isExternal || fn.blocks.empty()) continue;
         repr::PhaseContext ctx{module, fn, stats};
-        if (repr::sinkAllocations(ctx) | repr::sinkBoxes(ctx)) {
+        bool changed = repr::sinkAllocations(ctx);
+        changed |= repr::sinkBoxes(ctx);
+        if (changed) {
             stats.deadRemoved += repr::removeDeadInstructions(fn);
         }
     }
