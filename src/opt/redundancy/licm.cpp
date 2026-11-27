@@ -333,38 +333,53 @@ std::optional<Step> LoopPlanner::guardStep(BlockId b) {
     if (thenBlock == elseBlock) return std::nullopt;
     const bool thenExits = endsInLeave(fn_.blocks[thenBlock]);
     const bool elseExits = endsInLeave(fn_.blocks[elseBlock]);
-    if (thenExits == elseExits) return std::nullopt;
+    bool exitOnTrue = false;
+    bool fromLeaveExit = false;
+    if (thenExits != elseExits) {
+        exitOnTrue = thenExits;
+        fromLeaveExit = true;
+    } else if (!fn_.blocks[b].cold && loop_.contains(thenBlock) && loop_.contains(elseBlock)) {
+        const bool thenCold = fn_.blocks[thenBlock].cold;
+        const bool elseCold = fn_.blocks[elseBlock].cold;
+        if (thenCold == elseCold) return std::nullopt;
+        exitOnTrue = thenCold;
+    } else {
+        return std::nullopt;
+    }
     const ValueId cond = term.operands[0];
     if (!invariant(cond) || !dominatesLatches(b)) return std::nullopt;
-    // The exit's cache fills go with the guard, so their operands must be
-    // there at the preheader's end too.
     std::vector<il::Instruction> fills;
-    for (const il::Instruction& inst : fn_.blocks[thenExits ? thenBlock : elseBlock].instructions) {
-        if (!isCacheFill(inst.op)) continue;
-        for (ValueId v : inst.operands) {
-            if (!invariant(v)) return std::nullopt;
+    bool optimistic = false;
+    if (fromLeaveExit) {
+        const il::Block& exitBlock = fn_.blocks[exitOnTrue ? thenBlock : elseBlock];
+        // The exit's cache fills go with the guard, so their operands must be
+        // there at the preheader's end too.
+        for (const il::Instruction& inst : exitBlock.instructions) {
+            if (!isCacheFill(inst.op)) continue;
+            for (ValueId v : inst.operands) {
+                if (!invariant(v)) return std::nullopt;
+            }
+            fills.push_back(inst);
         }
-        fills.push_back(inst);
+        optimistic = exitBlock.instructions.back().keyIndex == il::kResumeOptimistic;
     }
-    const il::Block& exitBlock = fn_.blocks[thenExits ? thenBlock : elseBlock];
-    const std::optional<LeaveTarget>& target =
-        resumeTarget(exitBlock.instructions.back().keyIndex == il::kResumeOptimistic);
+    const std::optional<LeaveTarget>& target = resumeTarget(optimistic);
     if (!target) return std::nullopt;
 
     // From here on the preheader chain is past this guard: its fast edge's
     // facts hold there. They were derived at the guard's own block, about
     // invariant values whose tests move with them.
     const EdgeFacts edge = branchFacts(fn_, a_.defs, b);
-    preheaderFacts_.addAll(thenExits ? edge.onFalse : edge.onTrue);
+    preheaderFacts_.addAll(exitOnTrue ? edge.onFalse : edge.onTrue);
 
     Step step;
     step.kind = Step::Kind::Guard;
     step.block = b;
     step.cond = cond;
-    step.exitOnTrue = thenExits;
+    step.exitOnTrue = exitOnTrue;
     step.target = *target;
     step.fills = std::move(fills);
-    if (!step.fills.empty() && !step.exitOnTrue) {
+    if (fromLeaveExit && !step.fills.empty() && !step.exitOnTrue) {
         if (const il::Instruction* cd = a_.defs.defInst(fn_, cond)) {
             if (cd->op == Op::ProtoCell) {
                 step.warmKind = Step::WarmFill::ProtoCell;

@@ -146,7 +146,7 @@ void rtEnqueueThenableJob(Value promise, Value thenable, Value thenFn) {
     g_queue.push_back(Job{Job::Thenable, promise, thenable, thenFn});
 }
 
-bool rtMicrotasksPending() { return !g_queue.empty(); }
+bool rtMicrotasksPending() { return !g_queue.empty() || rtHasReadyAsyncAtomicsWaiters(); }
 
 void rtDrainMicrotasks() {
     // The synchronous half of the program is itself a job, and it has just
@@ -157,7 +157,7 @@ void rtDrainMicrotasks() {
     // in the same drain for an object the main script deref'd.
     rtClearKeptObjects();
     rtDrainAsyncAtomicsWaiters();
-    while (!g_queue.empty() || rtFinalizationCleanupPending()) {
+    while (!g_queue.empty() || rtHasReadyAsyncAtomicsWaiters() || rtFinalizationCleanupPending()) {
         // A FinalizationRegistry cleanup job is a HOST job (26.2.1.2's caller is
         // the host, not the language), so it runs at a checkpoint the microtask
         // queue has already reached quiescence at — a cleanup callback must
@@ -167,6 +167,7 @@ void rtDrainMicrotasks() {
         if (g_queue.empty()) {
             rtDrainAsyncAtomicsWaiters();
             if (!g_queue.empty()) continue;
+            if (!rtFinalizationCleanupPending()) break;
             rtRunFinalizationCleanupJob();
             rtClearKeptObjects();
             continue;

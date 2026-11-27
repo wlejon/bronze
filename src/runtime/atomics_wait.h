@@ -23,6 +23,10 @@ Value rtAtomicsWaitAsync(Value viewVal, Value indexVal, Value expectedVal, Value
 // whose finite deadline has elapsed, enqueuing their promise reactions.
 void rtDrainAsyncAtomicsWaiters();
 
+// Lock-free check whether any async waiter on the current thread is already
+// ready to settle (notified or past deadline) or already in the settling list.
+bool rtHasReadyAsyncAtomicsWaiters() noexcept;
+
 // Detaches/drops any still-pending async waiters owned by the exiting thread.
 void rtClearThreadAsyncAtomicsWaiters() noexcept;
 

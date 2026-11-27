@@ -85,7 +85,7 @@ struct WaiterNode {
     WaiterKind kind = WaiterKind::Sync;
     const void* addr = nullptr;
     SharedBufferBlock* block = nullptr;
-    bool notified = false;
+    std::atomic<bool> notified{false};
     bool removed = false;
     std::condition_variable cv;
     bool hasDeadline = false;
@@ -430,7 +430,7 @@ Value rtAtomicsWait(Value viewVal, Value indexVal, Value expectedVal, Value time
     } guard{wt, node, lock};
 
     bool terminated = false;
-    while (!node->notified) {
+    while (!node->notified.load(std::memory_order_acquire)) {
         if (rtTerminationRequested()) {
             terminated = true;
             break;
@@ -438,14 +438,14 @@ Value rtAtomicsWait(Value viewVal, Value indexVal, Value expectedVal, Value time
         const auto slice = Clock::now() + std::chrono::milliseconds(50);
         const auto wakeAt = target.hasDeadline && deadline < slice ? deadline : slice;
         node->cv.wait_until(lock, wakeAt);
-        if (node->notified) break;
+        if (node->notified.load(std::memory_order_acquire)) break;
         if (target.hasDeadline && Clock::now() >= deadline) break;
         lock.unlock();
         rtServiceHostInterrupt();
         lock.lock();
-        if (node->notified) break;
+        if (node->notified.load(std::memory_order_acquire)) break;
     }
-    const bool woke = node->notified;
+    const bool woke = node->notified.load(std::memory_order_acquire);
     removeWaiterLocked(wt, node);
     lock.unlock();
 
@@ -489,7 +489,7 @@ Value rtAtomicsNotify(Value viewVal, Value indexVal, Value countVal) {
             std::shared_ptr<WaiterNode> node = q.front();
             q.pop_front();
             node->removed = true;
-            node->notified = true;
+            node->notified.store(true, std::memory_order_release);
             toNotify.push_back(std::move(node));
         }
         if (q.empty()) wt.queues.erase(it);
@@ -545,6 +545,17 @@ Value rtAtomicsWaitAsync(Value viewVal, Value indexVal, Value expectedVal, Value
     return makeWaitAsyncResult(true, promise.get());
 }
 
+bool rtHasReadyAsyncAtomicsWaiters() noexcept {
+    if (!t_settlingWaiters.empty()) return true;
+    if (t_asyncWaiters.empty()) return false;
+    const Clock::time_point now = Clock::now();
+    for (const AsyncEntry& entry : t_asyncWaiters) {
+        if (entry.node->notified.load(std::memory_order_acquire)) return true;
+        if (entry.node->hasDeadline && now >= entry.node->deadline) return true;
+    }
+    return false;
+}
+
 void rtDrainAsyncAtomicsWaiters() {
     if (t_asyncWaiters.empty()) return;
     const Clock::time_point now = Clock::now();
@@ -557,7 +568,7 @@ void rtDrainAsyncAtomicsWaiters() {
         std::lock_guard<std::mutex> lock(wt.mu);
         for (AsyncEntry& entry : t_asyncWaiters) {
             const auto& node = entry.node;
-            if (node->notified) {
+            if (node->notified.load(std::memory_order_acquire)) {
                 t_settlingWaiters.emplace_back(entry.promise, true);
             } else if (node->hasDeadline && now >= node->deadline) {
                 removeWaiterLocked(wt, node);

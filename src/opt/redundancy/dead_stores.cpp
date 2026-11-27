@@ -47,6 +47,74 @@ bool overwrittenBeforeRead(const std::vector<il::Instruction>& insts, size_t i, 
     return false;
 }
 
+bool isDeadRemovableAlloc(il::Op op) {
+    return op == il::Op::CreateThis || op == il::Op::CreateObject || op == il::Op::CreateArray ||
+           op == il::Op::ObjectLiteral || op == il::Op::ArrayLiteral;
+}
+
+bool isSelfPrivateStore(const il::Instruction& inst) {
+    if (inst.op != il::Op::SlotStore && inst.op != il::Op::ShapeStore && inst.op != il::Op::ElemStore) {
+        return false;
+    }
+    if (inst.operands.empty()) return false;
+    const il::Effects e = il::effectsOf(inst);
+    return !e.throws && !e.callsUnknown && !e.observableOrder && !e.barrier && !e.allocates && !e.collects;
+}
+
+bool eliminateDeadAllocations(JobContext& ctx, const AliasInfo& alias) {
+    il::Function& fn = ctx.fn;
+    const size_t n = fn.valueCount;
+    if (n == 0) return false;
+    std::vector<uint8_t> used(n, 0);
+    auto mark = [&](ValueId v) {
+        if (v != kNoValue && v < n) used[v] = 1;
+    };
+    for (const il::Block& block : fn.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            for (ValueId v : inst.target.args) mark(v);
+            for (ValueId v : inst.elseTarget.args) mark(v);
+            const bool selfPrivate = isSelfPrivateStore(inst);
+            for (size_t i = 0; i < inst.operands.size(); ++i) {
+                if (i == 0 && selfPrivate) continue;
+                mark(inst.operands[i]);
+            }
+        }
+    }
+
+    std::vector<uint8_t> deadAlloc(n, 0);
+    bool anyDead = false;
+    for (const il::Block& block : fn.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            if (inst.result != kNoValue && inst.result < n && isDeadRemovableAlloc(inst.op) &&
+                alias.isFreshUnescaped(inst.result) && !used[inst.result]) {
+                deadAlloc[inst.result] = 1;
+                anyDead = true;
+            }
+        }
+    }
+    if (!anyDead) return false;
+
+    for (il::Block& block : fn.blocks) {
+        auto& insts = block.instructions;
+        std::vector<il::Instruction> kept;
+        kept.reserve(insts.size());
+        for (il::Instruction& inst : insts) {
+            if (inst.result != kNoValue && inst.result < n && deadAlloc[inst.result]) {
+                ++ctx.stats.deadInstructions;
+                continue;
+            }
+            if (!inst.operands.empty() && inst.operands[0] != kNoValue && inst.operands[0] < n &&
+                deadAlloc[inst.operands[0]] && isSelfPrivateStore(inst)) {
+                ++ctx.stats.deadStores;
+                continue;
+            }
+            kept.push_back(std::move(inst));
+        }
+        insts = std::move(kept);
+    }
+    return true;
+}
+
 }  // namespace
 
 bool runDeadStores(JobContext& ctx) {
@@ -85,6 +153,7 @@ bool runDeadStores(JobContext& ctx) {
         insts = std::move(kept);
         changed = true;
     }
+    changed |= eliminateDeadAllocations(ctx, alias);
     return changed;
 }
 
