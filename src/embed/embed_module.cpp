@@ -106,6 +106,12 @@ ModuleHandle beginModuleLoad() { return runtime::rtBeginModuleEpoch(); }
 void endModuleLoad(ModuleHandle module) { runtime::rtEndModuleEpoch(module); }
 void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
 void clearModuleRegistry() { runtime::rtModuleRegistryClear(); }
+bool invalidateModuleRegistryEntry(const std::string& path) {
+    return runtime::rtModuleRegistryInvalidate(path);
+}
+bool lookupModuleRegistryEntry(const std::string& path, Value& out) {
+    return runtime::rtModuleLookup(path, out);
+}
 
 void collectGarbage() { runtime::rtHeap().collect(); }
 

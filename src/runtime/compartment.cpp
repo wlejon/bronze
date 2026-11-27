@@ -3,6 +3,7 @@
 
 #include "runtime/compartment.h"
 
+#include "runtime/atomics_wait.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -41,8 +42,8 @@ struct Compartment {
     CompartmentOptions options;
     int64_t sliceNs = 0;
     std::unique_ptr<brass::gc::Fiber> fiber;
-    // The thread's TLS block, for the watchdog's arming store.
-    bronze_tls_block* tls = nullptr;
+    // The thread's TLS block, for the watchdog's / cross-thread arming store.
+    std::atomic<bronze_tls_block*> tls{nullptr};
     std::atomic<int64_t> deadlineNs{0};
 
     CompartmentState state = CompartmentState::Idle;
@@ -51,7 +52,8 @@ struct Compartment {
     bool jobPending = false;   // handed to the fiber, not yet finished
     std::string uncaught;      // the last job's uncaught error
 
-    bool terminateRequested = false;
+    std::atomic<bool> terminateRequested{false};
+    std::mutex reasonMu;
     std::string terminationReason;
     std::string terminationSite;
 
@@ -220,10 +222,11 @@ void fiberMain(void* arg) {
 void enterFiber(Compartment* c) {
     Compartment* prev = t_running;
     t_running = c;
-    c->tls = rtTls();
-    watchdog().start(c);
+    c->tls.store(rtTls(), std::memory_order_release);
+    if (c->sliceNs > 0) watchdog().start(c);
     c->fiber->resume();
-    watchdog().stop(c);
+    if (c->sliceNs > 0) watchdog().stop(c);
+    c->tls.store(nullptr, std::memory_order_release);
     t_running = prev;
     // An interrupt armed for the slice that just ended must not stop the
     // host's own code: the real limit goes back over it.
@@ -233,7 +236,7 @@ void enterFiber(Compartment* c) {
             c->state = CompartmentState::Yielded;
         } else {
             c->state = CompartmentState::Idle;
-            noteOverrun(c, nowNs() - c->deadlineNs.load(std::memory_order_relaxed), false);
+            if (c->sliceNs > 0) noteOverrun(c, nowNs() - c->deadlineNs.load(std::memory_order_relaxed), false);
         }
     }
 }
@@ -243,7 +246,10 @@ CompartmentStatus statusOf(Compartment* c) {
     s.state = c->state;
     if (c->state == CompartmentState::Idle) s.uncaught = std::move(c->uncaught);
     c->uncaught.clear();
-    s.terminationReason = c->terminationReason;
+    {
+        std::lock_guard<std::mutex> lock(c->reasonMu);
+        s.terminationReason = c->terminationReason;
+    }
     s.terminationSite = c->terminationSite;
     return s;
 }
@@ -257,7 +263,8 @@ void rtServiceInterrupt() {
     // The host's own stack is never preempted, nor is a compartment's from
     // a stack that is not its fiber.
     if (c == nullptr || brass::gc::Fiber::current() != c->fiber.get()) return;
-    if (c->terminateRequested) throwTermination(c);
+    if (c->terminateRequested.load(std::memory_order_acquire)) throwTermination(c);
+    if (c->sliceNs <= 0) return;
     const int64_t now = nowNs();
     const int64_t deadline = c->deadlineNs.load(std::memory_order_relaxed);
     if (now < deadline || t_noYield > 0) return;
@@ -265,15 +272,14 @@ void rtServiceInterrupt() {
     ++c->overruns;
     brass::gc::Fiber::suspend();
     // Resumed (rtCompartmentResume) with a fresh slice, or to be unwound.
-    if (c->terminateRequested) throwTermination(c);
+    if (c->terminateRequested.load(std::memory_order_acquire)) throwTermination(c);
 }
 
 Compartment* rtCreateCompartment(Realm* realm, const CompartmentOptions& options) {
     auto c = std::make_unique<Compartment>();
     c->realm = realm;
     c->options = options;
-    c->sliceNs = static_cast<int64_t>(options.sliceMs * 1e6);
-    if (c->sliceNs <= 0) c->sliceNs = 1;
+    c->sliceNs = options.sliceMs <= 0.0 ? 0 : std::max<int64_t>(1, static_cast<int64_t>(options.sliceMs * 1e6));
     c->fiber = brass::gc::Fiber::create(&fiberMain, c.get(), options.stackBytes);
     if (!c->fiber) return nullptr;
     return c.release();
@@ -313,8 +319,8 @@ CompartmentStatus rtCompartmentResume(Compartment* c) {
 
 void rtCompartmentTerminate(Compartment* c, const std::string& reason) {
     if (!c || c->state == CompartmentState::Terminated) return;
-    if (!c->terminateRequested) {
-        c->terminateRequested = true;
+    if (!c->terminateRequested.exchange(true, std::memory_order_acq_rel)) {
+        std::lock_guard<std::mutex> lock(c->reasonMu);
         c->terminationReason = reason;
     }
     if (t_running == c) {
@@ -338,6 +344,18 @@ void rtCompartmentTerminate(Compartment* c, const std::string& reason) {
     // Yielded: resumed once, the poll it is suspended in throws, and the
     // job unwinds to fiberMain, which ends.
     enterFiber(c);
+}
+
+void rtRequestCompartmentTerminate(Compartment* c, const std::string& reason) {
+    if (!c) return;
+    if (!c->terminateRequested.exchange(true, std::memory_order_acq_rel)) {
+        std::lock_guard<std::mutex> lock(c->reasonMu);
+        c->terminationReason = reason;
+    }
+    if (bronze_tls_block* tls = c->tls.load(std::memory_order_acquire)) {
+        rtArmInterrupt(tls);
+    }
+    rtWakeAllSyncAtomicsWaiters();
 }
 
 CompartmentState rtCompartmentState(const Compartment* c) { return c->state; }
@@ -365,13 +383,16 @@ bool rtCanAbortCurrentCompartment() noexcept {
     struct ResetGuard {
         ~ResetGuard() { t_abortingCompartment = false; }
     } resetGuard;
-    c->terminateRequested = true;
-    c->terminationReason = std::string("fatal: ") + (reason && *reason ? reason : "internal error");
+    c->terminateRequested.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(c->reasonMu);
+        c->terminationReason = std::string("fatal: ") + (reason && *reason ? reason : "internal error");
+    }
     throwTermination(c);
 }
 
 bool rtTerminationRequested() noexcept {
-    return t_running != nullptr && t_running->terminateRequested;
+    return t_running != nullptr && t_running->terminateRequested.load(std::memory_order_acquire);
 }
 uint32_t rtCompartmentOverruns(const Compartment* c) { return c->overruns; }
 double rtCompartmentLongestOverrunMs(const Compartment* c) { return c->longestOverrunMs; }

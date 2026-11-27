@@ -327,6 +327,8 @@ BRONZE_EMBED_API void unloadModule(ModuleHandle module);
 // the reloaded page compiles and evaluates its modules afresh rather than
 // binding the previous page's instances.
 BRONZE_EMBED_API void clearModuleRegistry();
+BRONZE_EMBED_API bool invalidateModuleRegistryEntry(const std::string& path);
+BRONZE_EMBED_API bool lookupModuleRegistryEntry(const std::string& path, Value& out);
 
 // Collect now. A host that has just released a large graph — a level torn
 // down, a frame's scratch objects dropped — knows something the heap's own
@@ -871,6 +873,7 @@ inline CompartmentStatus runInCompartment(Compartment* c, const std::function<vo
 }
 BRONZE_EMBED_API CompartmentStatus resumeCompartment(Compartment* c);
 BRONZE_EMBED_API void terminateCompartment(Compartment* c, const std::string& reason);
+BRONZE_EMBED_API void requestCompartmentTerminate(Compartment* c, const std::string& reason);
 BRONZE_EMBED_API CompartmentState compartmentState(const Compartment* c);
 BRONZE_EMBED_API Realm* compartmentRealm(const Compartment* c);
 // The compartment whose job is running on this thread, or null.
@@ -878,6 +881,11 @@ BRONZE_EMBED_API Compartment* runningCompartment();
 BRONZE_EMBED_API uint32_t compartmentOverruns(const Compartment* c);
 BRONZE_EMBED_API double compartmentLongestOverrunMs(const Compartment* c);
 BRONZE_EMBED_API std::string compartmentLongestOverrunSite(const Compartment* c);
+
+// Per-thread callback invoked from Atomics.notify when an async waiter
+// registered on this thread wakes, plus earliest finite waitAsync deadline.
+BRONZE_EMBED_API void setAtomicsWaitWakeCallback(void (*fn)(void* arg), void* arg);
+BRONZE_EMBED_API double nextAsyncAtomicsTimeoutMs();
 
 // ---- host interrupts (embed_compartment.cpp; runtime/host_interrupt.h) -----
 //

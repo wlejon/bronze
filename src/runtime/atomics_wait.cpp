@@ -81,6 +81,13 @@ uint64_t maskWidth(uint32_t width) noexcept {
 
 enum class WaiterKind : uint8_t { Sync, Async };
 
+struct AsyncWakeHandle {
+    std::mutex mu;
+    AtomicsWaitWakeFn fn = nullptr;
+    void* arg = nullptr;
+    bool active = false;
+};
+
 struct WaiterNode {
     WaiterKind kind = WaiterKind::Sync;
     const void* addr = nullptr;
@@ -88,6 +95,7 @@ struct WaiterNode {
     std::atomic<bool> notified{false};
     bool removed = false;
     std::condition_variable cv;
+    std::shared_ptr<AsyncWakeHandle> wake;
     bool hasDeadline = false;
     Clock::time_point deadline{};
 
@@ -128,6 +136,7 @@ struct AsyncEntry {
 
 thread_local std::vector<AsyncEntry> t_asyncWaiters;
 thread_local std::vector<std::pair<Value, bool>> t_settlingWaiters;
+thread_local std::shared_ptr<AsyncWakeHandle> t_asyncWake;
 thread_local bool t_asyncRootsRegistered = false;
 
 void ensureAsyncWaiterRoots() {
@@ -495,7 +504,12 @@ Value rtAtomicsNotify(Value viewVal, Value indexVal, Value countVal) {
         if (q.empty()) wt.queues.erase(it);
     }
     for (const auto& node : toNotify) {
-        if (node->kind == WaiterKind::Sync) node->cv.notify_one();
+        if (node->kind == WaiterKind::Sync) {
+            node->cv.notify_one();
+        } else if (node->wake) {
+            std::lock_guard<std::mutex> wakeLock(node->wake->mu);
+            if (node->wake->active && node->wake->fn) node->wake->fn(node->wake->arg);
+        }
     }
     return Value::fromDouble(static_cast<double>(toNotify.size()));
 }
@@ -519,6 +533,7 @@ Value rtAtomicsWaitAsync(Value viewVal, Value indexVal, Value expectedVal, Value
     node->kind = WaiterKind::Async;
     node->addr = addr;
     node->block = rtFindSharedStore(buf->externalPtrBits);
+    node->wake = t_asyncWake;
     node->hasDeadline = target.hasDeadline;
     node->deadline =
         target.hasDeadline ? Clock::now() + std::chrono::duration_cast<Clock::duration>(
@@ -591,6 +606,7 @@ void rtDrainAsyncAtomicsWaiters() {
 }
 
 void rtClearThreadAsyncAtomicsWaiters() noexcept {
+    rtSetAtomicsWaitWakeCallback(nullptr, nullptr);
     t_settlingWaiters.clear();
     if (t_asyncWaiters.empty()) return;
     WaitTable& wt = waitTable();
@@ -599,6 +615,54 @@ void rtClearThreadAsyncAtomicsWaiters() noexcept {
         removeWaiterLocked(wt, entry.node);
     }
     t_asyncWaiters.clear();
+}
+
+void rtWakeAllSyncAtomicsWaiters() noexcept {
+    std::vector<std::shared_ptr<WaiterNode>> syncNodes;
+    {
+        WaitTable& wt = waitTable();
+        std::lock_guard<std::mutex> lock(wt.mu);
+        for (const auto& [addr, q] : wt.queues) {
+            for (const auto& node : q) {
+                if (node->kind == WaiterKind::Sync) syncNodes.push_back(node);
+            }
+        }
+    }
+    for (const auto& node : syncNodes) {
+        node->cv.notify_all();
+    }
+}
+
+void rtSetAtomicsWaitWakeCallback(AtomicsWaitWakeFn fn, void* arg) noexcept {
+    if (t_asyncWake) {
+        std::lock_guard<std::mutex> lock(t_asyncWake->mu);
+        t_asyncWake->active = false;
+        t_asyncWake->fn = nullptr;
+        t_asyncWake->arg = nullptr;
+    }
+    t_asyncWake.reset();
+    if (fn) {
+        auto h = std::make_shared<AsyncWakeHandle>();
+        h->fn = fn;
+        h->arg = arg;
+        h->active = true;
+        t_asyncWake = std::move(h);
+    }
+}
+
+double rtNextAsyncAtomicsTimeoutMs() noexcept {
+    if (!t_settlingWaiters.empty()) return 0.0;
+    if (t_asyncWaiters.empty()) return std::numeric_limits<double>::infinity();
+    const Clock::time_point now = Clock::now();
+    double soonest = std::numeric_limits<double>::infinity();
+    for (const AsyncEntry& entry : t_asyncWaiters) {
+        if (entry.node->notified.load(std::memory_order_acquire)) return 0.0;
+        if (!entry.node->hasDeadline) continue;
+        if (now >= entry.node->deadline) return 0.0;
+        const double remMs = std::chrono::duration<double, std::milli>(entry.node->deadline - now).count();
+        soonest = std::min(soonest, std::max(0.0, remMs));
+    }
+    return soonest;
 }
 
 }  // namespace bronze::runtime

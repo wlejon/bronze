@@ -88,6 +88,19 @@ bool rtModuleLookup(const std::string& path, Value& out) {
     return false;
 }
 
+bool rtModuleRegistryInvalidate(const std::string& path) {
+    Realm* realm = rtCurrentRealm();
+    if (!realm) return false;
+    auto& reg = realm->moduleRegistry();
+    for (auto it = reg.begin(); it != reg.end(); ++it) {
+        if (it->first == path) {
+            reg.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 void rtModuleRegistryClear() {
     Realm* realm = rtCurrentRealm();
     if (realm) realm->moduleRegistry().clear();

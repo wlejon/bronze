@@ -47,6 +47,10 @@ void rtModulePublish(const std::string& path, Value ns);
 // the caller compile the file instead.
 bool rtModuleLookup(const std::string& path, Value& out);
 
+// Forget every published entry for `path` in the current realm (in-place
+// hot-swap of one module without clearing sibling modules in the realm).
+bool rtModuleRegistryInvalidate(const std::string& path);
+
 // Forget every module published in the current realm. A host that RELOADS a
 // page in the same realm calls this first: without it the new compile treats
 // every path the old page evaluated as external and binds the OLD instance —

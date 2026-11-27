@@ -2,6 +2,7 @@
 
 #include "embed/embed.h"
 
+#include "runtime/atomics_wait.h"
 #include "runtime/compartment.h"
 #include "runtime/host_interrupt.h"
 
@@ -22,6 +23,9 @@ CompartmentStatus resumeCompartment(Compartment* c) { return runtime::rtCompartm
 void terminateCompartment(Compartment* c, const std::string& reason) {
     runtime::rtCompartmentTerminate(c, reason);
 }
+void requestCompartmentTerminate(Compartment* c, const std::string& reason) {
+    runtime::rtRequestCompartmentTerminate(c, reason);
+}
 
 CompartmentState compartmentState(const Compartment* c) { return runtime::rtCompartmentState(c); }
 Realm* compartmentRealm(const Compartment* c) { return runtime::rtCompartmentRealm(c); }
@@ -31,6 +35,11 @@ double compartmentLongestOverrunMs(const Compartment* c) { return runtime::rtCom
 std::string compartmentLongestOverrunSite(const Compartment* c) {
     return runtime::rtCompartmentLongestOverrunSite(c);
 }
+
+void setAtomicsWaitWakeCallback(void (*fn)(void* arg), void* arg) {
+    runtime::rtSetAtomicsWaitWakeCallback(fn, arg);
+}
+double nextAsyncAtomicsTimeoutMs() { return runtime::rtNextAsyncAtomicsTimeoutMs(); }
 
 HostInterrupt* registerHostInterrupt(void (*fn)(void* arg), void* arg) {
     return runtime::rtRegisterHostInterrupt(fn, arg);

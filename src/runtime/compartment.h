@@ -39,6 +39,8 @@ struct Compartment;
 
 struct CompartmentOptions {
     // How long one job, or one resumption of it, runs before it yields.
+    // Values <= 0 disable time-slicing (unlimited slice, still preemptible via
+    // rtRequestCompartmentTerminate).
     double sliceMs = 8.0;
     // The fiber's stack.
     size_t stackBytes = 1u << 20;
@@ -82,6 +84,11 @@ CompartmentStatus rtCompartmentResume(Compartment* c);
 // say in a native it called) or from the host between turns; the reason is
 // reported. Safe to call on a dead one.
 void rtCompartmentTerminate(Compartment* c, const std::string& reason);
+// Thread-safe termination request from another thread while `c` is alive
+// (the caller synchronizes lifetime against rtDestroyCompartment): marks
+// termination, arms the thread's interrupt if a job is active, and wakes
+// any synchronous Atomics.wait waiters on the thread.
+void rtRequestCompartmentTerminate(Compartment* c, const std::string& reason);
 
 CompartmentState rtCompartmentState(const Compartment* c);
 Realm* rtCompartmentRealm(const Compartment* c);

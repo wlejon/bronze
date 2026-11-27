@@ -30,6 +30,19 @@ bool rtHasReadyAsyncAtomicsWaiters() noexcept;
 // Detaches/drops any still-pending async waiters owned by the exiting thread.
 void rtClearThreadAsyncAtomicsWaiters() noexcept;
 
+// Wakes all synchronous Atomics.wait waiters so threads checking
+// rtTerminationRequested() can exit immediately instead of waiting on a slice.
+void rtWakeAllSyncAtomicsWaiters() noexcept;
+
+// Per-thread callback invoked from Atomics.notify when an async waiter registered
+// on that thread is notified, so an idle Worker or event loop can wake at once.
+using AtomicsWaitWakeFn = void (*)(void* arg);
+void rtSetAtomicsWaitWakeCallback(AtomicsWaitWakeFn fn, void* arg) noexcept;
+
+// Remaining ms until the earliest finite Atomics.waitAsync deadline on the calling
+// thread, 0.0 if any async waiter is already ready/settling, or +infinity when none.
+double rtNextAsyncAtomicsTimeoutMs() noexcept;
+
 // Helpers for aligned/unaligned atomic accesses in builtin_shared_memory.cpp.
 uint64_t rtAtomicLoadBytes(const uint8_t* ptr, uint32_t width) noexcept;
 void rtAtomicStoreBytes(uint8_t* ptr, uint32_t width, uint64_t value) noexcept;
