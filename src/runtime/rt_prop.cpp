@@ -39,7 +39,6 @@
 #include "runtime/intrinsic_additions.h"
 #include "runtime/bigint.h"
 #include "runtime/profile.h"
-#include "runtime/shape_census.h"
 #include "runtime/ic_log.h"
 #include "runtime/exception.h"
 #include "runtime/proxy.h"
@@ -134,7 +133,6 @@ static bool arrayAbsentHit(uint32_t keyIndex) {
 // own property of `Object.prototype`, a data property holding `undefined` or
 // an accessor included.
 static void arrayAbsentFill(uint32_t keyIndex) {
-    if (censusFillsSuppressed()) return;
     const Shape* protoShape = currentObjectProtoShape();
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!protoShape || !keyHeader) return;
@@ -388,19 +386,8 @@ static uint64_t propGetHarvested(uint64_t objBits, uint32_t keyIndex, uint64_t* 
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
-    if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr && !g_shapeCensusEnabled) {
+    if (BRONZE_UNLIKELY(rtIcHarvestArmed()) && icEntry != nullptr) {
         return propGetHarvested(objBits, keyIndex, icEntry);
-    }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        // Receiver identity is read BEFORE the body: the walk below can
-        // allocate, and a collection would move the receiver out from under a
-        // post-hoc read. The RESULT is classified after, from its bits alone.
-        CensusToken tok =
-            censusRecordAccess(CensusKind::PropGet, objBits, keyIndex, 0, icEntry,
-                               BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
-        const uint64_t r = propGetHelperBody(objBits, keyIndex, icEntry);
-        censusRecordResult(tok, r);
-        return r;
     }
     return propGetHelperBody(objBits, keyIndex, icEntry);
 }
@@ -477,7 +464,7 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
                 // Way 0, always: generated code's array arm looks there and
                 // nowhere else, and InlineCacheSite::slotForInstall keeps a
                 // sentinel it finds at way 0 from being shifted away.
-                if (ic && !censusFillsSuppressed() &&
+                if (ic &&
                     recv.get().asObject<ArrayHeader>()->isBare()) {
                     ic->ways[0].fillArrayMethod(methodId);
                 }
@@ -864,7 +851,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                     PropertyInfo info;
                     if (sh->lookupProperty(PropertyKey::forString(strKey), info)) {
                         if (!info.accessor) {
-                            if (probe.entry && !censusFillsSuppressed()) {
+                            if (probe.entry) {
                                 InlineCacheSite site{};
                                 site.ways[0].fillLocal(sh, info.slot, 0);
                                 elemCacheFill(probe, strKey, site);
@@ -914,21 +901,6 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
 }
 
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        // An OBJECT key is skipped: the body converts it (ToPropertyKey runs
-        // user code) and re-enters this wrapper with the primitive, which is
-        // the observation worth recording — one per access, keyed the way the
-        // cache would have keyed it.
-        if (!Value(idxBits).isObject()) {
-            CensusToken tok =
-                censusRecordAccess(CensusKind::ElemGet, objBits, /*keyIndex=*/0xFFFFFFFFu,
-                                   idxBits, /*siteId=*/nullptr, BRONZE_CENSUS_RET_ADDR(),
-                                   /*hasValue=*/false, 0);
-            const uint64_t r = elemGetHelperBody(objBits, idxBits);
-            censusRecordResult(tok, r);
-            return r;
-        }
-    }
     return elemGetHelperBody(objBits, idxBits);
 }
 

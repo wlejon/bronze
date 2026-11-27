@@ -113,9 +113,11 @@ bronze version                            print the version
 ```
 
 `<entry.js>` is the entry of a module graph: `import`/`export` with relative
-specifiers pull in the rest. `--no-infer` compiles everything on the dynamic
-path; it exists as a debugging tool for isolating inference bugs
-([docs/internals.md](docs/internals.md) has the details).
+specifiers pull in the rest. AOT builds pair whole-program inference with
+inline-cache harvesting (`--harvest-out` followed by `--feedback-in`) for the
+fastest native code, and `bronze run` / `bronze eval` execute on the Auto
+multi-tier Brass JIT pipeline (Fast Tier-0 interpreter with background Tier-1,
+Tier-2, and OSR).
 
 ## Getting bronze
 
@@ -138,12 +140,11 @@ ctest --preset dev
 ```
 
 The native code generation backend is Brass (`src/codegen-brass`), which compiles
-Bronze IL to native machine code. Brass is a dependency, not a submodule: a
+Bronze IL to native machine code (for both AOT builds and the multi-tier JIT).
+Brass is a dependency, not a submodule: a
 working tree at `../brass` is used when there is one, otherwise configure fetches
 the head of brass's main (`cmake/bro_deps.cmake`; a release tag's
 `cmake/bro_lock.cmake` fixes the commit).
-
-[docs/internals.md](docs/internals.md) has the full build-and-iteration workflow.
 
 ## Testing
 
@@ -156,25 +157,6 @@ case runs through `run`, `aot`, `profile`, `switch`, and `adversarial` modes
 bytes. Compiled objects carry an ABI fingerprint the
 runtime verifies at startup, so an object built against an older runtime
 fails at launch with both versions named.
-
-## More
-
-- [docs/internals.md](docs/internals.md) the pipeline, repository layout,
-  inference and `--no-infer` in depth, embedding details, and the iteration
-  workflow.
-- [docs/dynamic-eval.md](docs/dynamic-eval.md) in-memory dynamic evaluation and
-  JIT execution (`eval`, `new Function`, `bronze run`, `bronze eval`, `src/eval`).
-- [docs/pin-census.md](docs/pin-census.md) `--census`: how a `--pins` manifest
-  gets written by a run of the program instead of by hand.
-- [docs/shape-census.md](docs/shape-census.md) the shape-flow census
-  (`BRONZE_SHAPE_CENSUS=1`) and artifact schema v0.
-- [docs/slot-representation.md](docs/slot-representation.md) per-slot
-  representation: what lets a shape say a slot holds a raw double, and what
-  keeps that true.
-- [docs/env-promotion.md](docs/env-promotion.md) scoped escape analysis and
-  environment record optimization.
-- [tests/oracle/run.js](tests/oracle/run.js) how the
-  self-compiled oracle suite runs and what a case is.
 
 ## License
 

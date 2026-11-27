@@ -80,8 +80,6 @@ bool mergeable(const il::Instruction& inst) {
         case il::Op::ResolveName:
         case il::Op::ImportMeta:
         case il::Op::DynamicImport:
-        case il::Op::PinGuard:
-        case il::Op::FeedbackRecord:
         case il::Op::CoroStart:
         case il::Op::CreateFunction:
         case il::Op::EnvCreate:
@@ -295,9 +293,6 @@ bool Lowerer::mergeSelfHostLibrary() {
         fn.sourceFile = file;
         fn.sourceBegin = fn.sourceEnd = 0;
         if (fn.nameKeyIndex != 0xFFFFFFFFu) fn.nameKeyIndex = remapKey(fn.nameKeyIndex);
-        for (il::Param& p : fn.params) {
-            if (p.pinned) p.pinKeyIndex = remapKey(p.pinKeyIndex);
-        }
         for (il::Block& b : fn.blocks) {
             for (il::Instruction& inst : b.instructions) {
                 inst.keyIndex = remapKey(inst.keyIndex);

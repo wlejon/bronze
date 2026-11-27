@@ -7,8 +7,8 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_naming.h"
 #include "runtime/string.h"
-#include "runtime/type_feedback.h"
 
 #include <cstring>
 #include <string>

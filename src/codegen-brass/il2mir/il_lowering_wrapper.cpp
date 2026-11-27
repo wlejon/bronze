@@ -193,29 +193,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
         // The bits, read right before the helper that converts them.
         Value* raw_i64 = ensure_type(loaded[source_idx], Type::i64(), b);
         if (param_type == BronzeType::F64) {
-            bool is_pinned = false;
-            uint32_t pin_key = 0;
-            if (it_meta != options_.function_meta.end() && p < it_meta->second.params_pinned.size() && it_meta->second.params_pinned[p]) {
-                is_pinned = true;
-                pin_key = (p < it_meta->second.param_pin_keys.size()) ? it_meta->second.param_pin_keys[p] : 0;
-            }
-            if (is_pinned) {
-                BasicBlock* cur_bb = b.current_block();
-                BasicBlock* bad_bb = b.append_block("w_pin_bad_" + std::to_string(p));
-                BasicBlock* ok_bb = b.append_block("w_pin_ok_" + std::to_string(p));
-                b.position_at_end(cur_bb);
-                Value* is_num = b.build_ule(raw_i64, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-                b.build_br_if(is_num, ok_bb, bad_bb);
-
-                b.position_at_end(bad_bb);
-                b.build_call("bronze_pin_violation", Type::i64(), {get_key_id(b, pin_key), raw_i64});
-                b.build_ret(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
-
-                b.position_at_end(ok_bb);
-                push_arg(b.build_bitcast_f64_i64(raw_i64));
-            } else {
-                push_arg(b.build_call("bronze_unbox_f64", Type::f64(), {raw_i64}));
-            }
+            push_arg(b.build_call("bronze_unbox_f64", Type::f64(), {raw_i64}));
         } else if (param_type == BronzeType::I32) {
             push_arg(b.build_call("bronze_unbox_i32", Type::i32(), {raw_i64}));
         } else {

@@ -25,13 +25,12 @@ hundreds of JS programs. Wall time is the loop; don't switch the working
 build to Debug.
 
 `oracle-threejs` compiles unmodified three.js r160 from vendored source and
-checks the scene graph it builds (`tests/oracle/threejs/README.md`).
-The 28-file graph is compiled once per inference mode. `oracle-pixi` does the
-same for the unmodified pixi.js v8.19.0 bundle (`tests/oracle/pixi/README.md`);
-its GC-stress re-runs are the bulk of the full suite's wall time (~87 s each,
-a whole-library import under every-allocation collection). **Both stay in the
-pre-commit run** — they are the tests that prove the project's stated bar —
-but `-LE "threejs|pixi"` is the loop to iterate against.
+checks the scene graph it builds. `oracle-pixi` does the same for the
+unmodified pixi.js v8.19.0 bundle; its GC-stress re-runs are the bulk of the
+full suite's wall time (~87 s each, a whole-library import under
+every-allocation collection). **Both stay in the pre-commit run** — they are
+the tests that prove the project's stated bar — but `-LE "threejs|pixi"` is
+the loop to iterate against.
 
 ## Hard rules
 
@@ -46,7 +45,7 @@ but `-LE "threejs|pixi"` is the loop to iterate against.
   committed `.expected` file byte-for-byte — never edit an expectation
   to match bronze's output, and never normalize bytes to force a match.
 - **node is not a dependency.** Tests, builds, and benchmarks must never
-  invoke node; expectations are pinned files (`tests/oracle/README.md`).
+  invoke node; expectations are committed `.expected` files.
 - **Module isolation**: each `src/<module>` is a static lib + own doctest
   binary + ctest label; dependencies flow through `bronze::<module>`
   targets only; the CLI is the composition root.

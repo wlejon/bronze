@@ -376,8 +376,6 @@ private:
                                                     ? zero64_
                                                     : toBV64(getVal(state, inst.operands[0]));
                     break;
-                case Op::PinGuard:
-                case Op::FeedbackRecord:
                 case Op::KeepAlive:
                     break;
                 case Op::IsNumber:

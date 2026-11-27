@@ -418,8 +418,6 @@ bool LoopIlEvaluator::execNonTerminators(const il::Function& fn, const il::Block
                 state.values[inst.result] = op64(0);
                 if (!inst.operands.empty()) state.heap.propagateAlias(inst.operands[0], inst.result);
                 break;
-            case Op::PinGuard:
-            case Op::FeedbackRecord:
             case Op::KeepAlive:
             case Op::EnvInitTdz:
                 break;

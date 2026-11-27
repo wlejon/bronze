@@ -163,9 +163,6 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
 
     Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
-    // `o.x++` is ToNumERIC, not ToNumber: a BigInt operand yields a BigInt, so
-    // an update is a store a `number` pin can be contradicted by.
-    emitPinFieldBarrier(*mem.object, mem.property, newVal, ilFn);
     Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 
     il::Instruction setInst;
@@ -219,9 +216,6 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
 
     Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
-    if (literalKey) {
-        emitPinFieldBarrier(*idxAccess.object, keyStrings_[*literalKey], newVal, ilFn);
-    }
     Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 
     il::Instruction setInst;

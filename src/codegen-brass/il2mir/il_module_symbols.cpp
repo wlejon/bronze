@@ -49,14 +49,13 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_construct_spread", "bronze_super_call_spread", "bronze_arg_at", "bronze_arguments_object",
         "bronze_rest_args", "bronze_super_get", "bronze_super_set", "bronze_for_in_keys", "bronze_for_in_live",
         "bronze_instanceof", "bronze_has_property", "bronze_is_nullish", "bronze_strict_eq", "bronze_loose_eq",
-        "bronze_rel_lt", "bronze_rel_gt", "bronze_rel_le", "bronze_rel_ge", "bronze_pin_guard",
-        "bronze_census_record", "bronze_to_int32", "bronze_to_int32_f64", "bronze_private_new", "bronze_private_has",
+        "bronze_rel_lt", "bronze_rel_gt", "bronze_rel_le", "bronze_rel_ge",
+        "bronze_to_int32", "bronze_to_int32_f64", "bronze_private_new", "bronze_private_has",
         "bronze_private_get", "bronze_private_add", "bronze_private_set", "bronze_private_misuse",
-        "bronze_census_register", "__bronze_census_out_path", "__bronze_census_sites",
         "bronze_register_key_manifest", "bronze_box_str_key", "bronze_box_str", "bronze_unbox_str",
         "bronze_unbox_f64", "bronze_box_f64", "bronze_unbox_i32", "bronze_box_i32", "bronze_unbox_bool",
         "bronze_box_bool",
-        "bronze_tls_enter", "bronze_stack_overflow", "bronze_interrupt_poll", "bronze_pin_violation", "bronze_pin_check_array", "bronze_pow",
+        "bronze_tls_enter", "bronze_stack_overflow", "bronze_interrupt_poll", "bronze_pow",
         "bronze_dynamic_pow", "bronze_dynamic_bitand", "bronze_dynamic_bitor", "bronze_dynamic_bitxor",
         "bronze_dynamic_shl", "bronze_dynamic_shr", "bronze_dynamic_ushr", "bronze_dynamic_sub",
         "bronze_dynamic_mul", "bronze_dynamic_div", "bronze_dynamic_mod", "bronze_dynamic_neg",
@@ -115,8 +114,6 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         mod->add_external_symbol("__bronze_module_env_" + entry_symbol);
         mod->add_external_symbol("__bronze_key_map_" + entry_symbol);
         mod->add_external_symbol("__bronze_template_cells_" + entry_symbol);
-        mod->add_external_symbol("__bronze_census_out_path_" + entry_symbol);
-        mod->add_external_symbol("__bronze_census_sites_" + entry_symbol);
         mod->add_external_symbol("__bronze_ic_table_" + entry_symbol);
         mod->add_external_symbol("__bronze_method_ic_sites_" + entry_symbol);
         mod->add_external_symbol("__bronze_ic_identity_" + entry_symbol);

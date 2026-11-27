@@ -50,7 +50,6 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 
 namespace bronze::runtime {
@@ -141,7 +140,7 @@ bool readFilling(uint64_t objBits, uint64_t keyBits, uint64_t* cell, uint64_t& o
 
 extern "C" uint64_t bronze_elem_get_cell(uint64_t objBits, uint64_t keyBits, uint64_t* cell) {
     using namespace bronze::runtime;
-    if (cell != nullptr && cell[3] < BRONZE_ABI_ELEM_CELL_LIMIT && !censusFillsSuppressed()) {
+    if (cell != nullptr && cell[3] < BRONZE_ABI_ELEM_CELL_LIMIT) {
         if (uint64_t out = 0; readFilling(objBits, keyBits, cell, out)) return out;
     }
     return bronze_elem_get(objBits, keyBits);

@@ -37,7 +37,6 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -89,7 +88,7 @@ bool rtStaticsCacheable(Value fnVal, const ObjectHeader* self) noexcept {
     // `String`, `Proxy`). `Number`, `Boolean`, `Object`, typed-array
     // constructors and user classes keep their statics in their own slots.
     if (rtIntrinsicConstructorHasTableStatics(fnVal)) return false;
-    return !censusFillsSuppressed();
+    return true;
 }
 
 ObjectHeader* rtStaticsAncestor(ObjectHeader* fnObj, uint32_t depth, bool* crossedDictionary) {

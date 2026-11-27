@@ -3,11 +3,10 @@
 # Bronze Benchmark Suite Runner
 #
 # Deterministic benchmark runner across execution modes:
-#   1. Compiled with Inference (default AOT with native layout proofs)
-#   2. Compiled without Inference (--no-infer uniform dynamic convention)
-#   3. Host Compiled vs bro-headless (script compiled in process by bronze)
+#   1. Compiled AOT (harvest-guided build: --harvest-out -> run -> --feedback-in)
+#   2. Host Compiled vs bro-headless (script compiled in process by bronze)
 #      for Bro WebGL/Scene render benchmarks
-#   4. Pinned Node.js Baseline Comparison (Node v24.2.0 out-of-band reference)
+#   3. Pinned Node.js Baseline Comparison (Node v24.2.0 out-of-band reference)
 #
 # HARD RULES (CLAUDE.md):
 #   - Automated runner MUST NEVER invoke node.
@@ -27,8 +26,6 @@ PURE_ONLY=0
 RENDER_ONLY=0
 ALLOW_DEBUG=0
 JSON_ONLY=0
-INFER_ONLY=0
-NOINFER_ONLY=0
 DO_PROFILE=0
 USE_CACHED=0
 JSONL_OUT="$SCRIPT_DIR/results.jsonl"
@@ -39,9 +36,7 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Options:
-  --quick            Fast iteration mode (3 runs, infer-only, runs in ~30s)
-  --infer-only       Run only default inference mode (skip --no-infer builds/runs)
-  --no-infer-only    Run only --no-infer mode
+  --quick            Fast iteration mode (3 runs, pure-only, runs in ~30s)
   --profile          Capture top ABI helper calls and IC misses per benchmark
   --cached           Reuse existing compiled binaries if newer than source
   --runs N           Number of timed runs per benchmark (default: 5, warmup discarded)
@@ -64,16 +59,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --quick)
             RUNS=3
-            INFER_ONLY=1
             PURE_ONLY=1
-            shift
-            ;;
-        --infer-only)
-            INFER_ONLY=1
-            shift
-            ;;
-        --no-infer-only)
-            NOINFER_ONLY=1
             shift
             ;;
         --profile)
@@ -284,7 +270,7 @@ if [[ $JSON_ONLY -eq 0 ]]; then
     echo "Bronze CLI : $BRONZE_BIN"
     echo "Build Type : $BUILD_TYPE"
     echo "Runs / case: $RUNS (+ 1 warmup discarded)"
-    echo "Mode       : $([ $INFER_ONLY -eq 1 ] && echo 'Inference only' || ([ $NOINFER_ONLY -eq 1 ] && echo 'No-Infer only' || echo 'Both (Infer & No-Infer)'))"
+    echo "Mode       : Harvest-guided AOT"
     if [[ $DO_PROFILE -eq 1 ]]; then
         echo "Profiling  : Enabled (capturing ABI helpers & IC misses)"
     fi
@@ -310,61 +296,55 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
             continue
         fi
 
-        exe_infer="$SCRIPT_DIR/${bench_file%.js}_infer.exe"
-        exe_noinfer="$SCRIPT_DIR/${bench_file%.js}_noinfer.exe"
+        exe_aot="$SCRIPT_DIR/${bench_file%.js}_aot.exe"
+        exe_harvest="$SCRIPT_DIR/${bench_file%.js}_harvest.exe"
+        tfb_harvest="$SCRIPT_DIR/${bench_file%.js}_harvest.tfb"
         win_js="$(to_win_path "$js_path")"
-        win_exe_infer="$(to_win_path "$exe_infer")"
-        win_exe_noinfer="$(to_win_path "$exe_noinfer")"
+        win_exe_aot="$(to_win_path "$exe_aot")"
+        win_exe_harvest="$(to_win_path "$exe_harvest")"
+        win_tfb="$(to_win_path "$tfb_harvest")"
 
-        # 1. Compile with default inference
-        if [[ $NOINFER_ONLY -eq 0 ]]; then
-            if [[ $USE_CACHED -eq 0 || ! -f "$exe_infer" || "$js_path" -nt "$exe_infer" || "$BRONZE_BIN" -nt "$exe_infer" ]]; then
-                "$BRONZE_BIN" build "$win_js" -o "$win_exe_infer" >/dev/null 2>&1
-                BUILD_STATUS_INFER=$?
-                if [[ $BUILD_STATUS_INFER -ne 0 || ! -f "$exe_infer" ]]; then
-                    echo "Error: Failed to build $bench_file (infer mode)" >&2
-                    continue
-                fi
+        # Compile with harvest-guided AOT (--harvest-out -> run -> --feedback-in)
+        if [[ $USE_CACHED -eq 0 || ! -f "$exe_aot" || "$js_path" -nt "$exe_aot" || "$BRONZE_BIN" -nt "$exe_aot" ]]; then
+            "$BRONZE_BIN" build "$win_js" -o "$win_exe_harvest" --harvest-out "$win_tfb" >/dev/null 2>&1
+            if [[ $? -ne 0 || ! -f "$exe_harvest" ]]; then
+                echo "Error: Failed to build $bench_file (harvest mode)" >&2
+                rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o" "$tfb_harvest"
+                continue
+            fi
+            "$exe_harvest" >/dev/null 2>&1 || true
+            rm -f "$exe_harvest" "${exe_harvest%.exe}.dll" "${exe_harvest%.exe}.pdb" "${exe_harvest%.exe}.obj" "${exe_harvest%.exe}.o"
+            if [[ ! -f "$tfb_harvest" ]]; then
+                echo "Error: harvest run did not produce $tfb_harvest" >&2
+                continue
+            fi
+            "$BRONZE_BIN" build "$win_js" -o "$win_exe_aot" --feedback-in "$win_tfb" >/dev/null 2>&1
+            BUILD_STATUS_AOT=$?
+            [[ $USE_CACHED -eq 0 ]] && rm -f "$tfb_harvest"
+            if [[ $BUILD_STATUS_AOT -ne 0 || ! -f "$exe_aot" ]]; then
+                echo "Error: Failed to build $bench_file (AOT mode)" >&2
+                continue
             fi
         fi
 
-        # 2. Compile without inference (--no-infer)
-        if [[ $INFER_ONLY -eq 0 ]]; then
-            if [[ $USE_CACHED -eq 0 || ! -f "$exe_noinfer" || "$js_path" -nt "$exe_noinfer" || "$BRONZE_BIN" -nt "$exe_noinfer" ]]; then
-                "$BRONZE_BIN" build "$win_js" -o "$win_exe_noinfer" --no-infer >/dev/null 2>&1
-                BUILD_STATUS_NOINFER=$?
-                if [[ $BUILD_STATUS_NOINFER -ne 0 || ! -f "$exe_noinfer" ]]; then
-                    echo "Error: Failed to build $bench_file (--no-infer mode)" >&2
-                    continue
-                fi
-            fi
-        fi
-
-        # Time infer executable
-        stats_infer="{}"
-        profile_infer="{}"
-        if [[ $NOINFER_ONLY -eq 0 && -f "$exe_infer" ]]; then
-            cmd_infer_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$exe_infer")"
-            stats_infer="$(time_command_json "$cmd_infer_json" "$RUNS")"
+        # Time AOT executable
+        stats_aot="{}"
+        profile_aot="{}"
+        if [[ -f "$exe_aot" ]]; then
+            cmd_aot_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$exe_aot")"
+            stats_aot="$(time_command_json "$cmd_aot_json" "$RUNS")"
             if [[ $DO_PROFILE -eq 1 ]]; then
-                profile_infer="$(profile_command_json "$cmd_infer_json")"
+                profile_aot="$(profile_command_json "$cmd_aot_json")"
             fi
-        fi
-
-        # Time no-infer executable
-        stats_noinfer="{}"
-        if [[ $INFER_ONLY -eq 0 && -f "$exe_noinfer" ]]; then
-            cmd_noinfer_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- json-argv "$exe_noinfer")"
-            stats_noinfer="$(time_command_json "$cmd_noinfer_json" "$RUNS")"
         fi
 
         # Clean up if caching not requested
         if [[ $USE_CACHED -eq 0 ]]; then
-            rm -f "$exe_infer" "$exe_noinfer"
+            rm -f "${exe_aot%.exe}"* "$tfb_harvest"
         fi
 
         # Parse stats and combine with Node baseline
-        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-pure "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_infer")"
+        record_json="$("$BRONZE_BIN" run "$BENCH_HELPER" -- record-pure "$bench_file" "$bench_desc" "$stats_aot" "{}" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_aot")"
 
         echo "$record_json" >> "$JSONL_OUT"
 

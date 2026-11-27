@@ -283,9 +283,6 @@ bool widenMethods(ModuleContext& mod) {
         for (size_t p = 0; p < m.signature.params.size(); ++p) {
             Type widened =
                 speaks ? joinParam(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
-            if (speaks && p < m.sawSkippedDynamicArg.size() && m.sawSkippedDynamicArg[p]) {
-                widened = demoteToGuess(widened);
-            }
             if (widened != m.signature.params[p]) {
                 m.signature.params[p] = widened;
                 changed = true;
@@ -528,8 +525,7 @@ uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceRe
 }  // namespace
 
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
-                                           const std::vector<std::string>* hostGlobals,
-                                           const PinManifest* pins) {
+                                           const std::vector<std::string>* hostGlobals) {
     InferenceResult result;
     result.moduleName = module.name;
 
@@ -607,8 +603,6 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
             mod.reboundByModuleFns.insert(name);
         }
     }
-    // Pins come from the `--pins` manifest alone.
-    mod.pins = pins != nullptr && !pins->empty() ? pins : nullptr;
     mod.methods.build(module);
     scanMethodEscapes(module, mod.methods, mod.methodPoison);
     mod.protoMutable = scanProtoMutation(module);

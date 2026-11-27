@@ -44,7 +44,6 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
-#include "runtime/shape_census.h"
 #include "runtime/namespace.h"
 #include "runtime/proxy.h"
 #include "runtime/regexp.h"
@@ -126,12 +125,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         if (shape == nullptr || shape->isDictionary()) {
             rtIcHarvestNoteUncached(icEntry);
         }
-    }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        // At entry, before anything can allocate: the receiver's shape and
-        // whether this store ADDS the key (a transition) are both read here.
-        censusRecordAccess(CensusKind::PropSet, objBits, keyIndex, 0, icEntry,
-                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
     }
     Value objVal(objBits);
     Value valVal(valBits);
@@ -423,10 +416,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
 void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
                       uint64_t valBits, bool strict) {
     recordPropCall("bronze_super_set", keyIndex, nullptr);
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        censusRecordAccess(CensusKind::SuperSet, thisBits, keyIndex, 0, nullptr,
-                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
-    }
     // A plain object for an instance element, the base CONSTRUCTOR for a
     // static one (`static m() { super.k = v; }`) — the OrdinarySet below
     // steps onto a function's statics itself.

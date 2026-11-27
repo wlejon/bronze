@@ -1,4 +1,5 @@
 #include "runtime/fatal.h"
+#include "runtime/compartment.h"
 #include "runtime/profile.h"
 
 #include <cstdio>
@@ -86,6 +87,9 @@ void disableCrashDialogs() noexcept {
     }
     std::fprintf(stderr, "Hard runtime error: %s\n", msg);
     std::fflush(stderr);
+    if (runtime::rtCanAbortCurrentCompartment()) {
+        runtime::rtCompartmentAbortCurrent(msg);
+    }
     dumpBacktrace();
     disableCrashDialogs();
     std::abort();

@@ -35,17 +35,12 @@ void contributeShape(ModuleContext& mod, uint32_t index, const MethodInfo& targe
                    Type::object(args[i].shapeClass()));
 }
 
-// A parameter's contribution to a method's join, under pin optimism's rule for
-// a Dynamic argument (see `methodCall`).
+// A parameter's contribution to a method's join.
 void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
                          const std::vector<Type>& args) {
     const auto param = static_cast<uint32_t>(i);
     if (i < args.size()) {
         if (target.hasDefault.size() > i && target.hasDefault[i] && args[i].is(TypeKind::Undefined)) {
-            return;
-        }
-        if (mod.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
-            mod.contribute(InferMemo::Contrib::MethodSkipped, index, param, Type::dynamic());
             return;
         }
         mod.contribute(InferMemo::Contrib::MethodParam, index, param, args[i]);
@@ -246,9 +241,6 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         return Type::dynamic();
     }
 
-    // As in the unbounded-receiver path above — under pin optimism a Dynamic
-    // argument does not poison the join, and the parameter is marked so the fold
-    // can charge for it.
     Type ret = Type::never();
     bool everyTargetSpeaks = true;
     for (const uint32_t index : targets) {

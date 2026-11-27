@@ -66,7 +66,6 @@
 #include "runtime/realm.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -249,7 +248,6 @@ extern "C" {
 void bronze_member_cell_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell, bronze_fn_code code,
                                 uint32_t kind, uint64_t* group, uint32_t groupSize) {
     recordHelperCall("bronze_member_cell_publish");
-    if (censusFillsSuppressed()) return;
     if (cell == nullptr || kind > 4) return;
     const uint64_t epoch = protoMutationEpoch();
     // A shape at this epoch stays; a refusal is asked again, as another
@@ -311,7 +309,6 @@ uint64_t bronze_shape_lacks(uint64_t objBits, uint32_t keyIndex) {
     // changes (the epoch), so both are kept; a found key's entry sends the
     // next receiver of the shape straight to the generic read.
     const bool absent = resolvesAbsent(obj, PropertyKey::forString(key));
-    if (censusFillsSuppressed()) return absent ? 1 : 0;
     const auto shapeBits = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(obj->shape));
     auto* table = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(bronze_shape_slot_keys(shapeBits)));
     uint64_t* entry = lacksEntryFor(table - BRONZE_ABI_SLOTKEY_LACKS_BYTES / sizeof(uint64_t), keyIndex);

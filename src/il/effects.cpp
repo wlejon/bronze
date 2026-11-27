@@ -310,17 +310,7 @@ Effects rawEffects(const Instruction& inst) {
         case Op::PrivateMisuse:
             return throwing(LocSet::none(), LocSet::none());
 
-        // A `--pins` write barrier raises. The branching forms leave for the
-        // handler on their own arm (canThrow below keeps the backend's answer
-        // for that); the field form tests the slot's array.
-        case Op::PinGuard: {
-            const bool field = static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
-            Effects e;
-            e.throws = true;
-            e.collects = field;
-            if (field) e.reads = Loc::Shapes | Loc::ArrayLen | Loc::Elements;
-            return e;
-        }
+        // Class hierarchy construction.
 
         // console.log never runs user code (inspect calls no getter), but it
         // reads whatever it formats, and its order is the program's output.
@@ -336,13 +326,6 @@ Effects rawEffects(const Instruction& inst) {
         // A use of its operands up to here, after the native call it guards;
         // kept in order with that call.
         case Op::KeepAlive: {
-            Effects e;
-            e.observableOrder = true;
-            return e;
-        }
-        // The type-feedback instrument: records a tag from immortal memory and
-        // returns. Its order is what the profile reads.
-        case Op::FeedbackRecord: {
             Effects e;
             e.observableOrder = true;
             return e;
@@ -478,9 +461,6 @@ Effects effectsOf(const Instruction& inst) {
 // table — which a CFG reads for its handler edges — says they throw.
 bool canThrow(const Instruction& inst) {
     if (isTerminator(inst.op)) return false;
-    if (inst.op == Op::PinGuard) {
-        return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
-    }
     return effectsOf(inst).throws;
 }
 

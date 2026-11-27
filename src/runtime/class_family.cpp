@@ -54,7 +54,6 @@
 #include "runtime/property_key.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -290,11 +289,6 @@ void bronze_register_class_family(const uint32_t* classTable, uint32_t classCoun
 
 void bronze_family_stamp(uint64_t objBits, uint64_t wantLo, uint64_t wantSpan) {
     recordHelperCall("bronze_family_stamp");
-    // Census mode: leave every shape UNSTAMPED so the family-guarded static
-    // sites keep missing into the ordinary IC sequence, whose helpers the
-    // census records. The emitter calls-and-continues, so this is one extra
-    // helper call per access, never a loop.
-    if (censusFillsSuppressed()) return;
     Value objVal(objBits);
     if (!objVal.isObject()) return;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();

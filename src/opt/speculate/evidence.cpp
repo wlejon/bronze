@@ -39,7 +39,7 @@ std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string
 
 Evidence::Evidence(const il::Module& module, const spec::TypeProfile& profile, const SpeculateOptions& options,
                    SpeculateStats& stats)
-    : module_(module), profile_(profile), keys_(il::feedbackFunctionKeys(module)) {
+    : module_(module), profile_(profile) {
     if (const spec::Harvest* h = profile.harvest()) {
         // A harvest is a table by IC and slow-site position: it says
         // something about this build only if that build numbered its sites as
@@ -59,13 +59,6 @@ Evidence::Evidence(const il::Module& module, const spec::TypeProfile& profile, c
         }
     }
     if (options.minEntries != 0) minEntries_ = options.minEntries;
-}
-
-const spec::SiteFeedback* Evidence::recorded(uint32_t fn, uint32_t ordinal) const {
-    if (fn >= keys_.size() || keys_[fn].empty()) return nullptr;
-    const spec::SiteFeedback* site = profile_.site(keys_[fn], ordinal);
-    if (site == nullptr || site->total < kMinSiteObservations) return nullptr;
-    return site;
 }
 
 const spec::HarvestSite* Evidence::harvested(uint32_t icIndex) const {
@@ -102,14 +95,6 @@ uint64_t Evidence::work(uint32_t fn) const {
 }
 
 bool Evidence::isHot(uint32_t fn) const {
-    if (fn < keys_.size() && !keys_[fn].empty()) {
-        if (profile_.entryCount(keys_[fn]) >= minEntries_) return true;
-        if (const spec::FunctionFeedback* ff = profile_.function(keys_[fn])) {
-            for (const auto& [ordinal, site] : ff->sites) {
-                if (site.total >= kMinSiteRunsForHot) return true;
-            }
-        }
-    }
     // A harvest's counts: a function the harvested build did not count is
     // one nothing is known of.
     if (harvest_ == nullptr || !counted(fn)) return false;
@@ -244,7 +229,7 @@ std::optional<SitePlan> Evidence::planSite(uint32_t fnIndex, BlockId block, uint
 // object of one of at most kMaxChainShapes shapes, each holding the key as
 // an own property (a harvest `own` way; a recorded shape whose key list has
 // it).
-std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
+std::optional<SitePlan> Evidence::planPropRead(uint32_t /*fn*/, const il::Instruction& inst, const SiteRefs& refs,
                                                BlockId block, uint32_t index) const {
     if (inst.operands.size() != 1 || refs.type(inst.operands[0]) != il::Type::Dynamic) return std::nullopt;
     if (inst.keyIndex >= module_.keyConstants.size()) return std::nullopt;
@@ -304,11 +289,7 @@ std::optional<SitePlan> Evidence::planPropRead(uint32_t fn, const il::Instructio
             names.push_back(way.receiver);
         }
     } else {
-        const auto shapeSites = refs.at(block, index, il::FeedbackKind::Shape);
-        if (shapeSites.size() != 1) return std::nullopt;
-        const spec::SiteFeedback* site = recorded(fn, shapeSites.front()->ordinal);
-        if (site == nullptr || !onlyPlainObjects(*site) || !namesComplete(site->shapes)) return std::nullopt;
-        for (const auto& [name, count] : site->shapes) names.push_back(name);
+        return std::nullopt;
     }
     if (names.empty() || names.size() > kMaxChainShapes) return std::nullopt;
 
@@ -371,7 +352,7 @@ std::optional<SitePlan> Evidence::planSlotKeyed(SiteKind kind, const std::vector
 // way is a write that ADDED the key (a transition: planPropAdd). A recorded Shape site is
 // observed before the write, so a shape whose key list has the key is a
 // receiver that had it. Defines (object literals, class fields) stay generic.
-std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
+std::optional<SitePlan> Evidence::planPropWrite(uint32_t /*fn*/, const il::Instruction& inst, const SiteRefs& refs,
                                                 BlockId block, uint32_t index) const {
     const int32_t mode = il::writeMode(inst);
     if (mode != il::kWriteSloppy && mode != il::kWriteStrict) return std::nullopt;
@@ -403,11 +384,7 @@ std::optional<SitePlan> Evidence::planPropWrite(uint32_t fn, const il::Instructi
         }
         if (sample) return planSlotKeyed(SiteKind::PropSlotWrite, names, key, block, index);
     } else {
-        const auto shapeSites = refs.at(block, index, il::FeedbackKind::Shape);
-        if (shapeSites.size() != 1) return std::nullopt;
-        const spec::SiteFeedback* site = recorded(fn, shapeSites.front()->ordinal);
-        if (site == nullptr || !onlyPlainObjects(*site)) return std::nullopt;
-        names.push_back(site->soleShape());
+        return std::nullopt;
     }
     if (names.empty() || names.size() > kMaxChainShapes) return std::nullopt;
 
@@ -466,12 +443,9 @@ std::optional<SitePlan> planPropAdd(const std::string& toName, const std::string
 // its type.
 std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                             BlockId block, uint32_t index) const {
-    const auto valueSites = refs.at(block, index, il::FeedbackKind::Value);
-    bool anyRecorded = false;
-    for (const il::FeedbackSite* vs : valueSites) anyRecorded = anyRecorded || recorded(fn, vs->ordinal) != nullptr;
-    const ArmEvidence arms = anyRecorded ? ArmEvidence{} : armEvidence(inst);
+    (void)fn;
+    const ArmEvidence arms = armEvidence(inst);
     std::vector<uint8_t> tags;
-    size_t next = 0;
     size_t boxed = 0;
     for (ValueId v : inst.operands) {
         switch (refs.type(v)) {
@@ -481,21 +455,9 @@ std::optional<SitePlan> Evidence::planArith(uint32_t fn, const il::Instruction& 
             default: return std::nullopt;
         }
         ++boxed;
-        if (arms.numbers) {
-            const size_t i = tags.size();
-            tags.push_back(arms.intKnown && i < 2 && !arms.operandDouble[i] ? kTagInt : kTagDouble);
-            continue;
-        }
-        if (next >= valueSites.size() || valueSites[next]->value != v) return std::nullopt;
-        const spec::SiteFeedback* site = recorded(fn, valueSites[next++]->ordinal);
-        if (site == nullptr) return std::nullopt;
-        const uint32_t mask = site->tagMask();
-        const uint32_t numbers = kTagBit(BRONZE_FEEDBACK_TAG_I32) | kTagBit(BRONZE_FEEDBACK_TAG_F64);
-        if (mask == 0 || (mask & ~numbers) != 0) return std::nullopt;
-        uint8_t t = 0;
-        if (mask & kTagBit(BRONZE_FEEDBACK_TAG_I32)) t |= kTagInt;
-        if (mask & kTagBit(BRONZE_FEEDBACK_TAG_F64)) t |= kTagDouble;
-        tags.push_back(t);
+        if (!arms.numbers) return std::nullopt;
+        const size_t i = tags.size();
+        tags.push_back(arms.intKnown && i < 2 && !arms.operandDouble[i] ? kTagInt : kTagDouble);
     }
     // Nothing boxed, nothing to speculate on.
     if (boxed == 0) return std::nullopt;

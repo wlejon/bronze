@@ -147,20 +147,6 @@
      * object for null/undefined, else its wrapper (rt_global.cpp). */ \
     X(bronze_sloppy_this,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
-    /* A `--pins` claim CONTRADICTED by a value the program actually produced
-     * (src/types/pins.h). The u32 is a registered key index holding the
-     * manifest line as the manifest spells it, and the u64 is the offending
-     * value, which the message names by type. It raises a TypeError and never
-     * returns; generated code follows the call with `unreachable`. Emitted
-     * only on the COLD arm of a barrier, so a program that keeps its promises
-     * never reaches it. */ \
-    X(bronze_pin_violation,       BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
-    /* The same barrier for the one pin whose shape has no inline test: a
-     * `numeric-elements` FIELD must hold a plain, dense JS Array, which is an
-     * object tag plus a header read plus a class comparison. Check and raise
-     * are one helper because the site is a constructor-time store, never a
-     * loop-carried one. */ \
-    X(bronze_pin_check_array,     BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_arguments_object,    BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_arg_at,              BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_class_extends,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -691,21 +677,6 @@
      *
      * Registration-only for the same reason the two above are. */ \
     X(bronze_register_fn_sources,  BRONZE_ABI_VOID, (BRONZE_ABI_CSTR, BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
-    /* THE PIN CENSUS (`bronze build --census`, src/runtime/pin_census.h). A
-     * census build hands over, at module init, the manifest path to write and
-     * the whole SITE TABLE — `count` pairs of (module key index, site info),
-     * turned into process-wide key ids through `keyMap` exactly as the class
-     * family table is. Registration is separate from recording because a site
-     * the run never reaches is still a fact: "never observed" and "not a site"
-     * are different answers, and a STATIC refusal has to disqualify its entry
-     * on a run that never touches it.
-     *
-     * The record call is one observation: the value that reached the site. It
-     * is emitted at exactly the places lowering has no static answer left, and
-     * a census build is never benchmarked, so it is a plain call with no fast
-     * path and no inline form. */ \
-    X(bronze_census_register,     BRONZE_ABI_VOID, (BRONZE_ABI_CSTR, BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_PU32)) \
-    X(bronze_census_record,       BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     /* The six Math members generated code can dispatch directly: exported so a
      * call site can compare a callee's FunctionHeader::code against the symbol
      * — the code pointer is the one identity a GC that moves the function

@@ -26,11 +26,10 @@
 // (its path, size and modification time, so any rebuild of the compiler is a
 // new key space), the entry's name and text, the entry-resolution path, the
 // module roots, the module-registry flags and the externals it names, the host
-// globals, the natives manifest, the pins text, the census path, whether
+// globals, the natives manifest, whether
 // function source is retained, and every `BRONZE_*` environment variable (the
-// lowering's switches), minus BRONZE_TIMINGS. The tier is NOT in the key:
-// the IL is the same at every tier, guarded method inlining included
-// (eval_front.cpp, inlineGuardedFor), since every tier reports the inline
+// lowering's switches), minus BRONZE_TIMINGS. The IL is the same across runs,
+// guarded method inlining included (eval_front.cpp, inlineGuardedFor).
 // frames of the bodies it runs.
 //
 // SAFETY. A file is used only when its header, key, length and payload checksum

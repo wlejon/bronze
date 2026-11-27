@@ -20,10 +20,8 @@ bronze_add_module(runtime
         stack_sampling.cpp
         profiler.cpp
         profiler_report.cpp
-        shape_census.cpp
+        shape_naming.cpp
         slot_repr.cpp
-        pin_census.cpp
-        type_feedback.cpp
         fatal.cpp
         abi_guard.cpp
         number_format.cpp

@@ -67,7 +67,8 @@ namespace bronze::il {
 // 54: Function::heat and Function::harvestEntries.
 // 55: a function's loop count after its entry count (numberSlowSites).
 // 56: forin.guard, forin.same and forin.live (il_op.h).
-inline constexpr uint32_t kFormatVersion = 56;
+// 57: remove pin flags and census table (PinGuard, FeedbackRecord).
+inline constexpr uint32_t kFormatVersion = 57;
 
 std::string serializeModule(const Module& module);
 

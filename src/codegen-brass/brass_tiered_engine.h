@@ -23,42 +23,24 @@ namespace il {
 struct Module;
 }
 class DiagnosticSink;
-class BrassJitProgram;
 class TieredProgramImage;
 
-// How a program runs. Every tier but Tier2_Optimized is the tiered pipeline
-// (brass MultiTierPipeline) running the program's MIR: it starts in the fast
-// interpreter, and the tier caps how far a function may be compiled.
-enum class ExecutionTier : uint8_t {
-    Tier0_Interpreter = 0, // the pipeline, never compiling: every function interpreted
-    Tier1_Baseline = 1,    // the pipeline, every function baseline-compiled before the program runs
-    Tier2_Optimized = 2,   // the whole program optimized ahead of running (ModuleCompiler -> JitExecutionEngine)
-    Auto = 3               // the pipeline, tiering hot functions up to baseline and then to optimized
-                           // code, which a background compiler builds and installs while the program runs;
-                           // the optimizer runs per function as it tiers up, and a hot loop moves into
-                           // optimized code mid-loop (OSR)
-};
-
-std::string_view executionTierToString(ExecutionTier tier) noexcept;
-std::optional<ExecutionTier> parseExecutionTier(std::string_view str) noexcept;
-
 struct TieredEngineConfig {
-    ExecutionTier tier = ExecutionTier::Auto;
     std::string entrySymbol = "main";
     std::vector<std::string> hostGlobals;
     bool emitDebugInfo = false;
     bool perThreadModuleData = true;
     // The program is kept for the life of the process (the evaluator retains
     // it: eval.cpp retainProgram), so its code never goes away under a
-    // closure. Under Tier2_Optimized and Auto its functions then carry
-    // BRONZE_ABI_FN_FLAG_DIRECT_CALL and compiled callers enter them without
-    // the runtime, as an image's do (BrassBackend::setDirectJsCalls). A
-    // program the process may free gets direct call sites only.
+    // closure. Its functions then carry BRONZE_ABI_FN_FLAG_DIRECT_CALL and
+    // compiled callers enter them without the runtime, as an image's do
+    // (BrassBackend::setDirectJsCalls). A program the process may free gets
+    // direct call sites only.
     bool livesForProcess = false;
     // The program is an app's first run, compiled to be harvested
     // (eval::EvalOptions::harvestOutPath; BrassBackend::setHarvestEvidence):
     // its MIR counts what an ahead-of-time module made to be harvested
-    // counts, in every tier, and its IC identity names it for the harvest.
+    // counts, and its IC identity names it for the harvest.
     bool harvestEvidence = false;
 };
 
@@ -73,7 +55,6 @@ public:
     BrassTieredProgram(BrassTieredProgram&&) = delete;
     BrassTieredProgram& operator=(BrassTieredProgram&&) = delete;
 
-    ExecutionTier tier() const noexcept { return tier_; }
     std::string_view entrySymbol() const noexcept { return entrySymbol_; }
 
     // A data symbol of the program (its import table, say), or a function's
@@ -93,12 +74,11 @@ public:
     // live programs never share handles or counters.
     brass::runtime::FunctionDispatchTable& dispatchTable() const noexcept { return *dispatchTable_; }
     brass::Module* mirModule() const noexcept { return mirModule_.get(); }
-    BrassJitProgram* jitProgram() const noexcept { return jitProgram_.get(); }
     const brass::ModuleStackMap* stackMaps() const noexcept;
 
     // Whether a run on another thread starts from fresh module data: true
-    // for the pipeline tiers when configured for multi-thread sharing; false
-    // for single-thread dynamic evaluations and Tier2_Optimized.
+    // when configured for multi-thread sharing; false for single-thread
+    // dynamic evaluations.
     bool perThreadData() const noexcept { return perThreadData_; }
     // Whether the module defines any non-entry function or coroutine body
     // whose code/data could outlive the top-level run().
@@ -114,7 +94,7 @@ public:
     // `bronze_module_instance`); null when !perThreadData().
     const uint64_t* moduleSlotCell() const;
     // The program's IC identity record (bronze_abi_layout.h), what
-    // embed::harvestInlineCaches takes; null under Tier2_Optimized.
+    // embed::harvestInlineCaches takes.
     const void* icIdentity() const;
 
     // Drops the optimizations queued for this program and waits out the one
@@ -123,7 +103,7 @@ public:
 
 private:
     friend class BrassTieredEngine;
-    BrassTieredProgram(ExecutionTier tier, std::string entrySymbol);
+    explicit BrassTieredProgram(std::string entrySymbol);
     void activateStackMaps() const;
     brass::RuntimeValue invokeUntranslated(std::string_view fnName,
                                            const std::vector<brass::RuntimeValue>& args);
@@ -131,17 +111,13 @@ private:
     // data (bronze_module_instance), as the entry does on its way in.
     void enterThreadInstance() const;
 
-    ExecutionTier tier_;
     std::string entrySymbol_;
     bool perThreadData_ = false;
     bool hasEscapableCode_ = true;
     bool entersDirectly_ = false;
     std::vector<const void*> codeTokens_;
 
-    // Tier2_Optimized only.
-    std::unique_ptr<BrassJitProgram> jitProgram_;
-
-    // The pipeline tiers. Destroyed in reverse: the dispatch table first
+    // Destroyed in reverse: the dispatch table first
     // (which stops this program's background compiler, whose installs the
     // image observes), then the MIR module, then the image the code refers to.
     std::unique_ptr<TieredProgramImage> image_;

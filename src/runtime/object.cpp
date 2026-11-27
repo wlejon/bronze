@@ -1,6 +1,5 @@
 #include "runtime/object.h"
 #include "runtime/intrinsic_additions.h"
-#include "runtime/shape_census.h"
 #include "runtime/tls_block.h"
 
 #include "runtime/accessor.h"
@@ -119,7 +118,6 @@ static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_ST
                   BRONZE_ABI_TAG_OBJECT % 2 == 1,
               "an epoch must never read as a heap header");
 void bumpProtoMutationEpoch() noexcept {
-    if (BRONZE_UNLIKELY(runtime::g_shapeCensusEnabled)) runtime::censusNoteEpochBump(BRONZE_CENSUS_RET_ADDR());
     runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP;
     noteForInKeyRemoved();
     // The accessor and method cells' guards compare no epoch
@@ -447,7 +445,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
         if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
             if (info.accessor) {
                 bool crossedDictionary = false;
-                if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
+                if (site && shape && shape->readCacheable() &&
                     (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                     if (InlineCache* into = site->slotForInstall(shape)) {
                         into->fillAccessor(shape, info.slot, depth);
@@ -472,7 +470,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             // the condition restated, so the two cannot drift into disagreeing
             // about the same entry.
             bool crossedDictionary = false;
-            if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
+            if (site && shape && shape->readCacheable() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                 if (InlineCache* into = site->slotForInstall(shape)) {
                     into->fill(shape, info.slot, depth);
@@ -626,7 +624,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // Refill rather than leave alone: the bump above (or an epoch the
         // entry outlived) would otherwise expire an entry that has just
         // proven itself.
-        if (!runtime::censusFillsSuppressed() && !next->used_as_prototype) {
+        if (!next->used_as_prototype) {
             trIc->fillForSet(next, slot);
         }
         live->setSlot(slot, val.get());
@@ -644,7 +642,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 runtime::rtThrowTypeError("redefining an accessor property as a data property is unsupported");
                 return this;
             }
-            if ((setSite || ic) && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+            if ((setSite || ic) && !shape->isDictionary()) {
                 InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
                 dst->fillAccessor(shape, own.slot, /*depth=*/0);
             }
@@ -678,8 +676,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // A prototype's shape is never cached for a store: generated code's
         // inline store would overwrite a method without the epoch moving
         // (Shape::markObjectAsPrototype). Every such write lands here instead.
-        if ((setSite || ic) && !shape->isDictionary() && !shape->used_as_prototype &&
-            !runtime::censusFillsSuppressed()) {
+        if ((setSite || ic) && !shape->isDictionary() && !shape->used_as_prototype) {
             InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
             dst->fillForStore(shape, own.slot);
         }
@@ -764,7 +761,6 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             }
             bool crossedDictionary = false;
             if ((setSite || ic) && shape && !shape->isDictionary() &&
-                !runtime::censusFillsSuppressed() &&
                 cachedProtoHolder(depth, crossedDictionary) == holder) {
                 InlineCache* dst = setSite ? setSite->slotForSetInstall(shape) : ic;
                 dst->fillAccessor(shape, info.slot, depth);
@@ -845,7 +841,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // the flag is for: the arm then tests the value for Number and misses
         // to here when it is not, where `setSlot` below generalizes the slot
         // and the next fill hands back an ordinary entry.
-        if ((setSite || ic) && !next_shape->used_as_prototype && !runtime::censusFillsSuppressed()) {
+        if ((setSite || ic) && !next_shape->used_as_prototype) {
             InlineCache* dst = setSite ? setSite->slotForSetTransition(next_shape) : ic;
             dst->fillForSet(next_shape, new_slot);
         }

@@ -243,7 +243,7 @@ void exportEvalDeclarations(ast::Module& astModule,
     }
 }
 
-std::string readPins(const std::string& path) {
+std::string readOptionalFile(const std::string& path) {
     if (path.empty()) return {};
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
@@ -317,13 +317,7 @@ bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink&
         }
     }
 
-    in.pinsText = readPins(options.pinsPath);
-    if (!in.pinsText.empty()) {
-        std::string err;
-        in.pins.parse(in.pinsText, options.pinsPath, err, /*allowObserved=*/true);
-    }
-    in.tier = options.tier.value_or(defaultTier());
-    in.feedbackText = readPins(options.feedbackInPath);
+    in.feedbackText = readOptionalFile(options.feedbackInPath);
     if (!keyOnly && !in.feedbackText.empty()) in.feedback = spec::TypeProfile::parse(in.feedbackText, nullptr);
     return true;
 }
@@ -368,8 +362,6 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.part("natives");
     k.field("|natives");
     k.field(in.manifestJson);
-    k.part("pins");
-    k.field(in.pinsText);
     k.part("profile");
     if (withFeedback) {
         k.field("|feedback");
@@ -397,15 +389,9 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     auto temporarilyExported = prepareEvalAstForInference(astModule, resName);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
 
-    const char* noInferEnv = std::getenv("BRONZE_NO_INFER");
-    const bool noInfer = noInferEnv && noInferEnv[0] == '1';
-    std::optional<types::InferenceResult> inferred;
-    if (!noInfer) {
-        inferred = types::inferModule(astModule, diags,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      in.pins.empty() ? nullptr : &in.pins);
-        if (diags.hasErrors() || !inferred) return nullptr;
-    }
+    std::optional<types::InferenceResult> inferred =
+        types::inferModule(astModule, diags, hostGlobals.empty() ? nullptr : &hostGlobals);
+    if (diags.hasErrors() || !inferred) return nullptr;
     exportEvalDeclarations(astModule, temporarilyExported, resName, options.publishTopLevel);
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
@@ -416,18 +402,14 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
         // `bronze build` goes through too. Its profile or harvest
         // (EvalOptions::feedbackInPath, `in.feedback`) is applied after
         // lowering, by the optimiser pipeline buildModule runs.
-        lower::FeedbackOptions feedback;
         lower::AheadOfTimeOptions aot;
         aot.hostGlobals = &hostGlobals;
-        aot.pins = in.pins.empty() ? nullptr : &in.pins;
         aot.nativeManifest = in.nativeManifest ? &*in.nativeManifest : nullptr;
-        aot.feedback = &feedback;
         aot.selfHostLibrary = selfhost::library();
-        lowered = lower::lowerAheadOfTime(astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
+        lowered = lower::lowerAheadOfTime(astModule, diags, &*inferred, &sources, aot);
     } else {
-        lowered = lower::lowerModule(astModule, diags, inferred ? &*inferred : nullptr,
+        lowered = lower::lowerModule(astModule, diags, &*inferred,
                                      hostGlobals.empty() ? nullptr : &hostGlobals, &sources,
-                                     in.pins.empty() ? nullptr : &in.pins,
                                      in.nativeManifest ? &*in.nativeManifest : nullptr);
     }
     if (diags.hasErrors() || !lowered) return nullptr;

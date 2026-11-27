@@ -28,7 +28,7 @@ bool conventionFits(const il::Module& module, const il::Function& callee, size_t
     if (callee.needsArguments || callee.hasRestParam) return false;
     if (argc > 16) return false;
     for (size_t p = callee.firstSourceParam(); p < callee.params.size(); ++p) {
-        if (callee.params[p].type != il::Type::Dynamic || callee.params[p].pinned) return false;
+        if (callee.params[p].type != il::Type::Dynamic) return false;
     }
     // The synthetic leading parameters are Dynamic by construction; a callee
     // whose are not was made by something this convention does not know.

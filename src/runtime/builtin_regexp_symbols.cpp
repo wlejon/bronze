@@ -500,10 +500,8 @@ bool receiverFor(Rooted<Value>& self, const char* member) {
         exec.asObject<FunctionHeader>()->code == rtRegExpExecBody) {
         return true;
     }
-    fatal((std::string("RegExp.prototype[Symbol.") + member +
-           "] on a RegExp whose `exec` is not RegExp.prototype.exec: bronze drives the matcher "
-           "directly and does not call an overridden exec")
-              .c_str());
+    rtThrowTypeError(std::string("RegExp.prototype[Symbol.") + member +
+                     "] on a RegExp whose `exec` is not RegExp.prototype.exec is not supported");
     return false;
 }
 

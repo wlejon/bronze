@@ -205,7 +205,7 @@ void collectChainStringKeys(ObjectHeader* holder, StringKeyList& keys) {
                 keys.push_back(key);
             }
         }
-        if (depth == kMaxPrototypeDepth) fatal("prototype chain too deep (a cycle?)");
+        if (depth == kMaxPrototypeDepth) rtThrowTypeError("prototype chain too deep (a cycle?)");
         const Value next = rawNextLink(holder);
         holder = next.isObject() && ordinaryLink(next.asObject<HeapObjectHeader>()->flags)
                      ? next.asObject<ObjectHeader>()
@@ -806,7 +806,7 @@ bool bronze_for_in_live(uint64_t objBits, uint64_t keyBits) {
         const uint64_t call[1] = {level.get().rawBits()};
         level.set(Value(objectGetPrototypeOf(0, 0, 1, call)));
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
     return false;
 }
 

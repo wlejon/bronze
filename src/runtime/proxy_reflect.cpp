@@ -354,7 +354,7 @@ bool rtIsArray(Value v) {
         if (rtProxyRefuseIfRevoked(v, "IsArray")) return false;
         v = v.asObject<ProxyHeader>()->target;
     }
-    fatal("proxy target chain too deep (a cycle?)");
+    rtThrowRangeError("Maximum call stack size exceeded");
 }
 
 Value rtProxyEnumerableOwn(Value proxyVal, bool wantEntries) {

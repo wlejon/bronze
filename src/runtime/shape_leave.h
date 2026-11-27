@@ -30,15 +30,11 @@
 // table edits (a dictionary shape is private and no compiled read names an
 // unfrozen one, shape.h `readCacheable`), and an accessor pair rewritten in
 // place.
-//
-// The shape census's leave log (docs/shape-census.md, "Leaves") sees every
-// move; appends it records itself, at the write.
 
 #include <cstdint>
 
 #include "runtime/profile.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 
 namespace bronze {
 
@@ -57,18 +53,13 @@ const char* shapeLeaveName(ShapeLeave why);
 
 namespace runtime {
 
-// The out-of-line halves: census recording, and the bump for a broken
-// watched layout.
-void shapeLeaveSlow(const Shape* from, const Shape* to, ShapeLeave why);
+// The out-of-line bump for a broken watched layout.
 void layoutBroken(const Shape* from, ShapeLeave why);
 
-// `why` is a constant at every call site, so on an append both tests fold away
-// and an add pays nothing: the census logs appends from its own record of the
-// write that finds its key absent (shape_census.cpp), which costs nothing with
-// the census off. Measured: a flag test here cost a runtime-add-heavy
-// microbench 0.1% of its instructions.
+// `why` is a constant at every call site, so on an append the test folds away
+// and an add pays nothing.
 inline void noteShapeLeave(const Shape* from, const Shape* to, ShapeLeave why) {
-    if (why != ShapeLeave::Add && BRONZE_UNLIKELY(g_shapeCensusEnabled)) shapeLeaveSlow(from, to, why);
+    (void)to;
     if (why != ShapeLeave::Add && BRONZE_UNLIKELY(from->watched)) layoutBroken(from, why);
 }
 

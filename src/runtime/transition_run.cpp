@@ -35,7 +35,6 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -85,7 +84,7 @@ extern "C" {
 void bronze_transition_run_publish(uint64_t objBits, uint64_t startBits, uint64_t* cells, const uint64_t* keys,
                                    uint32_t count, uint32_t firstSlot) {
     recordHelperCall("bronze_transition_run_publish");
-    if (cells == nullptr || censusFillsSuppressed()) return;
+    if (cells == nullptr) return;
     uint64_t& counter = cells[BRONZE_ABI_TRANSITION_RUN_COUNT];
     const uint64_t publishes = counter >> BRONZE_ABI_TRANSITION_RUN_COUNT_SHIFT;
     if (publishes >= BRONZE_ABI_TRANSITION_RUN_PUBLISH_LIMIT) return;

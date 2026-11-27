@@ -26,8 +26,8 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_naming.h"
 #include "runtime/slot_repr.h"
-#include "runtime/type_feedback.h"
 
 namespace bronze::runtime {
 

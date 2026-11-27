@@ -17,10 +17,9 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
                  const types::InferenceResult* inference,
                  const std::vector<std::string>* hostGlobals,
                  const SourceSet* sources,
-                 const types::PinManifest* pins,
                  const NativeManifest* nativeManifest)
     : astModule_(astModule), diags_(diags), inference_(inference),
-      pins_(pins), sources_(sources),
+      sources_(sources),
       nativeManifest_(nativeManifest) {
     if (hostGlobals) {
         hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
@@ -129,9 +128,6 @@ std::optional<il::Module> Lowerer::lower() {
             if (fnDecl->isAsync) fn.returnType = il::Type::Dynamic;
             fn.fnFlags = functionObjectFlags(ast::FunctionKind::Normal, fnDecl->isGenerator,
                                              fnDecl->isAsync);
-            // Last, because a pin is a promise about a convention every proof
-            // and every convention statement above has already had its say on.
-            if (!applySignaturePins(fnDecl->params, fnDecl->span, fn)) return std::nullopt;
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;
@@ -341,11 +337,6 @@ std::optional<il::Module> Lowerer::lower() {
     if (selfHostLibrary_ != nullptr && !mergeSelfHostLibrary()) return std::nullopt;
     if (!libraryOnly_ && !finishIlPasses()) return std::nullopt;
     if (selfHost_ && !finishSelfHost()) return std::nullopt;
-    // The type-feedback instrument, after everything: its sites are the final
-    // IL's own (lower_feedback.h), and the build that reads the profile back
-    // enumerates them at this same point. Nothing runs after it, so no pass
-    // ever sees a record.
-    if (feedback_ != nullptr && !feedback_->outPath.empty()) instrumentFeedback(ilModule_, feedback_->outPath);
     return ilModule_;
 }
 
@@ -693,12 +684,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::InferenceResult* inference,
                                       const std::vector<std::string>* hostGlobals,
                                       const SourceSet* sources,
-                                      const types::PinManifest* pins,
                                       const NativeManifest* nativeManifest,
-                                      const FeedbackOptions* feedback, bool selfHost,
+                                      bool selfHost,
                                       const SelfHostLibrary* selfHostLibrary) {
-    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, pins, nativeManifest);
-    lowerer.setFeedback(feedback);
+    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, nativeManifest);
     lowerer.setSelfHost(selfHost);
     lowerer.setSelfHostLibrary(selfHost ? nullptr : selfHostLibrary);
     return lowerer.lower();
@@ -729,7 +718,7 @@ std::optional<il::Module> lowerAheadOfTime(const ast::Module& astModule, Diagnos
                                            const AheadOfTimeOptions& options) {
     return lowerModule(astModule, diags, inference,
                        options.hostGlobals && !options.hostGlobals->empty() ? options.hostGlobals : nullptr,
-                       sources, options.pins, options.nativeManifest, options.feedback, options.selfHost,
+                       sources, options.nativeManifest, options.selfHost,
                        options.selfHostLibrary);
 }
 

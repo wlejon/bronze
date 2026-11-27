@@ -69,7 +69,6 @@ public:
         MethodParam,
         MethodShape,
         MethodReturn,
-        MethodSkipped,
         MethodReached,
         SetterReached,
         SetterReturn,

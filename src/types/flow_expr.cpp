@@ -226,32 +226,6 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // audit's refusals are STICKY, so one such round refuses the name
             // for the rest of the compilation on evidence that does not exist.
             if (field.is(TypeKind::Never)) return Type::never();
-            // A PINNED field (`--pins`, types/pins.h): the manifest DECLARES
-            // what this slot holds, and the read spends that declaration where
-            // the three proofs below would stand it down. Nothing checks it
-            // here — enforcement belongs on the write paths, and until that
-            // machinery exists the manifest IS the enforcement. Which is
-            // exactly why it is a named per-(class, field) list: the blanket
-            // form pinned `Object3D.children` too, and an object read out of a
-            // pinned array is a pointer's bits read as a double.
-            if (const PinKind* pin = pinnedField(base.shapeClass(), m->property)) {
-                if (*pin == PinKind::NumericElements) return Type::arrayPinnedF64();
-                // The NULLISH-WIDENED pin declares a Number-or-nullish slot,
-                // which is not a lattice element and must not be forced into
-                // one. The site is recorded and the TYPE stays `Dynamic`, so
-                // `typeof this.limit` and `this.limit === null` keep the
-                // dynamic answers that are the correct ones — only lowering's
-                // coercing positions read the set, and only they may.
-                if (*pin == PinKind::NumberOrNullish) {
-                    if (record_) mod_.result->nullishNumberFieldReads.insert(m);
-                    return Type::dynamic();
-                }
-                if (record_) {
-                    ++mod_.result->fieldAudit.numberFieldReads;
-                    mod_.result->provenFieldReads.insert(m);
-                }
-                return Type::number();
-            }
             // The IDENTITY travels either way, one rung weaker than the base's:
             // an object read out of a field was not watched being made, so the
             // next link is bounded the same way this one is.
@@ -331,8 +305,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             }
         }
         if (!ix->optional && idx.is(TypeKind::Number) &&
-            ((base.is(TypeKind::TypedArray) && base.typedArrayElemRaw() != kNoTypedArrayElem) ||
-             base.arrayElementsPinned())) {
+            base.is(TypeKind::TypedArray) && base.typedArrayElemRaw() != kNoTypedArrayElem) {
             lastNumericElem_ = ix;
         }
         if (!ix->optional) {
@@ -558,12 +531,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         }
     }
 
-    bool pinnedReturn = false;
-    if (!c.optional && mod_.pins != nullptr) {
-        const auto* ident = ast::exactAs<const ast::Ident*>(c.callee.get());
-        if (ident != nullptr && mod_.pins->returnPinned(ident->name)) pinnedReturn = true;
-    }
-
     // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
     // receiver's class rather than through the callee's name.
     if (member != nullptr && !c.optional && hadMemberBase && receiver.is(TypeKind::Array)) {
@@ -674,7 +641,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
                                       : ReceiverForm::Value;
         return methodCall(member->property, receiver, args, spreadArgs, form);
     }
-    if (objLitSetterRet.has_value() && !pinnedReturn) return *objLitSetterRet;
+    if (objLitSetterRet.has_value()) return *objLitSetterRet;
     // `super.m(...)`. The receiver is this method's `this` — a subclass instance
     // — but the LOOKUP starts at the enclosing class's base, which is the one
     // thing about the dispatch that is decided statically. So the contribution
@@ -713,7 +680,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
             const Type at = i < args.size() ? args[i] : Type::undefined();
             mod_.contribute(InferMemo::Contrib::NestedFnParam, nIdx, static_cast<uint32_t>(i), at);
         }
-        if (pinnedReturn) return Type::number();
         if (InferMemo* memo = mod_.rec()) memo->noteNestedFn(nIdx, callee.version);
         if (!callee.signature.returnType.is(TypeKind::Never)) return callee.signature.returnType;
         if (!callee.bodyReturn.is(TypeKind::Never)) return callee.bodyReturn;
@@ -724,7 +690,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
 
     const uint32_t index = calleeType.functionIndex();
     if (index == kNoFunctionIndex) {
-        if (pinnedReturn) return Type::number();
         if (calleeType.is(TypeKind::Never) || (!c.optional && calleeType.functionReturnsNever())) {
             return Type::never();
         }
@@ -734,7 +699,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
 
     FunctionInfo& callee = mod_.functions[index];
     if (!callee.directCallable) {
-        if (pinnedReturn) return Type::number();
         if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
         return callee.bodyReturn.is(TypeKind::Never) || callee.bodyReturn.is(TypeKind::Number)
                    ? callee.bodyReturn
@@ -747,11 +711,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         const Type at = i < args.size() ? args[i] : Type::undefined();
         mod_.contribute(InferMemo::Contrib::FnParam, index, static_cast<uint32_t>(i), at);
     }
-    // The pin wins over the join for the RESULT — the invocation's promise is
-    // the stronger statement, and it is the one the callee's typed entry was
-    // built from (`applySignaturePins`). The contribution above happened either
-    // way.
-    if (pinnedReturn) return Type::number();
     if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
     return !callee.signature.returnType.is(TypeKind::Never) ? callee.signature.returnType
                                                             : callee.bodyReturn;

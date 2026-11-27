@@ -633,9 +633,7 @@ const std::string& processKeyMaterial() {
 
 const std::string& moduleKeyMaterial() {
     static const std::string material = [] {
-        // "wpo": a module is built with the whole-program optimizer
-        // (lowerProgram's aheadOfTime), which one built before it was not.
-        std::string m = "module-v" + std::to_string(kVersion) + "|wpo|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
+        std::string m = "module-v" + std::to_string(kVersion) + "|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
         // A module compiles in the self-hosted builtins it reaches (lower.h
         // SelfHostLibrary), so the library's text is part of what it is.
         m += "|selfhost" + std::to_string(selfhost::libraryDigest());

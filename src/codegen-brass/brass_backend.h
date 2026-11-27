@@ -7,7 +7,6 @@
 #include <brass/object/macho_writer.hpp>
 #include <brass/object/object_writer.hpp>
 #include "codegen/backend.h"
-#include "codegen-brass/brass_jit.h"
 
 namespace brass {
 struct PassPipelineOptions;
@@ -143,9 +142,6 @@ public:
     // bind to wherever that engine keeps them. `globalCacheCount` is the
     // number of read keys buildMirModule reported.
     brass::object::ObjectFile buildDataImage(const il::Module& module, size_t globalCacheCount);
-
-    std::unique_ptr<BrassJitProgram> compileToJit(const il::Module& module,
-                                                  DiagnosticSink& diags);
 
     bool emitObject(const il::Module& module, const std::string& outputPath,
                     DiagnosticSink& diags) override;

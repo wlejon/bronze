@@ -21,7 +21,6 @@
 #include "opt/spec/profile.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
-#include "types/pins.h"
 
 namespace bronze::eval::detail {
 
@@ -38,9 +37,6 @@ struct CompileInputs {
     std::optional<lower::NativeManifest> nativeManifest;
     std::string manifestJson;  // "" when the program is compiled against no natives
     bool deferNativeBind = false;
-    std::string pinsText;
-    types::PinManifest pins;
-    ExecutionTier tier = ExecutionTier::Auto;
     // EvalOptions::feedbackInPath's bytes ("" for none or a missing file),
     // keyed, and the profile or harvest they parse to (none when they do
     // not: a damaged file costs the specialization, not the build).

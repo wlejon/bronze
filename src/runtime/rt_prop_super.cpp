@@ -17,7 +17,6 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -56,13 +55,6 @@ extern "C" {
 // instance, silently.
 uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits) {
     recordPropCall("bronze_super_get", keyIndex, nullptr);
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        // Keyed by return address — a super read has no IC site by design.
-        // The RECEIVER (`this`) is the identity that matters for a
-        // monomorphizer, not the prototype the walk starts from.
-        censusRecordAccess(CensusKind::SuperGet, thisBits, keyIndex, 0, nullptr,
-                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
-    }
     Value protoVal(protoBits);
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("super property read with an unregistered key index");

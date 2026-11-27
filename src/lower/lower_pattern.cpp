@@ -184,8 +184,6 @@ std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& targ
         }
         ref.keyIndex = getKeyConstantIndex(mem->property);
         ref.hasKeyIndex = true;
-        ref.receiverExpr = mem->object.get();
-        ref.keyName = mem->property;
         return ref;
     }
     const auto* idx = dynamic_cast<const ast::IndexAccess*>(&target);
@@ -202,8 +200,6 @@ std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& targ
     if (const std::optional<uint32_t> literalKey = literalIndexKey(*idx->index)) {
         ref.keyIndex = *literalKey;
         ref.hasKeyIndex = true;
-        ref.receiverExpr = idx->object.get();
-        ref.keyName = keyStrings_[*literalKey];
         return ref;
     }
     auto indexVal = lowerExpr(*idx->index, ilFn);
@@ -216,9 +212,6 @@ bool Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& 
     // Before the box, so the value's static type is still readable � a
     // destructuring store into a pinned field is a store like any other
     // (lower_pin.cpp).
-    if (ref.receiverExpr != nullptr && !ref.keyName.empty()) {
-        emitPinFieldBarrier(*ref.receiverExpr, ref.keyName, value, ilFn);
-    }
     Value boxed = boxValueIfNeeded(value, ilFn);
     // 13.15.5.6 step 5 sends a private target through PrivateSet, the same
     // write `this.#x = v` performs — brand check, kind dispatch and all, which

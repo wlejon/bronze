@@ -36,7 +36,7 @@ int runSelfHostBuild(const std::string& outputPath) {
         return 1;
     };
     if (!astModule) return fail();
-    auto inferred = types::inferModule(*astModule, diags, nullptr, nullptr);
+    auto inferred = types::inferModule(*astModule, diags);
     if (diags.hasErrors() || !inferred) return fail();
 
     lower::AheadOfTimeOptions aot;

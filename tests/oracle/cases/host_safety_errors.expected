@@ -1,0 +1,4 @@
+deep-proxy-isArray: RangeError
+json-stringify-wrapper: TypeError
+regexp-overridden-exec: TypeError
+deep-proto-in: TypeError

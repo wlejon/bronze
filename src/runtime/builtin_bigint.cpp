@@ -306,8 +306,7 @@ bool rtIsBigIntConstructor(Value fn) {
 void rtCheckBigIntProtoMember(const std::string& key) {
     for (const char* name : kBigIntProtoUnimplemented) {
         if (name && key == name) {
-            fatal((std::string("unsupported: BigInt.prototype.") + key + " is not implemented")
-                      .c_str());
+            rtThrowTypeError(std::string("BigInt.prototype.") + key + " is not implemented");
         }
     }
 }

@@ -55,8 +55,6 @@ static_assert(sizeof(Block) == sizeof(BlockMirror),
 struct ParamMirror {
     std::string name;
     Type type;
-    bool pinned;
-    uint32_t pinKeyIndex;
 };
 static_assert(sizeof(Param) == sizeof(ParamMirror),
               "il::Param changed: update il/serialize.cpp and bump kFormatVersion");
@@ -65,8 +63,6 @@ struct FunctionMirror {
     std::string name;
     std::vector<Param> params;
     Type returnType;
-    bool returnPinned;
-    uint32_t returnPinKeyIndex;
     bool isExported;
     bool isExternal;
     bool isEntryPoint;
@@ -120,8 +116,6 @@ struct ModuleMirror {
     std::vector<uint32_t> pretenureSites;
     bool mathPinned;
     bool numberPinned;
-    std::vector<Module::CensusSiteEntry> censusSites;
-    std::string censusOutPath;
     uint64_t icLayoutDigest;
     std::string harvestOutPath;
     std::vector<Module::NativeImport> nativeImports;
@@ -453,7 +447,6 @@ void readBlock(Reader& r, Block& b) {
 }
 
 enum FnBits : uint32_t {
-    kReturnPinned = 1u << 0,
     kIsExported = 1u << 1,
     kIsExternal = 1u << 2,
     kIsEntryPoint = 1u << 3,
@@ -469,7 +462,6 @@ enum FnBits : uint32_t {
 
 void writeFunction(Writer& w, const Function& fn) {
     uint32_t bits = 0;
-    if (fn.returnPinned) bits |= kReturnPinned;
     if (fn.isExported) bits |= kIsExported;
     if (fn.isExternal) bits |= kIsExternal;
     if (fn.isEntryPoint) bits |= kIsEntryPoint;
@@ -487,11 +479,8 @@ void writeFunction(Writer& w, const Function& fn) {
     for (const auto& p : fn.params) {
         w.str(p.name);
         w.u8(static_cast<uint8_t>(p.type));
-        w.u8(p.pinned ? 1u : 0u);
-        w.var(p.pinKeyIndex);
     }
     w.u8(static_cast<uint8_t>(fn.returnType));
-    w.var(fn.returnPinKeyIndex);
     w.svar(fn.coroKind);
     w.var(fn.fnFlags);
     w.var(fn.requiredArgs);
@@ -522,7 +511,6 @@ void writeFunction(Writer& w, const Function& fn) {
 void readFunction(Reader& r, Function& fn) {
     fn.name = r.str();
     const uint64_t bits = r.var();
-    fn.returnPinned = (bits & kReturnPinned) != 0;
     fn.isExported = (bits & kIsExported) != 0;
     fn.isExternal = (bits & kIsExternal) != 0;
     fn.isEntryPoint = (bits & kIsEntryPoint) != 0;
@@ -538,12 +526,8 @@ void readFunction(Reader& r, Function& fn) {
     for (auto& p : fn.params) {
         p.name = r.str();
         p.type = r.type();
-        const uint8_t pflags = r.u8();
-        p.pinned = (pflags & 1u) != 0;
-        p.pinKeyIndex = r.u32();
     }
     fn.returnType = r.type();
-    fn.returnPinKeyIndex = r.u32();
     const int32_t coro = r.i32();
     if (coro < INT8_MIN || coro > INT8_MAX) r.fail("bad coroutine kind");
     fn.coroKind = static_cast<int8_t>(coro);
@@ -596,12 +580,6 @@ std::string serializeModule(const Module& module) {
     for (uint32_t s : module.pretenureSites) w.var(s);
     w.var(module.mathPinned ? 1u : 0u);
     w.var(module.numberPinned ? 1u : 0u);
-    w.var(module.censusSites.size());
-    for (const auto& c : module.censusSites) {
-        w.var(c.keyIndex);
-        w.var(c.info);
-    }
-    w.str(module.censusOutPath);
     w.var(module.icLayoutDigest);
     w.str(module.harvestOutPath);
     w.var(module.nativeImports.size());
@@ -664,12 +642,6 @@ bool deserializeModule(std::string_view bytes, Module& out, std::string& err) {
     for (auto& s : out.pretenureSites) s = r.u32();
     out.mathPinned = r.u32() != 0;
     out.numberPinned = r.u32() != 0;
-    out.censusSites.resize(r.count());
-    for (auto& c : out.censusSites) {
-        c.keyIndex = r.u32();
-        c.info = r.u32();
-    }
-    out.censusOutPath = r.str();
     out.icLayoutDigest = r.var();
     out.harvestOutPath = r.str();
     out.nativeImports.resize(r.count());

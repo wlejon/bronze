@@ -147,22 +147,10 @@ uint32_t slotReprEligibleCount() noexcept;
 
 // --- diagnostics ------------------------------------------------------------
 //
-// Two modes, documented in docs/shape-census.md:
-//
-//   BRONZE_SLOT_REPR_STATS=1   the free counters below, printed at exit. They
-//                              are collected unconditionally because every one
-//                              of them is incremented on a cold path (a shape
-//                              node being created, a slot generalizing), so
-//                              collecting them costs a normal run nothing.
-//
-//   BRONZE_SLOT_REPR_CENSUS=1  per-(shape, slot) REPRESENTATION STABILITY: for
-//                              every slot of every shape the run touched, how
-//                              many stores were numbers and how many were not.
-//                              A boxed slot whose stores are 100% numbers is a
-//                              slot a wider pins manifest could claim. It needs the shape census's
-//                              latch suppression to see inline-cache hit
-//                              traffic, so it turns that on too, and a census
-//                              run is counts and never times.
+// BRONZE_SLOT_REPR_STATS=1 prints the free counters below at exit. They are
+// collected unconditionally because every one of them is incremented on a cold
+// path (a shape node being created, a slot generalizing), so collecting them
+// costs a normal run nothing.
 struct SlotReprCounters {
     uint64_t double_nodes = 0;      // shape nodes created with SlotRepr::Double
     uint64_t object_nodes = 0;      // shape nodes created with SlotRepr::Object
@@ -174,12 +162,7 @@ struct SlotReprCounters {
 const SlotReprCounters& slotReprCounters() noexcept;
 SlotReprCounters& slotReprMutableCounters() noexcept;
 
-bool slotReprCensusEnabled() noexcept;
-// One observed property access on a plain receiver, from the shape census's
-// recording point. `stored` is meaningful only when `hasValue`.
-void slotReprCensusNote(const Shape* shape, PropertyKey key, bool hasValue, Value stored);
-
-// The text report both modes print. Public so a test can force one.
+// The text report printed under BRONZE_SLOT_REPR_STATS=1. Public so a test can force one.
 void slotReprReport();
 
 }  // namespace bronze::runtime

@@ -6,7 +6,7 @@ bronze_add_module(lower
             lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp
             lower_concat_chain.cpp lower_define_props.cpp
             lower_object.cpp lower_call.cpp
-            lower_pattern.cpp lower_pin.cpp lower_feedback.cpp lower_final_passes.cpp native_manifest.cpp lower_native.cpp
+            lower_pattern.cpp lower_final_passes.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp lower_async.cpp
             lower_segment.cpp lower_function.cpp lower_selfhost.cpp selfhost_merge.cpp

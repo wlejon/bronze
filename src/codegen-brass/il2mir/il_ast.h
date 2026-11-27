@@ -116,8 +116,6 @@ enum class BronzeOp {
     SuperGet,
     InstanceOf,
     In,
-    PinGuard,
-    CensusRecord,
     SuperSet,
     DynamicImport,
     ModuleNamespace,

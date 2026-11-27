@@ -19,12 +19,6 @@
 //      points (S's and S+'s together: they share a location's ordinary point).
 //   4. Redirect entry over the whole module: to S+ where there is one (from G
 //      and from S), else to S.
-//
-// Nothing here reads the whole-program analysis (opt/wpo wpo::analyze). It is
-// the place a fact from it would enter a decision — a site the predicting
-// solve already types needs no profile, and one it proves needs no guard —
-// and the one hook for that is `planFromAnalysis` below, which answers
-// nothing yet.
 
 #include <algorithm>
 #include <map>
@@ -40,13 +34,6 @@
 namespace bronze::opt::speculate {
 
 namespace {
-
-// HOOK: whole-program facts (opt/wpo) that would add to or replace a profiled
-// plan. Empty: the profile is the only evidence today.
-void planFromAnalysis(const il::Module& module, FunctionPlan& plan) {
-    (void)module;
-    (void)plan;
-}
 
 void rewriteSite(RewriteContext& ctx, const SitePlan& site) {
     switch (site.kind) {
@@ -116,10 +103,6 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
                                const SpeculateOptions& options) {
     SpeculateStats stats;
     if (!options.enabled) return stats;
-    // An instrumented build (`--feedback-out`) records; it never spends a
-    // profile, and its `feedback.record`s would sit between a guard and its
-    // site.
-    if (!module.censusOutPath.empty()) return stats;
 
     // 1. Evidence, on the untouched module.
     const auto lowered = static_cast<uint32_t>(module.functions.size());
@@ -142,7 +125,6 @@ SpeculateStats speculateModule(il::Module& module, const spec::TypeProfile& prof
             ++stats.functionsConsidered;
             std::optional<FunctionPlan> plan = evidence.plan(f);
             if (!plan) continue;
-            planFromAnalysis(module, *plan);
             if (plan->sites.empty()) continue;
             plan->neverEntered = evidence.neverEnteredBlocks(f);
             plans.push_back(std::move(*plan));

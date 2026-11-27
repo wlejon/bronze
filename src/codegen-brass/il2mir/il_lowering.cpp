@@ -534,12 +534,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* cell_count = b.build_iconst_i32(static_cast<int32_t>(options_.shape_cell_count));
                 b.build_call("bronze_register_shape_cells", Type::void_type(), {cells_addr, keys_addr, cell_count});
             }
-            if (options_.enable_census && options_.census_site_count > 0) {
-                Value* out_path = b.build_func_addr(module_sym("__bronze_census_out_path"));
-                Value* sites_addr = b.build_func_addr(module_sym("__bronze_census_sites"));
-                Value* site_count = b.build_iconst_i32(static_cast<int32_t>(options_.census_site_count));
-                b.build_call("bronze_census_register", Type::void_type(), {out_path, sites_addr, site_count, map_addr});
-            }
             for (size_t f = 0; f < options_.source_files.size(); ++f) {
                 if (options_.source_files[f].entry_count == 0) continue;
                 Value* text_addr = b.build_func_addr(module_sym("__bronze_source_text_" + std::to_string(f)));

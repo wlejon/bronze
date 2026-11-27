@@ -2,19 +2,18 @@
 #define BRONZE_ABI_H
 
 /*
- * The ABI between the C++ runtime and LLVM-generated code: every symbol
+ * The ABI between the C++ runtime and Brass-generated code: every symbol
  * generated code links against, and nothing else. This header is pure C
  * (abi_check.c compiles it as C to enforce that): C cannot express a C++
  * class, so a type whose calling convention differs from its bit pattern
  * (MSVC returns classes with user-defined constructors via a hidden sret
  * pointer, shifting every argument register) is unrepresentable here.
  *
- * The registry below is the single source of truth. It expands twice:
- * into the C prototypes at the bottom of this header (which the runtime's
- * definitions are checked against), and into the LLVM declarations in
- * codegen-llvm (see BRONZE_ABI_LLVM_TYPES there). Adding a helper is one
- * X(...) line; a signature drift between the two sides is therefore
- * structurally impossible.
+ * The registry below is the single source of truth. It expands into the C
+ * prototypes at the bottom of this header (which the runtime's definitions
+ * are checked against), and is used by the Brass backend
+ * (`src/codegen-brass/il2mir`). Adding a helper is one X(...) line; a
+ * signature drift between the two sides is therefore structurally impossible.
  *
  * Drift between two BUILDS is a different failure, and it has its own
  * tripwire: the build hashes this file into BRONZE_ABI_FINGERPRINT
@@ -430,8 +429,7 @@ typedef struct bronze_code_range {
 #define BRONZE_ABI_PROTO_EPOCH_STEP     2
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
- * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds
- * them to llvm::Type*). */
+ * #undef'd after, so consumers can rebind the tokens. */
 #define BRONZE_ABI_U64    uint64_t
 #define BRONZE_ABI_U32    uint32_t
 #define BRONZE_ABI_I32    int32_t

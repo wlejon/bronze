@@ -2,7 +2,7 @@
 .SYNOPSIS
     Bronze Benchmark Suite Runner (PowerShell native)
 .DESCRIPTION
-    Deterministic benchmark runner comparing Bronze (infer & no-infer) against
+    Deterministic benchmark runner comparing Bronze harvest-guided AOT against
     the pinned Node.js v24.2.0 reference baseline without needing bash or WSL.
 .EXAMPLE
     .\bench\bench.ps1 --quick
@@ -12,8 +12,6 @@
 
 param(
     [switch]$Quick,
-    [switch]$InferOnly,
-    [switch]$NoInferOnly,
     [switch]$Profile,
     [switch]$Cached,
     [int]$Runs = 5,
@@ -31,7 +29,6 @@ $RootDir = Split-Path -Parent $ScriptDir
 
 if ($Quick) {
     $Runs = 3
-    $InferOnly = $true
 }
 
 if (-not $JsonlOut) {
@@ -102,8 +99,7 @@ if (-not $Json) {
     Write-Host "Bronze CLI : $BronzeBin"
     Write-Host "Build Type : $BuildType"
     Write-Host "Runs / case: $Runs (+ 1 warmup discarded)"
-    $modeStr = if ($InferOnly) { "Inference only" } elseif ($NoInferOnly) { "No-Infer only" } else { "Both (Infer & No-Infer)" }
-    Write-Host "Mode       : $modeStr"
+    Write-Host "Mode       : Harvest-guided AOT"
     if ($Profile) {
         Write-Host "Profiling  : Enabled (capturing ABI helpers & IC misses)"
     }
@@ -158,64 +154,53 @@ if (-not $RenderOnly) {
         }
 
         $baseName = [System.IO.Path]::GetFileNameWithoutExtension($benchFile)
-        $exeInfer = Join-Path $ScriptDir "${baseName}_infer.exe"
-        $exeNoInfer = Join-Path $ScriptDir "${baseName}_noinfer.exe"
+        $exeAot = Join-Path $ScriptDir "${baseName}_aot.exe"
+        $exeHarvest = Join-Path $ScriptDir "${baseName}_harvest.exe"
+        $tfbHarvest = Join-Path $ScriptDir "${baseName}_harvest.tfb"
 
-        # 1. Compile Infer
-        if (-not $NoInferOnly) {
-            $needBuild = -not $Cached -or (-not (Test-Path $exeInfer)) -or `
-                         ((Get-Item $jsPath).LastWriteTimeUtc -gt (Get-Item $exeInfer).LastWriteTimeUtc) -or `
-                         ((Get-Item $BronzeBin).LastWriteTimeUtc -gt (Get-Item $exeInfer).LastWriteTimeUtc)
-            if ($needBuild) {
-                cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeInfer`" 2>nul"
-                if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeInfer)) {
-                    Write-Warning "Failed to build $benchFile (infer mode)"
-                    continue
-                }
+        $needBuild = -not $Cached -or (-not (Test-Path $exeAot)) -or `
+                     ((Get-Item $jsPath).LastWriteTimeUtc -gt (Get-Item $exeAot).LastWriteTimeUtc) -or `
+                     ((Get-Item $BronzeBin).LastWriteTimeUtc -gt (Get-Item $exeAot).LastWriteTimeUtc)
+        if ($needBuild) {
+            cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeHarvest`" --harvest-out `"$tfbHarvest`" 2>nul"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeHarvest)) {
+                Write-Warning "Failed to build $benchFile (harvest mode)"
+                continue
             }
-        }
-
-        # 2. Compile No-Infer
-        if (-not $InferOnly) {
-            $needBuild = -not $Cached -or (-not (Test-Path $exeNoInfer)) -or `
-                         ((Get-Item $jsPath).LastWriteTimeUtc -gt (Get-Item $exeNoInfer).LastWriteTimeUtc) -or `
-                         ((Get-Item $BronzeBin).LastWriteTimeUtc -gt (Get-Item $exeNoInfer).LastWriteTimeUtc)
-            if ($needBuild) {
-                cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeNoInfer`" --no-infer 2>nul"
-                if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeNoInfer)) {
-                    Write-Warning "Failed to build $benchFile (--no-infer mode)"
-                    continue
-                }
+            cmd /c "`"$exeHarvest`" >nul 2>nul"
+            Remove-Item -Path "${ScriptDir}\${baseName}_harvest.exe","${ScriptDir}\${baseName}_harvest.dll" -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path $tfbHarvest)) {
+                Remove-Item -Path "${ScriptDir}\${baseName}_harvest.exe","${ScriptDir}\${baseName}_harvest.dll" -Force -ErrorAction SilentlyContinue
+                Write-Warning "Harvest run did not produce $tfbHarvest for $benchFile"
+                continue
+            }
+            cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeAot`" --feedback-in `"$tfbHarvest`" 2>nul"
+            $buildCode = $LASTEXITCODE
+            if (-not $Cached -and (Test-Path $tfbHarvest)) { Remove-Item $tfbHarvest -Force }
+            if ($buildCode -ne 0 -or -not (Test-Path $exeAot)) {
+                Write-Warning "Failed to build $benchFile (AOT mode)"
+                continue
             }
         }
 
         # Run Timings
         $statsInfer = $null
         $profInfer = $null
-        if (-not $NoInferOnly -and (Test-Path $exeInfer)) {
-            $statsInfer = Measure-CommandStats $exeInfer $Runs
+        if (Test-Path $exeAot) {
+            $statsInfer = Measure-CommandStats $exeAot $Runs
             if ($Profile) {
-                $profInfer = Measure-ProfileStats $exeInfer
+                $profInfer = Measure-ProfileStats $exeAot
             }
         }
 
-        $statsNoInfer = $null
-        if (-not $InferOnly -and (Test-Path $exeNoInfer)) {
-            $statsNoInfer = Measure-CommandStats $exeNoInfer $Runs
-        }
-
         if (-not $Cached) {
-            if (Test-Path $exeInfer) { Remove-Item $exeInfer -Force }
-            if (Test-Path $exeNoInfer) { Remove-Item $exeNoInfer -Force }
+            if (Test-Path $exeAot) { Remove-Item $exeAot -Force }
         }
 
         $nodeEntry = $NodeBaselines[$benchFile]
         $nodeMed = if ($nodeEntry) { $nodeEntry.median_ms } else { $null }
 
         $infMed = if ($statsInfer) { $statsInfer.median_ms } else { $null }
-        $noinfMed = if ($statsNoInfer) { $statsNoInfer.median_ms } else { $null }
-
-        $speedup = if ($infMed -and $noinfMed -and $infMed -gt 0) { [Math]::Round($noinfMed / $infMed, 2) } else { 1.0 }
         $vsNode = if ($nodeMed -and $infMed -and $infMed -gt 0) { [Math]::Round($nodeMed / $infMed, 2) } else { $null }
 
         $status = "N/A"
@@ -231,13 +216,11 @@ if (-not $RenderOnly) {
             category = "pure-compute"
             build_type = $BuildType
             infer = $statsInfer
-            noinfer = $statsNoInfer
-            infer_speedup = $speedup
             node_median_ms = $nodeMed
             vs_node = $vsNode
             status = $status
             profile = $profInfer
-            output_match = if ($statsInfer -and $statsNoInfer) { $statsInfer.output -eq $statsNoInfer.output } else { $true }
+            output_match = $true
         }
 
         $AllRecords += $record
@@ -254,15 +237,13 @@ if (-not $RenderOnly) {
 if (-not $Json) {
     Write-Host ""
     Write-Host "### Pure-Compute Benchmarks (Compiled Native vs Node.js Baseline)"
-    Write-Host "| Benchmark | Inferred (ms) | Node.js (ms) | vs Node | Status | No-Infer (ms) | Speedup (Infer) | Checksum / Output |"
-    Write-Host "|---|---|---|---|---|---|---|---|"
+    Write-Host "| Benchmark | Bronze AOT (ms) | Node.js (ms) | vs Node | Status | Checksum / Output |"
+    Write-Host "|---|---|---|---|---|---|"
 
     foreach ($r in $AllRecords) {
         if ($r.category -ne "pure-compute") { continue }
         $name = $r.name
         $infMed = if ($r.infer) { "{0:N2}" -f $r.infer.median_ms } else { "-" }
-        $noinfMed = if ($r.noinfer) { "{0:N2}" -f $r.noinfer.median_ms } else { "-" }
-        $speedup = if ($r.infer -and $r.noinfer) { "{0:N2}x" -f $r.infer_speedup } else { "-" }
         $nodeMed = if ($r.node_median_ms) { "{0:N2}" -f $r.node_median_ms } else { "-" }
         $vsNode = if ($r.vs_node) { "{0:N2}x" -f $r.vs_node } else { "-" }
         
@@ -273,8 +254,8 @@ if (-not $Json) {
             default { "-" }
         }
 
-        $out = if ($r.infer) { $r.infer.output } elseif ($r.noinfer) { $r.noinfer.output } else { "" }
-        Write-Host "| ``$name`` | **$infMed** | $nodeMed | **$vsNode** | $badge | $noinfMed | $speedup | ``$out`` |"
+        $out = if ($r.infer) { $r.infer.output } else { "" }
+        Write-Host "| ``$name`` | **$infMed** | $nodeMed | **$vsNode** | $badge | ``$out`` |"
     }
 
     if ($Profile) {

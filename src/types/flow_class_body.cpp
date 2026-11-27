@@ -622,22 +622,6 @@ const ClassLayout* FlowAnalyzer::receiverClass(Type receiver) const {
     return cl == nullptr || cl->name.empty() ? nullptr : cl;
 }
 
-const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& field) const {
-    if (mod_.pins == nullptr || cls == kNoShapeClass) return nullptr;
-    const ClassLayout* layout = mod_.result->classLayouts.byShapeClass(cls);
-    std::string name =
-        layout != nullptr ? layout->name : mod_.result->shapes.at(cls).constructorName;
-    if (name.empty()) return nullptr;
-    for (uint32_t hop = 0; hop < kMaxExtendsHops; ++hop) {
-        if (const PinKind* pin = mod_.pins->lookup(name, field)) return pin;
-        if (layout == nullptr || layout->superName.empty()) return nullptr;
-        layout = mod_.result->classLayouts.byName(layout->superName);
-        if (layout == nullptr) return nullptr;
-        name = layout->name;
-    }
-    return nullptr;
-}
-
 namespace {
 
 // Every candidate declaration of one scope at once: a single walk of the scope

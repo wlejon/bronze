@@ -30,7 +30,7 @@ std::unique_ptr<lower::SelfHostLibrary> lowerLibrary() {
     };
     auto astModule = modules::loadProgramSource(std::string(librarySource()), kSourceName, sources, diags, moduleOptions);
     if (!astModule) return fail();
-    auto inferred = types::inferModule(*astModule, diags, nullptr, nullptr);
+    auto inferred = types::inferModule(*astModule, diags);
     if (diags.hasErrors() || !inferred) return fail();
     auto lib = lower::lowerSelfHostLibrary(*astModule, diags, &*inferred, &sources);
     if (!lib) return fail();

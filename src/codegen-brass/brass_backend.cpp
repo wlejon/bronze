@@ -379,8 +379,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.pin_tls_register = true;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
-    options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
-    options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     options.template_site_count = module.templateSiteCount;
     // One image, any number of threads: every writable table is addressed
     // through the calling thread's delta (bronze_abi.h,
@@ -492,12 +490,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         meta.name_key = fn.nameKeyIndex;
         meta.required_args = fn.requiredArgs;
         meta.adapt_arity = fn.adaptArity();
-        meta.params_pinned.reserve(fn.params.size());
-        meta.param_pin_keys.reserve(fn.params.size());
-        for (const auto& p : fn.params) {
-            meta.params_pinned.push_back(p.pinned);
-            meta.param_pin_keys.push_back(p.pinKeyIndex);
-        }
         options.function_meta[uniqueNames[i]] = std::move(meta);
     }
 

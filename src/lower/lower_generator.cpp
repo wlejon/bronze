@@ -201,7 +201,6 @@ void Lowerer::splitCoroutineBody(il::Function& ilFn, int32_t kind) {
     body.returnType = il::Type::Dynamic;
     body.isEntryPoint = false;
     body.isExported = false;
-    body.returnPinned = false;
     const auto bodyIndex = static_cast<uint32_t>(ilModule_.functions.size());
 
     ilFn.blocks.clear();

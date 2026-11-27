@@ -473,7 +473,7 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
         if (nextVal.rawBits() == target) return Value::fromBool(true).rawBits();
         walker.set(nextVal);
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 // 20.1.3.7 ToObject(this), which for an object is the object — whatever kind it

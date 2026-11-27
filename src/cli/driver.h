@@ -40,24 +40,12 @@ int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath
 // it report an unreadable file or a bad line through the same error path as
 // everything else.
 //
-// `pinsPath` is the `--pins` manifest: per-(class, field) declarations
-// inference spends without the proofs it would otherwise demand
-// (types/pins.h). Empty means no manifest, and it travels as the PATH for the
-// same reason `hostGlobalsPath` does.
-//
-// `pinsAllowObserved` accepts a manifest entry marked `@observed`: one whose
-// stores are not all from sites the compiler can type, so a violation of it
-// would be silent rather than a TypeError. Off by default, on purpose.
-int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
+int runIl(const std::string& sourcePath, std::string* outString = nullptr,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
           const std::string& importMapPath = {},
-          const std::string& pinsPath = {}, bool pinsAllowObserved = false,
           const std::string& nativeManifestPath = {},
           const std::string& nativeLibPath = {},
-          // `--feedback-out`: the IL of a type-feedback build
-          // (docs/type-feedback.md), its `feedback.record` sites visible.
-          const std::string& feedbackOutPath = {},
           // `--feedback-in`: the profile the optimiser's speculation step
           // reads, as `bronze build` does.
           const std::string& feedbackInPath = {},
@@ -112,13 +100,12 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // `aarch64-windows`; empty is this one — and goes with `emitObj` or
 // `emitShared` only: a program needs that machine's host binary and runtime.
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
-             std::string* errOut = nullptr, bool infer = true, bool timings = false,
+             std::string* errOut = nullptr, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
-             const std::string& pinsPath = {}, bool pinsAllowObserved = false,
              const std::string& nativeManifestPath = {},
              const std::string& nativeLibPath = {},
              // See ModuleOptions::entryResolvesAs: the path `sourcePath`'s own
@@ -134,13 +121,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // is one unit and the namespaces would be built for nothing.
              bool publishModules = false,
              bool emitDebugInfo = false,
-             // `--feedback-out <file.tfb>`: instrument the program so that a
-             // run writes a type-feedback profile there; `--feedback-in
-             // <file.tfb>`: read one back (docs/type-feedback.md) for the
+             // `--feedback-in <file.tfb>`: read a harvest back for the
              // optimiser's speculation step.
-             const std::string& feedbackOutPath = {}, const std::string& feedbackInPath = {},
+             const std::string& feedbackInPath = {},
              // `--harvest-out <file.tfb>`: the program writes its inline-cache
-             // harvest there at exit (docs/type-feedback.md, "Harvest").
+             // harvest there at exit.
              const std::string& harvestOutPath = {},
              // `-j <n>` / `--jobs <n>`: threads for code generation's
              // per-function work (BrassBackend::setBuildThreads); 0 is every

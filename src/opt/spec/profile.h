@@ -1,30 +1,16 @@
 #pragma once
 
-// A TYPE-FEEDBACK PROFILE read back (`bronze build --feedback-in <file.tfb>`,
-// docs/type-feedback.md): what a run of a `--feedback-out` build saw at each
-// site, queryable by the site's stable key.
+// A TYPE-FEEDBACK HARVEST PROFILE read back (`bronze build --feedback-in <file.tfb>`):
+// what an uninstrumented `--harvest-out` run's inline caches and slow-site
+// counters observed.
 //
-// A site's key is (function key, ordinal), both from il/feedback_site.h:
-// `feedbackFunctionKeys(module)[i]` names function i of the module being
-// compiled, and an ordinal is the site's position in
-// `enumerateFeedbackSites(module, fn)`. A reading build that has not changed a
-// function finds its sites under the same keys; one that has finds nothing,
-// which is the answer it should get — feedback about a different body is not
-// feedback about this one.
-//
-// The same file can carry an inline-cache HARVEST instead (or as well): what
-// an uninstrumented build's caches held, by IC index (`Harvest` below).
-//
-// The parser is strict, like every reader in bronze: an unknown version, a
-// malformed line or a row outside a function is an error naming the line, not
-// a skipped row. Versions 1 to 6 are read (bronze_feedback_site.h says what
-// each added).
+// The parser is strict: an unknown version or malformed row is an error naming
+// the line, not a skipped row.
 
-#include <array>
 #include <cstdint>
 #include <map>
-#include <set>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,37 +20,6 @@
 #include "il/feedback_site.h"
 
 namespace bronze::spec {
-
-using TagCounts = std::array<uint64_t, BRONZE_FEEDBACK_TAG_COUNT>;
-
-// The tag spelling the file uses (`f64`, `i32`, ...), and back. -1 for a name
-// that is not a tag.
-const char* tagName(uint32_t tag);
-int tagFromName(std::string_view name);
-
-struct SiteFeedback {
-    uint32_t ordinal = 0;
-    il::FeedbackKind kind = il::FeedbackKind::Value;
-    uint64_t total = 0;
-    TagCounts tags{};
-    // Largest first; `*other*` (if present) is the folded tail.
-    std::vector<std::pair<std::string, uint64_t>> shapes;
-    std::vector<std::pair<std::string, uint64_t>> targets;
-
-    // Bit t set when tag t was seen.
-    uint32_t tagMask() const;
-    // Exactly one tag seen (and the site was reached).
-    bool monomorphic() const;
-    // The one shape / callee every observation had, or empty.
-    std::string soleShape() const;
-    std::string soleTarget() const;
-};
-
-struct FunctionFeedback {
-    std::string key;
-    uint64_t entries = 0;
-    std::map<uint32_t, SiteFeedback> sites;
-};
 
 // An INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"; the runtime's
 // ic_harvest.h writes it): what each IC site's cache held when an ordinary
@@ -146,23 +101,11 @@ public:
     // same counts: the round trip is how the two writers are held together.
     std::string serialize() const;
 
-    const FunctionFeedback* function(const std::string& fnKey) const;
-    const SiteFeedback* site(const std::string& fnKey, uint32_t ordinal) const;
-    // How many times the function was entered on the profiled run; 0 for one
-    // the profile does not know (never run, changed, or no entry site).
-    uint64_t entryCount(const std::string& fnKey) const;
-    bool isHot(const std::string& fnKey, uint64_t minEntries) const;
-
-    const std::map<std::string, FunctionFeedback>& functions() const { return functions_; }
-    // Adds or replaces one function; for tests and for merging profiles.
-    void put(FunctionFeedback fn);
-
-    // The file's harvest section, or null for a recorded profile.
+    // The file's harvest section, or null when empty.
     const Harvest* harvest() const { return harvest_ ? &*harvest_ : nullptr; }
     void setHarvest(Harvest harvest) { harvest_ = std::move(harvest); }
 
 private:
-    std::map<std::string, FunctionFeedback> functions_;
     std::optional<Harvest> harvest_;
 };
 

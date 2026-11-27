@@ -129,10 +129,9 @@ enum class Op : uint8_t {
     // The DENSE-ARRAY TEST: does this receiver answer every constant-index read
     // up to `immI32` out of its own element block, with no user code and no
     // allocation? It is to a constant-index read what `is.number` is to a
-    // coercion, so one test covers a run of reads. It compiles to the backend's
-    // own receiver proof (llvm_recv_proof.h), so it claims nothing the reads it
-    // stands in front of were not already going to assume
-    // (lower_pattern.cpp).
+    // coercion, so one test covers a run of reads. It is checked against the
+    // backend's receiver assumption so it claims nothing the reads it stands
+    // in front of were not already going to assume (lower_pattern.cpp).
     // With kDenseNumbers in immI32 it also asks the array's NUMBERS bit
     // (runtime/array.h): every element below the length is a Number in its
     // double form, so a read in bounds needs no hole or number test after it.
@@ -282,23 +281,6 @@ enum class Op : uint8_t {
     // named function expression's own name (15.2.5). Not a terminator, for
     // the reason name.resolve is not.
     ImmutableAssign,  // a: dynamic = immutable.assign <key_const_index>
-    // The WRITE BARRIER for a `--pins` claim (src/types/pins.h, stage B1).
-    //
-    // `pin.guard v, <key_const_index>, <immI32: PinBarrierKind>` tests one
-    // boxed value against the shape a pin PROMISED and raises a TypeError
-    // naming the manifest line when it does not hold. Void: what is wanted
-    // from it is the throw, which leaves the block before the store this
-    // precedes, so the store is skipped on the violating path.
-    //
-    // It sits at the WRITE and never at the read. A pin's whole performance
-    // model is that the read spends the claim unconditionally — a per-read
-    // guard would be the deoptimization the pin exists to avoid — so the
-    // claim is checked where it can be CONTRADICTED, which is the store, the
-    // call site, and the boxed wrapper. A store the compiler already proved
-    // (an f64-typed IL value, the closure parameter proof, the env-slot
-    // fixpoint) emits none: the proof is the licence, and re-checking it
-    // would tax the programs that need no barrier at all.
-    PinGuard,
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
     // be made together, before any method is stored.
@@ -460,7 +442,7 @@ enum class Op : uint8_t {
     // is in hand, across calls, detaches and collections alike; what such a
     // call CAN change, the view's length and where its bytes are, the typed
     // element accesses read afresh at every access. That is the licence for
-    // the element flag kElemFlagWordViewReceiver (il_pin.h) on the true edge
+    // the element flag kElemFlagWordViewReceiver (il.h) on the true edge
     // (lower_pattern.cpp). Header loads only: cannot throw, cannot collect.
     //
     // With kTypedArrayPristineLength set in `immI32` it also requires what the
@@ -477,19 +459,6 @@ enum class Op : uint8_t {
     // own `__proto__` of this one. Only the colon form with a written name
     // reaches here; a computed, shorthand or method `__proto__` is a define.
     ObjectLitProto,
-    // `feedback.record [<value>], <key_const_index>, <immI32: site info>`:
-    // hands one observation to the type-feedback recorder
-    // (src/runtime/type_feedback.h, docs/type-feedback.md). The key is the
-    // function's feedback key and the info word packs the site's kind and
-    // ordinal (abi/bronze_feedback_site.h); an `entry` site has no operand.
-    //
-    // Emitted only under `--feedback-out`, by lower/lower_feedback.cpp, as
-    // the LAST thing lowering does — so the sites are the final IL's own and
-    // no pass ever sees one. Void; it never throws and never collects: the
-    // recorder classifies the value's tag and names its shape or callee from
-    // immortal shape and string memory, allocating nothing on the JS heap. An
-    // instrument that could change control flow would be measuring itself.
-    FeedbackRecord,
     // a: bool = is.plain_array b. Whether `b` is an Array exotic object with
     // the bare array shape: no own named property, no integrity level, the
     // realm's Array.prototype as its [[Prototype]] (a subclass instance, a

@@ -54,7 +54,7 @@ DivUseKind classifyDivResultUsage(const il::Module& mod,
             }
             if (!usesTracked) continue;
 
-            if (u.op == Op::KeepAlive || u.op == Op::PinGuard || u.op == Op::FeedbackRecord) {
+            if (u.op == Op::KeepAlive) {
                 continue;
             }
             if (u.op == Op::Box || u.op == Op::Unbox || u.op == Op::ToNumeric ||

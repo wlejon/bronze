@@ -1,10 +1,8 @@
 #pragma once
 
 // Best-effort native symbolization for the runtime's own diagnostics — the
-// sampling profiler (sampler.cpp) and the shape census (shape_census.cpp)
-// both turn raw code addresses into `module!Function` at DUMP time, and this
-// is the one implementation they share so the two reports can never disagree
-// about what a PC is called.
+// sampling profiler (sampler.cpp) turns raw code addresses into
+// `module!Function` at DUMP time.
 //
 // dbghelp, lazily initialized on first use, never on a hot path: every caller
 // is an atexit dump walking a few thousand unique addresses once. On

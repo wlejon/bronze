@@ -275,7 +275,7 @@ bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out)
         if (!next) return false;
         holder.set(Value::fromObject(next));
     }
-    fatal("prototype chain of a native subclass instance exceeds the bounded walk");
+    rtThrowTypeError("prototype chain of a native subclass instance exceeds the bounded walk");
 }
 
 }  // namespace bronze::runtime

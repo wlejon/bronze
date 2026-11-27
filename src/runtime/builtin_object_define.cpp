@@ -38,7 +38,6 @@
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/realm.h"
-#include "runtime/shape_census.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -787,7 +786,7 @@ Shape* defineAddStart(Value objVal, const uint64_t* cells) {
 }
 
 void publishDefineAdd(Value objVal, Shape* start, PropertyKey key, const DecodedDescriptor& d, uint64_t* cells) {
-    if (!objVal.isObject() || runtime::censusFillsSuppressed()) return;
+    if (!objVal.isObject()) return;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain || !reinterpret_cast<ObjectHeader*>(hdr)->isBarePlain()) return;
     const Shape* end = reinterpret_cast<ObjectHeader*>(hdr)->shape;

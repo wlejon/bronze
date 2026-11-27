@@ -8,7 +8,6 @@
 #include "il/verifier.h"
 #include "il/verifier_proofs.h"
 #include "abi/bronze_abi.h"
-#include "il/feedback_site.h"
 #include "support/parallel.h"
 
 #include <string>
@@ -130,7 +129,7 @@ bool verify(const Module& module, DiagnosticSink& diags, size_t threads) {
                 }
                 return;
             }
-            failed[i] = !verifyFunction(fn, found[i]) || !verifyFeedbackRecords(fn, found[i]);
+            failed[i] = !verifyFunction(fn, found[i]);
         });
         for (size_t i = 0; i < n; ++i) {
             for (const Diagnostic& d : found[i].all()) {

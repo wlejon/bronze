@@ -2,9 +2,6 @@
 
 #include <charconv>
 
-#include "il/feedback_site.h"
-#include "il/il_pin.h"
-
 namespace bronze::il {
 
 // `typeName` and `opName` are in `print_names.cpp`.
@@ -38,18 +35,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         return idx < module.functions.size() ? module.functions[idx].name : "?";
     };
     std::string out = "module " + module.name + "\n";
-    // A type-feedback build registers through the module's census table
-    // (abi/bronze_feedback_site.h): its rows are the output path's marker and
-    // the method-name links, which are summarized rather than listed — the
-    // sites themselves are the `feedback.record` instructions.
-    size_t feedbackRows = 0;
-    for (const auto& site : module.censusSites) {
-        if ((site.info & BRONZE_FEEDBACK_FLAG) != 0) ++feedbackRows;
-    }
-    if (feedbackRows != 0) {
-        out += "\nfeedback " + module.censusOutPath + " (" + std::to_string(feedbackRows) +
-               " registration rows)\n";
-    }
     // The native import table and the declarations that reach it, before any
     // body: a call to `@__bronze_native_3` in a dump is only readable next to
     // the line saying what slot 3 is.
@@ -594,41 +579,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                     : std::string("?")) +
                                "\"";
                         break;
-                    // The manifest LINE, because which promise this barrier is
-                    // holding the program to IS the instruction, and the dump
-                    // is what a reader bisects an unexpected throw with.
-                    case Op::PinGuard: {
-                        const char* shape = "number";
-                        switch (static_cast<PinBarrier>(inst.immI32)) {
-                            case PinBarrier::Number: shape = "number"; break;
-                            case PinBarrier::NumberOrNullish: shape = "number-or-nullish"; break;
-                            case PinBarrier::DenseArray: shape = "dense-array"; break;
-                        }
-                        out += "pin.guard %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + shape + ", \"" +
-                               (inst.keyIndex < module.keyConstants.size()
-                                    ? module.keyConstants[inst.keyIndex]
-                                    : std::string("?")) +
-                               "\"";
-                        break;
-                    }
-                    // The site's kind and ordinal, which is what a profile
-                    // row is filed under (docs/type-feedback.md), and the
-                    // function key the run will file it in.
-                    case Op::FeedbackRecord: {
-                        const uint32_t info = static_cast<uint32_t>(inst.immI32);
-                        out += "feedback.record ";
-                        if (!inst.operands.empty()) out += "%" + std::to_string(inst.operands[0]) + ", ";
-                        out += std::string(feedbackKindName(static_cast<FeedbackKind>(
-                                   BRONZE_FEEDBACK_INFO_KIND(info)))) +
-                               " #" + std::to_string(BRONZE_FEEDBACK_INFO_ORDINAL(info)) + ", \"" +
-                               (inst.keyIndex < module.keyConstants.size()
-                                    ? module.keyConstants[inst.keyIndex]
-                                    : std::string("?")) +
-                               "\"";
-                        break;
-                    }
                     case Op::GlobalGet:
                         out += "global.get \"" +
                                (inst.keyIndex < module.keyConstants.size()

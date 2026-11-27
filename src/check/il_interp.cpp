@@ -170,7 +170,7 @@ InterpResult ConcreteVM::evalFn(const il::Function& fn,
                     if (inst.result != il::kNoValue) vals[inst.result] = CVal::makeBool(true);
                     break;
                 case Op::ClassExtend:
-                case Op::PinGuard: case Op::FeedbackRecord: case Op::KeepAlive: case Op::EnvInitTdz: break;
+                case Op::KeepAlive: case Op::EnvInitTdz: break;
                 case Op::CreateObject: case Op::CreateArray: {
                     uint32_t oid = allocObj("__local_" + std::to_string(heap.size()));
                     heap[oid].props["length"] = CVal::makeI64(std::max(0, inst.immI32));

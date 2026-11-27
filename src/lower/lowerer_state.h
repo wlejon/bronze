@@ -207,13 +207,6 @@ struct PatternRef {
     // kind dispatch (field / method / accessor) belongs to one place, and
     // that place is `lowerPrivateWrite`.
     const ast::MemberAccess* privateTarget = nullptr;
-    // The RECEIVER as the source wrote it, kept so that a destructuring
-    // store into a pinned field can ask the same question an ordinary
-    // assignment asks (lower_pin.cpp). Null when the target is private.
-    const ast::Expr* receiverExpr = nullptr;
-    // The property as the source spells it, for the same reason. Empty
-    // where the key is computed, which no pin can name.
-    std::string keyName;
 };
 
 // How one private name is stored, which is fixed by its declaration and so

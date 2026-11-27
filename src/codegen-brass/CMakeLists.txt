@@ -24,7 +24,6 @@ add_library(bronze_codegen_brass STATIC
     brass_backend_debug.cpp
     brass_backend_sections.cpp
     size_report.cpp
-    brass_jit.cpp
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
     brass_tiered_image.cpp

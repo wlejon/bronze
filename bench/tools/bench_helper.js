@@ -276,27 +276,24 @@ function cmdReport(jsonlFile, doProfStr) {
   }
 
   console.log('\n### Pure-Compute Benchmarks (Compiled Native vs Node.js Baseline)');
-  console.log('| Benchmark | Inferred (ms) | Node.js (ms) | vs Node | Status | No-Infer (ms) | Speedup (Infer) | Checksum / Output |');
-  console.log('|---|---|---|---|---|---|---|---|');
+  console.log('| Benchmark | Bronze AOT (ms) | Node.js (ms) | vs Node | Status | Checksum / Output |');
+  console.log('|---|---|---|---|---|---|');
 
   for (const r of records) {
     if (r.category !== 'pure-compute') continue;
     const name = r.name || '';
     if (r.error) {
-      console.log(`| \`${name}\` | ERROR | - | - | ERROR | - | - | ${r.error} |`);
+      console.log(`| \`${name}\` | ERROR | - | - | ERROR | ${r.error} |`);
       continue;
     }
     const infSt = r.infer || null;
-    const noinfSt = r.noinfer || null;
     const infMed = infSt ? Number(infSt.median_ms || 0).toFixed(2) : '-';
-    const noinfMed = noinfSt ? Number(noinfSt.median_ms || 0).toFixed(2) : '-';
-    const speedup = (infSt && noinfSt) ? `${Number(r.infer_speedup ?? 1).toFixed(2)}x` : '-';
     const nodeMed = r.node_median_ms != null ? Number(r.node_median_ms).toFixed(2) : '-';
     const vsNode = r.vs_node != null ? `${Number(r.vs_node).toFixed(2)}x` : '-';
     const status = r.status || '-';
     const badge = status === 'WIN' ? '**WIN**' : (status === 'PARITY' || status === 'BEHIND' ? status : '-');
-    const out = infSt ? (infSt.output || '') : (noinfSt ? (noinfSt.output || '') : '');
-    console.log(`| \`${name}\` | **${infMed}** | ${nodeMed} | **${vsNode}** | ${badge} | ${noinfMed} | ${speedup} | \`${out}\` |`);
+    const out = infSt ? (infSt.output || '') : '';
+    console.log(`| \`${name}\` | **${infMed}** | ${nodeMed} | **${vsNode}** | ${badge} | \`${out}\` |`);
   }
 
   if (doProf) {

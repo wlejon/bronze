@@ -25,7 +25,6 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
-#include "runtime/shape_census.h"
 #include "runtime/shape_leave.h"
 #include "runtime/string.h"
 #include "runtime/tls_block.h"
@@ -146,13 +145,6 @@ extern "C" {
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
     recordElemCall("bronze_elem_set", objBits, idxBits);
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled) && !Value(idxBits).isObject()) {
-        // Object keys are skipped for elem_get's reason: ToPropertyKey runs
-        // user code and the helper re-enters itself with the primitive.
-        censusRecordAccess(CensusKind::ElemSet, objBits, /*keyIndex=*/0xFFFFFFFFu, idxBits,
-                           /*siteId=*/nullptr, BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true,
-                           valBits);
-    }
     Value objVal(objBits);
 
     // 7.1.19 ToPropertyKey for an OBJECT key, at the entry and nowhere below,
@@ -273,7 +265,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                         !own.accessor && own.writable) {
                         fastObj->setSlot(own.slot, Value(valBits));
                         Shape* postSh = fastObj->shape;
-                        if (!censusFillsSuppressed() && postSh && !postSh->isDictionary() &&
+                        if (postSh && !postSh->isDictionary() &&
                             !postSh->used_as_prototype) {
                             InlineCache filled{};
                             filled.fillForSet(postSh, own.slot);

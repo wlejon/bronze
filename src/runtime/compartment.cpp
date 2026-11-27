@@ -288,6 +288,9 @@ void rtDestroyCompartment(Compartment* c) {
 }
 
 CompartmentStatus rtCompartmentRun(Compartment* c, CompartmentJob job, void* arg) {
+    if (!c) {
+        return CompartmentStatus{CompartmentState::Terminated, {}, "null compartment", {}};
+    }
     if (c->state == CompartmentState::Terminated) return statusOf(c);
     if (c->state == CompartmentState::Yielded || c->jobPending) {
         fatal("compartment: a job was run while another one is suspended in it (resume that one first)");
@@ -300,6 +303,9 @@ CompartmentStatus rtCompartmentRun(Compartment* c, CompartmentJob job, void* arg
 }
 
 CompartmentStatus rtCompartmentResume(Compartment* c) {
+    if (!c) {
+        return CompartmentStatus{CompartmentState::Terminated, {}, "null compartment", {}};
+    }
     if (c->state != CompartmentState::Yielded) return statusOf(c);
     enterFiber(c);
     return statusOf(c);
@@ -337,6 +343,32 @@ void rtCompartmentTerminate(Compartment* c, const std::string& reason) {
 CompartmentState rtCompartmentState(const Compartment* c) { return c->state; }
 Realm* rtCompartmentRealm(const Compartment* c) { return c->realm; }
 Compartment* rtRunningCompartment() noexcept { return t_running; }
+
+namespace {
+thread_local bool t_abortingCompartment = false;
+}  // namespace
+
+bool rtCanAbortCurrentCompartment() noexcept {
+    if (t_abortingCompartment) return false;
+    Compartment* c = t_running;
+    if (c == nullptr || c->state == CompartmentState::Terminated) return false;
+    if (!c->fiber || brass::gc::Fiber::current() != c->fiber.get()) return false;
+    return std::uncaught_exceptions() == 0;
+}
+
+[[noreturn]] void rtCompartmentAbortCurrent(const char* reason) {
+    Compartment* c = t_running;
+    if (!c || !c->fiber || brass::gc::Fiber::current() != c->fiber.get() || t_abortingCompartment) {
+        std::abort();
+    }
+    t_abortingCompartment = true;
+    struct ResetGuard {
+        ~ResetGuard() { t_abortingCompartment = false; }
+    } resetGuard;
+    c->terminateRequested = true;
+    c->terminationReason = std::string("fatal: ") + (reason && *reason ? reason : "internal error");
+    throwTermination(c);
+}
 uint32_t rtCompartmentOverruns(const Compartment* c) { return c->overruns; }
 double rtCompartmentLongestOverrunMs(const Compartment* c) { return c->longestOverrunMs; }
 const std::string& rtCompartmentLongestOverrunSite(const Compartment* c) { return c->longestOverrunSite; }

@@ -7,9 +7,7 @@
 #include <brass/target/target.hpp>
 #include "support/diagnostics.h"
 #include "support/source.h"
-#include "lower/lower_feedback.h"
 #include "opt/spec/profile.h"
-#include "types/pins.h"
 
 namespace bronze::cli {
 
@@ -17,7 +15,6 @@ int fail(const std::string& message);
 void reportWarnings(const DiagnosticSink& diags, const SourceSet& sources);
 bool readFile(const std::string& path, std::string& out);
 bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std::string& err);
-bool loadPins(const std::string& path, types::PinManifest& out, std::string& err, bool allowObserved);
 // `<arch>-<os>`; a Darwin one may name the platform's minimum version and,
 // for iOS, the simulator: aarch64-macos13.0, aarch64-ios16.0,
 // aarch64-ios16.0-simulator, x64-ios-simulator. iOS is the macOS target of
@@ -29,12 +26,9 @@ bool parseTargetName(const std::string& name, brass::Target& out, std::string& e
 // consumes the value), with `err` set when the value is missing.
 bool takeFlagValue(const std::string& arg, const char* name, int& i, int argc, char** argv,
                    std::string& out, std::string& err);
-// The type-feedback flags (docs/type-feedback.md): `--feedback-out` made
-// absolute (the run writes it from wherever it runs); `--feedback-in` read and
-// parsed into `profile`.
-bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feedbackInPath,
-                     std::optional<spec::TypeProfile>& profile, lower::FeedbackOptions& options,
-                     std::string& err);
+// Loads `--feedback-in` and parses it into `profile`.
+bool loadFeedbackProfile(const std::string& feedbackInPath,
+                         std::optional<spec::TypeProfile>& profile, std::string& err);
 int dispatchProveEquivArgs(int argc, char** argv);
 int dispatchSynthTestsArgs(int argc, char** argv);
 

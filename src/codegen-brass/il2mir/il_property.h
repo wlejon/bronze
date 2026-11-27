@@ -152,8 +152,7 @@ public:
     void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
                              const IcSite& site, bool val_is_primitive = false, bool is_length = false);
 
-    // Whether writes get lower_prop_set_mono (off while a census counts
-    // every write through the helper).
+    // Whether writes get lower_prop_set_mono.
     void set_inline_sets(bool on) noexcept { inline_sets_ = on; }
     [[nodiscard]] bool inline_sets() const noexcept { return inline_sets_; }
     // Whether the body being lowered is one the harvest found cold

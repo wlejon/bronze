@@ -17,7 +17,6 @@
 #include "types/host_contracts.h"
 #include "types/infer_memo.h"
 #include "types/method_ident.h"
-#include "types/pins.h"
 #include "types/result.h"
 #include "types/syntax_memo.h"
 #include "types/type.h"
@@ -193,13 +192,6 @@ struct ModuleContext {
     // an escape is a fact about the program text, and a call on a receiver whose
     // class is not proven stays unproven, because a receiver's type only widens.
     MethodPoison methodPoison;
-    // The `--pins` manifest, or null. Named (class, field) pairs — and only
-    // those — spend field-type claims without the builtHere / per-class /
-    // program-wide-audit proofs. See types/pins.h for what a pin promises and
-    // who is meant to enforce it.
-    const PinManifest* pins = nullptr;
-    // Whether pin optimism is in force at all.
-    bool pinOptimism() const { return pins != nullptr; }
     uint32_t unboundedMethodCalls = 0;
     // The program names a way to change an existing object's prototype
     // (scanProtoMutation); dispatchBounded then bounds nothing.

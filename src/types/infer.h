@@ -6,7 +6,6 @@
 
 #include "ast/ast.h"
 #include "support/diagnostics.h"
-#include "types/pins.h"
 #include "types/result.h"
 
 namespace bronze::types {
@@ -27,13 +26,7 @@ namespace bronze::types {
 // thread's builtins are locked down (runtime/lockdown.h), the two objects
 // frozen behind read-only global bindings, so no text of the program's can
 // change what the names mean.
-//
-// `pins` is the `--pins` manifest, when the caller has one: per-(class, field)
-// declarations this pass spends without the proofs it would otherwise demand.
-// A promise about the program, not a proof derived from it — types/pins.h says
-// what it licenses and who is meant to enforce it. Null means no manifest.
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
-                                           const std::vector<std::string>* hostGlobals = nullptr,
-                                           const PinManifest* pins = nullptr);
+                                           const std::vector<std::string>* hostGlobals = nullptr);
 
 }  // namespace bronze::types

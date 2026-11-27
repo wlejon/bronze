@@ -6,10 +6,9 @@
 // a property site's ways hold the receiver shapes it read or wrote (and
 // whether the key was own, inherited, absent or an accessor), a method site's
 // two ways the receiver shapes and the callee each latched. A harvest reads
-// those words back, names them the way the type-feedback recorder names what
-// it observes (type_feedback.h), and writes them as a type-feedback file a
-// later build reads with `--feedback-in`. Nothing is recorded while the
-// program runs: the caches are the record, kept anyway.
+// those words back, names them via shape_naming.h, and writes them as an
+// inline-cache harvest file a later build reads with `--feedback-in`. Nothing
+// is recorded while the program runs: the caches are the record, kept anyway.
 //
 // A module is harvested once something names a file for it: its image's
 // identity record (`bronze build --harvest-out`), or a host through

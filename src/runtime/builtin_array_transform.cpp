@@ -5,6 +5,7 @@
 
 #include "runtime/native_base.h"
 #include "runtime/builtin_array_internal.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/native_fast.h"
 #include "runtime/number_format.h"
@@ -218,7 +219,7 @@ private:
         size_t cap = latCap_ * 2;
         if (cap < latLen_ + need) cap = latLen_ + need;
         char* next = static_cast<char*>(std::malloc(cap));
-        if (!next) fatal("out of memory in Array.prototype.join");
+        if (!next) rtThrowRangeError("Invalid string length");
         std::memcpy(next, lat_, latLen_);
         if (lat_ != inline_) std::free(lat_);
         lat_ = next;

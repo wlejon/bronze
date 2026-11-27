@@ -184,9 +184,6 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
             slot = join(slot, c.t);
             break;
         }
-        case Contrib::MethodSkipped:
-            mod.methods.methods()[c.index].sawSkippedDynamicArg[c.param] = true;
-            break;
         case Contrib::MethodReached:
             mod.methods.methods()[c.index].observedReached = true;
             break;

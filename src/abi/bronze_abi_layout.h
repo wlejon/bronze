@@ -608,27 +608,6 @@
 #define BRONZE_ABI_NUMBER_MAX_BITS      0xFFF0000000000000ull
 #define BRONZE_ABI_HOLE_BITS            0xFFF7000000000000ull
 
-/* PIN CENSUS site info (`bronze_census_register` / `bronze_census_record`,
- * src/runtime/pin_census.h). The low byte is WHICH MANIFEST FORM the site's
- * key names, because the four forms admit different kinds — only the field
- * forms have `number-or-nullish` and `numeric-elements` to fall back to.
- *
- * `OPAQUE` is not a form: it is a store to a field NAME through a receiver
- * inference could not type, which is B1's one remaining silent hole
- * (src/types/pins.h). It names no class, so it can never be an entry; what it
- * does is mark every entry for a field of that name `@observed`.
- *
- * `REFUSES` is a site that disqualifies its entry on REGISTRATION, with no
- * observation needed — a return the body can fall off, or an owner spelling
- * that would govern two different functions. */
-#define BRONZE_ABI_CENSUS_KIND_MASK  0xFFu
-#define BRONZE_ABI_CENSUS_REFUSES    0x100u
-#define BRONZE_ABI_CENSUS_ENV_SLOT   0u
-#define BRONZE_ABI_CENSUS_FIELD      1u
-#define BRONZE_ABI_CENSUS_PARAM      2u
-#define BRONZE_ABI_CENSUS_RETURN     3u
-#define BRONZE_ABI_CENSUS_OPAQUE     4u
-
 /* HeapObjectHeader::flags, and the values that mean "a plain object" as
  * opposed to an array (1), a function (2), a typed-array view (3) or an
  * ArrayBuffer (4). Every object value of every kind begins with the shape word

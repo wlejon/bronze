@@ -3,10 +3,7 @@
 // The builtins with a FAST ENTRY (runtime/native_fast.h): a second door into
 // a native builtin for a compiled method site, the receiver and arguments in
 // registers. Lowering splits each site of one on its receiver kind and calls
-// the entry on the passing edge (lower/selfhost_merge.cpp); the whole-program
-// optimizer reads a call of an entry as the method call it replaced, the
-// builtin at `builtin` called with the first operand as `this`
-// (opt/wpo/solver_calls.cpp).
+// the entry on the passing edge (lower/selfhost_merge.cpp).
 
 #include <cstdint>
 #include <string_view>
@@ -30,7 +27,7 @@ struct FastEntry {
     // this many is split, the rest padded with undefined (native_fast.h says
     // why that is the absent argument for each).
     uint32_t argc;
-    // The builtin's path in the optimizer's catalogue (opt/wpo/builtins.cpp).
+    // The builtin's path in the catalogue.
     const char* builtin;
 };
 

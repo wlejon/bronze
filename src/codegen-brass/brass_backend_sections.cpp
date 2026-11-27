@@ -123,23 +123,6 @@ void emitKeyConstants(ObjectFile& obj, Section& roSec, int32_t roIdx,
     defineSymbol(obj, keySymbol, roIdx, keyOffset, roSec.data.size() - keyOffset, SymbolBinding::Global);
 }
 
-void emitCensusData(ObjectFile& obj, Section& roSec, int32_t roIdx,
-                    const std::string& entrySymbol, const il::Module& module) {
-    if (module.censusSites.empty() || module.censusOutPath.empty()) return;
-
-    emitStringSymbol(obj, roSec, roIdx, moduleSymbolName(entrySymbol, "__bronze_census_out_path"),
-                     module.censusOutPath, SymbolBinding::Local);
-
-    roSec.align_to(4);
-    const size_t sitesOffset = roSec.data.size();
-    for (const auto& site : module.censusSites) {
-        roSec.emit32(site.keyIndex);
-        roSec.emit32(site.info);
-    }
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_census_sites"), roIdx, sitesOffset,
-                 roSec.data.size() - sitesOffset, SymbolBinding::Local);
-}
-
 void emitMethodIcSites(ObjectFile& obj, Section& roSec, int32_t roIdx,
                        const std::string& entrySymbol, const std::vector<uint32_t>& methodIcSites) {
     if (methodIcSites.empty()) return;
@@ -848,7 +831,6 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     emitAbiStamp(obj, roSec, roIdx, entrySymbol);
     emitHostGlobalsManifest(obj, roSec, roIdx, entrySymbol, in.hostGlobals);
     emitKeyConstants(obj, roSec, roIdx, keySymbol, in.module.keyConstants);
-    emitCensusData(obj, roSec, roIdx, entrySymbol, in.module);
     emitMethodIcSites(obj, roSec, roIdx, entrySymbol, in.methodIcSites);
     emitIcIdentity(obj, roSec, roIdx, entrySymbol, in.module, in.slowArmed != nullptr);
     emitShapeCellKeys(obj, roSec, roIdx, entrySymbol, in.module);

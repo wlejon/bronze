@@ -37,14 +37,8 @@ bool takeFlagValue(const std::string& arg, const char* name, int& i, int argc, c
     return false;
 }
 
-bool prepareFeedback(const std::string& feedbackOutPath, const std::string& feedbackInPath,
-                     std::optional<spec::TypeProfile>& profile, lower::FeedbackOptions& options,
-                     std::string& err) {
-    if (!feedbackOutPath.empty()) {
-        std::error_code ec;
-        const auto abs = std::filesystem::absolute(feedbackOutPath, ec);
-        options.outPath = ec ? feedbackOutPath : abs.string();
-    }
+bool loadFeedbackProfile(const std::string& feedbackInPath,
+                         std::optional<spec::TypeProfile>& profile, std::string& err) {
     if (!feedbackInPath.empty()) {
         std::string loadErr;
         profile = spec::TypeProfile::load(feedbackInPath, &loadErr);
@@ -96,16 +90,6 @@ bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std
         out.push_back(std::move(name));
     }
     return true;
-}
-
-bool loadPins(const std::string& path, types::PinManifest& out, std::string& err,
-              bool allowObserved) {
-    std::string text;
-    if (!readFile(path, text)) {
-        err = "error: cannot read pin manifest " + path + "\n";
-        return false;
-    }
-    return out.parse(text, path, err, allowObserved);
 }
 
 bool parseTargetName(const std::string& name, brass::Target& out, std::string& err,

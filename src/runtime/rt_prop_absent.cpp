@@ -35,7 +35,6 @@
 #include "runtime/object.h"
 #include "runtime/property_key.h"
 #include "runtime/rt_property.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -43,9 +42,6 @@ namespace bronze::runtime {
 
 void rtInstallAbsentEntry(InlineCacheSite* site, Value objVal, const std::string& keyStr) {
     if (!site) return;
-    // Census mode suppresses every latch so all traffic keeps reaching the
-    // helpers it records in (shape_census.h).
-    if (censusFillsSuppressed()) return;
     if (!objVal.isObject()) return;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (!HeapKind::shapeNamesPrototype(hdr->flags)) return;

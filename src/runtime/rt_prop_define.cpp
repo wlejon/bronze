@@ -34,7 +34,6 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 

@@ -260,12 +260,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // carries a kind worth reading.
     newFn.fnFlags = functionObjectFlags(
         siteFnExpr ? siteFnExpr->kind : ast::FunctionKind::Normal, isGenerator, isAsync);
-    // The `--pins` signature entries, before the body is lowered: the parameter
-    // types are what the body's reads of them resolve against, and the return
-    // type is part of the calling convention a recursive call already reads.
-    // A failure still puts the enclosing state back, below.
-    const bool pinsOk = applySignaturePins(params, span, newFn);
-    const bool bodyOk = pinsOk && lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
+    const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     // The name's record is visible to the BODY and to nothing else — 15.2.5
     // creates it around the closure, not in the scope that wrote the
     // expression — so it leaves the stack the moment the body is lowered, and

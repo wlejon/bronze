@@ -10,7 +10,6 @@
 #include <vector>
 
 #include <filesystem>
-#include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_tiered_engine.h"
 #include "embed/embed.h"
 #include "modules/modules.h"
@@ -42,7 +41,6 @@ struct EvalOptions {
     bool retainSource = true;
     std::vector<modules::ModuleRoot> moduleRoots = {};
     std::filesystem::path entryResolvesAs = {};
-    std::string pinsPath = {};
     // The program is a classic script, or a page's classic scripts joined into
     // one unit: its top-level `var`s and function declarations are properties
     // of the global object, as on the web, not bindings of the unit. Each
@@ -94,10 +92,6 @@ struct EvalOptions {
     // src>`. Never for a driver script or inline script text.
     bool publishEntry = false;
     std::vector<std::string> externalModules = {};
-    // How the program runs (codegen-brass/brass_tiered_engine.h). Unset is
-    // the process default (setDefaultTier), which is also what every eval()
-    // and new Function() the program makes runs at.
-    std::optional<ExecutionTier> tier = std::nullopt;
     // Compile once for every thread that runs the same program. A tiered
     // program's writable module data is per thread (bronze_module_instance),
     // so one compiled program can run on any number of threads, each run
@@ -107,8 +101,7 @@ struct EvalOptions {
     // thread, with this set) is that program, unless this thread already ran
     // it: then it is compiled again, as a second evaluation on one thread
     // must start from fresh module data. For a host that runs one script on
-    // many threads, as workers do. Explicit Tier2_Optimized programs are
-    // never shared.
+    // many threads, as workers do.
     bool shareAcrossThreads = false;
     // With `moduleRegistry`: `externalModules` is the registry's list as
     // captured (captureThreadInputs), even when empty, and the compile does
@@ -156,7 +149,6 @@ struct EvalOptions {
 
 struct CompiledScript {
     std::shared_ptr<BrassTieredProgram> program;
-    ExecutionTier tier = ExecutionTier::Auto;
     std::string resName;
     std::string errorMessage;
     bool success = false;
@@ -179,12 +171,6 @@ struct CompiledScript {
 // thread and build the program the calling thread would have. The program is
 // still run (runCompiledScript) on the calling thread.
 BRONZE_EMBED_API void captureThreadInputs(EvalOptions& options);
-
-// The tier a program compiles at when its options name none: Auto (the
-// tiered pipeline: interpreted first, hot functions compiled to baseline and
-// then optimized code in the background) unless the host says otherwise.
-BRONZE_EMBED_API void setDefaultTier(ExecutionTier tier);
-BRONZE_EMBED_API ExecutionTier defaultTier();
 
 // Retains a compiled program for the process lifetime so its code, data
 // image and function pointers remain valid across executions. At exit the

@@ -17,7 +17,6 @@
 #include "lower/lowerer_state.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
-#include "types/pins.h"
 #include "types/result.h"
 
 namespace bronze::lower {
@@ -52,12 +51,9 @@ public:
             const types::InferenceResult* inference,
             const std::vector<std::string>* hostGlobals = nullptr,
             const SourceSet* sources = nullptr,
-            const types::PinManifest* pins = nullptr,
             const NativeManifest* nativeManifest = nullptr);
 
     std::optional<il::Module> lower();
-    // The type-feedback instrument (lower_feedback.h).
-    void setFeedback(const FeedbackOptions* options) { feedback_ = options; }
     // Compile the self-hosted builtins (lower_selfhost.cpp, src/selfhost):
     // `$Name(...)` calls are intrinsics, no global may be read, and each
     // function a top-level `$Builtin(...)` names becomes a builtin.
@@ -75,7 +71,6 @@ private:
     const ast::Module& astModule_;
     DiagnosticSink& diags_;
     const types::InferenceResult* inference_ = nullptr;
-    const types::PinManifest* pins_ = nullptr;
     il::Module ilModule_;
     std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
@@ -84,8 +79,6 @@ private:
     std::vector<std::string> keyStrings_;
     uint32_t icSiteCounter_ = 0;
     uint32_t anonFnCounter_ = 0;
-
-    const FeedbackOptions* feedback_ = nullptr;
 
     // --- The self-hosted builtins (lower_selfhost.cpp) ---
     struct SelfHostBuiltin {
@@ -189,9 +182,6 @@ private:
     std::unordered_set<std::string> moduleHomeSuffixes_;
     size_t moduleEnvScope_ = SIZE_MAX;
     bool segmentTopLevel_ = false;
-
-    // --- --pins signature entries (lower_pin.cpp) ---
-    bool applySignaturePins(const std::vector<ast::Param>& params, Span span, il::Function& fn);
 
     const SourceSet* sources_ = nullptr;
 
@@ -302,16 +292,6 @@ private:
     bool envSlotDefiniteInit(uint32_t depth, uint32_t index) const;
     SlotImmutability envSlotImmutability(uint32_t depth, uint32_t index) const;
     void emitImmutableAssign(const std::string& name, il::Function& ilFn);
-
-    // --- --pins write barriers (lower_pin.cpp) ---
-    bool emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
-                      il::Function& ilFn);
-    static bool pinSatisfiedStatically(Value val, il::PinBarrier kind);
-    const types::PinKind* pinnedFieldAt(const ast::Expr& receiver, const std::string& key,
-                                        std::string* pinTextOut) const;
-    void emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,
-                             il::Function& ilFn);
-    static std::string manifestOwnerName(const std::string& ilName);
 
     // --- Bindings and records (lower_scope.cpp) ---
     void openLexicalBindings(size_t scopeIndex, const std::vector<std::string>& lexicalNames,

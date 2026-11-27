@@ -152,7 +152,7 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
         if (!next) return false;
         holder = next;
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 // ---- `in`, kind by kind ----------------------------------------------------

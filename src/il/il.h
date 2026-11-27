@@ -9,15 +9,17 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
-// The pin claims the IL carries (`PinBarrier`, element flags).
-// Included here rather than left to each user, because every one of them
-// reaches these names through this header and a seam is not an occasion to
-// make twenty files say where they now live.
-#include "il/il_pin.h"
 #include "il/il_op.h"
 #include "support/source.h"
 
 namespace bronze::il {
+
+// Element and length flags carried in Instruction::immI32 on elem.get /
+// elem.set / prop.get.
+inline constexpr int32_t kElemFlagProvenIntegralIndex = 1 << 16;
+inline constexpr int32_t kElemFlagArrayReceiver = 1 << 18;
+inline constexpr int32_t kElemFlagWordViewReceiver = 1 << 19;
+inline constexpr int32_t kPropGetArrayLength = 1;
 
 // bronze IL: a typed, SSA, mid-level IR. Static layouts are used wherever
 // analysis can PROVE them (inference-first; TS annotations are untrusted
@@ -151,7 +153,7 @@ bool canThrow(const Instruction& inst);
 // that fails is fatal rather than catchable, so `create.object` throws nothing
 // and collects anyway — and the two are not interchangeable at a use site.
 //
-// It exists for the backend's receiver proof (llvm_recv_proof.h), which holds a
+// It exists for the backend's receiver guard, which holds a
 // pointer DERIVED from a heap object across several instructions. A derived
 // pointer is not a GC root: nothing forwards it, so it is valid exactly as far
 // as the next collection, and this predicate is where that distance is
@@ -183,8 +185,8 @@ inline constexpr int32_t kWriteDefine = 2;
 // the fast paths stay.
 inline constexpr int32_t kWriteLiteralElement = 3;
 
-// An `elem.set` carries element flags above its mode (il_pin.h
-// kElemFlagArrayReceiver, kElemFlagProvenIntegralIndex).
+// An `elem.set` carries element flags above its mode (kElemFlagArrayReceiver,
+// kElemFlagProvenIntegralIndex).
 inline constexpr int32_t kWriteModeMask = 0xFF;
 inline constexpr int32_t kElemSetFlagBits =
     kWriteModeMask | kElemFlagArrayReceiver | kElemFlagProvenIntegralIndex | kElemFlagWordViewReceiver;
@@ -218,17 +220,6 @@ struct Block {
 struct Param {
     std::string name;
     Type type;
-    // This slot is `F64` because a `--pins` SIGNATURE entry said so, and no
-    // proof agrees (src/types/pins.h, stage B1). It is the licence for the
-    // barrier the boxed wrapper and the enumerated call sites emit, and it is
-    // deliberately NOT "the type is F64": a parameter typed by
-    // `applyProvenSignature` or by the closure parameter proof has a proof
-    // behind it, and re-checking a proof would tax the programs that need no
-    // barrier at all. The pin index names the manifest line for the message.
-    bool pinned = false;
-    // The key-constant index of the manifest line this pin came from, valid
-    // only when `pinned`.
-    uint32_t pinKeyIndex = 0;
 };
 
 struct Function {
@@ -240,12 +231,6 @@ struct Function {
     // caller, including direct ones, so needsThis carries no such restriction.
     std::vector<Param> params;
     Type returnType = Type::Void;
-    // `returnType` is `F64` because a `--pins` `return <owner>: number` entry
-    // said so, with no proof agreeing — the return half of `Param::pinned`,
-    // and the licence for the barrier `lowerReturnStmt` puts on a returned
-    // value it cannot type. `pinKeyIndex` names the manifest line.
-    bool returnPinned = false;
-    uint32_t returnPinKeyIndex = 0;
     bool isExported = false;
     // A DECLARATION rather than a definition: no blocks, and the name is a
     // symbol the backend resolves — a runtime helper the lowering calls by
@@ -479,19 +464,7 @@ struct Module {
     // the property and no identity test when it holds.
     bool mathPinned = false;
     bool numberPinned = false;
-    // THE CENSUS SITE TABLE, the runtime channel a type-feedback build
-    // (`--feedback-out`, lower/lower_feedback.cpp) registers its sites
-    // through (abi/bronze_feedback_site.h): handed to the runtime at module
-    // init, so a site the run never reaches is still known.
-    struct CensusSiteEntry {
-        uint32_t keyIndex = 0;  // into `keyConstants`
-        uint32_t info = 0;      // BRONZE_FEEDBACK_INFO kind | ordinal
-    };
-    std::vector<CensusSiteEntry> censusSites;
-    // Where the instrumented run writes its profile. Empty unless
-    // `--feedback-out`.
-    std::string censusOutPath;
-    // THE INLINE-CACHE HARVEST (docs/type-feedback.md, "Harvest"). The image
+    // THE INLINE-CACHE HARVEST. The image
     // carries an identity record its module init hands the runtime with the
     // IC table: `icLayoutDigest`, a hash of the source texts and of what every
     // IC index names (il/feedback_site.h icLayoutDigest), as the final passes

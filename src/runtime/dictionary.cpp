@@ -19,7 +19,6 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/shape_leave.h"
 
 namespace bronze {
@@ -297,15 +296,13 @@ void Dictionary::releaseMemory() noexcept {
 // be in any of those, keyed by its address, so it stays allocated for the
 // thread's life (an address reused by another shape could be answered for);
 // only its tables go. Its keys were moved to the arena when it froze
-// (integrity.cpp), for the same reason. The shape census keeps every shape it
-// saw for its report at exit, so while it runs nothing is freed either; nor
-// while a harvest is armed, whose sites keep their last receiver's shape
-// (il/feedback_site.h kLastShapeArm), a dictionary one included, and name
-// it when the harvest is written.
+// (integrity.cpp), for the same reason. While a harvest is armed, its sites
+// keep their last receiver's shape (il/feedback_site.h kLastShapeArm), a
+// dictionary one included, and name it when the harvest is written.
 void releaseDictionaryShape(void* shapePtr) {
     auto* shape = static_cast<Shape*>(shapePtr);
     Dictionary* d = shape->dict;
-    if (d->level == IntegrityLevel::Frozen || runtime::g_shapeCensusEnabled || runtime::rtIcHarvestArmed()) {
+    if (d->level == IntegrityLevel::Frozen || runtime::rtIcHarvestArmed()) {
         d->releaseMemory();
         return;
     }

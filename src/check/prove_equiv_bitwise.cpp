@@ -201,8 +201,6 @@ SymEvalOutcome SymbolicIlBuilder::evalBlockPath(const il::Function& fn,
                         return {false, "unsupported IL operation: class.extend", false, zero64_, {}, {}, zero1_};
                     }
                     break;
-                case Op::PinGuard:
-                case Op::FeedbackRecord:
                 case Op::KeepAlive:
                 case Op::EnvInitTdz:
                     break;

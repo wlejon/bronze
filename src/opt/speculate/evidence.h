@@ -1,19 +1,14 @@
 #pragma once
 
-// EVIDENCE: the profile read into per-site decisions. The only file of the
-// step that reads a TypeProfile; everything after it works from the plans.
+// EVIDENCE: an inline-cache HARVEST read into per-site decisions. The only
+// file of the step that reads a TypeProfile; everything after it works from
+// the plans.
 //
-// Two kinds of evidence exist (docs/type-feedback.md):
-//   - a RECORDED profile (`--feedback-out` run): per function key, per site
-//     ordinal (il/feedback_site.h enumerateFeedbackSites), the tags, shapes
-//     and callees one run saw, with counts;
-//   - an inline-cache HARVEST: per IC index the ways each cache held, and
-//     the slow-site counters (each function's entries and loop-header runs
-//     among them). Used only when its digest
-//     is the module's (il::icLayoutDigest), i.e. it was taken from a build
-//     numbering its sites as this one does.
-// Both are read against the module as lowering left it, before anything
-// changes: keys hash the IL, and IC and slow-site indices are positions.
+// An inline-cache HARVEST supplies per IC index the ways each cache held, and
+// the slow-site counters (each function's entries and loop-header runs among
+// them). Used only when its digest matches the module's (`il::icLayoutDigest`),
+// i.e. it was taken from a build numbering its sites as this one does.
+// Read against the module as lowering left it, before anything changes.
 //
 // A site is planned only on DECISIVE evidence: one shape (or a short chain of
 // own-property shapes), one callee, one numeric tag pair, one array kind; and
@@ -27,32 +22,12 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
-#include "abi/bronze_feedback_site.h"
 #include "il/feedback_site.h"
 #include "il/il.h"
 #include "opt/spec/profile.h"
 #include "opt/speculate/speculate.h"
 
 namespace bronze::opt::speculate {
-
-// ---- recorded sites ----------------------------------------------------------
-inline constexpr uint32_t kTagBit(uint32_t tag) { return 1u << tag; }
-
-// Recorded tags that say "a plain object" and nothing else: the receivers a
-// shape guard can pass.
-inline bool onlyPlainObjects(const spec::SiteFeedback& site) {
-    return site.tagMask() == kTagBit(BRONZE_FEEDBACK_TAG_OBJECT);
-}
-
-// The names a site saw, when they are all real names: `*other*` is the
-// folded tail of more than the recorder tracks.
-inline bool namesComplete(const std::vector<std::pair<std::string, uint64_t>>& names) {
-    if (names.empty()) return false;
-    for (const auto& [name, count] : names) {
-        if (name == "*other*" || count == 0) return false;
-    }
-    return true;
-}
 
 // ---- thresholds -------------------------------------------------------------
 // WHICH FUNCTIONS ARE HOT, from counts alone, so every harvest of a
@@ -359,15 +334,13 @@ private:
                                            BlockId block, uint32_t index) const;
     std::optional<SitePlan> planLength(const il::Instruction& inst, BlockId block, uint32_t index) const;
 
-    const spec::SiteFeedback* recorded(uint32_t fn, uint32_t ordinal) const;
     const spec::HarvestSite* harvested(uint32_t icIndex) const;
     bool slowRan(uint32_t slowIndex) const;
     uint64_t slowCount(uint32_t slowIndex) const;
     bool slowArmed(uint32_t slowSite) const;
     // Whether the harvest says `inst` never executed (never_entered.cpp).
     bool neverRan(const il::Instruction& inst) const;
-    // The module function a profile's callee name names, if exactly one.
-    uint32_t calleeByRecordedName(const std::string& name) const;
+    // The module function a harvest callee name names, if exactly one.
     uint32_t calleeByHarvestName(const std::string& name) const;
     void buildCalleeNames() const;
     std::string sourceText(const il::Function& fn) const;
@@ -379,12 +352,10 @@ private:
     const spec::Harvest* harvest_ = nullptr;
     std::optional<spec::Harvest> spelled_;
     std::set<std::string> numberKeys_;
-    std::vector<std::string> keys_;
     uint64_t minEntries_ = kMinEntries;
     uint64_t totalWork_ = 0;  // the harvest's work, every counted function
     // Callee name -> function, built on first use (kNoFunction: ambiguous).
     mutable bool namesBuilt_ = false;
-    mutable std::unordered_map<std::string, uint32_t> recordedNames_;
     mutable std::unordered_map<std::string, uint32_t> harvestNames_;
 };
 

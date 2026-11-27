@@ -21,7 +21,6 @@
 #include "ast/ast.h"
 #include "il/print.h"
 #include "codegen-brass/brass_backend.h"
-#include "codegen-brass/brass_jit.h"
 #include "embed/embed.h"
 #include "eval/code_cache.h"
 #include "eval/eval_internal.h"
@@ -44,7 +43,6 @@
 #include "support/source.h"
 #include "support/timings.h"
 #include "types/infer.h"
-#include "types/pins.h"
 
 namespace bronze::eval {
 
@@ -92,7 +90,6 @@ static std::condition_variable& sharedInFlightCv() {
     return *cv;
 }
 static std::atomic<uint64_t> s_evalCounter{0};
-static std::atomic<ExecutionTier> s_defaultTier{ExecutionTier::Auto};
 
 // At exit, no retained or live dynamic program may still be compiling in the
 // background: a compile worker would be running brass while the process tears
@@ -150,7 +147,7 @@ static std::vector<WarmRecord>& warmRecords() {
 
 void armWarmList(const std::shared_ptr<BrassTieredProgram>& program, const std::string& dir,
                  const cache::Digest& key, bool hit) {
-    if (!program || dir.empty() || program->tier() != ExecutionTier::Auto || !program->mirModule()) {
+    if (!program || dir.empty() || !program->mirModule()) {
         return;
     }
     {
@@ -196,16 +193,15 @@ void saveWarmLists() {
 
 // Everything a compile reads: two compiles with the same key produce the
 // same program. Each field is length-prefixed, so no two keys run together.
-std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
+std::string sharedProgramKey(const EvalOptions& options,
                              const std::vector<std::string>& hostGlobals, const std::string& manifestJson,
-                             const std::string& pinsText, const SourceSet& sources) {
+                             const SourceSet& sources) {
     std::string key;
     auto field = [&](std::string_view s) {
         key += std::to_string(s.size());
         key += ':';
         key.append(s.data(), s.size());
     };
-    field(executionTierToString(tier));
     field(options.filename);
     field(options.entryResolvesAs.string());
     field(options.retainSource ? "src" : "nosrc");
@@ -217,7 +213,6 @@ std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
     for (const auto& g : hostGlobals) field(g);
     field("|natives");
     field(manifestJson);
-    field(pinsText);
     for (size_t i = 0; i < sources.size(); ++i) {
         const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
         field(buf.name());
@@ -282,7 +277,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     // counts what a module made to be harvested counts.
     const bool evidence = !options.harvestOutPath.empty();
 
-    const bool share = options.shareAcrossThreads && in.tier != ExecutionTier::Tier2_Optimized && !evidence;
+    const bool share = options.shareAcrossThreads && !evidence;
     std::string shareKey;
     // A shared program compiles once: a second thread asking for the same key
     // while the first compiles waits for that compile, not for every compile.
@@ -297,7 +292,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
         }
     } claim{compileLock};
     if (share) {
-        shareKey = sharedProgramKey(options, in.tier, hostGlobals, in.manifestJson, in.pinsText, sources);
+        shareKey = sharedProgramKey(options, hostGlobals, in.manifestJson, sources);
         sharedInFlightCv().wait(compileLock, [&] { return !sharedInFlight().count(shareKey); });
         sharedInFlight().insert(shareKey);
         claim.key = &shareKey;
@@ -307,7 +302,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
             return it->second.program;
         }
     }
-    if (in.tier != ExecutionTier::Tier2_Optimized) compileLock.unlock();
+    compileLock.unlock();
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
     if (!ilModule) {
         ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources, /*aheadOfTime=*/evidence);
@@ -326,7 +321,6 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     const std::string entrySym = "__bronze_dyn_entry_" + std::to_string(evalId);
 
     TieredEngineConfig config;
-    config.tier = in.tier;
     config.entrySymbol = entrySym;
     config.hostGlobals = hostGlobals;
     config.emitDebugInfo = options.emitDebugInfo;
@@ -470,11 +464,10 @@ embed::CallResult runProgramAndCollectResult(
     return embed::CallResult{result.get(), /*thrown=*/false};
 }
 
-std::unique_ptr<CompiledScript> newScript(const EvalOptions& options) {
+std::unique_ptr<CompiledScript> newScript(const EvalOptions& /*options*/) {
     auto res = std::make_unique<CompiledScript>();
     const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
     res->resName = "__bronze_eval_res_" + std::to_string(evalId);
-    res->tier = options.tier.value_or(defaultTier());
     return res;
 }
 
@@ -519,14 +512,6 @@ const char* functionPrefix(runtime::DynamicFunctionKind kind) {
 }
 
 }  // namespace
-
-void setDefaultTier(ExecutionTier tier) {
-    s_defaultTier.store(tier, std::memory_order_relaxed);
-}
-
-ExecutionTier defaultTier() {
-    return s_defaultTier.load(std::memory_order_relaxed);
-}
 
 void retainProgram(std::shared_ptr<BrassTieredProgram> program) {
     if (!program) return;

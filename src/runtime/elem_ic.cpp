@@ -10,7 +10,6 @@
 #include "runtime/ic_log.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
-#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/tls_block.h"
 
@@ -196,12 +195,6 @@ void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept {
 
 ElemProbe elemCacheProbe(Value objVal, Value key) {
     ElemProbe probe;
-    // Census mode keeps every computed read reaching the helpers it records
-    // in (shape_census.h).
-    if (censusFillsSuppressed()) {
-        recordElemIcMiss("census", objVal.rawBits(), key.rawBits());
-        return probe;
-    }
     // PLAIN receivers only, and that is a scope decision rather than a
     // limitation discovered late: an array, a typed array, a string exotic and
     // a function each answer a computed read from somewhere that is not the
@@ -366,7 +359,6 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
 }
 
 void elemCacheFillDict(Value objVal, Value key, uint32_t slot) {
-    if (censusFillsSuppressed()) return;
     Shape* shape = objVal.asObject<ObjectHeader>()->shape;
     if (shape->dict == nullptr || shape->readCacheable()) return;
     // A heap string's entry would answer only that string object (the stub's

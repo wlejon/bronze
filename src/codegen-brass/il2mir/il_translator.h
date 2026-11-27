@@ -64,8 +64,6 @@ struct FunctionMeta {
     uint32_t name_key = 0xFFFFFFFFu; // BRONZE_ABI_FN_NAME_NONE
     uint32_t required_args = 0;
     uint32_t adapt_arity = 0;
-    std::vector<bool> params_pinned;
-    std::vector<uint32_t> param_pin_keys;
 };
 
 struct TranslatorOptions {
@@ -170,8 +168,6 @@ struct TranslatorOptions {
     // calling `bronze_tls_block_addr`. Requires the runtime to enter compiled
     // code only through its trampoline (which sets the register).
     bool pin_tls_register = false;
-    bool enable_census = false;
-    uint32_t census_site_count = 0;
     // The module's inline-cache table (bronze_abi.h, "the inline property
     // cache contract"): `ic_site_count` sites of BRONZE_ABI_IC_SITE_SIZE
     // bytes each, laid out by the embedder as the module data symbol

@@ -9,7 +9,6 @@
 #include <unordered_map>
 
 #include "abi/bronze_abi.h"
-#include "abi/bronze_feedback_site.h"
 #include "opt/speculate/context.h"
 #include "opt/speculate/policy.h"
 #include "opt/core/shape_key.h"
@@ -70,6 +69,7 @@ int32_t Evidence::pinnedMathIntrinsic(ValueId recv, uint32_t keyIndex, size_t ar
 // identity tested), which holds whatever the receivers were.
 std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                              BlockId block, uint32_t index) const {
+    (void)fn;
     if (inst.operands.empty() || refs.type(inst.operands[0]) != il::Type::Dynamic) return std::nullopt;
     if (inst.keyIndex >= module_.keyConstants.size()) return std::nullopt;
     if (const int32_t m = pinnedMathIntrinsic(inst.operands[0], inst.keyIndex, inst.operands.size() - 1, refs);
@@ -143,17 +143,7 @@ std::optional<SitePlan> Evidence::planMethod(uint32_t fn, const il::Instruction&
         plan.calleesOpen = anySlot;
         if (anySlot && h->ways.size() == 1) ownShape = h->ways.front().receiver;
     } else {
-        const auto methodSites = refs.at(block, index, il::FeedbackKind::Method);
-        if (methodSites.size() != 1) return std::nullopt;
-        const spec::SiteFeedback* site = recorded(fn, methodSites.front()->ordinal);
-        if (site == nullptr || !namesComplete(site->targets)) return std::nullopt;
-        const std::string target = site->soleTarget();
-        if (target.empty()) return std::nullopt;
-        plan.callee = calleeByRecordedName(target);
-        const std::string shape = site->soleShape();
-        if (onlyPlainObjects(*site) && !shape.empty()) {
-            if (auto parsed = parseShapeName(shape); parsed && ownSlot(*parsed, key)) ownShape = shape;
-        }
+        return std::nullopt;
     }
     if (plan.callee == kNoFunction || !directCallFits(module_, module_.functions[plan.callee], argc)) return std::nullopt;
 
@@ -239,6 +229,7 @@ std::optional<SitePlan> Evidence::planConstruct(const il::Instruction& inst, con
 // none, and its helper never ran.
 std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& inst, const SiteRefs& refs,
                                            BlockId block, uint32_t index) const {
+    (void)fn;
     if (inst.operands.size() < 2) return std::nullopt;
     // `const cos = Math.cos; cos(x)` with Math pinned: the callee is the
     // read of the intrinsic.
@@ -254,23 +245,12 @@ std::optional<SitePlan> Evidence::planCall(uint32_t fn, const il::Instruction& i
     for (ValueId v : inst.operands) {
         if (refs.type(v) != il::Type::Dynamic) return std::nullopt;
     }
-    uint32_t callee = kNoFunction;
-    const auto targetSites = refs.at(block, index, il::FeedbackKind::Target);
-    const spec::SiteFeedback* site = targetSites.size() == 1 ? recorded(fn, targetSites.front()->ordinal) : nullptr;
-    if (site != nullptr) {
-        if (site->tagMask() != kTagBit(BRONZE_FEEDBACK_TAG_FUNCTION) ||
-            !namesComplete(site->targets)) {
-            return std::nullopt;
-        }
-        callee = calleeByRecordedName(site->soleTarget());
-    } else {
-        // A Math function held in a variable (`const cos = Math.cos`).
-        if (const std::string* name = harvestedCalleeName(inst)) {
-            const int32_t intrinsic = intrinsicNamed(*name, inst.operands.size() - 2);
-            if (intrinsic >= 0) return mathCallPlan(intrinsic, block, index);
-        }
-        callee = harvestedCallee(inst);
+    // A Math function held in a variable (`const cos = Math.cos`).
+    if (const std::string* name = harvestedCalleeName(inst)) {
+        const int32_t intrinsic = intrinsicNamed(*name, inst.operands.size() - 2);
+        if (intrinsic >= 0) return mathCallPlan(intrinsic, block, index);
     }
+    const uint32_t callee = harvestedCallee(inst);
     if (callee == kNoFunction || !directCallFits(module_, module_.functions[callee], inst.operands.size() - 2)) {
         return std::nullopt;
     }
@@ -289,16 +269,9 @@ std::string Evidence::sourceText(const il::Function& fn) const {
     return text.substr(fn.sourceBegin, fn.sourceEnd - fn.sourceBegin);
 }
 
-// The recorder names a callee `<name>@<fnv32 of its source, 8 hex>` and the
-// harvest `~<source offset>@<fnv32>` (runtime/type_feedback.cpp calleeText,
+// The harvest names a callee `~<source offset>@<fnv32>` (runtime/shape_naming.cpp
 // typeFeedbackCodeName). A name matching two functions (one source range
 // lowered twice) names neither.
-uint32_t Evidence::calleeByRecordedName(const std::string& name) const {
-    buildCalleeNames();
-    auto it = recordedNames_.find(name);
-    return it == recordedNames_.end() ? kNoFunction : it->second;
-}
-
 uint32_t Evidence::calleeByHarvestName(const std::string& name) const {
     buildCalleeNames();
     auto it = harvestNames_.find(name);
@@ -318,10 +291,6 @@ void Evidence::buildCalleeNames() const {
         const std::string src = sourceText(fn);
         if (src.empty()) continue;
         const std::string hash = hex8(il::fnv32(src));
-        std::string jsName;
-        if (fn.nameKeyIndex < module_.keyConstants.size()) jsName = module_.keyConstants[fn.nameKeyIndex];
-        if (jsName.empty()) jsName = "<anonymous>";
-        put(recordedNames_, jsName + "@" + hash, f);
         put(harvestNames_, "~" + std::to_string(fn.sourceBegin) + "@" + hash, f);
     }
 }

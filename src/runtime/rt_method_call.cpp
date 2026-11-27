@@ -16,7 +16,6 @@
 #include "runtime/rt_property.h"
 #include "runtime/root_remset.h"
 #include "runtime/rt_state.h"
-#include "runtime/shape_census.h"
 #include "runtime/tls_block.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
@@ -391,7 +390,7 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
 // — and everything here is loads and stores, never an allocation.
 void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCache& probe,
                    uint32_t keyIndex) {
-    if (!icEntry || censusFillsSuppressed()) return;
+    if (!icEntry) return;
     if (!fnVal.isObject()) return;
     // Another realm's function is called through bronze_dynamic_call every
     // time, which enters its realm (realm.h, CalleeRealmScope); a cached
@@ -667,20 +666,7 @@ uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
     // entry. It holds a non-moving Shape* and integers only, so it needs no
     // rooting.
     InlineCacheSite scratch{};
-    CensusToken censusTok = nullptr;
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        // The method fetch IS this site's property read; the inner
-        // bronze_prop_get below runs against a STACK scratch site and must
-        // not mint a census row per call, so it is bracketed as nested.
-        censusTok = censusRecordAccess(CensusKind::MethodGet, thisBits, keyIndex, 0, icEntry,
-                                       BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
-    }
-    uint64_t fnBits = 0;
-    {
-        CensusNestedScope nested(g_shapeCensusEnabled);
-        fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
-    }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) censusRecordResult(censusTok, fnBits);
+    uint64_t fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
 
     recordCallSite("bronze_call_method", fnBits);
 
@@ -695,17 +681,7 @@ uint64_t bronze_call_method_spread(uint64_t thisBits, uint32_t keyIndex, uint64_
     Rooted<Value> thisRoot{Value(thisBits)};
     Rooted<Value> argsRoot{Value(argsArrBits)};
     InlineCacheSite scratch{};
-    CensusToken censusTok = nullptr;
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        censusTok = censusRecordAccess(CensusKind::MethodGet, thisBits, keyIndex, 0, icEntry,
-                                       BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
-    }
-    uint64_t fnBits = 0;
-    {
-        CensusNestedScope nested(g_shapeCensusEnabled);
-        fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
-    }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) censusRecordResult(censusTok, fnBits);
+    uint64_t fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
 
     recordCallSite("bronze_call_method_spread", fnBits);
 

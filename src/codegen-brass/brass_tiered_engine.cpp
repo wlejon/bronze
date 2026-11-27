@@ -1,7 +1,6 @@
 #include "codegen-brass/brass_tiered_engine.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_sections.h"
-#include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
 #include "codegen-brass/il2mir/il_pipeline.h"
@@ -59,66 +58,30 @@ bool jitVerifiesMir() {
     return on;
 }
 
-// The pipeline's configuration for a tier (ExecutionTier says what each is).
-brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
+// The pipeline's configuration: Fast Tier-0 interpreter with background Tier-1
+// and Tier-2 compilation + OSR.
+brass::runtime::TieringConfig defaultTieringConfig() {
     brass::runtime::TieringConfig config;
     config.set_tier0_interpreter(brass::runtime::Tier0Interpreter::Fast);
-    switch (tier) {
-        case ExecutionTier::Tier0_Interpreter:
-            config.max_tier = brass::runtime::TierLevel::Tier0_Interpreter;
-            break;
-        case ExecutionTier::Tier1_Baseline:
-            config.max_tier = brass::runtime::TierLevel::Tier1_Baseline;
-            break;
-        case ExecutionTier::Auto:
-        case ExecutionTier::Tier2_Optimized:
-            // Optimized code is built off the mutator, on the process's one
-            // compile pool (brass CompilePool::shared()): a hot function
-            // keeps running in its lower tier until its code is installed,
-            // and a hot loop until its OSR entry is. Baseline code too: a
-            // function past the tier-1 threshold stays interpreted until
-            // its code, and that of every function it reaches, is ready.
-            config.enable_background_compile = true;
-            config.enable_background_tier1 = true;
-            // A failed guard of brass's own tier-2 code finishes its call in
-            // Tier 0 (a loop in it interpreted to the end), and code whose
-            // guards failed twice is dropped rather than paying three more.
-            config.deopt_threshold = 2;
-            break;
-    }
+    // Optimized code is built off the mutator, on the process's one compile
+    // pool (brass CompilePool::shared()): a hot function keeps running in its
+    // lower tier until its code is installed, and a hot loop until its OSR
+    // entry is. Baseline code too: a function past the tier-1 threshold stays
+    // interpreted until its code, and that of every function it reaches, is
+    // ready.
+    config.enable_background_compile = true;
+    config.enable_background_tier1 = true;
+    // A failed guard of brass's own tier-2 code finishes its call in Tier 0
+    // (a loop in it interpreted to the end), and code whose guards failed
+    // twice is dropped rather than paying three more.
+    config.deopt_threshold = 2;
     return config;
 }
 
 }  // namespace
 
-std::string_view executionTierToString(ExecutionTier tier) noexcept {
-    switch (tier) {
-        case ExecutionTier::Tier0_Interpreter: return "interpreter";
-        case ExecutionTier::Tier1_Baseline:    return "baseline";
-        case ExecutionTier::Tier2_Optimized:   return "optimized";
-        case ExecutionTier::Auto:              return "auto";
-    }
-    return "auto";
-}
-
-std::optional<ExecutionTier> parseExecutionTier(std::string_view str) noexcept {
-    if (str == "0" || str == "tier0" || str == "interp" || str == "interpreter" || str == "fast") {
-        return ExecutionTier::Tier0_Interpreter;
-    }
-    if (str == "1" || str == "tier1" || str == "baseline") {
-        return ExecutionTier::Tier1_Baseline;
-    }
-    if (str == "2" || str == "tier2" || str == "opt" || str == "optimized" || str == "jit") {
-        return ExecutionTier::Tier2_Optimized;
-    }
-    if (str == "3" || str == "auto" || str == "multi" || str == "tiered") {
-        return ExecutionTier::Auto;
-    }
-    return std::nullopt;
-}
-
-BrassTieredProgram::BrassTieredProgram(ExecutionTier tier, std::string entrySymbol)
-    : tier_(tier), entrySymbol_(std::move(entrySymbol)),
+BrassTieredProgram::BrassTieredProgram(std::string entrySymbol)
+    : entrySymbol_(std::move(entrySymbol)),
       dispatchTable_(std::make_unique<brass::runtime::FunctionDispatchTable>()) {}
 
 // Member order does the teardown (the header says which way).
@@ -131,7 +94,6 @@ BrassTieredProgram::~BrassTieredProgram() {
 }
 
 const brass::ModuleStackMap* BrassTieredProgram::stackMaps() const noexcept {
-    if (tier_ == ExecutionTier::Tier2_Optimized) return jitProgram_ ? jitProgram_->stackMaps() : nullptr;
     return &dispatchTable_->pipeline().active_stack_maps();
 }
 
@@ -142,7 +104,6 @@ void BrassTieredProgram::activateStackMaps() const {
 }
 
 void* BrassTieredProgram::symbolAddress(std::string_view name) const {
-    if (tier_ == ExecutionTier::Tier2_Optimized) return jitProgram_ ? jitProgram_->symbolAddress(name) : nullptr;
     if (void* addr = image_ ? image_->symbolAddress(name) : nullptr) return addr;
     const brass::Function* fn = mirModule_ ? mirModule_->get_function(name) : nullptr;
     if (!fn || !fn->has_body()) return nullptr;
@@ -150,14 +111,13 @@ void* BrassTieredProgram::symbolAddress(std::string_view name) const {
 }
 
 void BrassTieredProgram::stopBackgroundCompilation() {
-    if (tier_ == ExecutionTier::Tier2_Optimized) return;
     dispatchTable_->pipeline().stop_background_compiles();
     dispatchTable_->osr().stop_compiles();
 }
 
 brass::RuntimeValue BrassTieredProgram::run() {
     // A program of no statements has no entry to run.
-    if (tier_ != ExecutionTier::Tier2_Optimized && !mirModule_->get_function(entrySymbol_)) {
+    if (!mirModule_->get_function(entrySymbol_)) {
         return brass::RuntimeValue::from_u64(0);
     }
     return invoke(entrySymbol_, {});
@@ -190,18 +150,6 @@ brass::RuntimeValue BrassTieredProgram::invokeUntranslated(std::string_view fnNa
     // frames are that heap's roots.
     embed::bindThreadHeap();
     activateStackMaps();
-    if (tier_ == ExecutionTier::Tier2_Optimized) {
-        if (!jitProgram_) return brass::RuntimeValue::from_u64(0);
-        if (fnName == entrySymbol_) {
-            auto* entry = reinterpret_cast<uint64_t (*)()>(jitProgram_->entryPoint());
-            if (!entry) return brass::RuntimeValue::from_u64(0);
-            // A native raise out of the entry leaves here as a C++ exception
-            // (brass native_frames.hpp).
-            brass::GeneratedCodeEntryScope entryScope;
-            return brass::RuntimeValue::from_u64(entry());
-        }
-        return jitProgram_->engine()->invoke(fnName, args);
-    }
     // The runtime's calls into this thread's interpreted functions
     // (embed::setEnterJsHook) are per thread, and the thread that compiled
     // a program need not be the one that runs it.
@@ -227,7 +175,6 @@ const uint64_t* BrassTieredProgram::moduleSlotCell() const {
 }
 
 const void* BrassTieredProgram::icIdentity() const {
-    if (tier_ == ExecutionTier::Tier2_Optimized) return nullptr;
     return symbolAddress(codegen::icIdentitySymbol(entrySymbol_));
 }
 
@@ -239,60 +186,41 @@ BrassTieredEngine::~BrassTieredEngine() = default;
 std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     const il::Module& module, DiagnosticSink& diags) {
 
-    const ExecutionTier tier = config_.tier;
     const std::string entrySymbol = config_.entrySymbol.empty() ? "main" : config_.entrySymbol;
-    const bool perThreadData = config_.perThreadModuleData && (tier != ExecutionTier::Tier2_Optimized);
+    const bool perThreadData = config_.perThreadModuleData;
 
     BrassBackend backend;
     backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(config_.hostGlobals);
     backend.setPerThreadModuleData(perThreadData);
-    // Tier 2 optimizes the whole program before it runs. The pipeline tiers
-    // translate it as it stands and optimize a function when it tiers up.
-    backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
+    // Translate as it stands and optimize each function when it tiers up.
+    backend.setOptimize(false);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
     backend.setVerifyLowered(jitVerifiesMir());
-    // Every closure's code in these two tiers is native for as long as the
-    // program is: Tier2_Optimized's is the program's own JIT image, and the
-    // pipeline's is the function's module stub (MultiTierPipeline::
-    // function_address), which follows the best code and bridges to Tier 0
-    // for a function not compiled yet. So a compiled caller may enter it
-    // directly, skipping rtEnterJs and its scopes (bronze_abi.h says why
-    // each is unobservable); measured, a third of mesh_churn_2k's steady
-    // state under either tier went there. Tier 0 keeps the runtime path, as
-    // a stub entered natively compiles its function and tier 0 promises none
-    // is; Tier 1 keeps it too, unmeasured.
-    const bool nativeEntries = tier == ExecutionTier::Tier2_Optimized || tier == ExecutionTier::Auto;
-    const bool entersDirectly = nativeEntries && config_.livesForProcess;
+    // Every closure's code is the function's module stub
+    // (MultiTierPipeline::function_address), which follows the best code and
+    // bridges to Tier 0 for a function not compiled yet. So a compiled caller
+    // may enter it directly when the program is retained for the process,
+    // skipping rtEnterJs and its scopes.
+    const bool entersDirectly = config_.livesForProcess;
     if (entersDirectly) backend.setDirectJsCalls(true);
-    // The pipeline tiers build a function's MIR when it first runs, or a
-    // tier-up first copies it: a large program's load lowers what its start
-    // needs, not every function it has. Tier 1 compiles everything before
-    // running anyway.
-    backend.setLazyBodies(tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter);
+    // Build a function's MIR when it first runs, or when a tier-up copies it:
+    // a large program's load lowers what its start needs, not every function.
+    backend.setLazyBodies(true);
     backend.setHarvestEvidence(config_.harvestEvidence);
 
-    bool hasEscapable = !module.censusSites.empty() && !module.censusOutPath.empty();
-    if (!hasEscapable) {
-        for (const auto& fn : module.functions) {
-            if (!fn.isExternal && (!fn.isEntryPoint || fn.isCoroutineBody())) {
-                hasEscapable = true;
-                break;
-            }
+    bool hasEscapable = false;
+    for (const auto& fn : module.functions) {
+        if (!fn.isExternal && (!fn.isEntryPoint || fn.isCoroutineBody())) {
+            hasEscapable = true;
+            break;
         }
     }
 
-    std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));
+    std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(entrySymbol));
     prog->perThreadData_ = perThreadData;
     prog->hasEscapableCode_ = hasEscapable;
     prog->entersDirectly_ = entersDirectly;
-    if (tier == ExecutionTier::Tier2_Optimized) {
-        prog->jitProgram_ = backend.compileToJit(module, diags);
-        if (!prog->jitProgram_) return nullptr;
-        prog->codeTokens_ = prog->jitProgram_->codeTokens();
-        prog->activateStackMaps();
-        return prog;
-    }
 
     // The module's writable tables are per thread (bronze_module_instance):
     // one compiled program runs on any number of threads, each with its own
@@ -315,16 +243,13 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // `ulimit -s`.
     brass::FastInterpreter::set_default_max_call_depth(SIZE_MAX);
     brass::runtime::MultiTierPipeline& pipeline = prog->dispatchTable().pipeline();
-    pipeline.initialize(tieringConfigFor(tier));
+    pipeline.initialize(defaultTieringConfig());
     registerBronzeMultiTierSymbols(pipeline);
-    if (tier == ExecutionTier::Auto) {
-        // Tier-up and OSR code run the optimizer the whole-program tier runs,
-        // one function (or one loop's entry) at a time.
-        pipeline.set_tier2_passes(backend.tierUpPasses());
-        brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
-        osr.set_threshold(kOsrBackedgeThreshold);
-        osr.set_enabled(true);
-    }
+    // Tier-up and OSR code run the optimizer one function (or one loop's entry) at a time.
+    pipeline.set_tier2_passes(backend.tierUpPasses());
+    brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
+    osr.set_threshold(kOsrBackedgeThreshold);
+    osr.set_enabled(true);
 
     ptimer.mark("pipeline");
     brass::object::ObjectFile dataImage = backend.buildDataImage(module, globalReadKeys.size());
@@ -351,16 +276,6 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         }
     }
 
-    if (tier == ExecutionTier::Tier1_Baseline) {
-        // Every function compiled before anything runs; one the baseline
-        // compiler rejects stays interpreted.
-        for (const brass::Function* fn : prog->mirModule_->functions()) {
-            if (fn && fn->block_count() != 0) prog->dispatchTable().get_or_create(fn->name(), fn);
-        }
-        for (const brass::Function* fn : prog->mirModule_->functions()) {
-            if (fn && fn->block_count() != 0) pipeline.compile_and_install_tier1(fn->name(), fn);
-        }
-    }
     prog->activateStackMaps();
     return prog;
 }

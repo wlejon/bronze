@@ -221,7 +221,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (protoRoot.get().rawBits() == next.rawBits()) return true;
         cur.set(next);
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 namespace {

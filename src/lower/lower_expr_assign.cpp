@@ -80,7 +80,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setCurrentBlock(bRhs);
             auto rhsVal = lowerExpr(*bin->rhs, ilFn);
             if (!rhsVal) return std::nullopt;
-            emitPinFieldBarrier(*mem->object, mem->property, *rhsVal, ilFn);
             Value storedBoxed = boxValueIfNeeded(*rhsVal, ilFn);
             il::Instruction setInst;
             setInst.op = il::Op::PropSet;
@@ -159,7 +158,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (!rhsVal) return std::nullopt;
         Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                               : *rhsVal;
-        emitPinFieldBarrier(*mem->object, mem->property, stored, ilFn);
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
         il::Instruction inst;
@@ -232,9 +230,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setCurrentBlock(bRhs);
             auto rhsVal = lowerExpr(*bin->rhs, ilFn);
             if (!rhsVal) return std::nullopt;
-            if (literalKey) {
-                emitPinFieldBarrier(*idxAccess->object, keyStrings_[*literalKey], *rhsVal, ilFn);
-            }
             Value storedBoxed = boxValueIfNeeded(*rhsVal, ilFn);
 
             il::Instruction setInst;
@@ -325,9 +320,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (!rhsVal) return std::nullopt;
         Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
                               : *rhsVal;
-        if (literalKey) {
-            emitPinFieldBarrier(*idxAccess->object, keyStrings_[*literalKey], stored, ilFn);
-        }
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
         il::Instruction setInst;

@@ -87,6 +87,10 @@ CompartmentState rtCompartmentState(const Compartment* c);
 Realm* rtCompartmentRealm(const Compartment* c);
 // The compartment whose fiber is running on this thread, or null.
 Compartment* rtRunningCompartment() noexcept;
+// True when fatal() can terminate the currently running compartment cleanly
+// instead of aborting the host process.
+bool rtCanAbortCurrentCompartment() noexcept;
+[[noreturn]] void rtCompartmentAbortCurrent(const char* reason);
 // Slices a job of this compartment overran: each time a slice ended in a
 // yield, plus each time a native held a slice past twice its length.
 uint32_t rtCompartmentOverruns(const Compartment* c);

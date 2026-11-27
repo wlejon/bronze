@@ -59,7 +59,7 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
 
 IlLowering::IlLowering(TranslatorOptions options, DiagnosticReporter* diag)
     : options_(std::move(options)), diag_(diag), alloc_lowering_(options_.enable_tlab) {
-    prop_lowering_.set_inline_sets(!options.enable_census);
+    prop_lowering_.set_inline_sets(true);
     prop_lowering_.set_in_process(options.in_process);
     if (options.count_slow_sites && options.slow_site_count != 0) {
         prop_lowering_.set_slow_count_fn([this](Builder& b, uint32_t index) {

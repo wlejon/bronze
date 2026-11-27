@@ -115,7 +115,7 @@ FieldFound lookupField(Value descVal, PropertyKey name, Value& out) {
         if (next == nullptr) return FieldFound::Absent;
         hdr = reinterpret_cast<HeapObjectHeader*>(next);
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 // `ordinary` is false for a String wrapper, which answers `length` and its

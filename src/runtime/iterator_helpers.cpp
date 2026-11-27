@@ -669,11 +669,8 @@ uint64_t setterIgnoringPrototype(uint64_t thisBits, uint32_t argc, const uint64_
     if (kind == HeapKind::Function) {
         rtEnsureFunctionProperties(self);
     } else if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal((std::string("unsupported: defining ") + what +
-               " on a receiver that is neither a plain object nor a function (the "
-               "Iterator.prototype setter creates an own data property, and this kind "
-               "keeps its named properties somewhere the definition path does not reach)")
-                  .c_str());
+        rtThrowTypeError(std::string("Cannot define ") + what +
+                         " on an object that is neither a plain object nor a function");
     }
     SetRefusal refusal = SetRefusal::None;
     self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value,

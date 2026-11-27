@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "runtime/exception.h"
 #include "runtime/external_store.h"
 #include "runtime/fatal.h"
 
@@ -533,7 +534,7 @@ ArrayBufferHeader* allocateBuffer(Heap& heap, Shape* shape, uint32_t reserve) {
     buf->externalPtrBits = 0;
     if (external) {
         auto* bytes = static_cast<uint8_t*>(std::calloc(reserve, 1));
-        if (!bytes) fatal("out of memory allocating ArrayBuffer backing store");
+        if (!bytes) runtime::rtThrowRangeError("ArrayBuffer allocation failed");
         runtime::rtAttachNewExternalStore(heap, buf, bytes, reserve);
     } else if (reserve > 0) {
         std::memset(buf->data(), 0, reserve);

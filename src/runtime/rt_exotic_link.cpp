@@ -28,6 +28,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/builtin_object.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
 #include "runtime/integrity.h"
@@ -133,7 +134,7 @@ Value rtLinkGet(Rooted<Value>& link, Rooted<Value>& key, Rooted<Value>& receiver
         }
         holder.set(prototypeOf(holder.get()));
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 bool rtLinkHas(Rooted<Value>& link, Rooted<Value>& key) {
@@ -150,7 +151,7 @@ bool rtLinkHas(Rooted<Value>& link, Rooted<Value>& key) {
         if (rtOwnPropertyOf(holder, key.get(), enumerable)) return true;
         holder.set(prototypeOf(holder.get()));
     }
-    fatal("prototype chain too deep (a cycle?)");
+    rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 SetRefusal rtLinkSet(Rooted<Value>& link, Rooted<Value>& key, Rooted<Value>& val, Rooted<Value>& receiver,

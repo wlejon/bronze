@@ -489,11 +489,8 @@ bool rtWrapperPrimitive(Value v, Value& out) {
                            : data.isBool() ? g_pristineBooleanValueOf
                                            : g_pristineNumberValueOf;
     if (resolvedValueOf(v).rawBits() != pristine.rawBits()) {
-        fatal((std::string("unsupported: ToPrimitive of a ") + kind +
-               " object whose `valueOf` is not the builtin (7.1.1 OrdinaryToPrimitive calls it, "
-               "and bronze answers from the internal slot instead, which an override would "
-               "change)")
-                  .c_str());
+        rtThrowTypeError(std::string("ToPrimitive of a ") + kind +
+                         " object with overridden `valueOf` is not supported here");
     }
     out = data;
     return true;

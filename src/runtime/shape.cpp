@@ -343,11 +343,20 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
 }
 
 namespace runtime {
+namespace {
+thread_local uint8_t t_dictReason = 0xFF;
+}
+
+ShapeLeaveReason::ShapeLeaveReason(ShapeLeave why) : saved(t_dictReason) { t_dictReason = static_cast<uint8_t>(why); }
+ShapeLeaveReason::~ShapeLeaveReason() { t_dictReason = saved; }
+ShapeLeave currentDictionaryReason() {
+    return t_dictReason == 0xFF ? ShapeLeave::Redefine : static_cast<ShapeLeave>(t_dictReason);
+}
+
 // A watched layout broke (shape_leave.h): the layout epoch, which is the
 // prototype epoch, moves, so every compiled assumption that compared it —
 // and every prototype-hit entry and transition cell, which is the price of
-// sharing the word — is asked again. Steady-state frames break none
-// (docs/aot-specialization.md, "S0").
+// sharing the word — is asked again. Steady-state frames break none.
 void layoutBroken(const Shape* from, ShapeLeave why) {
     (void)from;
     (void)why;

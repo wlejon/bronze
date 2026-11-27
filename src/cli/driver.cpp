@@ -162,13 +162,12 @@ int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath
     return check::runSynthTests(inputPath, outputPath, jsonOutput, std::cout, std::cerr, moduleRoots, importMapPath);
 }
 
-int runIl(const std::string& sourcePath, std::string* outString, bool infer,
+int runIl(const std::string& sourcePath, std::string* outString,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
           const std::string& importMapPath,
-          const std::string& pinsPath,
-          bool pinsAllowObserved, const std::string& nativeManifestPath,
-          const std::string& nativeLibPath, const std::string& feedbackOutPath,
+          const std::string& nativeManifestPath,
+          const std::string& nativeLibPath,
           const std::string& feedbackInPath, bool printLowered, bool optStats) {
     // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
@@ -196,15 +195,6 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
             hostGlobals.push_back(root);
         }
     }
-    types::PinManifest pins;
-    if (!pinsPath.empty()) {
-        std::string err;
-        if (!loadPins(pinsPath, pins, err, pinsAllowObserved)) {
-            if (outString) *outString = err;
-            else std::fputs(err.c_str(), stderr);
-            return 1;
-        }
-    }
 
     // The graph — resolution, loading, linking — is `src/modules`' job; the
     // CLI is a composition root and stays one. What comes back is the single
@@ -219,30 +209,21 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
         return 1;
     }
 
-    // The CLI runs inference and hands the side table to lowering. A null side
-    // table is the no-inference mode, not a failure mode — inference itself
-    // only ever fails on an internal impossibility, which is diagnosed and
-    // fatal.
-    std::optional<types::InferenceResult> inferred;
-    if (infer) {
-        inferred = types::inferModule(*astModule, diags,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      pins.empty() ? nullptr : &pins);
-        if (diags.hasErrors() || !inferred) {
-            std::string msg = diags.render(sources);
-            if (outString) *outString = msg;
-            else std::fputs(msg.c_str(), stderr);
-            return 1;
-        }
+    std::optional<types::InferenceResult> inferred =
+        types::inferModule(*astModule, diags, hostGlobals.empty() ? nullptr : &hostGlobals);
+    if (diags.hasErrors() || !inferred) {
+        std::string msg = diags.render(sources);
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
     }
 
     // `&sources` is not optional here even though this path only PRINTS the
     // IL: `import.meta` resolves its module's URL out of the source set at
     // lowering time, so a null one would make `bronze il` dump a different
     // program from the one `bronze build` compiles.
-    lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
-    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, feedbackProfile, feedback, err)) {
+    if (std::string err; !loadFeedbackProfile(feedbackInPath, feedbackProfile, err)) {
         if (outString) *outString = err;
         else std::fputs(err.c_str(), stderr);
         return 1;
@@ -252,11 +233,9 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // against.
     lower::AheadOfTimeOptions aot;
     aot.hostGlobals = &hostGlobals;
-    aot.pins = pins.empty() ? nullptr : &pins;
     aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
-    aot.feedback = &feedback;
     aot.selfHostLibrary = selfhost::library();
-    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
+    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, &*inferred, &sources, aot);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -286,15 +265,14 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 }
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
-             bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
+             bool timings, bool emitObj, const std::string& hostGlobalsPath,
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
              const std::string& importMapPath,
-             const std::string& pinsPath,
-             bool pinsAllowObserved, const std::string& nativeManifestPath,
+             const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
-             const std::string& feedbackOutPath, const std::string& feedbackInPath,
+             const std::string& feedbackInPath,
              const std::string& harvestOutPath, size_t buildThreads, bool optStats) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
@@ -370,15 +348,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
         if (!hasBronze) hostGlobals.push_back("Bronze");
     }
-    types::PinManifest pins;
-    if (!pinsPath.empty()) {
-        std::string manifestErr;
-        if (!loadPins(pinsPath, pins, manifestErr, pinsAllowObserved)) {
-            if (errOut) *errOut = manifestErr;
-            else std::fputs(manifestErr.c_str(), stderr);
-            return 1;
-        }
-    }
     SourceSet sources;
     DiagnosticSink diags;
     modules::ModuleOptions moduleOptions{moduleRoots, importMapPath};
@@ -397,25 +366,20 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    std::optional<types::InferenceResult> inferred;
-    if (infer) {
-        inferred = types::inferModule(*astModule, diags,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      pins.empty() ? nullptr : &pins);
-        timer.mark("infer");
-        if (diags.hasErrors() || !inferred) {
-            std::string msg = diags.render(sources);
-            if (errOut) *errOut = msg;
-            else std::fputs(msg.c_str(), stderr);
-            return 1;
-        }
+    std::optional<types::InferenceResult> inferred =
+        types::inferModule(*astModule, diags, hostGlobals.empty() ? nullptr : &hostGlobals);
+    timer.mark("infer");
+    if (diags.hasErrors() || !inferred) {
+        std::string msg = diags.render(sources);
+        if (errOut) *errOut = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
     }
 
     // Read before the compile, like every manifest: a bad profile is a fact
     // about the invocation. The optimiser's speculation step consumes it.
-    lower::FeedbackOptions feedback;
     std::optional<spec::TypeProfile> feedbackProfile;
-    if (std::string err; !prepareFeedback(feedbackOutPath, feedbackInPath, feedbackProfile, feedback, err)) {
+    if (std::string err; !loadFeedbackProfile(feedbackInPath, feedbackProfile, err)) {
         if (errOut) *errOut = err;
         else std::fputs(err.c_str(), stderr);
         return 1;
@@ -423,11 +387,9 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // The ahead-of-time front end (lower.h).
     lower::AheadOfTimeOptions aot;
     aot.hostGlobals = &hostGlobals;
-    aot.pins = pins.empty() ? nullptr : &pins;
     aot.nativeManifest = nativeManifest ? &*nativeManifest : nullptr;
-    aot.feedback = &feedback;
     aot.selfHostLibrary = selfhost::library();
-    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, inferred ? &*inferred : nullptr, &sources, aot);
+    auto ilModule = lower::lowerAheadOfTime(*astModule, diags, &*inferred, &sources, aot);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -536,16 +498,15 @@ void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn) {
     s_runFileInJitFn = fileFn;
 }
 
-static int runEval(std::string_view code, std::optional<ExecutionTier> tier = std::nullopt, bool emitDebugInfo = false) {
-    if (s_runEvalFn) return s_runEvalFn(code, tier, emitDebugInfo);
+static int runEval(std::string_view code, bool emitDebugInfo = false) {
+    if (s_runEvalFn) return s_runEvalFn(code, emitDebugInfo);
     return fail("error: eval not supported in this build\n");
 }
 
 static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals,
-                        std::optional<ExecutionTier> tier, bool emitDebugInfo,
-                        const std::optional<std::string>& classic,
+                        bool emitDebugInfo, const std::optional<std::string>& classic,
                         const std::vector<std::string>& scriptArgs) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo, classic, scriptArgs);
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, emitDebugInfo, classic, scriptArgs);
     return fail("error: run not supported in this build\n");
 }
 
@@ -580,26 +541,11 @@ int runDriver(int argc, char** argv) {
 
     if (command == "-e" || command == "eval") {
         std::string code;
-        std::optional<ExecutionTier> tier;
         bool emitDebugInfo = false;
         for (int i = 2; i < argc; ++i) {
             std::string_view arg = argv[i];
             if (arg == "-g" || arg == "--debug") {
                 emitDebugInfo = true;
-            } else if (arg == "--interp") {
-                tier = ExecutionTier::Tier0_Interpreter;
-            } else if (arg.rfind("--tier=", 0) == 0) {
-                auto parsed = parseExecutionTier(arg.substr(7));
-                if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
-                tier = parsed;
-            } else if (arg == "--tier") {
-                if (i + 1 < argc) {
-                    auto parsed = parseExecutionTier(argv[++i]);
-                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
-                    tier = parsed;
-                } else {
-                    return fail("error: missing argument for --tier\n");
-                }
             } else if (code.empty()) {
                 code = argv[i];
             } else {
@@ -607,7 +553,7 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (code.empty()) return fail("error: missing code to evaluate\n");
-        return runEval(code, tier, emitDebugInfo);
+        return runEval(code, emitDebugInfo);
     }
 
     if (command == "run") {
@@ -616,7 +562,6 @@ int runDriver(int argc, char** argv) {
         // lowered against the same provided-globals set both ways.
         std::string sourcePath;
         std::string hostGlobalsPath;
-        std::optional<ExecutionTier> tier;
         std::optional<std::string> classic;
         bool emitDebugInfo = false;
         std::vector<std::string> scriptArgs;
@@ -637,16 +582,6 @@ int runDriver(int argc, char** argv) {
                     classic = std::string(arg.substr(10));
                 } else if (arg == "--host-globals" && i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
-                } else if (arg == "--interp") {
-                    tier = ExecutionTier::Tier0_Interpreter;
-                } else if (arg.rfind("--tier=", 0) == 0) {
-                    auto parsed = parseExecutionTier(arg.substr(7));
-                    if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
-                    tier = parsed;
-                } else if (arg == "--tier" && i + 1 < argc) {
-                    auto parsed = parseExecutionTier(argv[++i]);
-                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
-                    tier = parsed;
                 } else {
                     for (int j = i; j < argc; ++j) scriptArgs.emplace_back(argv[j]);
                     break;
@@ -664,20 +599,6 @@ int runDriver(int argc, char** argv) {
                     hostGlobalsPath = argv[++i];
                 } else {
                     return fail("error: missing argument for --host-globals\n");
-                }
-            } else if (arg == "--interp") {
-                tier = ExecutionTier::Tier0_Interpreter;
-            } else if (arg.rfind("--tier=", 0) == 0) {
-                auto parsed = parseExecutionTier(arg.substr(7));
-                if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
-                tier = parsed;
-            } else if (arg == "--tier") {
-                if (i + 1 < argc) {
-                    auto parsed = parseExecutionTier(argv[++i]);
-                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
-                    tier = parsed;
-                } else {
-                    return fail("error: missing argument for --tier\n");
                 }
             } else {
                 sourcePath = argv[i];
@@ -697,7 +618,7 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (!hasBronze) hostGlobals.push_back("Bronze");
-        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo, classic, scriptArgs);
+        return runFileInJit(sourcePath, hostGlobals, emitDebugInfo, classic, scriptArgs);
     }
 
 
@@ -781,20 +702,14 @@ int runDriver(int argc, char** argv) {
         std::string hostGlobalsPath;
         std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
-        bool infer = true;
-        std::string pinsPath;
-        bool pinsAllowObserved = false;
         std::string nativeManifestPath;
-        std::string feedbackOutPath;
         std::string feedbackInPath;
         bool printLowered = false;
         bool optStats = false;
         std::string flagErr;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "--no-infer") {
-                infer = false;
-            } else if (arg == "--lowered") {
+            if (arg == "--lowered") {
                 printLowered = true;
             } else if (arg == "--opt-stats") {
                 optStats = true;
@@ -813,12 +728,8 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
-                       takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
-                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
+            } else if (takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr)) {
                 if (!flagErr.empty()) return fail(flagErr);
-            } else if (arg == "--pins-allow-observed") {
-                pinsAllowObserved = true;
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -853,8 +764,8 @@ int runDriver(int argc, char** argv) {
             return fail("error: --lowered prints the IL before optimisation, which reads no "
                         "--feedback-in and has no --opt-stats\n");
         }
-        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     pinsPath, pinsAllowObserved, nativeManifestPath, {}, feedbackOutPath, feedbackInPath,
+        return runIl(sourcePath, nullptr, hostGlobalsPath, moduleRoots, importMapPath,
+                     nativeManifestPath, {}, feedbackInPath,
                      printLowered, optStats);
     }
 
@@ -866,19 +777,15 @@ int runDriver(int argc, char** argv) {
         std::string entrySymbol;
         std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
-        bool infer = true;
         bool timings = false;
         bool emitObj = false;
         bool emitShared = false;
         bool retainFnSource = true;
-        std::string pinsPath;
-        bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string targetName;
         bool emitDebugInfo = false;
         bool publishModules = false;
         bool optStats = false;
-        std::string feedbackOutPath;
         std::string feedbackInPath;
         std::string harvestOutPath;
         std::string jobsText;
@@ -888,8 +795,6 @@ int runDriver(int argc, char** argv) {
             std::string arg = argv[i];
             if (arg == "-g" || arg == "--debug") {
                 emitDebugInfo = true;
-            } else if (arg == "--no-infer") {
-                infer = false;
             } else if (arg == "--target") {
                 if (i + 1 < argc) {
                     targetName = argv[++i];
@@ -939,17 +844,13 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (takeFlagValue(arg, "--pins", i, argc, argv, pinsPath, flagErr) ||
-                       takeFlagValue(arg, "--feedback-out", i, argc, argv, feedbackOutPath, flagErr) ||
-                       takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr) ||
+            } else if (takeFlagValue(arg, "--feedback-in", i, argc, argv, feedbackInPath, flagErr) ||
                        takeFlagValue(arg, "--harvest-out", i, argc, argv, harvestOutPath, flagErr) ||
                        takeFlagValue(arg, "--jobs", i, argc, argv, jobsText, flagErr) ||
                        takeFlagValue(arg, "-j", i, argc, argv, jobsText, flagErr)) {
                 if (!flagErr.empty()) return fail(flagErr);
             } else if (arg.size() > 2 && arg.compare(0, 2, "-j") == 0) {
                 jobsText = arg.substr(2);
-            } else if (arg == "--pins-allow-observed") {
-                pinsAllowObserved = true;
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -996,12 +897,12 @@ int runDriver(int argc, char** argv) {
             }
             buildThreads = static_cast<size_t>(n);
         }
-        return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
+        return runBuild(sourcePath, outputPath, nullptr, timings, emitObj,
                         hostGlobalsPath, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath, pinsPath,
-                        pinsAllowObserved, nativeManifestPath, {}, {},
+                        emitShared, retainFnSource, importMapPath,
+                        nativeManifestPath, {}, {},
                         targetName, publishModules, emitDebugInfo,
-                        feedbackOutPath, feedbackInPath, harvestOutPath, buildThreads, optStats);
+                        feedbackInPath, harvestOutPath, buildThreads, optStats);
     }
 
     return fail(kUsage);

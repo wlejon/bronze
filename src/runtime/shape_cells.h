@@ -2,7 +2,7 @@
 
 // THE SHAPE CELLS (il.h Module::shapeCells, abi bronze_register_shape_cells):
 // a module's words that each name one shape by the harvest's name for it
-// (type_feedback.h typeFeedbackShapeName: `<prototype>[#N]{k1,...,kn}`), which
+// (shape_naming.h typeFeedbackShapeName: `<prototype>[#N]{k1,...,kn}`), which
 // its speculated code compares receivers' shape words with (`shape.cell`).
 //
 // The module's entry registers them, zero, on each thread that runs it. A cell

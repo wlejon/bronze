@@ -23,21 +23,14 @@ static int reportUncaught(Value thrown) {
     return 1;
 }
 
-// `--tier` sets the process default, so the program's own eval() and
-// new Function() run at the tier it names too.
-static void applyTier(std::optional<ExecutionTier> tier) {
-    if (tier) eval::setDefaultTier(*tier);
-}
-
-int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool emitDebugInfo) {
-    applyTier(tier);
+int runEvalReal(std::string_view code, bool emitDebugInfo) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     host::installCliHost({{}, host::ownExecutablePath(), &eval::stopBackgroundCompiles});
     embed::CallResult res = eval::evalScript(
         code,
-        eval::EvalOptions{.filename = "<eval>", .livesForProcess = true, .emitDebugInfo = emitDebugInfo, .tier = tier});
+        eval::EvalOptions{.filename = "<eval>", .livesForProcess = true, .emitDebugInfo = emitDebugInfo});
     eval::stopBackgroundCompiles();
     if (res.thrown) return reportUncaught(res.value);
     if (!res.value.isUndefined()) {
@@ -48,10 +41,8 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
 }
 
 int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
-                     std::optional<ExecutionTier> tier, bool emitDebugInfo,
-                     const std::optional<std::string>& classic,
+                     bool emitDebugInfo, const std::optional<std::string>& classic,
                      const std::vector<std::string>& scriptArgs) {
-    applyTier(tier);
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
     // standalone main and the embed entry make, so BRONZE_SAMPLE=1 profiles
@@ -71,8 +62,7 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
                           // has run (`--classic` instantiates it properly).
                           .publishTopLevel = !classic.has_value(),
                           .livesForProcess = true,
-                          .emitDebugInfo = emitDebugInfo,
-                          .tier = tier});
+                          .emitDebugInfo = emitDebugInfo});
     eval::stopBackgroundCompiles();
     if (res.thrown) return reportUncaught(res.value);
     return 0;

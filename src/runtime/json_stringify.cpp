@@ -414,9 +414,8 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             // Reaching here means the value came from somewhere this list has
             // not considered, and `{}` would bury that.
             default:
-                fatal((std::string("JSON.stringify of ") + rtObjectKindName(v) +
-                       " is unsupported")
-                          .c_str());
+                rtThrowTypeError(std::string("JSON.stringify of ") + rtObjectKindName(v) +
+                                 " is not supported");
         }
     }
     return false;  // undefined, a function, or a symbol
