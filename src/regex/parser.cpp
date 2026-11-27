@@ -389,6 +389,17 @@ NodePtr PatternParser::parseAtomEscape() {
         NodePtr node = make(NodeKind::Class);
         node->ranges = std::move(value.set);
         normalizeRanges(node->ranges);
+        if (!value.strings.empty()) {
+            if (flags_.unicodeSets && flags_.ignoreCase) {
+                value.strings = foldedStringsForOperation(value.strings);
+            }
+            node->strings = std::move(value.strings);
+            std::sort(node->strings.begin(), node->strings.end(),
+                      [](const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+                          if (a.size() != b.size()) return a.size() > b.size();
+                          return a < b;
+                      });
+        }
         return node;
     }
     return charNode(value.code);
@@ -555,6 +566,23 @@ bool PatternParser::readPropertyEscape(EscapeValue& out, bool negated) {
     }
     if (value.empty()) {
         return refuse("a unicode property escape names no property");
+    }
+    if (name.empty() && isPropertyOfStrings(value)) {
+        if (!flags_.unicodeSets) {
+            return refuse("unsupported: `\\p{" + value +
+                          "}` is a property of strings (22.2.1 Table 67), which is valid only "
+                          "under the `v` flag");
+        }
+        if (negated) {
+            return refuse("`\\P{" + value +
+                          "}` cannot negate a property of strings (22.2.1 Table 67)");
+        }
+        if (!unicodePropertyOfStrings(value, out.set, out.strings)) {
+            return refuse("internal: unknown property of strings `" + value + "`");
+        }
+        out.isSet = true;
+        out.mayContainStrings = true;
+        return true;
     }
     RangeList set;
     std::string why;

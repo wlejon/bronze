@@ -24,6 +24,8 @@ bronze_add_module(regex
         unicode_data_binary_3.cpp
         unicode_data_gc.cpp
         unicode_data_scf.cpp
+        unicode_data_strings.cpp
+        unicode_data_strings_1.cpp
         unicode_data_upper.cpp
         unicode_data_script.cpp
 )

@@ -6,6 +6,7 @@ add_executable(gen_unicode_tables
     gen_unicode_tables.cpp
     gen_unicode_regex.cpp
     gen_unicode_binary.cpp
+    gen_unicode_strings.cpp
     gen_unicode_runtime.cpp
     gen_unicode_norm.cpp
 )

@@ -67,6 +67,7 @@ int main(int argc, char** argv) {
                                    "Scripts.txt",       "ScriptExtensions.txt",
                                    "PropertyValueAliases.txt", "CompositionExclusions.txt",
                                    "PropList.txt",      "emoji-data.txt",
+                                   "emoji-sequences.txt", "emoji-zwj-sequences.txt",
                                    "DerivedBinaryProperties.txt",
                                    "DerivedNormalizationProps.txt"};
     bool haveInputs = !ucdDir.empty() && !outDir.empty();
@@ -85,6 +86,7 @@ int main(int argc, char** argv) {
 
     gen::generateRegexTables(ucdDir, outDir);
     gen::generateBinaryTables(ucdDir, outDir);
+    gen::generateStringPropertyTables(ucdDir, outDir);
     gen::generateRuntimeTables(ucdDir, outDir);
     gen::generateNormTables(ucdDir, outDir);
 

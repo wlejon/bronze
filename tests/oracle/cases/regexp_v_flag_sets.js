@@ -98,16 +98,13 @@ console.log(names(function () { return new RegExp("[\\qab]", "v"); },
             names(function () { return new RegExp("[^\\q{ab}]", "v"); },
                   "negated"));
 
-// The other half of 22.2.1's string-capable sets, still refused and named as
-// what it is. Table 67 is a closed list of seven, so this refusal can say
-// "property of strings" where an unknown binary property can only be told it
-// might be a misspelling — and it names `\q{...}` as the thing that DOES work,
-// because what these seven lack is Unicode's sequence data and not a class that
-// can hold a member longer than one character.
-console.log(names(function () { return new RegExp("\\p{RGI_Emoji}", "v"); },
-                  "property of STRINGS"),
-            names(function () { return new RegExp("[\\p{Basic_Emoji}]", "v"); },
-                  "\\q{...}"));
+// The properties of strings (ECMA-262 Table 67) are valid only under `v` and
+// cannot be negated with `\P{...}` because the complement of a set of strings
+// is not defined over code points.
+console.log(names(function () { return new RegExp("\\p{RGI_Emoji}", "u"); },
+                  "property of strings"),
+            names(function () { return new RegExp("\\P{Basic_Emoji}", "v"); },
+                  "negate"));
 
 // Escaped, every reserved character is itself again; and the punctuators that
 // are only reserved DOUBLED are ordinary written once.

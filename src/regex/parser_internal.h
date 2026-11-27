@@ -240,8 +240,10 @@ private:
     // and a code unit without them.
     struct EscapeValue {
         bool isSet = false;
+        bool mayContainStrings = false;
         uint32_t code = 0;
         RangeList set;
+        std::vector<std::vector<uint32_t>> strings;
     };
 
     NodePtr parseAtomEscape();
@@ -296,6 +298,8 @@ private:
     // their operands. It is the identity without `i`, so the two operators can
     // be written once.
     RangeList foldedForOperation(const RangeList& set) const;
+    std::vector<std::vector<uint32_t>> foldedStringsForOperation(
+        const std::vector<std::vector<uint32_t>>& list) const;
 
     // The complement, over the alphabet 22.2.2.9's AllCharacters gives this
     // mode. Under `v` with `i` that alphabet is the code points that are their

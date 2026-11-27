@@ -588,27 +588,40 @@ private:
     // `matchOneCharacter`: a class of characters has one way to match at a
     // position, and this has as many ways as it has members.
     bool matchClassSet(const Node& node, size_t pos, const Cont* k, bool backward) {
-        for (const std::vector<uint32_t>& member : node.strings) {
-            size_t at = pos;
-            bool consumed = true;
-            for (size_t i = 0; i < member.size() && consumed; ++i) {
-                if (backward) {
-                    // Read right to left, so the member is consumed from its END:
-                    // its last character is the one nearest `pos`.
-                    if (at == 0) { consumed = false; break; }
-                    const CodePointStep step = characterBefore(at);
-                    if (step.code != member[member.size() - 1 - i]) { consumed = false; break; }
-                    at -= step.width;
-                } else {
-                    if (at >= input_.size()) { consumed = false; break; }
-                    const CodePointStep step = characterAt(at);
-                    if (step.code != member[i]) { consumed = false; break; }
-                    at += step.width;
+        auto fold = [this](uint32_t cp) { return ignoreCase_ ? simpleCaseFold(cp) : cp; };
+        if (!node.strings.empty()) {
+            const bool canRead = backward ? (pos > 0) : (pos < input_.size());
+            if (canRead) {
+                const uint32_t boundaryCode =
+                    fold(backward ? characterBefore(pos).code : characterAt(pos).code);
+                for (const std::vector<uint32_t>& member : node.strings) {
+                    const uint32_t edge = backward ? member.back() : member[0];
+                    if (edge != boundaryCode) continue;
+                    size_t at = pos;
+                    bool consumed = true;
+                    for (size_t i = 0; i < member.size() && consumed; ++i) {
+                        if (backward) {
+                            // Read right to left, so the member is consumed from its END:
+                            // its last character is the one nearest `pos`.
+                            if (at == 0) { consumed = false; break; }
+                            const CodePointStep step = characterBefore(at);
+                            if (fold(step.code) != member[member.size() - 1 - i]) {
+                                consumed = false;
+                                break;
+                            }
+                            at -= step.width;
+                        } else {
+                            if (at >= input_.size()) { consumed = false; break; }
+                            const CodePointStep step = characterAt(at);
+                            if (fold(step.code) != member[i]) { consumed = false; break; }
+                            at += step.width;
+                        }
+                    }
+                    if (!consumed) continue;
+                    if (runCont(k, at)) return true;
+                    if (failed_) return false;
                 }
             }
-            if (!consumed) continue;
-            if (runCont(k, at)) return true;
-            if (failed_) return false;
         }
         // The one-character members next, and the zero-length one last: the same
         // descending order by length, continued past where `strings` stops.

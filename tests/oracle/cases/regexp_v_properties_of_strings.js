@@ -1,30 +1,7 @@
-// BLOCKED: `invalid regular expression: unsupported: `\p{Basic_Emoji}` is a
-// property of STRINGS (22.2.1's Table 67), which is legal only under the `v`
-// flag. bronze holds class members that are strings — `\q{...}` works — but
-// carries no table for any of the seven, each of which is a list of emoji
-// sequences from UTS #51`.
-//
-// The other half of 22.2.1's string-capable sets. `\q{...}` writes a set of
-// strings by hand and works (`cases/regexp_v_strings.js`); these seven name one
-// from Unicode's own data: Basic_Emoji, Emoji_Keycap_Sequence,
-// RGI_Emoji_Modifier_Sequence, RGI_Emoji_Flag_Sequence, RGI_Emoji_Tag_Sequence,
-// RGI_Emoji_ZWJ_Sequence, and RGI_Emoji, which is the union of the other six.
-// They are legal ONLY under `v`, because only there can a class hold a member
-// that is more than one character — and for the same reason a negated class
-// cannot contain one.
-//
-// What blocks them is now DATA rather than representation. The class machinery
-// already holds string members, sorts them longest-first, and runs `--` and `&&`
-// over them. What is missing is the tables: `emoji-sequences.txt` and
-// `emoji-zwj-sequences.txt` from UTS #51, thousands of sequences across six
-// properties, plus a generator arm for each and the emoji-version pinning that
-// makes the answers reproducible.
-//
-// Every expectation below is a sequence documented in UTS #51's RGI set, spelled
-// with `\u{...}` escapes so this file stays ASCII. The pins are deliberately
-// conservative: one certain member per property, one non-member where the
-// distinction is interesting (U+2764 is in Basic_Emoji only WITH U+FE0F, since
-// its default presentation is text), and the two early errors.
+// 22.2.1 Table 67 properties of strings under the `v` flag:
+// Basic_Emoji, Emoji_Keycap_Sequence, RGI_Emoji_Modifier_Sequence,
+// RGI_Emoji_Flag_Sequence, RGI_Emoji_Tag_Sequence, RGI_Emoji_ZWJ_Sequence,
+// and RGI_Emoji (union of the other six), sourced from UTS #51 Unicode 16.0.
 
 const grin = "\u{1F600}";
 const heart = "\u{2764}";

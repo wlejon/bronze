@@ -31,6 +31,14 @@ namespace bronze::regex {
 bool unicodePropertySet(std::string_view name, std::string_view value, RangeList& out,
                         std::string& error);
 
+// True when `value` names one of ECMA-262 Table 67's seven properties of strings.
+bool isPropertyOfStrings(std::string_view value);
+
+// Populates `ranges` (single-codepoint members) and `strings` (multi-codepoint
+// sequences) for a Table 67 property of strings.
+bool unicodePropertyOfStrings(std::string_view value, RangeList& ranges,
+                              std::vector<std::vector<uint32_t>>& strings);
+
 // The General_Category of one code point, as its two-letter alias. This is the
 // generated table's lookup itself — a binary search over the runs — exposed so
 // a test can walk the whole code space against the sets `unicodePropertySet`

@@ -6,6 +6,7 @@
 
 #include "regex/unicode_data.h"
 #include "regex/unicode_data_binary.h"
+#include "regex/unicode_data_strings.h"
 
 namespace bronze::regex {
 
@@ -290,26 +291,6 @@ const char* kSupported =
     "and `Script` / `Script_Extensions` by either spelling (`\\p{Script=Greek}`, "
     "`\\p{scx=Grek}`)";
 
-// 22.2.1's Table 67, in full. Written out rather than derived because it IS a
-// list in the specification and not a slice of the UCD: each entry names a set
-// whose members may be sequences, and the list changes only when an edition
-// adds one.
-bool isPropertyOfStrings(std::string_view value) {
-    static constexpr std::string_view kNames[] = {
-        "Basic_Emoji",
-        "Emoji_Keycap_Sequence",
-        "RGI_Emoji",
-        "RGI_Emoji_Flag_Sequence",
-        "RGI_Emoji_Modifier_Sequence",
-        "RGI_Emoji_Tag_Sequence",
-        "RGI_Emoji_ZWJ_Sequence",
-    };
-    for (std::string_view known : kNames) {
-        if (value == known) return true;
-    }
-    return false;
-}
-
 const std::vector<std::pair<uint32_t, uint32_t>>& foldTable() {
     static const std::vector<std::pair<uint32_t, uint32_t>> table = [] {
         std::vector<std::pair<uint32_t, uint32_t>> out;
@@ -335,6 +316,71 @@ const std::map<uint32_t, std::vector<uint32_t>>& reverseFoldTable() {
 }
 
 }  // namespace
+
+// 22.2.1's Table 67, in full.
+bool isPropertyOfStrings(std::string_view value) {
+    static constexpr std::string_view kNames[] = {
+        "Basic_Emoji",
+        "Emoji_Keycap_Sequence",
+        "RGI_Emoji",
+        "RGI_Emoji_Flag_Sequence",
+        "RGI_Emoji_Modifier_Sequence",
+        "RGI_Emoji_Tag_Sequence",
+        "RGI_Emoji_ZWJ_Sequence",
+    };
+    for (std::string_view known : kNames) {
+        if (value == known) return true;
+    }
+    return false;
+}
+
+namespace {
+
+void appendStringPropertyTable(const data::StringPropertyTable& t, RangeList& ranges,
+                               std::vector<std::vector<uint32_t>>& strings) {
+    for (uint32_t i = 0; i < t.rangeCount; ++i) {
+        addRange(ranges, t.ranges[i].first, t.ranges[i].last);
+    }
+    uint32_t pos = 0;
+    while (pos < t.seqDataLen) {
+        const uint32_t len = t.seqData[pos++];
+        std::vector<uint32_t> seq;
+        seq.reserve(len);
+        for (uint32_t j = 0; j < len && pos < t.seqDataLen; ++j) {
+            seq.push_back(t.seqData[pos++]);
+        }
+        if (seq.size() == 1) {
+            addRange(ranges, seq[0], seq[0]);
+        } else if (seq.size() > 1) {
+            strings.push_back(std::move(seq));
+        }
+    }
+}
+
+}  // namespace
+
+bool unicodePropertyOfStrings(std::string_view value, RangeList& ranges,
+                              std::vector<std::vector<uint32_t>>& strings) {
+    ranges.clear();
+    strings.clear();
+    if (value == "RGI_Emoji") {
+        for (uint32_t i = 0; i < data::kStringPropertyCount; ++i) {
+            appendStringPropertyTable(data::kStringProperties[i], ranges, strings);
+        }
+        normalizeRanges(ranges);
+        std::sort(strings.begin(), strings.end());
+        strings.erase(std::unique(strings.begin(), strings.end()), strings.end());
+        return true;
+    }
+    for (uint32_t i = 0; i < data::kStringPropertyCount; ++i) {
+        if (value == data::kStringProperties[i].name) {
+            appendStringPropertyTable(data::kStringProperties[i], ranges, strings);
+            normalizeRanges(ranges);
+            return true;
+        }
+    }
+    return false;
+}
 
 bool unicodePropertySet(std::string_view name, std::string_view value, RangeList& out,
                         std::string& error) {

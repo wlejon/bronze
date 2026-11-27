@@ -21,6 +21,7 @@
 // under `vi`, where the same pattern under `ui` matches nothing of the sort.
 
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -167,15 +168,9 @@ namespace {
 
 using ClassString = std::vector<uint32_t>;
 
-bool hasString(const std::vector<ClassString>& list, const ClassString& s) {
-    for (const ClassString& candidate : list) {
-        if (candidate == s) return true;
-    }
-    return false;
-}
-
-void addString(std::vector<ClassString>& list, const ClassString& s) {
-    if (!hasString(list, s)) list.push_back(s);
+void sortUniqueStrings(std::vector<ClassString>& list) {
+    std::sort(list.begin(), list.end());
+    list.erase(std::unique(list.begin(), list.end()), list.end());
 }
 
 // LONGEST FIRST, then by code points, which is 22.2.2.9.6's order made TOTAL.
@@ -190,6 +185,18 @@ void sortLongestFirst(std::vector<ClassString>& list) {
 }
 
 }  // namespace
+
+std::vector<std::vector<uint32_t>> PatternParser::foldedStringsForOperation(
+    const std::vector<std::vector<uint32_t>>& list) const {
+    std::vector<ClassString> out = list;
+    if (flags_.ignoreCase) {
+        for (ClassString& s : out) {
+            for (uint32_t& cp : s) cp = simpleCaseFold(cp);
+        }
+    }
+    sortUniqueStrings(out);
+    return out;
+}
 
 // ---- ClassSetExpression (22.2.1, +UnicodeSetsMode) --------------------------
 
@@ -249,6 +256,9 @@ NodePtr PatternParser::parseClassSet() {
     // `complementInMode` picks.
     node->negated = false;
     node->ranges = std::move(set.ranges);
+    if (flags_.ignoreCase && !set.strings.empty()) {
+        set.strings = foldedStringsForOperation(set.strings);
+    }
     node->strings = std::move(set.strings);
     node->matchesEmpty = set.empty;
     sortLongestFirst(node->strings);
@@ -284,10 +294,12 @@ bool PatternParser::readClassSetExpression(ClassSetValue& out) {
             // 22.2.1's MayContainStrings for `&&` is likewise the AND of its
             // operands': an intersection with anything that cannot hold a string
             // cannot either.
+            std::vector<ClassString> lhs = foldedStringsForOperation(acc.strings);
+            std::vector<ClassString> rvec = foldedStringsForOperation(rhs.strings);
             std::vector<ClassString> kept;
-            for (const ClassString& s : acc.strings) {
-                if (hasString(rhs.strings, s)) kept.push_back(s);
-            }
+            kept.reserve(std::min(lhs.size(), rvec.size()));
+            std::set_intersection(lhs.begin(), lhs.end(), rvec.begin(), rvec.end(),
+                                  std::back_inserter(kept));
             acc.strings = std::move(kept);
             acc.empty = acc.empty && rhs.empty;
             acc.mayContainStrings = acc.mayContainStrings && rhs.mayContainStrings;
@@ -312,10 +324,12 @@ bool PatternParser::readClassSetExpression(ClassSetValue& out) {
             // A difference drops what the RIGHT side holds and asks nothing of
             // it, which is also why 22.2.1 takes MayContainStrings for `--` from
             // the first operand alone.
+            std::vector<ClassString> lhs = foldedStringsForOperation(acc.strings);
+            std::vector<ClassString> rvec = foldedStringsForOperation(rhs.strings);
             std::vector<ClassString> kept;
-            for (const ClassString& s : acc.strings) {
-                if (!hasString(rhs.strings, s)) kept.push_back(s);
-            }
+            kept.reserve(lhs.size());
+            std::set_difference(lhs.begin(), lhs.end(), rvec.begin(), rvec.end(),
+                                std::back_inserter(kept));
             acc.strings = std::move(kept);
             acc.empty = acc.empty && !rhs.empty;
         }
@@ -365,7 +379,7 @@ bool PatternParser::readClassSetUnion(ClassSetValue& out, ClassSetValue first,
             addRange(out.ranges, code, hi);
         } else {
             out.ranges.insert(out.ranges.end(), pending.ranges.begin(), pending.ranges.end());
-            for (const ClassString& s : pending.strings) addString(out.strings, s);
+            out.strings.insert(out.strings.end(), pending.strings.begin(), pending.strings.end());
             out.empty = out.empty || pending.empty;
             // Union: MayContainStrings if ANY operand's does.
             out.mayContainStrings = out.mayContainStrings || pending.mayContainStrings;
@@ -377,6 +391,7 @@ bool PatternParser::readClassSetUnion(ClassSetValue& out, ClassSetValue first,
         if (!readClassSetOperand(pending, isCharacter, code)) return false;
     }
     normalizeRanges(out.ranges);
+    sortUniqueStrings(out.strings);
     return true;
 }
 
@@ -403,6 +418,8 @@ bool PatternParser::readClassSetOperand(ClassSetValue& out, bool& isCharacter, u
         if (!readEscapeValue(value, /*inClass=*/true)) return false;
         if (value.isSet) {
             out.ranges = std::move(value.set);
+            out.strings = std::move(value.strings);
+            out.mayContainStrings = value.mayContainStrings;
             return true;
         }
         isCharacter = true;
@@ -459,7 +476,7 @@ bool PatternParser::readClassStringDisjunction(ClassSetValue& out) {
             if (alternative.empty()) {
                 out.empty = true;
             } else {
-                addString(out.strings, alternative);
+                out.strings.push_back(alternative);
             }
         }
         if (eat('|')) continue;
@@ -467,21 +484,7 @@ bool PatternParser::readClassStringDisjunction(ClassSetValue& out) {
         return refuse("`}` was expected to close `\\q{...}`");
     }
     normalizeRanges(out.ranges);
-    // Under `i` a string member would have to go through 22.2.2.9's
-    // MaybeSimpleCaseFolding element by element, and the matcher would have to
-    // fold each input character it compares against one — which is a second
-    // canonicalization path beside `classMatches`'s, and a second path is how
-    // the two would come to disagree. Refused by name rather than left to fold
-    // the characters and not the strings, which would match "ABC" against
-    // `[\q{abc}]` only sometimes.
-    //
-    // The EMPTY member is exempt, and not by leniency: it has no element to fold,
-    // so `[\q{|a}]` under `i` is the same set folded or not.
-    if (flags_.ignoreCase && !out.strings.empty()) {
-        return refuse("unsupported: `\\q{...}` with a member longer than one character, under "
-                      "the `i` flag (22.2.2.9 folds each element of each member, and bronze "
-                      "canonicalizes characters only)");
-    }
+    sortUniqueStrings(out.strings);
     return true;
 }
 
