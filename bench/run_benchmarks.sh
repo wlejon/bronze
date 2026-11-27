@@ -80,10 +80,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --pure-only)
             PURE_ONLY=1
+            RENDER_ONLY=0
             shift
             ;;
         --render-only)
             RENDER_ONLY=1
+            PURE_ONLY=0
             shift
             ;;
         --allow-debug)

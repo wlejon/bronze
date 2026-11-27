@@ -84,6 +84,14 @@ ReprStats selectRepresentationsModule(il::Module& module, const RedundancyOption
         if (fn.isSpeculated()) selectRepresentations(module, fn, &stats);
     }
     stats.redundancy.add(runRedundancyModule(module, cleanup));
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        il::Function& fn = module.functions[i];
+        if (!fn.isSpeculated() || fn.isExternal || fn.blocks.empty()) continue;
+        repr::PhaseContext ctx{module, fn, stats};
+        if (repr::sinkAllocations(ctx) | repr::sinkBoxes(ctx)) {
+            stats.deadRemoved += repr::removeDeadInstructions(fn);
+        }
+    }
     return stats;
 }
 

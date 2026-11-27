@@ -39,6 +39,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "opt/core/cfg.h"
+#include "opt/core/loops.h"
 #include "opt/speculate/evidence.h"
 #include "opt/speculate/sites.h"
 
@@ -58,6 +60,10 @@ bool demotable(il::Op op) {
     }
 }
 
+bool isRelCompare(il::Op op) {
+    return op == il::Op::RelLt || op == il::Op::RelGt || op == il::Op::RelLe || op == il::Op::RelGe;
+}
+
 bool int32Constant(double d) {
     return d >= -2147483648.0 && d <= 2147483647.0 && static_cast<double>(static_cast<int32_t>(d)) == d &&
            !(d == 0 && std::signbit(d));
@@ -66,6 +72,10 @@ bool int32Constant(double d) {
 }  // namespace
 
 void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
+    const Cfg cfg(fn);
+    const DomTree dom(cfg);
+    const LoopForest loops(cfg, dom);
+
     struct Def {
         BlockId block = il::kNoBlock;
         uint32_t index = 0;  // instruction; UINT32_MAX for a block parameter
@@ -191,6 +201,28 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
         return siteIsInt(p->second);
     };
 
+    auto isLoopInvariantBound = [&](ValueId v, uint32_t loopIdx) -> bool {
+        const auto dIt = defs.find(v);
+        if (dIt == defs.end()) return true;
+        return !loops.loop(loopIdx).contains(dIt->second.block);
+    };
+    auto keepLoopBoundedIntCompare = [&](const SitePlan& p, const il::Instruction& inst) -> bool {
+        if (!isRelCompare(inst.op) || inst.operands.size() != 2) return false;
+        const uint32_t loopIdx = p.block < loops.loops().size() || p.block < fn.blocks.size()
+                                     ? loops.innermost(p.block)
+                                     : kNoLoop;
+        if (loopIdx == kNoLoop) return false;
+        bool anyIntOperand = false;
+        for (ValueId v : inst.operands) {
+            if (types[v] == il::Type::I32 || (types[v] == il::Type::Dynamic && isSource(v))) {
+                anyIntOperand = true;
+            } else if (types[v] != il::Type::Dynamic || !isLoopInvariantBound(v, loopIdx)) {
+                return false;
+            }
+        }
+        return anyIntOperand;
+    };
+
     for (ValueId v : values) source[v] = true;
     for (bool changed = true; changed;) {
         changed = false;
@@ -208,6 +240,7 @@ void demoteUnsourcedInts(const il::Function& fn, FunctionPlan& plan) {
                  inst.op == il::Op::NumericStep)) {
                 continue;
             }
+            if (keepLoopBoundedIntCompare(p, inst)) continue;
             for (ValueId v : inst.operands) {
                 if (types[v] != il::Type::Dynamic || isSource(v)) continue;
                 p.form = ArithForm::Double;
