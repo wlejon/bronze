@@ -9,6 +9,7 @@
 #include <deque>
 #include <vector>
 
+#include "runtime/atomics_wait.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -155,6 +156,7 @@ void rtDrainMicrotasks() {
     // the drain rather than at the bottom is what lets a cleanup callback fire
     // in the same drain for an object the main script deref'd.
     rtClearKeptObjects();
+    rtDrainAsyncAtomicsWaiters();
     while (!g_queue.empty() || rtFinalizationCleanupPending()) {
         // A FinalizationRegistry cleanup job is a HOST job (26.2.1.2's caller is
         // the host, not the language), so it runs at a checkpoint the microtask
@@ -163,6 +165,8 @@ void rtDrainMicrotasks() {
         // waiting on. It may enqueue microtasks of its own, which the outer loop
         // then drains before the next batch of cleanups.
         if (g_queue.empty()) {
+            rtDrainAsyncAtomicsWaiters();
+            if (!g_queue.empty()) continue;
             rtRunFinalizationCleanupJob();
             rtClearKeptObjects();
             continue;

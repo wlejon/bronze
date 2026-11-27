@@ -102,6 +102,8 @@ bronze_add_module(runtime
         rt_module_remset.cpp
         native_handle.cpp
         external_store.cpp
+        shared_store.cpp
+        atomics_wait.cpp
         native_registry.cpp
         rt_convert.cpp
         rt_concat.cpp

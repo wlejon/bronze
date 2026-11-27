@@ -164,6 +164,7 @@ struct ArrayBufferHeader {
     // cannot hand out a block that later moves under a view.
     static ArrayBufferHeader* createShared(Heap& heap, Shape* shape, uint32_t byte_length,
                                            uint32_t max_byte_length);
+    static ArrayBufferHeader* createSharedOverStore(Heap& heap, Shape* shape, void* store);
     // A header over bytes that live OUTSIDE the heap (external_store.cpp): the
     // prefix and the fields, no inline bytes, `externalPtrBits` left for the
     // caller to point at the store.

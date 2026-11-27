@@ -22,6 +22,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/atomics_wait.h"
 #include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/exception.h"
@@ -37,6 +38,7 @@
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shared_store.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
@@ -123,7 +125,19 @@ bool requireSharedBuffer(Value v, const char* member) {
 uint64_t sharedByteLengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     const Value self{Value(thisBits)};
     if (!requireSharedBuffer(self, "byteLength")) return Value::fromUndefined().rawBits();
-    return Value::fromDouble(self.asObject<ArrayBufferHeader>()->byteLength).rawBits();
+    auto* buf = self.asObject<ArrayBufferHeader>();
+    if (buf->isResizable()) {
+        if (SharedBufferBlock* block = rtFindSharedStore(buf->externalPtrBits)) {
+            const uint32_t curLen = block->byteLength.load(std::memory_order_acquire);
+            rtReleaseSharedStore(block);
+            if (curLen != buf->byteLength) {
+                buf->byteLength = curLen;
+                Rooted<Value> root{self};
+                closeOrReopenViews(rtHeap(), root);
+            }
+        }
+    }
+    return Value::fromDouble(buf->byteLength).rawBits();
 }
 
 // 25.2.5.5 get maxByteLength.
@@ -165,11 +179,20 @@ uint64_t sharedArrayBufferGrow(uint64_t, uint64_t thisBits, uint32_t argc, const
     if (newLen > buf->maxByteLength) {
         return rtThrowRangeError("Invalid byte length: exceeds maxByteLength").rawBits();
     }
-    if (newLen < buf->byteLength) {
-        return rtThrowRangeError("SharedArrayBuffer cannot shrink").rawBits();
+    if (SharedBufferBlock* block = rtFindSharedStore(buf->externalPtrBits)) {
+        const bool ok = rtGrowSharedStore(block, newLen);
+        const uint32_t liveLen = block->byteLength.load(std::memory_order_acquire);
+        rtReleaseSharedStore(block);
+        if (!ok) {
+            return rtThrowRangeError("SharedArrayBuffer cannot shrink").rawBits();
+        }
+        buf->byteLength = liveLen;
+    } else {
+        if (newLen < buf->byteLength) {
+            return rtThrowRangeError("SharedArrayBuffer cannot shrink").rawBits();
+        }
+        buf->byteLength = newLen;
     }
-    std::memset(buf->data() + buf->byteLength, 0, newLen - buf->byteLength);
-    buf->byteLength = newLen;
     // A grow can never strand a fixed view, but a length-TRACKING one
     // (`new Uint8Array(sab)` over a growable buffer) recomputes its window
     // from exactly this mutation — same walk, same reason as `resize`.
@@ -271,17 +294,12 @@ uint64_t maskFor(uint32_t width) {
     return width == 8 ? ~uint64_t{0} : ((uint64_t{1} << (width * 8)) - 1);
 }
 
-// The raw element bytes, zero-extended. Little-endian, as every other byte-level
-// path in this runtime is (typed_array.cpp memcpys native types), and valid only
-// until the next allocation.
 uint64_t readRaw(TypedArrayHeader* view, uint32_t index, uint32_t width) {
-    uint64_t bits = 0;
-    std::memcpy(&bits, view->bytes() + static_cast<size_t>(index) * width, width);
-    return bits;
+    return rtAtomicLoadBytes(view->bytes() + static_cast<size_t>(index) * width, width);
 }
 
 void writeRaw(TypedArrayHeader* view, uint32_t index, uint32_t width, uint64_t bits) {
-    std::memcpy(view->bytes() + static_cast<size_t>(index) * width, &bits, width);
+    rtAtomicStoreBytes(view->bytes() + static_cast<size_t>(index) * width, width, bits);
 }
 
 // RawBytesToNumeric for the six Number kinds: sign-extend from the element's
@@ -403,19 +421,6 @@ uint64_t atomicsStore(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 enum class Rmw { Add, Sub, And, Or, Xor, Exchange };
 
-uint64_t applyRmw(Rmw op, uint64_t oldBits, uint64_t operand, uint32_t width) {
-    const uint64_t mask = maskFor(width);
-    switch (op) {
-        case Rmw::Add: return (oldBits + operand) & mask;
-        case Rmw::Sub: return (oldBits - operand) & mask;
-        case Rmw::And: return (oldBits & operand) & mask;
-        case Rmw::Or: return (oldBits | operand) & mask;
-        case Rmw::Xor: return (oldBits ^ operand) & mask;
-        case Rmw::Exchange: return operand & mask;
-    }
-    fatal("internal: unknown atomic read-modify-write operation");
-}
-
 // 25.4.1.2 AtomicReadModifyWrite, once. Every one of the six differs only in
 // `applyRmw`, and all six return the OLD value.
 template <Rmw Op>
@@ -433,8 +438,8 @@ uint64_t atomicsRmw(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (!operandRaw(args[2], kind, operand, converted)) return Value::fromUndefined().rawBits();
     auto* live = view.get().asObject<TypedArrayHeader>();
     if (index >= live->length) return Value::fromUndefined().rawBits();
-    const uint64_t oldBits = readRaw(live, index, kind.width);
-    writeRaw(live, index, kind.width, applyRmw(Op, oldBits, operand, kind.width));
+    uint8_t* ptr = live->bytes() + static_cast<size_t>(index) * kind.width;
+    const uint64_t oldBits = rtAtomicRmwBytes(ptr, kind.width, static_cast<int>(Op), operand);
     // The read and the write are both done: `valueOfRaw` can allocate a BigInt
     // and the raw pointer above must not outlive it.
     return valueOfRaw(oldBits, kind).rawBits();
@@ -458,21 +463,33 @@ uint64_t atomicsCompareExchange(uint64_t, uint64_t, uint32_t argc, const uint64_
     if (!operandRaw(args[3], kind, replacement, converted)) return Value::fromUndefined().rawBits();
     auto* live = view.get().asObject<TypedArrayHeader>();
     if (index >= live->length) return Value::fromUndefined().rawBits();
-    const uint64_t oldBits = readRaw(live, index, kind.width);
-    if (oldBits == (expected & maskFor(kind.width))) {
-        writeRaw(live, index, kind.width, replacement & maskFor(kind.width));
-    }
+    uint8_t* ptr = live->bytes() + static_cast<size_t>(index) * kind.width;
+    const uint64_t oldBits = rtAtomicCompareExchangeBytes(ptr, kind.width, expected, replacement);
     return valueOfRaw(oldBits, kind).rawBits();
 }
 
 // 25.4.3.7 Atomics.isLockFree. The answer is the implementation's, and bronze's
-// is the honest one for a single agent on the platforms it targets: every width
-// a view can have is one native aligned access.
+// is the honest one: widths 1, 2, 4, and 8 correspond to native aligned accesses.
 uint64_t atomicsIsLockFree(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const double size = toInteger(rtToNumber(args[0]));
     const bool lockFree = size == 1.0 || size == 2.0 || size == 4.0 || size == 8.0;
     return Value::fromBool(lockFree).rawBits();
+}
+
+uint64_t atomicsWait(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    return rtAtomicsWait(args[0], args[1], args[2], args[3]).rawBits();
+}
+
+uint64_t atomicsNotify(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    return rtAtomicsNotify(args[0], args[1], args[2]).rawBits();
+}
+
+uint64_t atomicsWaitAsync(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    return rtAtomicsWaitAsync(args[0], args[1], args[2], args[3]).rawBits();
 }
 
 using AtomicsFn = NativeMethod;
@@ -488,23 +505,9 @@ const AtomicsFn kAtomicsFunctions[] = {
     {"exchange", atomicsRmw<Rmw::Exchange>, 3, 3},
     {"compareExchange", atomicsCompareExchange, 4, 4},
     {"isLockFree", atomicsIsLockFree, 1, 1},
-};
-
-// The three 25.4 operations that are not a memory access but an AGENT
-// operation. `wait` blocks the calling agent until another one notifies it and
-// `notify` wakes agents in a wait list — and bronze has one agent, no way to
-// spawn a second, and no wait list for anything to be in.
-//
-// `notify` could legally answer 0 (no agent was woken, which is true), and that
-// is deliberately NOT what it does: the loop that calls `notify` has a
-// counterpart that calls `wait`, and `wait` cannot be answered at all — a
-// spin-wait whose `notify` silently succeeds becomes an infinite loop instead of
-// a diagnostic. Refusing all three puts the error at the first line of the
-// protocol rather than at its deadlock.
-const char* const kAtomicsUnimplemented[] = {
-    "wait",
-    "waitAsync",
-    "notify",
+    {"wait", atomicsWait, 4, 4},
+    {"waitAsync", atomicsWaitAsync, 4, 4},
+    {"notify", atomicsNotify, 3, 3},
 };
 
 void defineSharedGetter(Rooted<Value>& proto, const char* name, bronze_fn_code code,
@@ -623,16 +626,6 @@ Value rtAtomicsObject() {
     g_atomicsObject = obj.get();
     rtHeap().add_permanent_root(&g_atomicsObject);
     return g_atomicsObject;
-}
-
-bool rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
-    if (g_atomicsObject.isObject() && obj.rawBits() == g_atomicsObject.rawBits()) {
-        rtCheckUnimplementedMember("Atomics", kAtomicsUnimplemented,
-                                   sizeof(kAtomicsUnimplemented) / sizeof(kAtomicsUnimplemented[0]),
-                                   key);
-        return true;
-    }
-    return false;
 }
 
 }  // namespace bronze::runtime

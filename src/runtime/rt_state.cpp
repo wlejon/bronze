@@ -28,6 +28,7 @@
 #include "runtime/lockdown.h"
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/atomics_wait.h"
 #include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -972,6 +973,7 @@ static void releaseThreadDynamicModules() {
 }
 
 void rtTeardownThreadState() {
+    rtClearThreadAsyncAtomicsWaiters();
     rtForgetPublishedCells();
     g_plainObjectShape = nullptr;
     bronze_tls_block_addr()->plain_shape = 0;

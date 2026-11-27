@@ -91,6 +91,8 @@ Compartment* rtRunningCompartment() noexcept;
 // instead of aborting the host process.
 bool rtCanAbortCurrentCompartment() noexcept;
 [[noreturn]] void rtCompartmentAbortCurrent(const char* reason);
+// True when the running compartment on this thread has a pending termination.
+bool rtTerminationRequested() noexcept;
 // Slices a job of this compartment overran: each time a slice ended in a
 // yield, plus each time a native held a slice past twice its length.
 uint32_t rtCompartmentOverruns(const Compartment* c);

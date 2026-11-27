@@ -16,6 +16,7 @@
 #include "runtime/exception.h"
 #include "runtime/external_store.h"
 #include "runtime/fatal.h"
+#include "runtime/shared_store.h"
 
 namespace bronze {
 
@@ -566,17 +567,32 @@ ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, Shape* shape,
 
 ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, Shape* shape, uint32_t byte_length,
                                                    uint32_t max_byte_length) {
-    // The GROWABLE case reserves the maximum immediately, for the reason
-    // createResizable does: a view holds a byte offset into this block and the
-    // block cannot be reallocated under it.
+    // SharedArrayBuffer always lives in a process-wide ref-counted non-moving
+    // store so Worker threads can share its bytes concurrently and grow
+    // reservations stay fixed in address space.
     const uint32_t reserve = max_byte_length > byte_length ? max_byte_length : byte_length;
-    ArrayBufferHeader* buf = allocateBuffer(heap, shape, reserve);
+    const bool growable = reserve > byte_length;
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, 0);
     buf->byteLength = byte_length;
     buf->maxByteLength = reserve;
-    // `kFlagResizable` rides along when it can grow: `grow` is `resize` that
-    // refuses to shrink, and one bit answering "is this block bigger than its
-    // current length" keeps the two from disagreeing about the reservation.
-    buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
+    buf->bufferFlags = kFlagShared | (growable ? kFlagResizable : 0u);
+    runtime::SharedBufferBlock* block = runtime::rtCreateSharedStore(byte_length, reserve, growable);
+    if (!block) runtime::rtThrowRangeError("SharedArrayBuffer allocation failed");
+    runtime::rtAttachSharedStore(heap, buf, block);
+    if (buf->isResizable()) trackBufferViews(heap, buf);
+    else trackNewBuffer(heap, buf);
+    return buf;
+}
+
+ArrayBufferHeader* ArrayBufferHeader::createSharedOverStore(Heap& heap, Shape* shape, void* storePtr) {
+    auto* block = static_cast<runtime::SharedBufferBlock*>(storePtr);
+    const uint32_t len = block->byteLength.load(std::memory_order_acquire);
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, 0);
+    buf->byteLength = len;
+    buf->maxByteLength = block->maxByteLength;
+    buf->bufferFlags = kFlagShared | (block->growable ? kFlagResizable : 0u);
+    runtime::rtRetainSharedStore(block);
+    runtime::rtAttachSharedStore(heap, buf, block);
     if (buf->isResizable()) trackBufferViews(heap, buf);
     else trackNewBuffer(heap, buf);
     return buf;

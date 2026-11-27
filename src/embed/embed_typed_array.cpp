@@ -23,6 +23,7 @@
 #include "runtime/heap.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/shared_store.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -210,6 +211,34 @@ void detachArrayBuffer(Value v) {
 bool isDetachedArrayBuffer(Value v) {
     ArrayBufferHeader* buf = bufferBehind(v);
     return buf ? buf->isDetached() : false;
+}
+
+bool isSharedArrayBuffer(Value v) {
+    return isArrayBuffer(v) && v.asObject<ArrayBufferHeader>()->isShared();
+}
+
+SharedBufferHandle retainSharedArrayBuffer(Value v) {
+    if (!isSharedArrayBuffer(v)) return {};
+    auto* buf = v.asObject<ArrayBufferHeader>();
+    // rtFindSharedStore returns with refcount incremented by 1.
+    auto* block = runtime::rtFindSharedStore(buf->externalPtrBits);
+    if (!block) return {};
+    return SharedBufferHandle{
+        block,
+        block->byteLength.load(std::memory_order_acquire),
+        block->maxByteLength,
+        block->growable,
+    };
+}
+
+void releaseSharedArrayBuffer(void* store) {
+    runtime::rtReleaseSharedStore(static_cast<runtime::SharedBufferBlock*>(store));
+}
+
+Value adoptSharedArrayBuffer(void* store) {
+    if (!store) return undefined();
+    ShadowStackFrame frame;
+    return runtime::rtAdoptSharedStore(static_cast<runtime::SharedBufferBlock*>(store));
 }
 
 }  // namespace bronze::embed

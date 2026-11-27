@@ -135,7 +135,7 @@ void rtReleaseExternalStore(void* store) {
 
 ExternalWindow rtExternalizeArrayBuffer(Value bufferOrView) {
     ArrayBufferHeader* buf = bufferBehind(bufferOrView);
-    if (!buf || buf->isDetached()) return {};
+    if (!buf || buf->isDetached() || buf->isShared()) return {};
 
     // The BUFFER is what externalizes; the answered window is the view's own,
     // so two views over one buffer cross as two windows on one store.

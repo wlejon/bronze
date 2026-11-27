@@ -166,9 +166,7 @@ const char* rtMathNativeName(const void* code);
 Value rtPerformanceNamespace();
 
 // The `Atomics` namespace object (ECMA-262 25.4), built once on first use like
-// `Math`, and the named refusal for the three operations on it that need an
-// agent cluster bronze does not have.
-// Each of the receiver-gated `*CheckMissingMember` refusals below answers
+// `Math`. Each of the receiver-gated `*CheckMissingMember` refusals below answers
 // whether it CLAIMED the receiver — whether this object is the singleton whose
 // absent members it diagnoses from a C table. The read path's negative inline
 // cache needs that answer: an entry saying "absent" is keyed on the receiver's
@@ -177,7 +175,6 @@ Value rtPerformanceNamespace();
 // The claim is the identity test the refusal already performs, returned rather
 // than restated, so the two can never disagree.
 Value rtAtomicsObject();
-bool rtAtomicsCheckMissingMember(Value obj, const std::string& key);
 bool rtMathCheckMissingMember(Value obj, const std::string& key);
 bool rtPerformanceCheckMissingMember(Value obj, const std::string& key);
 

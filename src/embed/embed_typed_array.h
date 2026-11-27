@@ -194,4 +194,18 @@ BRONZE_EMBED_API uint32_t typedArrayByteOffset(Value view);
 BRONZE_EMBED_API void detachArrayBuffer(Value v);
 BRONZE_EMBED_API bool isDetachedArrayBuffer(Value v);
 
+BRONZE_EMBED_API bool isSharedArrayBuffer(Value v);
+
+struct SharedBufferHandle {
+    void* store{nullptr};
+    uint32_t byteLength{0};
+    uint32_t maxByteLength{0};
+    bool growable{false};
+    explicit operator bool() const { return store != nullptr; }
+};
+
+BRONZE_EMBED_API SharedBufferHandle retainSharedArrayBuffer(Value v);
+BRONZE_EMBED_API void releaseSharedArrayBuffer(void* store);
+BRONZE_EMBED_API Value adoptSharedArrayBuffer(void* store);
+
 }  // namespace bronze::embed

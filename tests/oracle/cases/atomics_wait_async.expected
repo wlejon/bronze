@@ -1,0 +1,9 @@
+4 3 4
+true true
+notify other: 0
+before notify: pending
+notify index 0: 1
+big not-equal: false not-equal
+big timeout: false timed-out
+non-shared notify: 0
+resolved: ok

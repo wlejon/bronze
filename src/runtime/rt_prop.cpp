@@ -596,7 +596,6 @@ static uint64_t propGetByName(Value objVal, const std::string* optKeyStr, String
         // diagnostic fires.
         bool diagnosed = rtMathCheckMissingMember(objRoot.get(), keyStr);
         diagnosed = rtPerformanceCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
-        diagnosed = rtAtomicsCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         diagnosed = rtObjectCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         diagnosed = rtJsonCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         // The `Array.prototype` object, whose misses are Array's table: a name

@@ -369,6 +369,10 @@ bool rtCanAbortCurrentCompartment() noexcept {
     c->terminationReason = std::string("fatal: ") + (reason && *reason ? reason : "internal error");
     throwTermination(c);
 }
+
+bool rtTerminationRequested() noexcept {
+    return t_running != nullptr && t_running->terminateRequested;
+}
 uint32_t rtCompartmentOverruns(const Compartment* c) { return c->overruns; }
 double rtCompartmentLongestOverrunMs(const Compartment* c) { return c->longestOverrunMs; }
 const std::string& rtCompartmentLongestOverrunSite(const Compartment* c) { return c->longestOverrunSite; }
