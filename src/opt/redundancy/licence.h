@@ -26,15 +26,18 @@
 #include "il/effects.h"
 #include "il/il.h"
 #include "opt/core/fact_env.h"
+#include "opt/core/uses.h"
 
 namespace bronze::opt::redundancy {
 
 enum class LicenceKind : uint8_t {
-    Object,  // the subject is a heap object (`load.shape`)
-    Shape,   // the subject's shape is one of `cells` (`slot.load`)
-    Callee,  // the subject is a closure of module function `imm` (`fn.env`)
-    Array,   // the subject is an Array (`array.length`)
-    TypedArray,  // the subject is a typed array (`typed.length`)
+    Object,       // the subject is a heap object (`load.shape`)
+    Shape,        // the subject's shape is one of `cells` (`slot.load`)
+    MemberData,   // shape Ptr matched data `member.cell imm` (`shape.proto` chain & slot)
+    Callee,       // the subject is a closure of module function `imm` (`fn.env`, `fn.constructs`)
+    FnConstructs, // the subject passed `fn.constructs` (`fn.instance_shape`)
+    Array,        // the subject is an Array (`array.length`)
+    TypedArray,   // the subject is a typed array (`typed.length`)
 };
 
 struct Licence {
@@ -53,7 +56,8 @@ struct Licence {
 
 // The licence `inst` holds under `facts` at its position, or nullopt when the
 // facts do not show one (or `inst` is not a movable guarded form).
-std::optional<Licence> licenceAt(const il::Instruction& inst, const FactEnv& facts);
+std::optional<Licence> licenceAt(const il::Module& module, const il::Function& fn, const DefUse& defs,
+                                 const il::Instruction& inst, const FactEnv& facts);
 
 // Whether `facts` grant `licence` exactly.
 bool licenceHolds(const Licence& licence, const FactEnv& facts);

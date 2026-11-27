@@ -308,6 +308,9 @@ std::optional<bool> knownTestResult(const il::Instruction& inst, const FactEnv& 
                           knownNotObject(facts, def, x) ? std::optional<bool>(false) : std::nullopt);
         case Op::FnCodeIs:
             return fnCodeTest(facts, values, def, inst);
+        case Op::FnConstructs:
+            return either(facts.known(FactKind::FnConstructs, x),
+                          knownNotObject(facts, def, x) ? std::optional<bool>(false) : std::nullopt);
         case Op::InBounds:
             if (inst.operands.size() != 2) return std::nullopt;
             return inBoundsTest(inst, facts, values);

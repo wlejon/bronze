@@ -48,6 +48,8 @@ enum class FactKind : uint8_t {
     TypedArray,  // value passes `is.typed_array value, imm`; with the pristine bit depends on Shapes, Heap
     Array,       // value is an Array (`is.array`): about the value, it never ends
     Callee,      // value is a function whose code is module function `imm` (`fn.code_is`)
+    FnConstructs, // value passes `fn.constructs`; depends on FnFields
+    MemberCell,  // shape Ptr `value` matched `member.cell imm`; depends on Protos
     InBounds,    // (uint32)value < (uint32)other (`in.bounds`)
     // value + c is in [0, other) for every c from imm's low half to its high
     // half (packRange), exactly: a widened `in.bounds x, n, +span` with x the

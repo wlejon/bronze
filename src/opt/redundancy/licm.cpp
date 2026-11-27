@@ -141,7 +141,8 @@ void ensurePreheaders(il::Function& fn) {
     }
 }
 
-LoopFacts gatherFacts(const il::Function& fn, const Analyses& a, const Loop& loop, BlockId preheader) {
+LoopFacts gatherFacts(const il::Module& module, const il::Function& fn, const Analyses& a, const Loop& loop,
+                      BlockId preheader) {
     LoopFacts out;
     out.licences.resize(fn.valueCount);
     FactEnv env;
@@ -150,7 +151,7 @@ LoopFacts gatherFacts(const il::Function& fn, const Analyses& a, const Loop& loo
         for (const il::Instruction& inst : fn.blocks[b].instructions) {
             if (inLoop && inst.result != kNoValue && inst.result < out.licences.size() &&
                 il::effectsOf(inst).guarded) {
-                out.licences[inst.result] = licenceAt(inst, facts);
+                out.licences[inst.result] = licenceAt(module, fn, a.defs, inst, facts);
             }
             facts.stepOver(inst);
         }
@@ -646,7 +647,7 @@ bool hoistLoop(JobContext& ctx, const Analyses& a, uint32_t loopIndex) {
     const Loop& loop = a.loops.loop(loopIndex);
     const BlockId preheader = a.loops.preheader(a.cfg, loopIndex);
     if (preheader == kNoBlock || loopHasBarrier(ctx.fn, loop)) return false;
-    LoopFacts facts = gatherFacts(ctx.fn, a, loop, preheader);
+    LoopFacts facts = gatherFacts(ctx.module, ctx.fn, a, loop, preheader);
     LoopPlanner planner(ctx, a, loopIndex, preheader, std::move(facts));
     return applyPlan(ctx, preheader, planner.plan());
 }

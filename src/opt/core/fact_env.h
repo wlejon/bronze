@@ -73,6 +73,8 @@ public:
     // Shape and ShapeSet facts bound it: their intersection less the cells
     // failed tests ruled out. Empty only on a path that cannot run.
     std::optional<std::vector<uint32_t>> shapeSet(ValueId v) const;
+    // Live `member.cell` indices whose pointer matched shape Ptr `v`.
+    std::vector<uint32_t> memberCells(ValueId v) const;
     // The module function `v` is known to be the code of, if any.
     std::optional<uint32_t> calleeOf(ValueId v) const;
     // A dense-array fact covering index `index`: `is.dense_array v, k` held

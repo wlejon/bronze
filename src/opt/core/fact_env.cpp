@@ -170,6 +170,9 @@ std::optional<bool> FactEnv::known(FactKind kind, ValueId v, int64_t imm, ValueI
             case FactKind::TypedArray:
                 if (f.imm == imm) return f.holds;
                 continue;
+            case FactKind::MemberCell:
+                if (f.imm == imm) return f.holds;
+                continue;
             default:
                 return f.holds;
         }
@@ -261,6 +264,19 @@ std::optional<uint32_t> FactEnv::shapeOf(ValueId v) const {
     const std::optional<std::vector<uint32_t>> set = shapeSet(v);
     if (!set || set->size() != 1) return std::nullopt;
     return set->front();
+}
+
+std::vector<uint32_t> FactEnv::memberCells(ValueId v) const {
+    std::vector<uint32_t> out;
+    const auto it = byValue_.find(v);
+    if (it == byValue_.end()) return out;
+    for (const uint32_t i : it->second) {
+        const Fact& f = facts_[i];
+        if (alive_[i] && f.kind == FactKind::MemberCell && f.holds && f.value == v) {
+            out.push_back(static_cast<uint32_t>(f.imm));
+        }
+    }
+    return out;
 }
 
 std::optional<uint32_t> FactEnv::calleeOf(ValueId v) const {

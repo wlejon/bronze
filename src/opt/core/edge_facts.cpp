@@ -20,6 +20,8 @@ const char* factKindName(FactKind kind) {
         case FactKind::TypedArray: return "typed-array";
         case FactKind::Array: return "array";
         case FactKind::Callee: return "callee";
+        case FactKind::FnConstructs: return "fn-constructs";
+        case FactKind::MemberCell: return "member-cell";
         case FactKind::InBounds: return "in-bounds";
         case FactKind::InRange: return "in-range";
         case FactKind::PtrEq: return "ptr-eq";
@@ -54,6 +56,9 @@ public:
             case il::Op::IsNullish: valueFact(FactKind::Nullish); return;
             case il::Op::IsHole: valueFact(FactKind::Hole); return;
             case il::Op::FnCodeIs: valueFact(FactKind::Callee, d->calleeIndex); return;
+            case il::Op::FnConstructs:
+                memoryFact(cond, FactKind::FnConstructs, truth, d->operands[0], 0, Loc::FnFields, out);
+                return;
             case il::Op::IsArray: valueFact(FactKind::Array); return;
             case il::Op::InBounds: {
                 if (d->operands.size() != 2) return;
@@ -141,6 +146,17 @@ private:
             if (load == nullptr || cell == nullptr) continue;
             shapeFacts(loadId, *load, {static_cast<uint32_t>(cell->immI32)}, truth, out);
             return;
+        }
+        if (truth) {
+            for (int flip = 0; flip < 2; ++flip) {
+                const ValueId shapeId = flip ? b : a;
+                const ValueId cellId = flip ? a : b;
+                const il::Instruction* cell = defs_.defInstIs(fn_, cellId, il::Op::MemberCell);
+                if (cell != nullptr && freshAtBranch(cellId, Loc::Protos)) {
+                    out.push_back(Fact{FactKind::MemberCell, true, shapeId, kNoValue, cell->immI32, Loc::Protos});
+                    break;
+                }
+            }
         }
         out.push_back(Fact{FactKind::PtrEq, truth, a, b, 0, {}});
     }
