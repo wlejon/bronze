@@ -35,6 +35,7 @@
 #include "runtime/host_globals.h"
 #include "runtime/module_instance.h"
 #include "runtime/module_registry.h"
+#include "runtime/native_registry.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -208,11 +209,21 @@ std::string sharedProgramKey(const EvalOptions& options,
     field(options.emitDebugInfo ? "dbg" : "nodbg");
     const modules::ModuleOptions modOpts = moduleOptionsFor(options);
     field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
+    field(modOpts.customLoader ? "custom-loader" : "no-custom");
+    for (const auto& ext : modOpts.extraExtensions) field(ext);
     for (const auto& ext : modOpts.externalModules) field(ext);
     field("|globals");
     for (const auto& g : hostGlobals) field(g);
     field("|natives");
     field(manifestJson);
+    for (const auto& ne : runtime::rtNativeEntries()) {
+        if (ne.mirModule) {
+            field(ne.path);
+            field(ne.mirFunction);
+            field(std::to_string(reinterpret_cast<uintptr_t>(ne.mirModule.get())));
+            field(std::to_string(ne.mirExpectedEpoch));
+        }
+    }
     for (size_t i = 0; i < sources.size(); ++i) {
         const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
         field(buf.name());
@@ -308,7 +319,7 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
         ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources, /*aheadOfTime=*/evidence);
         if (!ilModule) return nullptr;
 
-        if (store) {
+        if (store && store->deps && !store->deps->usedCustomLoader) {
             cache::store(*store->dir, store->maxBytes, store->key, resName, sources, *store->deps, *ilModule);
             timer.mark("cache store");
         }

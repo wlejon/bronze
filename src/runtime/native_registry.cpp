@@ -138,7 +138,21 @@ bool rtRegisterNative(std::string_view pathView, void* fn, const NativeSpec& spe
         // the thread (one per app it hosts) registers what the first realm's
         // install already did, and the registry is the thread's, not the
         // realm's. A different function under a taken path is still refused.
-        if (existing->fn == fn) return true;
+        if (existing->fn == fn) {
+            if (spec.mirModule) {
+                for (auto& e : g_natives) {
+                    if (e.kind == spec.kind && e.path == path) {
+                        e.mirModule = spec.mirModule;
+                        e.mirFunction = spec.mirFunction;
+                        e.mirEpochPtr = spec.mirEpochPtr;
+                        e.mirExpectedEpoch = spec.mirExpectedEpoch;
+                        e.mirMaxInlinedInsts = spec.mirMaxInlinedInsts;
+                        break;
+                    }
+                }
+            }
+            return true;
+        }
         return refuse("already registered");
     }
 
@@ -147,6 +161,11 @@ bool rtRegisterNative(std::string_view pathView, void* fn, const NativeSpec& spe
     entry.kind = spec.kind;
     entry.fn = fn;
     entry.returnClass = spec.returnClass;
+    entry.mirModule = spec.mirModule;
+    entry.mirFunction = spec.mirFunction;
+    entry.mirEpochPtr = spec.mirEpochPtr;
+    entry.mirExpectedEpoch = spec.mirExpectedEpoch;
+    entry.mirMaxInlinedInsts = spec.mirMaxInlinedInsts;
 
     const bool isMember = spec.kind == NativeKind::Method ||
                           ((spec.kind == NativeKind::Getter || spec.kind == NativeKind::Setter) &&

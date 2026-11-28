@@ -16,7 +16,9 @@
 // not already be a host global. Every refusal is a returned message, never a
 // silent default.
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +26,10 @@
 #include "abi/bronze_native_type.h"
 #include "runtime/native_handle.h"
 #include "runtime/value.h"
+
+namespace brass {
+class Module;
+}
 
 namespace bronze::runtime {
 
@@ -57,6 +63,11 @@ struct NativeSpec {
     std::string returnClass;              // with returnType "dynamic": the class the value is known to be
     HandleDestructor destructor = nullptr;
     Finalize finalize = Finalize::InSweep;
+    std::shared_ptr<const brass::Module> mirModule;
+    std::string mirFunction;
+    const std::atomic<uint64_t>* mirEpochPtr = nullptr;
+    uint64_t mirExpectedEpoch = 0;
+    size_t mirMaxInlinedInsts = 8192;
 };
 
 // A registration as the registry holds it: the spec resolved to type refs,
@@ -73,6 +84,11 @@ struct NativeEntry {
     // "ret(params)" with `self` for the receiver of a member kind — the text
     // the manifest carries and the bind step compares.
     std::string signature;
+    std::shared_ptr<const brass::Module> mirModule;
+    std::string mirFunction;
+    const std::atomic<uint64_t>* mirEpochPtr = nullptr;
+    uint64_t mirExpectedEpoch = 0;
+    size_t mirMaxInlinedInsts = 8192;
 };
 
 // The import name a compiled module records for one slot: "<kind> <path>",

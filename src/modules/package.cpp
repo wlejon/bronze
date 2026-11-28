@@ -300,7 +300,8 @@ bool exportsTarget(const json::Value& exports, const Specifier& spec,
 
 bool resolvePackageSpecifier(const std::string& specifier,
                              const std::filesystem::path& importerPath, Span span,
-                             DiagnosticSink& diags, std::filesystem::path& out) {
+                             DiagnosticSink& diags, std::filesystem::path& out,
+                             const std::vector<std::string>& extraExtensions) {
     Specifier spec;
     if (!splitSpecifier(specifier, span, diags, spec)) return false;
 
@@ -383,7 +384,7 @@ bool resolvePackageSpecifier(const std::string& specifier,
     if (!requireExistingFile(resolved,
                              "module specifier \"" + specifier + "\" from " +
                                  importerPath.string() + " (via " + manifest.string() + ")",
-                             span, diags)) {
+                             span, diags, extraExtensions)) {
         return false;
     }
     out = std::move(resolved);

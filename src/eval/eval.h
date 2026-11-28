@@ -145,6 +145,9 @@ struct EvalOptions {
     // thread, 1 the compiling thread alone; the module's bytes, and so its
     // record and key, are the same at any count.
     size_t buildThreads = 0;
+    // Host-handled non-JS ES module extensions (e.g. ".bk") and callback.
+    std::vector<std::string> extraModuleExtensions = {};
+    modules::CustomModuleLoader customModuleLoader = {};
 };
 
 struct CompiledScript {

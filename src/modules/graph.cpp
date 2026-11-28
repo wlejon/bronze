@@ -161,6 +161,25 @@ public:
             return true;
         }
 
+        if (options_.customLoader) {
+            CustomModuleResult custom = options_.customLoader(path);
+            if (custom.handled) {
+                if (!custom.error.empty()) {
+                    sources_.add(path.generic_string(), "");
+                    diags_.error(importSpan, custom.error);
+                    return false;
+                }
+                const SourceBuffer& buffer = sources_.add(path.generic_string(), custom.jsSource);
+                if (options_.dependencyLog) {
+                    options_.dependencyLog->usedCustomLoader = true;
+                    for (const std::string& extra : custom.extraFilesRead) {
+                        options_.dependencyLog->filesRead.push_back(extra);
+                    }
+                }
+                return loadBuffer(path, buffer, importSpan, outId);
+            }
+        }
+
         std::string text;
         const bool read = readFile(path, text);
         const SourceBuffer& buffer = sources_.add(path.generic_string(), read ? text : "");
@@ -377,7 +396,7 @@ public:
             DiagnosticSink scratch;
             std::filesystem::path target;
             if (!resolveSpecifier(specifier, resolvesFrom(file), Span{}, scratch, target,
-                                  options_.moduleRoots)) {
+                                  options_.moduleRoots, options_.extraExtensions)) {
                 return;
             }
             const std::string key = target.generic_string();
@@ -453,7 +472,8 @@ private:
     bool follow(ModuleFile& file, const std::string& specifier, Span span) {
         if (file.deps.count(specifier)) return true;  // the same specifier twice is one edge
         std::filesystem::path target;
-        if (!resolveSpecifier(specifier, resolvesFrom(file), span, diags_, target, options_.moduleRoots)) return false;
+        if (!resolveSpecifier(specifier, resolvesFrom(file), span, diags_, target,
+                              options_.moduleRoots, options_.extraExtensions)) return false;
         if (options_.dependencyLog && specifier.rfind("./", 0) != 0 && specifier.rfind("../", 0) != 0) {
             options_.dependencyLog->edges.push_back(
                 {specifier, resolvesFrom(file).generic_string(), target.generic_string()});
@@ -497,6 +517,9 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
     uint16_t entryId = 0;
     out.publishModules = effectiveOptions.publishModules;
     out.publishEntry = effectiveOptions.publishModules && effectiveOptions.publishEntry;
+    if (effectiveOptions.dependencyLog) {
+        effectiveOptions.dependencyLog->extraExtensions = effectiveOptions.extraExtensions;
+    }
     Loader loader(sources, diags, out, effectiveOptions);
     if (!loader.load(entry, Span{}, entryId)) return false;
     loader.resolveTypeSpecifiers();

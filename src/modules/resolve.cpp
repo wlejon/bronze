@@ -67,21 +67,27 @@ std::vector<std::filesystem::path> nearMisses(const std::filesystem::path& path)
 
 }  // namespace
 
-bool isModuleFileName(const std::string& name) {
+bool isModuleFileName(const std::string& name, const std::vector<std::string>& extraExtensions) {
     static const char* const kExtensions[] = {".js", ".mjs", ".ts", ".mts"};
     for (const char* ext : kExtensions) {
         const size_t n = std::char_traits<char>::length(ext);
         // `>=`, not `>`: a glob tail is often the bare extension.
         if (name.size() >= n && name.compare(name.size() - n, n, ext) == 0) return true;
     }
+    for (const std::string& ext : extraExtensions) {
+        if (!ext.empty() && name.size() >= ext.size() &&
+            name.compare(name.size() - ext.size(), ext.size(), ext) == 0) {
+            return true;
+        }
+    }
     return false;
 }
 
 bool requireExistingFile(const std::filesystem::path& path, const std::string& what, Span span,
-                         DiagnosticSink& diags) {
+                         DiagnosticSink& diags, const std::vector<std::string>& extraExtensions) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(path, ec)) {
-        if (isModuleFileName(path.filename().generic_string())) return true;
+        if (isModuleFileName(path.filename().generic_string(), extraExtensions)) return true;
         // A real file that is not a module. Refused HERE, at the import that
         // named it, because the alternative is to lex it — and a parse error
         // inside a `.gitignore` names the wrong file entirely.
@@ -204,7 +210,8 @@ bool resolveSpecifierDirectory(const std::string& dirSpecifier,
 
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
                       Span span, DiagnosticSink& diags, std::filesystem::path& out,
-                      const std::vector<ModuleRoot>& moduleRoots) {
+                      const std::vector<ModuleRoot>& moduleRoots,
+                      const std::vector<std::string>& extraExtensions) {
     if (specifier.empty()) {
         diags.error(span, "empty module specifier");
         return false;
@@ -216,7 +223,7 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
         fallbackJsToTs(resolved);
         if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
                                                bestRoot->prefix + "\"",
-                                 span, diags)) {
+                                 span, diags, extraExtensions)) {
             return false;
         }
         out = std::move(resolved);
@@ -229,7 +236,7 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
                                   kind + ", which bronze does not resolve");
             return false;
         }
-        return resolvePackageSpecifier(specifier, importerPath, span, diags, out);
+        return resolvePackageSpecifier(specifier, importerPath, span, diags, out, extraExtensions);
     }
 
     std::error_code ec;
@@ -244,7 +251,7 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
 
     if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from " +
                                            importerPath.string(),
-                             span, diags)) {
+                             span, diags, extraExtensions)) {
         return false;
     }
     out = std::move(resolved);

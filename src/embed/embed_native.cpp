@@ -68,6 +68,11 @@ std::string jsonString(const std::string& s) {
 
 bool registerNative(std::string_view jsPath, void* fn, const NativeSignature& sig,
                     std::string* error) {
+    return registerNativeMir(jsPath, fn, sig, NativeMirSpec{}, error);
+}
+
+bool registerNativeMir(std::string_view jsPath, void* fn, const NativeSignature& sig,
+                       const NativeMirSpec& mir, std::string* error) {
     runtime::NativeSpec spec;
     spec.kind = toRuntimeKind(sig.kind);
     spec.returnType = sig.returnType;
@@ -76,6 +81,11 @@ bool registerNative(std::string_view jsPath, void* fn, const NativeSignature& si
     spec.returnClass = sig.returnClass;
     spec.destructor = sig.destructor;
     spec.finalize = sig.finalize;
+    spec.mirModule = mir.mirModule;
+    spec.mirFunction = mir.mirFunction;
+    spec.mirEpochPtr = mir.epochPtr;
+    spec.mirExpectedEpoch = mir.expectedEpoch;
+    spec.mirMaxInlinedInsts = mir.maxInlinedInsts;
     std::string err;
     if (runtime::rtRegisterNative(jsPath, fn, spec, err)) return true;
     if (error) {

@@ -6,6 +6,8 @@
 // carrying BRONZE_EMBED_API for the same reason it does; embed.h includes it,
 // so a host that includes embed.h has all of it.
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +15,10 @@
 #include "abi/bronze_native_type.h"  // bronze_native_buffer: a `T[]` return's out-descriptor
 #include "embed/embed.h"
 #include "runtime/native_handle.h"
+
+namespace brass {
+class Module;
+}
 
 namespace bronze::embed {
 
@@ -118,6 +124,22 @@ struct NativeSignature {
 // the JS heap except for a constructor, which mints the class's prototype.
 BRONZE_EMBED_API bool registerNative(std::string_view jsPath, void* fn, const NativeSignature& sig,
                                      std::string* error = nullptr);
+
+// Optional Brass MIR backing for in-process cross-language call fusion.
+// Parameter/return MIR types must match Bronze's lowered native types:
+// `f64` -> `f64`, `i32` -> `i32`, `bool` -> `i32`, `str` -> `ptr`, `T[]` -> `(i64, i32)`.
+// When `epochPtr != nullptr`, fused code checks `*epochPtr == expectedEpoch`
+// on entry and falls back to the bound C pointer `fn` when mismatched.
+struct NativeMirSpec {
+    std::shared_ptr<const brass::Module> mirModule;
+    std::string mirFunction;
+    const std::atomic<uint64_t>* epochPtr = nullptr;
+    uint64_t expectedEpoch = 0;
+    size_t maxInlinedInsts = 8192;
+};
+
+BRONZE_EMBED_API bool registerNativeMir(std::string_view jsPath, void* fn, const NativeSignature& sig,
+                                        const NativeMirSpec& mir, std::string* error = nullptr);
 
 // Remove one registration. A module already bound keeps calling what it
 // bound; a later bind refuses the name. Unregistering a constructor unlinks

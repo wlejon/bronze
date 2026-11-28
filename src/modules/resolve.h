@@ -28,16 +28,12 @@ namespace bronze::modules {
 // `what` names the thing being resolved, for the message ("module specifier
 // \"./x\"", "\"main\" of package \"lib\"").
 bool requireExistingFile(const std::filesystem::path& path, const std::string& what, Span span,
-                         DiagnosticSink& diags);
+                         DiagnosticSink& diags, const std::vector<std::string>& extraExtensions = {});
 
 // Whether a file NAME is one bronze reads as a module: `.js`, `.mjs`, or the
 // TypeScript spellings `.ts` and `.mts`, whose annotations the parser takes as
-// hints. The one reading of that list, shared by `requireExistingFile` (which
-// refuses a resolved path that is not one — a `.gitignore` named by an import
-// must fail as an import, not as a parse of its bytes) and by the
-// template-literal glob (whose tail must end in one, or the interpolation is
-// bounded by nothing).
-bool isModuleFileName(const std::string& name);
+// hints, plus any host-registered `extraExtensions`.
+bool isModuleFileName(const std::string& name, const std::vector<std::string>& extraExtensions = {});
 
 // A BARE specifier — `lib`, `lib/sub.js`, `@scope/pkg` — to a file, by walking
 // `node_modules` upward from the importing file and reading the package's
@@ -46,7 +42,8 @@ bool isModuleFileName(const std::string& name);
 // guess.
 bool resolvePackageSpecifier(const std::string& specifier,
                              const std::filesystem::path& importerPath, Span span,
-                             DiagnosticSink& diags, std::filesystem::path& out);
+                             DiagnosticSink& diags, std::filesystem::path& out,
+                             const std::vector<std::string>& extraExtensions = {});
 
 // The regular files in `dir` whose names start with `namePrefix` and end with
 // `tail` (strictly longer than both together), sorted: what a template-literal

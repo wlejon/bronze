@@ -5,6 +5,7 @@
 #include "codegen-brass/deopt_sites.h"
 #include "codegen-brass/elem_cells.h"
 #include "codegen-brass/il_to_brass_ast.h"
+#include "codegen-brass/native_mir_fusion.h"
 #include "codegen-brass/size_report.h"
 
 #include "abi/bronze_abi.h"
@@ -151,7 +152,7 @@ void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
 }
 
 void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
-                            const std::string& entrySymbol, bool perThread) {
+                            const std::string& entrySymbol, bool perThread, bool inProcess) {
     const auto& imports = module.nativeImports;
     if (imports.empty()) return;
 
@@ -181,6 +182,14 @@ void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
         if (!thunk) {
             thunk = mod.create_function(
                 decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
+        }
+
+        if (inProcess && !isClassSlot && imports[i].bufferReturnKind == UINT32_MAX &&
+            codegen::tryEmitMirNativeThunk(mod, thunk, imports[i].name, imports[i].signature,
+                                           decl.returnType == il::Type::Bool, paramTypes, retType,
+                                           entrySymbol, importsSymbol,
+                                           static_cast<int32_t>(8 + i * sizeof(uint64_t)), perThread)) {
+            continue;
         }
 
         brass::Builder b(mod);
@@ -576,7 +585,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // A companion calls its image's thunks.
     if (!companion_) {
         emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys, perThreadModuleData_);
-        emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_);
+        emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_, inProcess_);
     }
     mtimer.mark("thunks");
 

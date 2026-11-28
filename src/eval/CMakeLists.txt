@@ -19,6 +19,10 @@ bronze_add_module(eval
         support
         modules
         selfhost_il
+    TEST_SOURCES
+        eval_custom_mir_tests.cpp
+    TEST_DEPS
+        codegen_brass
 )
 # The code cache identifies its own binary with dladdr.
 if(NOT WIN32)

@@ -327,6 +327,8 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
     modOpts.moduleRoots = options.moduleRoots;
     modOpts.entryResolvesAs = options.entryResolvesAs;
     if (options.classicScript) modOpts.classicScriptMarker = options.classicScriptMarker;
+    modOpts.extraExtensions = options.extraModuleExtensions;
+    modOpts.customLoader = options.customModuleLoader;
     applyModuleRegistry(options, modOpts);
     return modOpts;
 }
@@ -345,6 +347,8 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
     k.field(options.classicScript ? "classic:" + options.classicScriptMarker : "unit");
     k.field(options.publishTopLevel ? "publish-top" : "own-top");
+    for (const auto& ext : modOpts.extraExtensions) k.field("ext:" + ext);
+    if (modOpts.customLoader) k.field("custom-loader");
     k.part("module roots");
     k.field("|roots");
     for (const auto& root : modOpts.moduleRoots) {

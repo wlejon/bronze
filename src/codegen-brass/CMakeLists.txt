@@ -32,6 +32,7 @@ add_library(bronze_codegen_brass STATIC
     deopt_sites.cpp
     il_to_brass_ast.cpp
     module_image.cpp
+    native_mir_fusion.cpp
     # il2mir: the bronze IL → brass MIR translator.
     il2mir/il_alloc_lowering.cpp
     il2mir/il_bridge_verifier.cpp

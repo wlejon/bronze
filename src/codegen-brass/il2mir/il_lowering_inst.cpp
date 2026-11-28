@@ -684,6 +684,21 @@ bool IlLowering::lower_instruction(
                 if (arg) args.push_back(arg);
             }
             res_val = b.build_call(callee_name, callee_ret, Span<Value* const>(args.data(), args.size()));
+            if (callee && callee_name.rfind("__bronze_native_", 0) == 0 && !callee->blocks().empty()) {
+                bool isFused = false;
+                size_t hotInsts = 0;
+                for (const BasicBlock* bb : callee->blocks()) {
+                    if (!bb) continue;
+                    if (bb->name() == "fused_entry") isFused = true;
+                    if (!bb->is_cold()) hotInsts += bb->instruction_count();
+                }
+                if (isFused && hotInsts <= 600 && b.current_block()) {
+                    if (Instruction* callInst = b.current_block()->tail();
+                        callInst && callInst->opcode() == Opcode::call) {
+                        callInst->set_inline_hint(true);
+                    }
+                }
+            }
             through_entry_cell(b, callee_name);
             break;
         }

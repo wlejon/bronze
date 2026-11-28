@@ -1,8 +1,10 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "ast/ast.h"
 #include "support/diagnostics.h"
@@ -60,7 +62,17 @@ struct DependencyLog {
     // The SourceSet names of the buffers read from disk. Every other buffer
     // (the in-memory entry, text the linker synthesizes) is not a file.
     std::vector<std::string> filesRead;
+    std::vector<std::string> extraExtensions;
+    bool usedCustomLoader = false;
 };
+
+struct CustomModuleResult {
+    bool handled = false;
+    std::string jsSource;
+    std::vector<std::string> extraFilesRead;
+    std::string error;
+};
+using CustomModuleLoader = std::function<CustomModuleResult(const std::filesystem::path& resolvedPath)>;
 
 // True when every glob in `log` still lists the same names and every edge still
 // resolves to the same file. The file TEXTS are the caller's to compare.
@@ -111,6 +123,8 @@ struct ModuleOptions {
     // is recorded. Last, so positional initializers of the fields above keep
     // their meaning.
     DependencyLog* dependencyLog = nullptr;
+    std::vector<std::string> extraExtensions;
+    CustomModuleLoader customLoader;
 };
 
 // Loads an import map from a JSON file, resolving relative target paths relative
@@ -147,7 +161,8 @@ std::unique_ptr<ast::Module> loadProgramSource(const std::string& code,
 // a diagnosed error.
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
                       Span span, DiagnosticSink& diags, std::filesystem::path& out,
-                      const std::vector<ModuleRoot>& moduleRoots = {});
+                      const std::vector<ModuleRoot>& moduleRoots = {},
+                      const std::vector<std::string>& extraExtensions = {});
 
 // The DIRECTORY a specifier prefix names — `./panels/`, `three/addons/loaders/`
 // — honouring module roots and the import map exactly as a full specifier

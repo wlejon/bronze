@@ -44,7 +44,7 @@ bool dependenciesUnchanged(const DependencyLog& log, const std::vector<ModuleRoo
         DiagnosticSink quiet;
         std::filesystem::path target;
         if (!resolveSpecifier(edge.specifier, std::filesystem::path(edge.importer), Span{}, quiet, target,
-                              moduleRoots)) {
+                              moduleRoots, log.extraExtensions)) {
             return false;
         }
         if (target.generic_string() != edge.target) return false;
