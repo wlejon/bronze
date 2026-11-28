@@ -95,6 +95,22 @@ bool registerNativeMir(std::string_view jsPath, void* fn, const NativeSignature&
     fatal(("embed: " + err).c_str());
 }
 
+bool lookupNativeMir(std::string_view kindText, std::string_view jsPath,
+                     std::string_view expectedSignature, NativeMirSpec& out) {
+    out = NativeMirSpec{};
+    runtime::NativeKind kind = runtime::NativeKind::Function;
+    if (!runtime::parseNativeKind(kindText, kind)) return false;
+    const runtime::NativeEntry* entry = runtime::rtFindNative(jsPath, kind);
+    if (!entry || !entry->mirModule || entry->mirFunction.empty()) return false;
+    if (entry->signature != expectedSignature) return false;
+    out.mirModule = entry->mirModule;
+    out.mirFunction = entry->mirFunction;
+    out.epochPtr = entry->mirEpochPtr;
+    out.expectedEpoch = entry->mirExpectedEpoch;
+    out.maxInlinedInsts = entry->mirMaxInlinedInsts;
+    return true;
+}
+
 bool unregisterNative(std::string_view jsPath, NativeKind kind) {
     return runtime::rtUnregisterNative(jsPath, toRuntimeKind(kind));
 }

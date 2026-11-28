@@ -141,6 +141,9 @@ struct NativeMirSpec {
 BRONZE_EMBED_API bool registerNativeMir(std::string_view jsPath, void* fn, const NativeSignature& sig,
                                         const NativeMirSpec& mir, std::string* error = nullptr);
 
+BRONZE_EMBED_API bool lookupNativeMir(std::string_view kindText, std::string_view jsPath,
+                                      std::string_view expectedSignature, NativeMirSpec& out);
+
 // Remove one registration. A module already bound keeps calling what it
 // bound; a later bind refuses the name. Unregistering a constructor unlinks
 // the class: instances already made keep their tag and still answer to

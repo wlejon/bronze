@@ -2,7 +2,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-brass/brass_backend_sections.h"
-#include "runtime/native_registry.h"
+#include "embed/embed_native.h"
 
 #include <brass/mir/block.hpp>
 #include <brass/mir/builder.hpp>
@@ -64,20 +64,16 @@ bool tryEmitMirNativeThunk(
     const std::string path = importName.substr(sp + 1);
     if (kindText == "class") return false;
 
-    runtime::NativeKind kind = runtime::NativeKind::Function;
-    if (!runtime::parseNativeKind(kindText, kind)) return false;
+    embed::NativeMirSpec spec;
+    if (!embed::lookupNativeMir(kindText, path, importSignature, spec)) return false;
 
-    const runtime::NativeEntry* entry = runtime::rtFindNative(path, kind);
-    if (!entry || !entry->mirModule || entry->mirFunction.empty()) return false;
-    if (entry->signature != importSignature) return false;
-
-    const brass::Function* srcFn = entry->mirModule->get_function(entry->mirFunction);
+    const brass::Function* srcFn = spec.mirModule->get_function(spec.mirFunction);
     if (!srcFn || !srcFn->has_body()) return false;
     if (!mirTypesMatch(*srcFn, paramTypes, retType)) return false;
 
     brass::CrossDomainFusionOptions fopts;
     fopts.allow_nanbox_unboxing = false;
-    fopts.max_inlined_insts = entry->mirMaxInlinedInsts > 0 ? entry->mirMaxInlinedInsts : 8192;
+    fopts.max_inlined_insts = spec.maxInlinedInsts > 0 ? spec.maxInlinedInsts : 8192;
     fopts.audit_opts.require_no_gc = true;
     fopts.audit_opts.require_no_pinned_tls = true;
     fopts.audit_opts.require_no_alloc = true;
@@ -85,7 +81,7 @@ bool tryEmitMirNativeThunk(
     fopts.audit_opts.require_no_eh = true;
 
     const brass::DomainAuditReport preAudit =
-        brass::audit_function_domain(*srcFn, *entry->mirModule, fopts.audit_opts);
+        brass::audit_function_domain(*srcFn, *spec.mirModule, fopts.audit_opts);
     if (!preAudit.ok) return false;
 
     const std::string thunkName(thunk->name());
@@ -100,16 +96,16 @@ bool tryEmitMirNativeThunk(
 
     brass::BasicBlock* fusedBb = b.append_block("fused_entry");
     brass::BasicBlock* slowBb = nullptr;
-    if (entry->mirEpochPtr != nullptr) {
+    if (spec.epochPtr != nullptr) {
         slowBb = b.append_block("slow");
         slowBb->set_cold();
     }
 
     b.position_at_end(entryBb);
     if (slowBb) {
-        brass::Value* addr = b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(entry->mirEpochPtr)));
+        brass::Value* addr = b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(spec.epochPtr)));
         brass::Value* curEpoch = b.build_load(brass::Type::i64(), addr, 0);
-        brass::Value* wantEpoch = b.build_iconst_i64(static_cast<int64_t>(entry->mirExpectedEpoch));
+        brass::Value* wantEpoch = b.build_iconst_i64(static_cast<int64_t>(spec.expectedEpoch));
         brass::Value* ok = b.build_eq(curEpoch, wantEpoch);
         b.build_br_if(ok, fusedBb, slowBb);
 
@@ -131,7 +127,7 @@ bool tryEmitMirNativeThunk(
 
     b.position_at_end(fusedBb);
     brass::Value* callVal = b.build_call(
-        entry->mirFunction, retType, brass::Span<brass::Value* const>(args.data(), args.size()));
+        spec.mirFunction, retType, brass::Span<brass::Value* const>(args.data(), args.size()));
     brass::Instruction* callInst = nullptr;
     for (brass::Instruction* inst : *fusedBb) {
         if (inst && inst->opcode() == brass::Opcode::call) {
@@ -156,7 +152,7 @@ bool tryEmitMirNativeThunk(
     thunk->rebuild_cfg_predecessors();
     fopts.link_opts.symbol_prefix = thunkName + "_";
     const brass::CrossDomainFusionResult fres = brass::fuse_cross_module_call(
-        *thunk, callInst, mod, *entry->mirModule, entry->mirFunction, fopts);
+        *thunk, callInst, mod, *spec.mirModule, spec.mirFunction, fopts);
     if (!fres.fused) {
         mod.remove_function(thunk);
         thunk = mod.create_function(
